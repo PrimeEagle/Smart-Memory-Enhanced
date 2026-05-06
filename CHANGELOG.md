@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.10] - 2026-05-06
+
+### Fixed
+
+- **"Add memory" field now appears even when the memory list is empty**: the add
+  form for long-term memories and session memories was only rendered after the
+  list items, so it was never shown when there were no memories yet. The early
+  return that caused this has been removed so the form always renders.
+
+- **Manually added memories no longer go to the wrong character**: when switching
+  from a solo chat to a group chat where the selected character had no memories,
+  the add form from the previous character was left in the DOM because the cleanup
+  step was skipped by the same early return. Typing a memory and clicking Add
+  would silently save it to the previous character instead. The form is now always
+  torn down and rebuilt with the correct character when the panel re-renders.
+
 ## [1.6.9] - 2026-05-05
 
 ### Fixed

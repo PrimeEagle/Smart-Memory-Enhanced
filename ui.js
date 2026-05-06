@@ -539,7 +539,6 @@ export function updateSessionUI() {
 
   if (memories.length === 0) {
     $list.append('<div class="sm_no_char">No session memories yet.</div>');
-    return;
   }
 
   const sortedSession = [...memories].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
@@ -1139,7 +1138,6 @@ export function renderMemoriesList(memories, characterName) {
 
   if (memories.length === 0) {
     $list.append('<div class="sm_no_char">No memories stored yet for this character.</div>');
-    return;
   }
 
   const sorted = [...memories].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
