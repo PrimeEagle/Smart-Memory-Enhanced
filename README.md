@@ -495,15 +495,15 @@ This section covers the technical details behind Smart Memory's behaviour. You d
 
 Smart Memory's defaults are designed to layer cleanly alongside SillyTavern's Vector Storage extension. "Depth" is how far a piece of context sits from the AI's response - depth 0 is right before the AI responds, higher numbers sit further back.
 
-| Tier       | Position                | Depth | Notes                                           |
-| ---------- | ----------------------- | ----- | ----------------------------------------------- |
-| Arcs       | In-chat @ depth 2       | 2     | Shares depth with ST chat vectors intentionally |
-| Session    | In-chat @ depth 3       | 3     | Just above ST's default vector depth            |
-| Scenes     | In-chat @ depth 6       | 6     | Further back - past scene context               |
-| Long-term  | After Main Prompt       | -     | Near character card                             |
-| Short-term | After Main Prompt       | -     | Rolling narrative summary                       |
-| Canon      | After Main Prompt       | -     | Stable character history, separate slot         |
-| Profiles   | After Main Prompt       | -     | State snapshots, near character card            |
+| Tier       | Position                | Notes                                           |
+| ---------- | ----------------------- | ----------------------------------------------- |
+| Arcs       | In-chat @ depth 2       | Shares depth with ST chat vectors intentionally |
+| Session    | In-chat @ depth 3       | Just above ST's default vector depth            |
+| Scenes     | In-chat @ depth 6       | Further back - past scene context               |
+| Long-term  | After Main Prompt       | Near character card                             |
+| Short-term | After Main Prompt       | Rolling narrative summary                       |
+| Canon      | After Main Prompt       | Stable character history, separate slot         |
+| Profiles   | After Main Prompt       | State snapshots, near character card            |
 
 The away recap is shown as a popup to the user, not added to the prompt.
 
