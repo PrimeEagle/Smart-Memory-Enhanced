@@ -152,11 +152,11 @@ Smart Memory is designed to work _alongside_ SillyTavern's built-in vector stora
 
 | Layer                         | What it does                                                     |
 | ----------------------------- | ---------------------------------------------------------------- |
-| **Message Limit** extension   | Hard cap on raw messages in context - your VRAM budget           |
-| **Vector storage**            | Retrieves specific details on demand when they are relevant      |
-| **Smart Memory - session**    | Always-present curated details from the current chat             |
-| **Smart Memory - short-term** | Always-present narrative summary of everything before the window |
 | **Smart Memory - long-term**  | Always-present character facts from all previous sessions        |
+| **Smart Memory - short-term** | Always-present narrative summary of everything before the window |
+| **Smart Memory - session**    | Always-present curated details from the current chat             |
+| **Vector storage**            | Retrieves specific details on demand when they are relevant      |
+| **Message Limit** extension   | Hard cap on raw messages in context - your VRAM budget           |
 
 If you are on limited VRAM (8GB or less), keep the Message Limit extension enabled and consider lowering **Max session memories** to around 15 to keep prompt size comfortable.
 
