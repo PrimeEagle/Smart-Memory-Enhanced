@@ -257,7 +257,7 @@ Manual edits take effect immediately and are added to the prompt on the next mes
 
 ## Settings
 
-All settings are saved automatically.
+All settings are saved automatically. The tier sections (Long-term, Session, Short-term, etc.) are near the top of the extension panel. Hardware Profile, Memory LLM, and Memory Deduplication are in the **Configuration** accordion at the bottom of the panel.
 
 ### Simple and Advanced Mode
 
@@ -270,11 +270,15 @@ Switching from simple to advanced never overwrites your values - the advanced co
 
 ### Hardware Profile
 
-Smart Memory adjusts its behavior based on whether you are using a local model or a hosted service.
+Smart Memory adjusts its behavior based on whether you are using a local model or a hosted service. The profile is auto-detected from your Memory LLM selection but can be overridden manually.
 
 | Setting          | Default | Description                                                                                                                                                                                                                                                                                   |
 | ---------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Hardware profile | Auto    | Auto-detects from your memory source. Ollama or WebLLM selects Profile A (fewer model calls, lighter extraction). Main API or OpenAI Compatible selects Profile B (richer extraction, automatic continuity checks, auto-canon). Override manually if auto-detection does not match your setup |
+
+**Profile A** (local hardware - Ollama, WebLLM) is designed to be conservative with model calls. Extraction runs on a schedule, scene AI detection is off by default, the continuity check is manual-only, and canon generation is triggered manually. This keeps things running smoothly on limited VRAM.
+
+**Profile B** (hosted models - Main API, OpenAI Compatible) takes advantage of faster, less constrained inference. The continuity check runs automatically after every response, canon regenerates automatically when an arc closes, and profile regeneration can be scheduled on a message-count interval in addition to extraction passes.
 
 ### Memory LLM
 
@@ -491,15 +495,15 @@ This section covers the technical details behind Smart Memory's behaviour. You d
 
 Smart Memory's defaults are designed to layer cleanly alongside SillyTavern's Vector Storage extension. "Depth" is how far a piece of context sits from the AI's response - depth 0 is right before the AI responds, higher numbers sit further back.
 
-| Tier       | Position  | Depth | Notes                                           |
-| ---------- | --------- | ----- | ----------------------------------------------- |
-| Arcs       | In-chat   | 2     | Shares depth with ST chat vectors intentionally |
-| Session    | In-chat   | 3     | Just above ST's default vector depth            |
-| Scenes     | In-chat   | 6     | Further back - past scene context               |
-| Long-term  | After Main Prompt | -     | Near character card                             |
-| Short-term | After Main Prompt | -     | Rolling narrative summary                       |
-| Canon      | After Main Prompt | -     | Stable character history, separate slot         |
-| Profiles   | After Main Prompt | -     | State snapshots, near character card            |
+| Tier       | Position                | Depth | Notes                                           |
+| ---------- | ----------------------- | ----- | ----------------------------------------------- |
+| Arcs       | In-chat @ depth 2       | 2     | Shares depth with ST chat vectors intentionally |
+| Session    | In-chat @ depth 3       | 3     | Just above ST's default vector depth            |
+| Scenes     | In-chat @ depth 6       | 6     | Further back - past scene context               |
+| Long-term  | After Main Prompt       | -     | Near character card                             |
+| Short-term | After Main Prompt       | -     | Rolling narrative summary                       |
+| Canon      | After Main Prompt       | -     | Stable character history, separate slot         |
+| Profiles   | After Main Prompt       | -     | State snapshots, near character card            |
 
 The away recap is shown as a popup to the user, not added to the prompt.
 
