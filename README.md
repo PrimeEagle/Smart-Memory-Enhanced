@@ -164,11 +164,11 @@ If you are on limited VRAM (8GB or less), keep the Message Limit extension enabl
 
 For local Ollama setups with limited VRAM (8GB or less), three models have been tested against Smart Memory's full extraction harness and score 47-48/48 (98-100%):
 
-**`huihui_ai/qwen3-vl-abliterated:8b-instruct`** (6.1 GB) - primary recommendation. Reliable, consistent, no thinking overhead. The abliterated variant handles explicit roleplay content without refusals.
+[**`huihui_ai/qwen3-vl-abliterated:8b-instruct`**](https://ollama.com/huihui_ai/qwen3-vl-abliterated) (6.1 GB) - primary recommendation. Reliable, consistent, no thinking overhead. The abliterated variant handles explicit roleplay content without refusals.
 
-**`mistral:7b`** (4.1 GB) - strong alternative when VRAM is tighter. Matches qwen3-vl quality. A good choice if you want to free up headroom for the embedding model alongside the roleplay model.
+[**`mistral:7b`**](https://ollama.com/library/mistral) (4.1 GB) - strong alternative when VRAM is tighter. Matches qwen3-vl quality. A good choice if you want to free up headroom for the embedding model alongside the roleplay model.
 
-**`gemma3:4b`** (3.3 GB) - lightest recommended option. Matches qwen3-vl on most extractions; occasionally files some long-term-relevant details under session memory on very long chats. Use if 4 GB is your hard limit.
+[**`gemma3:4b`**](https://ollama.com/library/gemma3) (3.3 GB) - lightest recommended option. Matches qwen3-vl on most extractions; occasionally files some long-term-relevant details under session memory on very long chats. Use if 4 GB is your hard limit.
 
 All three follow Smart Memory's structured output reliably. Smart Memory's prompts are longer than typical chat prompts - a model that works fine for roleplay may still struggle here if the combined prompt length exceeds its effective context window. If you get empty or garbled extraction output with a different model, context overflow is the most likely cause.
 
