@@ -588,7 +588,7 @@ export function updateSessionUI() {
                 <button class="sm_delete_session_memory menu_button" data-index="${idx}" title="Delete this memory">
                     <i class="fa-solid fa-trash-can"></i>
                 </button>
-                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
+                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
             </div>
         `);
     $list.append($item);
@@ -614,8 +614,32 @@ export function updateSessionUI() {
 
   $list.find('.sm_jump_source').on('click', function () {
     const startIdx = parseInt($(this).data('source-start'), 10);
-    const $msg = $(`#chat .mes[mesid="${startIdx}"]`);
-    if ($msg.length) $msg[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const endIdx = parseInt($(this).data('source-end'), 10);
+    const $startMsg = $(`#chat .mes[mesid="${startIdx}"]`);
+    if (!$startMsg.length) return;
+    // Close the extension panel so the chat is visible when the scroll lands.
+    const $drawerContent = $('#smart_memory_settings')
+      .closest('.inline-drawer')
+      .find('>.inline-drawer-content');
+    if ($drawerContent.is(':visible')) {
+      $('#smart_memory_settings')
+        .closest('.inline-drawer')
+        .find('>.inline-drawer-header')
+        .trigger('click');
+    }
+    // Scroll to the first message in the source range.
+    setTimeout(() => {
+      $startMsg[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Flash all messages in the range so the user can see what produced this memory.
+      const FLASH_DURATION_MS = 2400; // 3 pulses × 0.8 s each
+      for (let i = startIdx; i <= endIdx; i++) {
+        const $m = $(`#chat .mes[mesid="${i}"]`);
+        if ($m.length) {
+          $m.addClass('sm_source_flash');
+          setTimeout(() => $m.removeClass('sm_source_flash'), FLASH_DURATION_MS);
+        }
+      }
+    }, 300);
   });
 
   $list.find('.sm_edit_session_memory').on('click', async function () {
@@ -1197,7 +1221,7 @@ export function renderMemoriesList(memories, characterName) {
                 <button class="sm_delete_memory menu_button" data-index="${idx}" title="Delete this memory">
                     <i class="fa-solid fa-trash-can"></i>
                 </button>
-                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
+                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
             </div>
         `);
     $list.append($item);
@@ -1224,8 +1248,32 @@ export function renderMemoriesList(memories, characterName) {
 
   $list.find('.sm_jump_source').on('click', function () {
     const startIdx = parseInt($(this).data('source-start'), 10);
-    const $msg = $(`#chat .mes[mesid="${startIdx}"]`);
-    if ($msg.length) $msg[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const endIdx = parseInt($(this).data('source-end'), 10);
+    const $startMsg = $(`#chat .mes[mesid="${startIdx}"]`);
+    if (!$startMsg.length) return;
+    // Close the extension panel so the chat is visible when the scroll lands.
+    const $drawerContent = $('#smart_memory_settings')
+      .closest('.inline-drawer')
+      .find('>.inline-drawer-content');
+    if ($drawerContent.is(':visible')) {
+      $('#smart_memory_settings')
+        .closest('.inline-drawer')
+        .find('>.inline-drawer-header')
+        .trigger('click');
+    }
+    // Scroll to the first message in the source range.
+    setTimeout(() => {
+      $startMsg[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Flash all messages in the range so the user can see what produced this memory.
+      const FLASH_DURATION_MS = 2400; // 3 pulses × 0.8 s each
+      for (let i = startIdx; i <= endIdx; i++) {
+        const $m = $(`#chat .mes[mesid="${i}"]`);
+        if ($m.length) {
+          $m.addClass('sm_source_flash');
+          setTimeout(() => $m.removeClass('sm_source_flash'), FLASH_DURATION_MS);
+        }
+      }
+    }, 300);
   });
 
   $list.find('.sm_edit_memory').on('click', function () {

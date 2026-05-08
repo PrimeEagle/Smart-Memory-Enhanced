@@ -1079,6 +1079,21 @@
   transition: outline 0.2s ease;
 }
 
+@keyframes sm-source-flash {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  40%,
+  60% {
+    background-color: rgba(126, 207, 255, 0.18);
+  }
+}
+
+#chat .mes.sm_source_flash {
+  animation: sm-source-flash 0.8s ease-in-out 3;
+}
+
 #smart_memory_settings .sm_memory_retired_badge {
   display: inline-block;
   font-size: 0.7em;
