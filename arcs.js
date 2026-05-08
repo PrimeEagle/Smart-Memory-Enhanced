@@ -37,8 +37,12 @@
  * loadPersistentArcs     - returns the character-level persistent arc array
  * savePersistentArcs     - writes a persistent arc array to character-level storage
  * mergePersistentArcs    - merges character-level persistent arcs into chatMetadata on chat open
- * promoteArc             - marks a chat arc as persistent and saves it to character level
- * demoteArc              - removes the persistent flag from an arc and cleans character level
+ * loadGroupPersistentArcs  - returns the group-level persistent arc array
+ * saveGroupPersistentArcs  - writes a persistent arc array to group-level storage
+ * mergeGroupPersistentArcs - merges group-level persistent arcs into chatMetadata on chat open
+ * pruneOrphanedGroupArcs  - removes group arc stores for groups that no longer exist
+ * promoteArc             - marks a chat arc as persistent and saves it to character or group level
+ * demoteArc              - removes the persistent flag from an arc and cleans character or group level
  */
 
 import {
@@ -257,6 +261,80 @@ export function savePersistentArcs(characterName, arcs) {
 }
 
 /**
+ * Returns the persistent arc array for the given group.
+ * Group persistent arcs are stored at the group level so they survive
+ * across chats and are merged into new group chats on load.
+ * @param {string} groupId
+ * @returns {Array<{content: string, ts: number, persistent: true}>}
+ */
+export function loadGroupPersistentArcs(groupId) {
+  if (!groupId) return [];
+  return extension_settings[MODULE_NAME]?.group_arcs?.[groupId] ?? [];
+}
+
+/**
+ * Overwrites the persistent arc array for the given group and persists it.
+ * @param {string} groupId
+ * @param {Array<{content: string, ts: number, persistent: true}>} arcs
+ */
+export function saveGroupPersistentArcs(groupId, arcs) {
+  if (!groupId) return;
+  if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
+  if (!extension_settings[MODULE_NAME].group_arcs) extension_settings[MODULE_NAME].group_arcs = {};
+  extension_settings[MODULE_NAME].group_arcs[groupId] = arcs;
+  saveSettingsDebounced();
+}
+
+/**
+ * Removes group arc stores for groups that no longer exist.
+ * Called once on chat load. Prevents orphaned entries from accumulating
+ * when users create and delete groups frequently.
+ */
+export function pruneOrphanedGroupArcs() {
+  const groupArcs = extension_settings[MODULE_NAME]?.group_arcs;
+  if (!groupArcs) return;
+  const knownIds = new Set((getContext().groups ?? []).map((g) => String(g.id)));
+  let changed = false;
+  for (const id of Object.keys(groupArcs)) {
+    if (!knownIds.has(id)) {
+      delete groupArcs[id];
+      changed = true;
+    }
+  }
+  if (changed) saveSettingsDebounced();
+}
+
+/**
+ * Merges group-level persistent arcs into the current chat's arc list.
+ * Called once on chat load so that injection and extraction see persistent
+ * arcs as part of the normal arc list without any special-casing elsewhere.
+ * Arcs already present in the chat (persistent or otherwise) are skipped.
+ * @param {string} groupId
+ */
+export async function mergeGroupPersistentArcs(groupId) {
+  if (!groupId) return;
+  const persistent = loadGroupPersistentArcs(groupId);
+  if (persistent.length === 0) return;
+
+  const existing = loadArcs();
+  const toAdd = [];
+  for (const p of persistent) {
+    let found = false;
+    for (const e of existing) {
+      if (await arcIsDuplicate(p.content, e.content)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) toAdd.push(p);
+  }
+  if (toAdd.length === 0) return;
+
+  const merged = [...existing, ...toAdd.map((a) => ({ ...a, persistent: true }))];
+  await saveArcs(merged);
+}
+
+/**
  * Merges character-level persistent arcs into the current chat's arc list.
  * Called once on chat load so that injection and extraction see persistent
  * arcs as part of the normal arc list without any special-casing elsewhere.
@@ -287,19 +365,21 @@ export async function mergePersistentArcs(characterName) {
 }
 
 /**
- * Marks an arc as persistent: saves it to the character level so it carries
- * into future chats, and updates the persistent flag in the current chat.
+ * Marks an arc as persistent: saves it to character-level or group-level
+ * storage so it carries into future chats, and updates the persistent flag
+ * in the current chat. Pass either characterName or groupId, not both.
  * @param {number} index - Index in the current chat arc array.
- * @param {string} characterName
+ * @param {string|null} characterName
+ * @param {string|null} [groupId]
  */
-export async function promoteArc(index, characterName) {
-  if (!characterName) return;
+export async function promoteArc(index, characterName, groupId = null) {
+  if (!characterName && !groupId) return;
   const arcs = loadArcs();
   if (!arcs[index]) return;
   arcs[index].persistent = true;
   await saveArcs(arcs);
 
-  const persistent = loadPersistentArcs(characterName);
+  const persistent = groupId ? loadGroupPersistentArcs(groupId) : loadPersistentArcs(characterName);
   let already = false;
   for (const p of persistent) {
     if (await arcIsDuplicate(p.content, arcs[index].content)) {
@@ -313,31 +393,35 @@ export async function promoteArc(index, characterName) {
       ts: arcs[index].ts ?? Date.now(),
       persistent: true,
     });
-    savePersistentArcs(characterName, persistent);
+    if (groupId) saveGroupPersistentArcs(groupId, persistent);
+    else savePersistentArcs(characterName, persistent);
   }
 }
 
 /**
  * Removes the persistent flag from an arc and cleans it from character-level
- * storage. The arc stays in the current chat as a normal non-persistent arc.
+ * or group-level storage. The arc stays in the current chat as a normal
+ * non-persistent arc. Pass either characterName or groupId, not both.
  * @param {number} index - Index in the current chat arc array.
- * @param {string} characterName
+ * @param {string|null} characterName
+ * @param {string|null} [groupId]
  */
-export async function demoteArc(index, characterName) {
-  if (!characterName) return;
+export async function demoteArc(index, characterName, groupId = null) {
+  if (!characterName && !groupId) return;
   const arcs = loadArcs();
   if (!arcs[index]) return;
   const content = arcs[index].content;
   delete arcs[index].persistent;
   await saveArcs(arcs);
 
-  const persistent = loadPersistentArcs(characterName);
+  const persistent = groupId ? loadGroupPersistentArcs(groupId) : loadPersistentArcs(characterName);
   const filtered = [];
   for (const p of persistent) {
     if (!(await arcIsDuplicate(p.content, content))) filtered.push(p);
   }
   if (filtered.length !== persistent.length) {
-    savePersistentArcs(characterName, filtered);
+    if (groupId) saveGroupPersistentArcs(groupId, filtered);
+    else savePersistentArcs(characterName, filtered);
   }
 }
 

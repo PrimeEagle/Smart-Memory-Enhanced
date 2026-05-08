@@ -112,6 +112,8 @@ Unresolved narrative threads - promises made, character goals, mysteries introdu
 
 Story arcs normally start fresh with each new chat. If you are running a continuing story across multiple chats (new chats as chapters rather than fresh starts), you can **pin an arc** with the thumbtack button next to it. Pinned arcs are stored at the character level and appear automatically in every new chat with that character. Unpinning returns it to chat-local scope; resolving a pinned arc removes it from future chats automatically.
 
+Group chats support pinned arcs too. Pinned arcs in a group are stored against the group itself rather than any individual character, and appear automatically whenever that group starts a new chat.
+
 ### Canon
 
 Once you have at least one resolved arc summary, you can generate a **canon document** - a stable prose narrative synthesized from those arc summaries and high-importance long-term facts. Think of it as a "story bible" for the character: not a list of bullet points, but a composed history written by the model from everything it has learned.
@@ -243,7 +245,7 @@ Every entry in the long-term memory, session memory, and story arc lists has act
 
 - **Pencil (edit)** - replaces the entry with an inline text editor. Edit the content and click **Save**, or **Cancel** to discard changes. Not shown on retired memories.
 - **Trash / Checkmark (delete/resolve)** - removes the entry immediately. For story arcs the button is a checkmark to indicate resolving the thread rather than discarding it.
-- **Pin (story arcs only)** - marks the arc as persistent so it carries into future chats. The pin icon turns gold and the arc gets a gold left border when pinned. Click again to unpin.
+- **Pin (story arcs only)** - marks the arc as persistent so it carries into future chats. The pin icon turns gold and the arc gets a gold left border when pinned. Click again to unpin. In group chats, the pin stores the arc against the group rather than an individual character.
 - **Jump to source** - scrolls the chat to the message window the memory was extracted from. Shown on session memories whenever provenance is available, and on long-term memories when the memory was extracted from the current chat.
 
 Below each list an **Add** form lets you insert a new entry manually:

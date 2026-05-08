@@ -92,6 +92,10 @@ import {
   mergePersistentArcs,
   loadPersistentArcs,
   savePersistentArcs,
+  mergeGroupPersistentArcs,
+  loadGroupPersistentArcs,
+  saveGroupPersistentArcs,
+  pruneOrphanedGroupArcs,
 } from './arcs.js';
 import {
   checkContinuity,
@@ -904,6 +908,10 @@ async function onChatChangedImpl() {
   // Fast no-op when the container is already at the current schema version.
   await ensureChatMigrated();
 
+  // Remove group arc stores for groups that no longer exist. Runs once per
+  // chat load; cheap enough that it does not need further throttling.
+  pruneOrphanedGroupArcs();
+
   const settings = getSettings();
   if (!settings.enabled) return;
 
@@ -915,6 +923,8 @@ async function onChatChangedImpl() {
     const summary = loadAndInjectSummary();
     updateShortTermUI(summary);
     injectSceneHistory();
+    // Merge group-level persistent arcs into this chat before injecting.
+    await mergeGroupPersistentArcs(getContext().groupId);
     injectArcs();
     updateScenesUI();
     updateArcsUI();
@@ -1457,16 +1467,26 @@ async function onGroupWrapperFinished({ type } = {}) {
             updateArcsUI();
             total += count;
 
-            // Clean persistent arcs for all responding characters. The solo path
-            // does this inside extractArcs via characterName, but group arc
-            // extraction is chat-wide with no single characterName. Any persistent
-            // arc whose content is no longer in the current arc list was resolved.
+            // Clean persistent arcs for all responding characters and the group
+            // store. The solo path does this inside extractArcs via characterName,
+            // but group arc extraction is chat-wide with no single characterName.
+            // Any persistent arc whose content is no longer in the current arc
+            // list was resolved and must be removed from the persistent store.
             const currentArcContents = new Set(loadArcs().map((a) => a.content));
             for (const charName of roundResponders) {
               const persistent = loadPersistentArcs(charName);
               if (persistent.length === 0) continue;
               const cleaned = persistent.filter((a) => currentArcContents.has(a.content));
               if (cleaned.length < persistent.length) savePersistentArcs(charName, cleaned);
+            }
+            const groupId = context.groupId;
+            if (groupId) {
+              const groupPersistent = loadGroupPersistentArcs(groupId);
+              if (groupPersistent.length > 0) {
+                const cleaned = groupPersistent.filter((a) => currentArcContents.has(a.content));
+                if (cleaned.length < groupPersistent.length)
+                  saveGroupPersistentArcs(groupId, cleaned);
+              }
             }
           }
 

@@ -745,8 +745,10 @@ export function updateArcsUI() {
   const $list = $('#sm_arcs_list');
   $list.empty();
 
-  // Only solo chats support persistent arcs - group chats have no single character.
-  const charName = getContext().groupId ? null : getCurrentCharacterName();
+  const ctx = getContext();
+  const groupId = ctx.groupId ?? null;
+  const charName = groupId ? null : getCurrentCharacterName();
+  const canPin = !!(charName || groupId);
 
   if (arcs.length === 0) {
     $list.append('<div class="sm_no_char">No open story threads.</div>');
@@ -760,7 +762,7 @@ export function updateArcsUI() {
     const $item = $(`
             <div class="sm_arc_item${isPersistent ? ' sm_arc_persistent' : ''}" data-index="${idx}">
                 <span class="sm_arc_text">${$('<div>').text(arc.content).html()}</span>
-                ${charName ? `<button class="sm_pin_arc menu_button${isPersistent ? ' sm_pin_active' : ''}" data-index="${idx}" title="${pinTitle}"><i class="fa-solid fa-thumbtack"></i></button>` : ''}
+                ${canPin ? `<button class="sm_pin_arc menu_button${isPersistent ? ' sm_pin_active' : ''}" data-index="${idx}" title="${pinTitle}"><i class="fa-solid fa-thumbtack"></i></button>` : ''}
                 <button class="sm_edit_arc menu_button" data-index="${idx}" title="Edit this arc">
                     <i class="fa-solid fa-pencil"></i>
                 </button>
@@ -777,9 +779,9 @@ export function updateArcsUI() {
     const arc = loadArcs()[idx];
     if (!arc) return;
     if (arc.persistent) {
-      await demoteArc(idx, charName);
+      await demoteArc(idx, charName, groupId);
     } else {
-      await promoteArc(idx, charName);
+      await promoteArc(idx, charName, groupId);
     }
     injectArcs();
     updateArcsUI();

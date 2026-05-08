@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrived. The Memorize Chat and per-tier Extract Now buttons are unaffected and
   continue to use their fixed windows.
 
+- **Pinned arc transfers for group chats**: story arcs can now be pinned in group
+  chats, bringing them to parity with solo chats. Pinned arcs are stored against
+  the group ID and automatically merged into new chats for that group on load.
+  When an arc is resolved the group's persistent store is cleaned up so resolved
+  threads do not resurface in future chats.
+
 ## [1.6.10] - 2026-05-06
 
 ### Fixed
