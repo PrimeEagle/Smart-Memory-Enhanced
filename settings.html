@@ -1304,6 +1304,26 @@
             </label>
           </div>
 
+          <!-- Model test -->
+          <div class="sm-block sm-btn-row">
+            <button id="sm_model_test_btn" class="menu_button menu_button_icon">
+              <i class="fa-solid fa-flask"></i>
+              <span>
+                Test Extraction Model
+                <span
+                  class="sm-info"
+                  data-tooltip="Runs a fixed test scenario through all enabled extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session."
+                  >ⓘ</span
+                >
+              </span>
+            </button>
+          </div>
+          <div
+            id="sm_model_test_result"
+            style="display: none"
+            class="sm-block sm_model_test_result"
+          ></div>
+
           <p class="sm-section-title">Settings</p>
           <div class="sm-block">
             <label class="checkbox_label">
@@ -1361,26 +1381,6 @@
             </select>
             <div id="sm_hardware_profile_label" class="sm_hardware_profile_label"></div>
           </div>
-
-          <!-- Model test -->
-          <div class="sm-block">
-            <button id="sm_model_test_btn" class="menu_button menu_button_icon">
-              <i class="fa-solid fa-flask"></i>
-              <span>
-                Test Extraction Model
-                <span
-                  class="sm-info"
-                  data-tooltip="Runs a fixed test scenario through all enabled extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session."
-                  >ⓘ</span
-                >
-              </span>
-            </button>
-          </div>
-          <div
-            id="sm_model_test_result"
-            style="display: none"
-            class="sm-block sm_model_test_result"
-          ></div>
 
           <!-- Extraction frequency (simple mode only) -->
           <div class="sm-block sm-simple-only">
