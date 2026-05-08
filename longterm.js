@@ -527,6 +527,14 @@ export async function extractAndStoreMemories(characterName, recentMessages) {
       mem.triggers = filterTriggersByFrequency(raw, finalActive);
     }
 
+    // Re-filter triggers for all active memories against the current full corpus.
+    // As the memory set grows, terms that were unique early on become common and
+    // should be pruned. This pass is cheap (max 25 memories) and self-correcting.
+    for (const mem of finalActive) {
+      if (!Array.isArray(mem.triggers) || mem.triggers.length === 0) continue;
+      mem.triggers = filterTriggersByFrequency(mem.triggers, finalActive);
+    }
+
     // Resolve entity names to ids for any new memories that carried
     // _raw_entity_names through the pipeline. The entity registry is loaded,
     // updated in place, then persisted alongside the memories.
