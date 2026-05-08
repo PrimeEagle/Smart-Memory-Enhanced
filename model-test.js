@@ -40,104 +40,137 @@ import { parseExtractionOutput, parseSessionOutput, parseArcOutput } from './par
 // A fixed roleplay scenario designed to exercise all three extraction tiers.
 // Rich enough that a capable model should produce multiple items per tier;
 // long enough to surface models that degrade on larger prompts.
-const TEST_CHARACTERS = ['Sable', 'Riven'];
+const TEST_CHARACTERS = ['Yara', 'Cael'];
 
+// A post-armistice occupied city. Yara is a former resistance fighter looking
+// for her brother Daven, who went into hiding after the war ended and has now
+// gone missing. Cael is an intelligence operative officially working for the
+// occupation authority, secretly helping Yara.
+//
+// Designed so that all three story arcs open clearly but NONE resolve within
+// the conversation - the brother is not found, the surveillance tail is not
+// identified, Cael's handler does not discover him. This prevents the model
+// from confusing established facts with open threads.
 const TEST_MESSAGES = [
   {
-    name: 'Riven',
-    text: 'Keep your hood up. The watch patrols have doubled since Tarren went missing.',
-  },
-  { name: 'Sable', text: 'Missing or dead?' },
-  {
-    name: 'Riven',
-    text: 'Both, probably. He was supposed to meet me at the Broken Tine three nights ago. Never showed.',
+    name: 'Cael',
+    text: 'You got my note. I was not sure you would come after last time.',
   },
   {
-    name: 'Sable',
-    text: "Tarren was your best contact inside the watch. If she got to him, she knows we're looking into her.",
+    name: 'Yara',
+    text: 'You said you had word of Daven. I would walk through the occupation garrison barefoot for that.',
   },
   {
-    name: 'Riven',
-    text: "Lady Voss doesn't leave loose ends. That's why I was dismissed - I refused to file a false report on one of her arrests. Should have known that wasn't the end of it.",
+    name: 'Cael',
+    text: 'Keep your voice down. The Pact officers have doubled their patrols since the Aldenmoor incident. Half the market has informants on retainer.',
   },
   {
-    name: 'Sable',
-    text: "I still need to find Mira. Three weeks since she disappeared and the watch won't even acknowledge she existed.",
+    name: 'Yara',
+    text: 'Then tell me quickly. What do you know?',
   },
   {
-    name: 'Riven',
-    text: 'Your sister was asking questions she should not have been asking. Same as Tarren. Same as the six names on that list I showed you.',
+    name: 'Cael',
+    text: 'He was spotted three weeks ago in the Vethara district. A market stall owner recognised him from before the armistice. Daven was asking about passage north - toward the border crossings.',
   },
   {
-    name: 'Sable',
-    text: 'So Voss is behind all of it. The disappearances, the false arrests, everything.',
+    name: 'Yara',
+    text: 'North means he is trying to get out. Or someone is moving him.',
   },
   {
-    name: 'Riven',
-    text: "I cannot prove it yet. That's why we're here. The mill foreman told Tarren there was a tunnel - runs under the old quarter, comes up somewhere near the estate grounds.",
-  },
-  { name: 'Sable', text: "You trust a dead man's rumour?" },
-  {
-    name: 'Riven',
-    text: 'I trust that Tarren died for it. Come on, this way.',
+    name: 'Cael',
+    text: 'The stall owner said he did not look like he was choosing where to go. And the same morning he was seen, two Pact intelligence officers checked into the Vethara wayhouse. That is not a coincidence.',
   },
   {
-    name: 'Sable',
-    text: "This place smells like it hasn't been used in decades.",
+    name: 'Yara',
+    text: 'If they have him, I need to reach Vethara before they move him again. How long do we have?',
   },
   {
-    name: 'Riven',
-    text: "The mill itself hasn't. But someone has been through here recently - look at the floor. Fresh scuff marks.",
-  },
-  { name: 'Sable', text: "There's a door at the back. Lock's been cut." },
-  {
-    name: 'Riven',
-    text: "Someone didn't want it to look forced. They had a key and cut the lock afterward to make it look abandoned.",
+    name: 'Cael',
+    text: 'A day, maybe two. Pact intelligence does not hold people in field wayhouses - they are transit points. Daven will be moved to a processing facility the moment the paperwork clears.',
   },
   {
-    name: 'Sable',
-    text: 'Found something. A letter, tucked behind the millstone. It is written in cipher.',
+    name: 'Yara',
+    text: 'Then we go tonight. Will you help me?',
   },
   {
-    name: 'Riven',
-    text: 'Let me see. I know this cipher - it is the old watch administrative code. Voss used it before she switched to couriers. If I am reading this right it is a delivery schedule. Names, dates, destinations.',
-  },
-  { name: 'Sable', text: 'Destinations where?' },
-  {
-    name: 'Riven',
-    text: "The Greyveil labor camps. She has been selling people into indenture. The disappearances aren't murders - they're trafficking. Your sister might still be alive.",
+    name: 'Cael',
+    text: 'Yara. My handler believes I am monitoring resistance contacts - monitoring you. If I travel to Vethara with you, I burn everything I have built in this city. My access, my cover, possibly my life if he decides I have turned.',
   },
   {
-    name: 'Sable',
-    text: 'Then we need to move fast. If she finds out we have this letter, Mira gets moved or worse.',
+    name: 'Yara',
+    text: 'Then do not come.',
   },
   {
-    name: 'Riven',
-    text: 'The tunnel is real. I can see the entrance behind the grain chute. It is going to be a tight fit but it goes north toward the estate.',
-  },
-  { name: 'Sable', text: 'We go in tonight. I am not waiting.' },
-  {
-    name: 'Riven',
-    text: 'Sable. I owe you for pulling me out of the investigation last year. I will follow you in. But if we are caught inside those grounds, no one is coming for us.',
-  },
-  { name: 'Sable', text: 'I know. Let us go.' },
-  {
-    name: 'Riven',
-    text: 'The tunnel opens into a storage cellar. Barred from the outside but the bar is up. Someone left it open.',
-  },
-  { name: 'Sable', text: 'Intentionally?' },
-  {
-    name: 'Riven',
-    text: 'Could be a trap. Could be that whoever left that letter wanted us to get through.',
-  },
-  { name: 'Sable', text: "An informant inside Voss's estate?" },
-  {
-    name: 'Riven',
-    text: 'It would explain how Tarren got the delivery schedule in the first place. Someone on the inside has been feeding information out. We need to find them before Voss does.',
+    name: 'Cael',
+    text: 'I did not say I would not. I said what it costs. I will come with you. But you need to understand what you are asking of me.',
   },
   {
-    name: 'Sable',
-    text: 'One thing at a time. Mira first, then we figure out who our unexpected ally is.',
+    name: 'Yara',
+    text: 'I understand. And I will not forget it, Cael. Whatever happens after.',
+  },
+  {
+    name: 'Cael',
+    text: 'There is something else. Since I sent you that note two days ago, I have had the feeling we are being watched. Not Pact - they do not follow at a distance, they simply take you. Someone else. Independent.',
+  },
+  {
+    name: 'Yara',
+    text: 'The Thornback cells are still operating in the south quarter. Could be former resistance who think I am a liability.',
+  },
+  {
+    name: 'Cael',
+    text: 'Possibly. Or someone who picked up that I was asking questions about your brother and decided to follow the thread back to you. I have not been able to identify them yet.',
+  },
+  {
+    name: 'Yara',
+    text: 'Can you find out who they are?',
+  },
+  {
+    name: 'Cael',
+    text: 'I have a contact who tracks independent operators in this district. She may know who is running surveillance here. I sent word this morning - waiting on a reply.',
+  },
+  {
+    name: 'Yara',
+    text: 'How long until she answers?',
+  },
+  {
+    name: 'Cael',
+    text: 'A day. Maybe two. The same window we have for Daven.',
+  },
+  {
+    name: 'Yara',
+    text: 'So we move on Vethara not knowing who is watching us.',
+  },
+  {
+    name: 'Cael',
+    text: 'That is the situation, yes. I would rather wait for the identification but you are right that we cannot. We move tonight and I try to run the tail down in parallel.',
+  },
+  {
+    name: 'Yara',
+    text: 'Tell me about the wayhouse. Exits, staff, who is inside.',
+  },
+  {
+    name: 'Cael',
+    text: 'Two exits. The front is watched around the clock. The south gate is unmanned after the second bell - garrison budget cuts gutted the overnight posts after the armistice. There is a porter inside named Fen who owes me a considerable debt.',
+  },
+  {
+    name: 'Yara',
+    text: 'You trust him?',
+  },
+  {
+    name: 'Cael',
+    text: 'I trust that he is more afraid of me than of the two Pact officers staying there. That has been enough before.',
+  },
+  {
+    name: 'Yara',
+    text: 'And your handler - when does he expect his next report from you?',
+  },
+  {
+    name: 'Cael',
+    text: 'Three days. If I am not back with something credible by then, he will start asking questions I cannot answer. That is our hard deadline on this, Yara.',
+  },
+  {
+    name: 'Yara',
+    text: 'Three days to reach Vethara, get Daven out, and get you back in place before your handler notices. I swear I will not waste a single hour of that. Let us go.',
   },
 ];
 
@@ -152,7 +185,8 @@ const TIER_DEFS = [
     enabledKey: 'longterm_enabled',
     hint:
       'Should contain lasting facts about characters, relationships, preferences, and ' +
-      'significant events. A capable model typically finds 5 or more items in this scenario.',
+      'significant events - who these people are, what binds them, what is at stake. ' +
+      'A capable model typically finds 5 or more items in this scenario.',
     responseLength: 600,
     buildPrompt: (history) => buildExtractionPrompt(history, '', TEST_CHARACTERS[0]),
     parse: (response) => {
@@ -165,8 +199,9 @@ const TIER_DEFS = [
     name: 'Session Memories',
     enabledKey: 'session_enabled',
     hint:
-      'Should contain current-session developments, revelations, and scene details. ' +
-      'A capable model typically finds 4 or more items in this scenario.',
+      'Should contain scene details, revelations about the situation, and how things ' +
+      'developed this session - the wayhouse location, the sighting, the timeline, ' +
+      'what Cael committed to. A capable model typically finds 4 or more items in this scenario.',
     responseLength: 400,
     buildPrompt: (history) => buildSessionExtractionPrompt(history, '', ''),
     parse: (response) => {
@@ -179,8 +214,11 @@ const TIER_DEFS = [
     name: 'Story Arcs',
     enabledKey: 'arcs_enabled',
     hint:
-      'Should identify open narrative threads - promises made, goals set, mysteries introduced, ' +
-      'unresolved tensions. A capable model typically finds 3 items in this scenario.',
+      'Should identify exactly the three open threads in this scenario: Yara must reach ' +
+      'Vethara and get Daven out before the Pact moves him; an unknown party is surveilling ' +
+      'them and has not been identified; Cael is deceiving his handler and will face ' +
+      'consequences if discovered. None of these resolve in the conversation. ' +
+      'A capable model finds all three and nothing else.',
     responseLength: 400,
     buildPrompt: (history) => buildArcExtractionPrompt(history, ''),
     parse: (response) => {

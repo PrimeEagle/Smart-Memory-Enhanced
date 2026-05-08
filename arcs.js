@@ -582,7 +582,49 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
     // Parse against activeExisting so resolve indices map correctly to active arcs.
-    const { add, resolve } = parseArcOutput(response, activeExisting);
+    const { add: rawAdd, resolve } = parseArcOutput(response, activeExisting);
+
+    // Filter new arc candidates against current session memories using semantic
+    // similarity. Scene details and established facts that slipped past the
+    // keyword filter in parseArcOutput tend to be high-similarity matches for
+    // existing session entries - if a candidate scores >= 0.78 against any
+    // session memory it is almost certainly a rephrased scene detail, not a
+    // genuine open thread. Falls back to Jaccard when embeddings are unavailable
+    // so the filter still catches the most obvious overlaps without embeddings.
+    let add = rawAdd;
+    if (rawAdd.length > 0) {
+      const sessionMemories = loadSessionMemories();
+      if (sessionMemories.length > 0) {
+        const sessionTexts = sessionMemories.map((m) => m.content.toLowerCase().trim());
+        const arcTexts = rawAdd.map((a) => a.content.toLowerCase().trim());
+        const vectorMap = await getEmbeddingBatch([...sessionTexts, ...arcTexts]);
+        const useEmbeddings = vectorMap.size > 0;
+
+        add = rawAdd.filter((arc) => {
+          const arcKey = arc.content.toLowerCase().trim();
+          const arcVec = vectorMap.get(arcKey);
+          for (const mem of sessionMemories) {
+            const memKey = mem.content.toLowerCase().trim();
+            let score;
+            if (useEmbeddings && arcVec) {
+              const memVec = vectorMap.get(memKey);
+              if (memVec) score = cosineSimilarity(arcVec, memVec);
+            }
+            // Fall back to Jaccard when vectors are unavailable for this pair.
+            if (score === undefined) score = arcJaccard(arc.content, mem.content);
+            // 0.78 cosine / 0.45 Jaccard - lower than arc dedup thresholds
+            // because arc descriptions and session details are phrased differently
+            // even when they describe the same thing.
+            if (score >= (useEmbeddings && arcVec ? 0.78 : 0.45)) return false;
+          }
+          return true;
+        });
+
+        smLog(
+          `[SmartMemory] Arc session-filter: ${rawAdd.length} candidates -> ${add.length} kept`,
+        );
+      }
+    }
 
     // Convert resolve indices to arc objects immediately, before any async work.
     // Storing content rather than indices means subsequent loadArcs() re-fetches
