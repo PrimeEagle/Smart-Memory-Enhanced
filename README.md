@@ -166,15 +166,15 @@ If you are on limited VRAM (8GB or less), keep the Message Limit extension enabl
 
 ### Recommended local models
 
-For local Ollama setups with limited VRAM (8GB or less), three models have been tested against Smart Memory's full extraction harness and score 47-48/48 (98-100%):
+These three models have been tested against Smart Memory's extraction prompts on limited VRAM hardware. They are listed in order of extraction quality - each step down trades precision for a smaller footprint.
 
-[**`huihui_ai/qwen3-vl-abliterated:8b-instruct`**](https://ollama.com/huihui_ai/qwen3-vl-abliterated) (6.1 GB) - primary recommendation. Reliable, consistent, no thinking overhead. The abliterated variant handles explicit roleplay content without refusals.
+[**`huihui_ai/qwen3-vl-abliterated:8b-instruct`**](https://ollama.com/huihui_ai/qwen3-vl-abliterated) (6.1 GB) - primary recommendation. Produces accurate character facts, correctly infers preferences from subtext, and reliably identifies open narrative threads. The abliterated variant handles explicit roleplay content without refusals. If you have the VRAM, use this one.
 
-[**`mistral:7b`**](https://ollama.com/library/mistral) (4.1 GB) - strong alternative when VRAM is tighter. Matches qwen3-vl quality. A good choice if you want to free up headroom for the embedding model alongside the roleplay model.
+[**`mistral:7b`**](https://ollama.com/library/mistral) (4.1 GB) - solid fallback when VRAM is tight. Extraction quality is lower than Qwen across all tiers - character details are sometimes less precise, session memory undercounts on shorter exchanges, and arc descriptions tend to be vaguer. Still functional and worth using if the 2GB saving matters to you, for example to leave headroom for the embedding model alongside your roleplay model.
 
-[**`gemma3:4b`**](https://ollama.com/library/gemma3) (3.3 GB) - lightest recommended option. Matches qwen3-vl on most extractions; occasionally files some long-term-relevant details under session memory on very long chats. Use if 4 GB is your hard limit.
+[**`gemma3:4b`**](https://ollama.com/library/gemma3) (3.3 GB) - lightest option, but the quality gap is meaningful. On shorter exchanges it can misread character traits, occasionally produces duplicate entries in a single pass, and is more prone to extracting from prompt examples rather than conversation content on complex prompts. Use it only if 4 GB is a hard limit and you accept that memory quality will be noticeably lower than the models above.
 
-All three follow Smart Memory's structured output reliably. Smart Memory's prompts are longer than typical chat prompts - a model that works fine for roleplay may still struggle here if the combined prompt length exceeds its effective context window. If you get empty or garbled extraction output with a different model, context overflow is the most likely cause.
+Smart Memory's prompts are longer than typical chat prompts - a model that works fine for roleplay may still struggle with extraction if the combined prompt length exceeds its effective context window. If you get empty or garbled extraction output with a different model, context overflow is the most likely cause. Use the **Test Extraction Model** button to check any model before committing to it.
 
 ### Testing your model
 
