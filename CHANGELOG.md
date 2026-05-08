@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Arc extraction noise on small local models**: two filters now work in
+  combination to reduce false positives from 8B models that misfile
+  established facts and scene details as story arcs. A keyword filter in the
+  parser requires every new arc candidate to contain at least one signal of a
+  genuine open thread - goal or obligation language (`must`, `needs to`,
+  `promised`), incompleteness markers (`unknown`, `unclear`, `remains open`),
+  unknown-actor framing (`someone`, `the identity of`), or open question
+  structure (`who is`, `whether`). A second semantic filter in the extraction
+  pass compares each candidate against current session memories; candidates
+  that score above the similarity threshold are treated as rephrased scene
+  details and dropped. The semantic filter falls back to keyword matching
+  when embeddings are not available. The model test fixture was also rewritten
+  with a scenario designed to have three explicitly open threads that do not
+  resolve within the conversation, giving a clearer pass/fail baseline for
+  the arc tier.
+
 ### Added
 
 - **Source-message provenance**: long-term and session memories now record which
