@@ -176,6 +176,29 @@ For local Ollama setups with limited VRAM (8GB or less), three models have been 
 
 All three follow Smart Memory's structured output reliably. Smart Memory's prompts are longer than typical chat prompts - a model that works fine for roleplay may still struggle here if the combined prompt length exceeds its effective context window. If you get empty or garbled extraction output with a different model, context overflow is the most likely cause.
 
+### Testing your model
+
+The **Test Extraction Model** button (in the **Configuration** section, below the hardware profile) runs a fixed 30-message roleplay scenario through all enabled extraction tiers using the model you currently have configured. This lets you verify a new model before committing to it, without waiting for a real roleplay to produce extraction output.
+
+The test is safe to run mid-roleplay - it uses its own private scenario and never writes anything to your session, chat history, or stored memories.
+
+**What the test does:**
+
+- Sends the same scenario through each enabled tier (long-term memories, session memories, story arcs) in sequence
+- Displays results one tier at a time with **Previous** and **Next** buttons to step through them
+- Each tier shows the model's raw output in a text area so you can judge the quality yourself, alongside a hint describing what a capable model should produce
+- If any tier returns empty output the test stops immediately and reports which tier failed - a model that produces nothing on a rich scenario is not suitable for Smart Memory
+
+**What to look for:**
+
+The test scenario is a 30-message fantasy investigation scene with multiple named characters, key revelations, explicit promises, and open threads. A capable model should produce:
+
+- **Long-term memories**: 5 or more items covering character facts, relationships, and significant events
+- **Session memories**: 4 or more items covering scene details, revelations, and developments
+- **Story arcs**: 3 items identifying unresolved threads (promises made, goals set, mysteries introduced)
+
+You are the judge. The hint on each tier tells you what to expect; the raw output tells you what the model actually did. Look for structured tagged lines (`[fact]`, `[scene]`, `[arc]`, etc.) with meaningful content. Vague items or repeated paraphrases of the same fact are signs of a weaker model; completely empty output means the model is not suitable.
+
 ---
 
 ## Manual Operations
