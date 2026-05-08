@@ -110,9 +110,11 @@ Smart Memory watches for scene transitions - time skips, location changes, those
 
 Unresolved narrative threads - promises made, character goals, mysteries introduced, tensions left hanging - are tracked and kept in context. When the story resolves one, it gets marked closed and a short narrative summary is generated for the record. This keeps the AI oriented toward where the story is going, not just reacting to the last message.
 
-Story arcs normally start fresh with each new chat. If you are running a continuing story across multiple chats (new chats as chapters rather than fresh starts), you can **pin an arc** with the thumbtack button next to it. Pinned arcs are stored at the character level and appear automatically in every new chat with that character. Unpinning returns it to chat-local scope; resolving a pinned arc removes it from future chats automatically.
+Story arcs normally start fresh with each new chat. If you are running a continuing story across multiple chats (new chats as chapters rather than fresh starts), you can **pin an arc** with the thumbtack button next to it. Pinned arcs are stored at the character level and appear automatically in every new chat with that character. Unpinning returns it to chat-local scope.
 
 Group chats support pinned arcs too. Pinned arcs in a group are stored against the group itself rather than any individual character, and appear automatically whenever that group starts a new chat.
+
+When a pinned arc gets resolved, it moves to a separate **Resolved Threads** section below the active list rather than being deleted. Resolved arcs are not injected into context but stay visible as a record of where the story has been. A **re-open** button reactivates the thread if the story revisits it; a **remove** button discards it entirely. The resolved state carries into future chats so closed threads arrive already marked as resolved. The Resolved Threads section is collapsed by default and hidden when empty.
 
 ### Canon
 
@@ -245,7 +247,9 @@ Every entry in the long-term memory, session memory, and story arc lists has act
 
 - **Pencil (edit)** - replaces the entry with an inline text editor. Edit the content and click **Save**, or **Cancel** to discard changes. Not shown on retired memories.
 - **Trash / Checkmark (delete/resolve)** - removes the entry immediately. For story arcs the button is a checkmark to indicate resolving the thread rather than discarding it.
-- **Pin (story arcs only)** - marks the arc as persistent so it carries into future chats. The pin icon turns gold and the arc gets a gold left border when pinned. Click again to unpin. In group chats, the pin stores the arc against the group rather than an individual character.
+- **Pin (active story arcs only)** - marks the arc as persistent so it carries into future chats. The pin icon turns gold and the arc gets a gold left border when pinned. Click again to unpin. In group chats, the pin stores the arc against the group rather than an individual character.
+- **Re-open (resolved arcs only)** - moves the arc back to the active list. If an equivalent thread is already active the resolved copy is discarded instead.
+- **Remove (resolved arcs only)** - discards the resolved arc from the panel and the persistent store.
 - **Jump to source** - scrolls the chat to the message window the memory was extracted from. Shown on session memories whenever provenance is available, and on long-term memories when the memory was extracted from the current chat.
 
 Below each list an **Add** form lets you insert a new entry manually:

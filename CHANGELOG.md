@@ -36,13 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   groups frequently.
 
 - **Resolved state for pinned arcs**: pinned arcs that get resolved by extraction
-  are now kept in the arc panel rather than deleted. They appear visually distinct
-  (strikethrough text, muted border) and are not injected into context. A
-  re-open button lets the user reactivate a resolved thread if the story revisits
-  it; clicking unpin on a resolved arc removes it entirely. The resolved state
-  carries into future chats via the persistent store. New extraction passes treat
-  resolved arcs as invisible so fresh instances of a similar thread can be added
-  without being blocked as duplicates.
+  are now kept rather than deleted. They move into a separate **Resolved Threads**
+  section below the active arc list - collapsed by default and hidden entirely
+  when empty. Resolved arcs appear with strikethrough text and a muted border,
+  are not injected into context, and carry their resolved state into future chats
+  via the persistent store. A **re-open** button reactivates a thread if the
+  story revisits it (with a duplicate check against current active arcs); a
+  **remove** button discards it from both the panel and the persistent store.
+  New extraction passes treat resolved arcs as invisible so a fresh instance of a
+  similar thread can be added as active without being blocked as a duplicate.
 
 ## [1.6.10] - 2026-05-06
 
