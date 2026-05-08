@@ -880,6 +880,63 @@
   font-style: italic;
 }
 
+/* ── Model test ──────────────────────────────────────────────────────────── */
+
+#smart_memory_settings .sm_model_test_result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#smart_memory_settings .sm_model_test_running {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+#smart_memory_settings .sm_model_test_fail {
+  color: #c06060;
+  line-height: 1.5;
+}
+
+#smart_memory_settings .sm_model_test_pass_header {
+  color: #60a060;
+  font-size: 0.875em;
+}
+
+#smart_memory_settings .sm_model_test_tier_name {
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#smart_memory_settings .sm_model_test_tier_pos {
+  font-size: 0.8em;
+  font-weight: normal;
+  opacity: 0.6;
+}
+
+#smart_memory_settings .sm_model_test_tier_hint {
+  font-size: 0.8em;
+  opacity: 0.65;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+#smart_memory_settings .sm_model_test_output {
+  width: 100%;
+  min-height: 100px;
+  max-height: 220px;
+  resize: vertical;
+  font-size: 0.8em;
+  line-height: 1.5;
+}
+
+#smart_memory_settings .sm_model_test_nav {
+  display: flex;
+  gap: 8px;
+}
+
 /* ── Entity panel ────────────────────────────────────────────────────────── */
 
 #smart_memory_settings .sm_entity_panel {

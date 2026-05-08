@@ -76,6 +76,7 @@ import {
   detectSceneBreakHeuristic,
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
+import { runModelTest } from './model-test.js';
 import { checkContinuity, generateRepair, injectRepair } from './continuity.js';
 import { getHardwareProfile, getEmbeddingBatch, clearEmbeddingFailed } from './embeddings.js';
 import { clearCanon, generateCanon, injectCanon, saveCanon } from './canon.js';
@@ -763,6 +764,75 @@ export function bindSettingsUI(ctrl) {
 
   updateProfileLabel();
   syncProfileGating();
+
+  // ---- Model test button --------------------------------------------------
+
+  $('#sm_model_test_btn').on('click', async function () {
+    const $btn = $(this);
+    const $result = $('#sm_model_test_result');
+
+    $btn.prop('disabled', true);
+    $result
+      .show()
+      .html(
+        '<div class="sm_model_test_running"><i class="fa-solid fa-spinner fa-spin"></i> Running extraction test...</div>',
+      );
+
+    let outcome;
+    try {
+      outcome = await runModelTest();
+    } catch (err) {
+      console.error('[SmartMemory] Model test failed:', err);
+      $result.html(
+        '<div class="sm_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> Test failed with an error. Check the browser console for details.</div>',
+      );
+      $btn.prop('disabled', false);
+      return;
+    }
+
+    if (outcome.failedTier) {
+      $result.html(
+        `<div class="sm_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> <strong>${outcome.failedTier}</strong> returned no output. Your model may not be suitable for Smart Memory, or may need a stronger prompt style. Consider trying a different model.</div>`,
+      );
+      $btn.prop('disabled', false);
+      return;
+    }
+
+    // All tiers passed - render paginated tier review.
+    const tiers = outcome.tiers;
+    let current = 0;
+
+    function renderTier() {
+      const tier = tiers[current];
+      $result.html(`
+        <div class="sm_model_test_pass_header">
+          <i class="fa-solid fa-circle-check"></i> All tiers returned output.
+        </div>
+        <div class="sm_model_test_tier_name">${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span></div>
+        <div class="sm_model_test_tier_hint">${tier.hint}</div>
+        <textarea class="sm_model_test_output text_pole" readonly>${tier.items.join('\n')}</textarea>
+        <div class="sm_model_test_nav">
+          <button class="menu_button sm_model_test_prev"${current === 0 ? ' disabled' : ''}>&#8592; Previous</button>
+          <button class="menu_button sm_model_test_next"${current === tiers.length - 1 ? ' disabled' : ''}>Next &#8594;</button>
+        </div>
+      `);
+      $result.find('.sm_model_test_prev').on('click', () => {
+        if (current > 0) {
+          current--;
+          renderTier();
+        }
+      });
+      $result.find('.sm_model_test_next').on('click', () => {
+        if (current < tiers.length - 1) {
+          current++;
+          renderTier();
+        }
+      });
+    }
+
+    renderTier();
+    $btn.prop('disabled', false);
+  });
 
   $('#sm_extraction_frequency')
     .val(s.extraction_frequency ?? 'medium')

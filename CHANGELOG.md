@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   New extraction passes treat resolved arcs as invisible so a fresh instance of a
   similar thread can be added as active without being blocked as a duplicate.
 
+- **Extraction model test**: a **Test Extraction Model** button in the settings
+  panel runs a fixed 30-message roleplay scenario through every enabled extraction
+  tier (long-term memories, session memories, story arcs). Results are shown
+  tier-by-tier with prev/next navigation - each tier displays the model's raw
+  output alongside a hint explaining what a capable model should find. If any tier
+  returns empty output the test reports an immediate failure naming the tier, so
+  users can quickly identify whether their configured model is suitable without
+  reading through all tiers.
+
 ## [1.6.10] - 2026-05-06
 
 ### Fixed
