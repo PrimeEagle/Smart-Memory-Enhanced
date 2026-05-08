@@ -623,7 +623,9 @@ export function updateSessionUI() {
     }
     // Scroll to the first message in the source range.
     setTimeout(() => {
-      $startMsg[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const $chat = $('#chat');
+      const scrollTarget = $startMsg.offset().top - $chat.offset().top + $chat.scrollTop();
+      $chat.animate({ scrollTop: scrollTarget }, 400);
       // Flash all messages in the range so the user can see what produced this memory.
       const FLASH_DURATION_MS = 2400; // 3 pulses × 0.8 s each
       for (let i = startIdx; i <= endIdx; i++) {
@@ -1251,7 +1253,9 @@ export function renderMemoriesList(memories, characterName) {
     }
     // Scroll to the first message in the source range.
     setTimeout(() => {
-      $startMsg[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const $chat = $('#chat');
+      const scrollTarget = $startMsg.offset().top - $chat.offset().top + $chat.scrollTop();
+      $chat.animate({ scrollTop: scrollTarget }, 400);
       // Flash all messages in the range so the user can see what produced this memory.
       const FLASH_DURATION_MS = 2400; // 3 pulses × 0.8 s each
       for (let i = startIdx; i <= endIdx; i++) {
