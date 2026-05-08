@@ -1082,11 +1082,13 @@
 @keyframes sm-source-flash {
   0%,
   100% {
-    background-color: transparent;
+    outline: 2px solid transparent;
+    box-shadow: none;
   }
   40%,
   60% {
-    background-color: rgba(126, 207, 255, 0.18);
+    outline: 2px solid rgba(126, 207, 255, 0.9);
+    box-shadow: 0 0 10px rgba(126, 207, 255, 0.5);
   }
 }
 
