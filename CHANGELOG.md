@@ -91,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LLM-suggested triggers score at 80 pts per hit (versus 40 pts for plain
   content-word overlap) so memories with strong semantic relevance surface ahead of
   memories that merely share vocabulary with the current turn. On Profile A without
-  the toggle, content-word overlap handles the baseline.
+  the toggle, content-word overlap handles the baseline. Trigger generation applies
+  to both long-term memories and session memories.
 
 ## [1.6.10] - 2026-05-06
 

@@ -29,7 +29,8 @@
  * saveSessionMemories        - persists the session memory array to chatMetadata
  * clearSessionMemories       - empties session memories for the current chat
  * purgeSessionMemoriesSince  - deletes all session memories with ts >= a given timestamp and repairs the entity registry
- * extractSessionMemories     - runs extraction against recent messages and merges results
+ * extractSessionMemories     - runs extraction against recent messages and merges results;
+ *                              populates LLM-suggested triggers on Profile B or when opted in
  * consolidateSessionMemories - evaluates unprocessed entries against the consolidated base per type
  * injectSessionMemories      - pushes session memories into the prompt via setExtensionPrompt
  */
@@ -55,8 +56,12 @@ import {
   resolveEntityNames,
   reconcileEntityRegistry,
 } from './graph-migration.js';
-import { buildSessionExtractionPrompt, buildSessionConsolidationPrompt } from './prompts.js';
-import { parseSessionOutput } from './parsers.js';
+import {
+  buildSessionExtractionPrompt,
+  buildSessionConsolidationPrompt,
+  buildTriggerGenerationPrompt,
+} from './prompts.js';
+import { parseSessionOutput, parseTriggerResponse } from './parsers.js';
 import {
   batchVerify,
   getEmbeddingBatch,
@@ -73,6 +78,7 @@ import {
   selectProtectedMemories,
   sortByTimeline,
   trimByPriority,
+  filterTriggersByFrequency,
 } from './memory-utils.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
@@ -392,11 +398,35 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
       }
     }
 
+    // Profile B and opted-in Profile A: generate LLM-suggested triggers for
+    // newly added session memories. Same path as long-term, runs sequentially.
+    const existingKeys = new Set(existing.map((m) => `${m.type}|${m.content}`));
+    const settings = extension_settings[MODULE_NAME];
+    if (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled) {
+      for (const mem of finalActive) {
+        if (existingKeys.has(`${mem.type}|${mem.content}`)) continue;
+        if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue;
+        try {
+          const triggerPrompt = buildTriggerGenerationPrompt(mem.content);
+          const triggerResponse = await generateMemoryExtract(triggerPrompt, {
+            responseLength: 60,
+          });
+          const raw = parseTriggerResponse(triggerResponse, mem.content);
+          mem.triggers = filterTriggersByFrequency(raw, finalActive);
+          smLog(
+            `[SmartMemory] Session triggers for "${mem.content.slice(0, 50)}": ${mem.triggers.join(', ')}`,
+          );
+        } catch (err) {
+          smLog(`[SmartMemory] Session trigger generation failed: ${err.message}`);
+          mem.triggers = [];
+        }
+      }
+    }
+
     // Resolve entity names to ids for any new memories that carried
     // _raw_entity_names through the pipeline. The session entity registry is
     // loaded from chatMetadata, updated in place, then persisted.
     const entityRegistry = loadSessionEntityRegistry();
-    const existingKeys = new Set(existing.map((m) => `${m.type}|${m.content}`));
     for (const mem of finalActive) {
       if (Array.isArray(mem._raw_entity_names)) {
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
