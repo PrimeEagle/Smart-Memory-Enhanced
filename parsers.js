@@ -452,7 +452,11 @@ export function parseTriggerResponse(response, memoryContent) {
 // Matches lines like "Senjin->Asher: warm, cautious, magnitude=medium"
 // The arrow can be -> or the unicode → character.
 const RELATIONSHIP_LINE_RE = /^([^→-]+?)\s*(?:->|→)\s*([^:]+?)\s*:\s*(.+)$/;
+// Matches explicit "magnitude=X" syntax.
 const MAGNITUDE_RE = /magnitude\s*=\s*(low|medium|high)/i;
+// Matches a bare magnitude keyword when the model skips the "magnitude=" prefix.
+const MAGNITUDE_BARE_RE = /(?:^|,)\s*(low|medium|high)\s*(?:,|$)/i;
+const MAGNITUDE_KEYWORDS = new Set(['low', 'medium', 'high']);
 
 /**
  * Parses the model's relationship delta response into an array of state objects.
@@ -481,12 +485,14 @@ export function parseRelationshipDeltaResponse(response) {
     const target = match[2].trim();
     const rest = match[3].trim();
 
-    const magnitudeMatch = MAGNITUDE_RE.exec(rest);
+    // Prefer explicit "magnitude=X" syntax; fall back to a bare keyword.
+    const magnitudeMatch = MAGNITUDE_RE.exec(rest) ?? MAGNITUDE_BARE_RE.exec(rest);
     const magnitude = magnitudeMatch ? magnitudeMatch[1].toLowerCase() : 'low';
 
-    // Strip the magnitude tag and parse remaining comma-separated descriptors.
+    // Strip whichever magnitude form was matched, then parse remaining descriptors.
     const descriptors = rest
       .replace(MAGNITUDE_RE, '')
+      .replace(MAGNITUDE_BARE_RE, ',')
       .split(',')
       .map((d) =>
         d
@@ -495,7 +501,7 @@ export function parseRelationshipDeltaResponse(response) {
           .replace(/[^a-z\s-]/g, '')
           .trim(),
       )
-      .filter((d) => d.length > 0);
+      .filter((d) => d.length > 0 && !MAGNITUDE_KEYWORDS.has(d));
 
     if (subject && target && descriptors.length > 0) {
       results.push({ subject, target, descriptors, magnitude });

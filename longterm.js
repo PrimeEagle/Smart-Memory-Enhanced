@@ -609,13 +609,21 @@ export async function extractAndStoreMemories(characterName, recentMessages) {
         const relResponse = await generateMemoryExtract(relPrompt, { responseLength: 150 });
         const deltas = parseRelationshipDeltaResponse(relResponse);
 
-        if (deltas.length > 0) {
-          for (const { subject, target, descriptors, magnitude } of deltas) {
+        // Only store pairs where the character is one of the parties.
+        // Pairs between two other people belong in their own records.
+        const charLower = characterName.toLowerCase();
+        const relevant = deltas.filter(
+          ({ subject, target }) =>
+            subject.toLowerCase().includes(charLower) || target.toLowerCase().includes(charLower),
+        );
+
+        if (relevant.length > 0) {
+          for (const { subject, target, descriptors, magnitude } of relevant) {
             const key = `${subject}→${target}`;
             relHistory[key] = { descriptors, magnitude, updatedAt: Date.now() };
           }
           saveRelationshipHistory(characterName, relHistory);
-          smLog(`[SmartMemory] Relationship deltas applied: ${deltas.length} pair(s)`);
+          smLog(`[SmartMemory] Relationship deltas applied: ${relevant.length} pair(s)`);
         }
       } catch (err) {
         smLog(`[SmartMemory] Relationship extraction failed: ${err.message}`);
