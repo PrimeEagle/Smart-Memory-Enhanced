@@ -525,6 +525,7 @@ export function updateRelationshipHistoryUI(characterName) {
         saveSettingsDebounced();
         injectRelationshipHistory(characterName);
         updateRelationshipHistoryUI(characterName);
+        updateTokenDisplay();
       });
 
     $row.append($content, $editBtn, $deleteBtn);
