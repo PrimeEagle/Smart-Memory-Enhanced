@@ -135,6 +135,7 @@ import {
   updateFreshStartUI,
   updateCanonUI,
   updateProfilesUI,
+  updateRelationshipHistoryUI,
   updateEntityPanel,
   updateEmbeddingNotice,
   setContinuityBadge,
@@ -700,6 +701,7 @@ async function onCharacterMessageRendered() {
           await injectMemories(characterName, true);
           injectRelationshipHistory(characterName);
           updateLongTermUI(characterName);
+          updateRelationshipHistoryUI(characterName);
           total += count;
         }
 
@@ -947,6 +949,7 @@ async function onChatChangedImpl() {
     injectProfiles(selectedGroupCharacter);
     loadAndInjectRepair();
     updateLongTermUI(selectedGroupCharacter);
+    updateRelationshipHistoryUI(selectedGroupCharacter);
     updateSessionUI();
     updateFreshStartUI(isFreshStart());
     updateCanonUI(selectedGroupCharacter);
@@ -1036,6 +1039,7 @@ async function onChatChangedImpl() {
   loadAndInjectRepair();
 
   updateLongTermUI(characterName);
+  updateRelationshipHistoryUI(characterName);
   updateFreshStartUI(freshStart);
   updateSessionUI();
   updateScenesUI();
@@ -1524,6 +1528,7 @@ async function onGroupWrapperFinished({ type } = {}) {
           // is showing so new memories appear without the user having to
           // manually switch selection.
           updateLongTermUI(selectedGroupCharacter);
+          updateRelationshipHistoryUI(selectedGroupCharacter);
           updateSessionUI();
 
           setStatusMessage(total > 0 ? `${total} item${total === 1 ? '' : 's'} stored.` : '');
@@ -1868,6 +1873,7 @@ jQuery(async function () {
           await injectSessionMemories();
           injectArcs();
           updateLongTermUI(characterName);
+          updateRelationshipHistoryUI(characterName);
           updateSessionUI();
           updateArcsUI();
           saveSettingsDebounced();
