@@ -415,7 +415,7 @@ function mergeMemories(existing, incoming, maxTotal) {
  * @param {Array} recentMessages - Last N message objects from context.chat.
  * @returns {Promise<number>} Count of new memories added (0 on failure or nothing found).
  */
-export async function extractAndStoreMemories(characterName, recentMessages) {
+export async function extractAndStoreMemories(characterName, recentMessages, statusFn = null) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.longterm_enabled || !characterName) return 0;
 
@@ -605,6 +605,7 @@ export async function extractAndStoreMemories(characterName, recentMessages) {
       const cardExcerpt = cardChar?.description ?? '';
 
       try {
+        if (statusFn) statusFn('Extracting relationship history...');
         const relPrompt = buildRelationshipDeltaPrompt(chatHistory, stateLines, cardExcerpt);
         const relResponse = await generateMemoryExtract(relPrompt, { responseLength: 150 });
         const deltas = parseRelationshipDeltaResponse(relResponse);

@@ -673,12 +673,14 @@ async function onCharacterMessageRendered() {
           longtermWindow.length > 0 &&
           !isFreshStart()
         ) {
-          const count = await extractAndStoreMemories(characterName, longtermWindow).catch(
-            (err) => {
-              console.error('[SmartMemory] Long-term extraction error:', err);
-              return 0;
-            },
-          );
+          const count = await extractAndStoreMemories(
+            characterName,
+            longtermWindow,
+            setStatusMessage,
+          ).catch((err) => {
+            console.error('[SmartMemory] Long-term extraction error:', err);
+            return 0;
+          });
           // Run consolidation after extraction if new memories were added.
           if (count > 0 && settings.consolidation_enabled && !consolidationRunning) {
             consolidationRunning = true;
@@ -1424,6 +1426,7 @@ async function onGroupWrapperFinished({ type } = {}) {
               const count = await extractAndStoreMemories(
                 characterName,
                 characterLongtermWindow,
+                setStatusMessage,
               ).catch((err) => {
                 console.error('[SmartMemory] Long-term extraction error:', err);
                 return 0;
@@ -1864,7 +1867,7 @@ jQuery(async function () {
           const recentSession = getStableExtractionWindowWithFallback(context.chat, 40);
           const recentArcs = getStableExtractionWindowWithFallback(context.chat, 100);
           if (!isFreshStart()) {
-            await extractAndStoreMemories(characterName, recentLongTerm);
+            await extractAndStoreMemories(characterName, recentLongTerm, setStatusMessage);
             await extractArcs(recentArcs, characterName);
             await extractSessionMemories(recentSession);
           }
