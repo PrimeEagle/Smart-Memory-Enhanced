@@ -79,8 +79,7 @@ import {
   selectProtectedMemories,
   sortByTimeline,
   trimByPriority,
-  deriveTriggers,
-  filterTriggersByFrequency,
+  keywordSet,
 } from './memory-utils.js';
 import { batchVerify, getEmbeddingBatch, getHardwareProfile } from './embeddings.js';
 import { smLog } from './logging.js';
@@ -506,34 +505,13 @@ export async function extractAndStoreMemories(characterName, recentMessages) {
       }
     }
 
-    // Populate triggers for newly added memories. We derive keywords from each
-    // memory's content, exclude the character name and any current group members
-    // (they appear in almost every memory and would be useless triggers), then
-    // drop terms that are too common across the full active set.
+    // Profile B only: populate LLM-suggested triggers for newly added memories.
+    // Noun-derived triggers (Profile A) are redundant with direct content matching
+    // and add no signal - the scoring path handles Profile A via content overlap.
+    // LLM-suggested triggers add genuine value by capturing synonyms and contextual
+    // cues not present in the memory text itself. Not yet implemented; placeholder
+    // so the triggers field exists on new memories and the schema is forward-compatible.
     const existingKeys = new Set(activeMemories.map((m) => `${m.type}|${m.content}`));
-    const groupMembers = (() => {
-      const ctx = getContext();
-      if (!ctx.groupId) return [];
-      const group = ctx.groups?.find((g) => g.id === ctx.groupId);
-      return (group?.members ?? [])
-        .map((avatarId) => ctx.characters?.find((c) => c.avatar === avatarId)?.name)
-        .filter(Boolean);
-    })();
-    const excludeNames = [characterName, ...groupMembers].filter(Boolean);
-    for (const mem of finalActive) {
-      if (existingKeys.has(`${mem.type}|${mem.content}`)) continue; // skip existing memories
-      if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue; // already derived
-      const raw = deriveTriggers(mem.content, excludeNames);
-      mem.triggers = filterTriggersByFrequency(raw, finalActive);
-    }
-
-    // Re-filter triggers for all active memories against the current full corpus.
-    // As the memory set grows, terms that were unique early on become common and
-    // should be pruned. This pass is cheap (max 25 memories) and self-correcting.
-    for (const mem of finalActive) {
-      if (!Array.isArray(mem.triggers) || mem.triggers.length === 0) continue;
-      mem.triggers = filterTriggersByFrequency(mem.triggers, finalActive);
-    }
 
     // Resolve entity names to ids for any new memories that carried
     // _raw_entity_names through the pipeline. The entity registry is loaded,
@@ -863,27 +841,30 @@ export async function injectMemories(characterName, updateTelemetry = false) {
     saveSettingsDebounced();
   }
 
-  // Build recentText for trigger matching: last few messages lowercased.
-  // Used both here for injection split and passed to hybridPrioritize above.
+  // Build recentText for contextual matching: last few messages lowercased.
+  // Used both here for the injection split and passed to hybridPrioritize above.
   const recentContext = getContext();
   const recentMsgs = (recentContext.chat ?? []).slice(-4);
   const recentText = recentMsgs
     .map((m) => m.mes || '')
     .join(' ')
     .toLowerCase();
-  const recentWords = new Set(recentText.split(/\W+/).filter(Boolean));
+  // Significant words only (4+ chars) to avoid spurious matches on short words.
+  const recentWords = new Set(recentText.split(/\W+/).filter((w) => w.length >= 4));
 
-  // Split trimmed into triggered (any trigger matches recentText) and regular.
-  // Triggered memories are placed at the end of the main block so the model
-  // reads them closest to the current turn, and also injected separately into
-  // PROMPT_KEY_TRIGGERED at IN_CHAT depth so they appear even nearer to the prompt.
+  // Split trimmed into contextually relevant and regular memories.
+  // A memory is considered contextually relevant when at least one significant
+  // content word (3+ chars, non-stopword) appears in the recent turn text, OR
+  // when any LLM-suggested trigger (Profile B) matches. Relevant memories are
+  // placed at the end of the main block and also injected into the secondary
+  // PROMPT_KEY_TRIGGERED slot closer to the prompt.
   const triggeredSet = new Set(
-    trimmed.filter(
-      (m) =>
-        Array.isArray(m.triggers) &&
-        m.triggers.length > 0 &&
-        m.triggers.some((t) => recentWords.has(t)),
-    ),
+    trimmed.filter((m) => {
+      // LLM-suggested triggers (Profile B): check first.
+      if (Array.isArray(m.triggers) && m.triggers.some((t) => recentWords.has(t))) return true;
+      // Content-word overlap (all profiles): any significant content word in recent turn.
+      return [...keywordSet(m.content)].some((w) => recentWords.has(w));
+    }),
   );
   const regular = trimmed.filter((m) => !triggeredSet.has(m));
   const triggered = trimmed.filter((m) => triggeredSet.has(m));

@@ -73,20 +73,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users can quickly identify whether their configured model is suitable without
   reading through all tiers.
 
-- **Activation triggers for long-term memories**: each new long-term memory is now
-  assigned a set of keyword triggers automatically derived from its content at
-  write time. When any trigger matches a word in the current chat turn, that memory
-  receives a scoring bonus in the hybrid retrieval pass (80 pts per trigger hit,
-  capped at three) so contextually relevant memories rise to the top of the
-  injection budget. Memories whose triggers fire are also injected a second time
-  into a secondary in-chat slot closer to the prompt (configurable depth, default
-  4) so the roleplay model sees them right before it responds. Triggers are derived
-  from content keywords (4+ character tokens, non-stopword), with character and
-  group-member names excluded unconditionally and setting-omnipresent terms filtered
-  out if they appear in more than 35% of the memory corpus. Existing memories
-  receive an empty trigger array via schema migration v6 and accumulate triggers
-  naturally on subsequent extractions. The secondary slot depth is configurable in
-  the advanced injection settings.
+- **Contextual relevance for long-term memories**: the hybrid scorer now applies a
+  bonus to memories whose content words overlap with the current chat turn, so
+  memories about what is actually being discussed right now rise to the top of the
+  injection budget. The bonus is 40 pts per significant content word hit (capped at
+  three), with a higher 80 pt bonus reserved for LLM-suggested trigger keywords
+  (Profile B, not yet implemented) that add signal beyond what is in the content
+  itself. Memories that score a contextual hit are also placed at the end of the
+  main injection block and injected a second time into a secondary in-chat slot
+  closer to the prompt (configurable depth, default 4) so the roleplay model sees
+  them right before it responds. Schema v6 adds a `triggers` field to all memories
+  for future LLM-suggested trigger storage; the field is empty for Profile A and
+  populated at write time for Profile B once that path is implemented.
 
 ## [1.6.10] - 2026-05-06
 

@@ -25,10 +25,11 @@
  * reconcileTypeEntries      - merges promoted consolidation entries into a base, replacing overlapping originals
  * sortByTimeline            - sorts memories by timestamp (oldest to newest) for timeline-friendly injection
  * extractTurnEntityMentions - lightweight regex extraction of proper-noun candidates from last messages
- * deriveTriggers            - extracts keyword trigger candidates from a memory's content string
+ * keywordSet                - returns the set of significant (3+ char, non-stopword) lowercase tokens from a string
+ * deriveTriggers            - extracts keyword trigger candidates from a memory's content string (Profile B write path)
  * filterTriggersByFrequency - drops triggers that appear in more than `threshold` fraction of all memories
  * hybridScore               - weighted blend of utility, entity overlap, arc relevance, temporal proximity,
- *                             w5 turn similarity (cosine sim to last AI turn text), and trigger bonus
+ *                             w5 turn similarity, and contextual relevance bonus (content-word overlap + LLM triggers)
  * hybridPrioritize          - sorts a memory array by hybridScore then applies a diversity floor;
  *                             accepts embedFn, lastTurnText, w5, and recentText in context
  * classifyTurn              - heuristic turn-type classifier (dialogue/action/transition/intimate)
@@ -113,7 +114,7 @@ function normalizeExpiration(value, fallback = 'session') {
   return fallback;
 }
 
-function keywordSet(text) {
+export function keywordSet(text) {
   return new Set(
     String(text || '')
       .toLowerCase()
@@ -631,17 +632,37 @@ export function hybridScore(mem, context = {}) {
   const contradictionPenalty =
     Array.isArray(mem.contradicts) && mem.contradicts.length > 0 ? 50 : 0;
 
-  // Trigger bonus: 80 pts per trigger that appears as a whole word in the recent
-  // turn text, capped at 3 hits so a single memory with many matching triggers
-  // cannot dominate the entire budget.
+  // Contextual relevance bonus: rewards memories whose content overlaps with
+  // the current turn text. For Profile B memories that carry LLM-suggested
+  // triggers (synonyms and contextual cues not in the content itself), those
+  // are checked first and score higher per hit. For all memories, content-word
+  // overlap against the recent turn is the baseline signal - this is meaningful
+  // because it surfaces memories about what is actually being discussed right now,
+  // which noun-derived triggers would redundantly replicate from the content anyway.
+  // Capped at 3 hits so a single verbose memory cannot dominate the budget.
   let triggerBonus = 0;
-  if (recentText && Array.isArray(mem.triggers) && mem.triggers.length > 0) {
-    const recentWords = new Set(recentText.split(/\W+/).filter(Boolean));
+  if (recentText) {
+    const recentWords = new Set(recentText.split(/\W+/).filter((w) => w.length >= 4));
     let hits = 0;
-    for (const t of mem.triggers) {
-      if (recentWords.has(t)) {
-        triggerBonus += 80;
-        if (++hits >= 3) break;
+    // LLM-suggested triggers (Profile B): higher bonus per hit because they add
+    // signal beyond what direct content matching already provides.
+    if (Array.isArray(mem.triggers) && mem.triggers.length > 0) {
+      for (const t of mem.triggers) {
+        if (recentWords.has(t)) {
+          triggerBonus += 80;
+          if (++hits >= 3) break;
+        }
+      }
+    }
+    // Content-word overlap (all profiles): bonus for significant words from the
+    // memory content that appear in the recent turn. Uses keywordSet (3+ chars,
+    // non-stopword) so common words do not inflate the score.
+    if (hits < 3) {
+      for (const w of keywordSet(mem.content)) {
+        if (recentWords.has(w)) {
+          triggerBonus += 40;
+          if (++hits >= 3) break;
+        }
       }
     }
   }
