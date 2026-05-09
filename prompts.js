@@ -716,9 +716,12 @@ export function buildTriggerGenerationPrompt(content) {
   return (
     `[KEYWORD TASK - Output a comma-separated list only. Do NOT continue any story or explain your choices.]\n\n` +
     `Memory: "${content}"\n\n` +
-    `List 3 to 5 short keywords or brief phrases that would signal this memory is relevant to a conversation. ` +
-    `Focus on synonyms, related concepts, and situational cues - words someone might use when this topic comes up ` +
-    `that are NOT already words in the memory text above.\n\n` +
+    `List 4 to 6 keywords that would signal this memory is relevant to a conversation. Think broadly:\n` +
+    `- Synonyms for key concepts in the memory\n` +
+    `- Broader categories that contain the specific thing (e.g. "insects" for a bee allergy)\n` +
+    `- Situational cues - things someone would encounter or describe when this memory matters\n` +
+    `- Emotional or physical reactions associated with this memory\n\n` +
+    `Do NOT repeat words already in the memory text. Output short single words or two-word phrases only.\n\n` +
     `Output format: keyword1, keyword2, keyword3\n` +
     `Output:`
   );

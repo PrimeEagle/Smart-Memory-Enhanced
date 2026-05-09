@@ -442,7 +442,7 @@ export function parseTriggerResponse(response, memoryContent) {
         .trim(),
     )
     .filter((t) => t.length >= 3 && t.length <= 40 && /[a-z]/.test(t) && !contentWords.has(t))
-    .slice(0, 6);
+    .slice(0, 8);
 }
 
 // ---- Scene break heuristics ---------------------------------------------
