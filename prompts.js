@@ -762,13 +762,17 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `You maintain a relationship history record. The existing state lists what is already known and TRUE.\n` +
     `Your job is to output the updated state by:\n` +
     `1. Keeping ALL existing descriptors (they remain true unless the scene proves otherwise)\n` +
-    `2. Adding any new descriptors observed in the scene\n` +
+    `2. Adding new descriptors observed in the scene - maximum 6 per pair total\n` +
     `3. Prefixing a descriptor with ! only if the scene explicitly resolves it\n\n` +
+    `Descriptors must describe how subject FEELS TOWARD or RELATES TO target.\n` +
+    `Good examples: affectionate, trusting, jealous, protective, hostile, admiring, wary, grateful, resentful.\n` +
+    `NOT physical states (sleepy, wet, blushing), NOT character traits (impulsive, naive), NOT scene atmosphere.\n` +
+    `Test: would this word still apply if the target left the room? If yes, it is not a relationship descriptor.\n\n` +
     `Example:\n` +
     `Existing: Alice -> Bob: fond(high), nervous(medium)\n` +
     `Scene: Alice confesses her feelings. Bob smiles and takes her hand.\n` +
     `Output: Alice -> Bob: fond(high), nervous(medium), open(high)\n` +
-    `(fond and nervous are kept because they are still true; open is added)\n\n` +
+    `(fond and nervous are kept; open is added; 3 total - within the 6 cap)\n\n` +
     `Rules:\n` +
     `- subject -> target and target -> subject are separate lines - feelings are not always mutual\n` +
     `- Each descriptor gets its own magnitude: (low), (medium), or (high)\n` +

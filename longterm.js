@@ -631,7 +631,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       try {
         if (statusFn) statusFn('Extracting relationship history...');
         const relPrompt = buildRelationshipDeltaPrompt(chatHistory, stateLines, cardExcerpt);
-        const relResponse = await generateMemoryExtract(relPrompt, { responseLength: 150 });
+        const relResponse = await generateMemoryExtract(relPrompt, { responseLength: 300 });
         const deltas = parseRelationshipDeltaResponse(relResponse);
 
         // Only store pairs where the character is one of the parties.
@@ -658,6 +658,18 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             // Apply removals first, then add/update.
             for (const word of removals) descMap.delete(word);
             for (const { word, magnitude } of updates) descMap.set(word, magnitude);
+
+            // Enforce a hard cap of 6 descriptors per pair. When over the cap,
+            // drop the lowest-magnitude entries first to preserve the most significant ones.
+            const MAG_RANK = { high: 2, medium: 1, low: 0 };
+            const REL_DESCRIPTOR_CAP = 6;
+            if (descMap.size > REL_DESCRIPTOR_CAP) {
+              const sorted = Array.from(descMap.entries()).sort(
+                (a, b) => (MAG_RANK[b[1]] ?? 0) - (MAG_RANK[a[1]] ?? 0),
+              );
+              descMap.clear();
+              for (const [w, m] of sorted.slice(0, REL_DESCRIPTOR_CAP)) descMap.set(w, m);
+            }
 
             relHistory[key] = {
               descriptors: Array.from(descMap.entries()).map(([word, magnitude]) => ({
