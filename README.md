@@ -86,7 +86,7 @@ Facts, relationship history, preferences, and significant events are extracted f
 
 ### Relationship History
 
-Alongside individual memories, Smart Memory tracks the current emotional state of every named relationship as a set of descriptors - words like `warm`, `cautious`, `fragile`, `mistrustful`. After each extraction pass the model reviews the scene and records any shifts: what the relationship now feels like, and how strongly (`low`, `medium`, `high`). These states accumulate across sessions so the AI always knows the current standing between characters, not just scattered memories about past events.
+Alongside individual memories, Smart Memory tracks the current emotional state of every named relationship as a set of descriptors - words like `warm`, `cautious`, `fragile`, `mistrustful`. Each descriptor carries its own magnitude (`low`, `medium`, `high`), displayed as `word(magnitude)` - e.g. `trusting(high), cautious(medium)`. After each extraction pass the model reviews the scene and emits any shifts; new descriptors are merged in and existing ones updated rather than replaced, so the state accumulates across sessions without losing earlier signals. A maximum of six descriptors per pair is kept; the lowest-magnitude entry is dropped when the cap is exceeded.
 
 The **Relationship History** section in the settings panel shows all tracked pairs for the current character. You can add pairs manually (useful for seeding a relationship described in the character card), edit any pair to correct or refine the descriptors, and delete pairs that are no longer relevant. Relationship History is cleared alongside long-term memories when you use **Clear Memories** or **Fresh Start**.
 
