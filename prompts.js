@@ -759,7 +759,8 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
 
   return (
     `[RELATIONSHIP HISTORY TASK - Output structured data only. Do NOT continue the roleplay.]\n\n` +
-    `You maintain a relationship history record. The existing state lists what is already known and TRUE.\n` +
+    `You maintain a relationship history record for ALL named characters in the scene - not only the character whose card is provided below. The card is background context only.\n\n` +
+    `The existing state lists what is already known and TRUE.\n` +
     `Your job is to output the updated state by:\n` +
     `1. Keeping ALL existing descriptors (they remain true unless the scene proves otherwise)\n` +
     `2. Adding new descriptors observed in the scene - maximum 6 per pair total\n` +
@@ -770,15 +771,16 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `Test: would this word still apply if the target left the room? If yes, it is not a relationship descriptor.\n\n` +
     `Example:\n` +
     `Existing: Alice -> Bob: fond(high), nervous(medium)\n` +
-    `Scene: Alice confesses her feelings. Bob smiles and takes her hand.\n` +
-    `Output: Alice -> Bob: fond(high), nervous(medium), open(high)\n` +
-    `(fond and nervous are kept; open is added; 3 total - within the 6 cap)\n\n` +
+    `Scene: Alice confesses her feelings. Bob smiles and takes her hand. Meanwhile Carol watches them, clearly envious.\n` +
+    `Output:\n` +
+    `Alice -> Bob: fond(high), nervous(medium), open(high)\n` +
+    `Carol -> Alice: envious(medium)\n` +
+    `(Alice/Bob: fond and nervous kept, open added. Carol included even though she has no card - she is named and her feeling is clear.)\n\n` +
     `Rules:\n` +
     `- subject -> target and target -> subject are separate lines - feelings are not always mutual\n` +
     `- Each descriptor gets its own magnitude: (low), (medium), or (high)\n` +
     `- high = deep or persistent; medium = notable; low = mild or fleeting\n` +
-    `- Only output pairs where at least one party appears in the scene\n` +
-    `- Include new pairs introduced mid-scene if the prose establishes a clear relationship\n` +
+    `- Capture ALL named characters with observable relationships - NPCs and characters without cards count\n` +
     `- Include named animals and non-human characters if they have a meaningful relationship with someone\n` +
     `- Do not include unnamed extras or background crowd members\n` +
     `- Output NONE if no relevant pairs appear in the scene\n\n` +
