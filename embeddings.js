@@ -20,15 +20,15 @@
 /**
  * Semantic embedding support for memory deduplication and supersession detection.
  *
- * Uses Ollama's /api/embed endpoint to produce vector representations of memory
- * content. Cosine similarity between vectors catches near-paraphrase duplicates
- * that word-overlap (Jaccard) misses - e.g. "Finn is Senjin's anchor" vs
+ * Supports two embedding sources: Ollama (/api/embed) and any OpenAI-compatible
+ * endpoint (/v1/embeddings). Cosine similarity between vectors catches near-paraphrase
+ * duplicates that word-overlap (Jaccard) misses - e.g. "Finn is Senjin's anchor" vs
  * "Finn serves as Senjin's emotional foundation" score near-zero in Jaccard but
  * ~0.92 in cosine space.
  *
  * Falls back to Jaccard automatically when embeddings are disabled, the model
  * is not available, or the API call fails - so the system degrades gracefully
- * for users who have not installed an embedding model.
+ * for users who have not configured an embedding source.
  *
  * getEmbeddingBatch      - fetches vectors for multiple texts in one API call
  * cosineSimilarity       - re-exported from similarity.js for callers that import here
@@ -88,34 +88,50 @@ export async function getEmbeddingBatch(texts) {
   const baseUrl = (settings.embedding_url || 'http://localhost:11434').replace(/\/$/, '');
   const model = settings.embedding_model || 'nomic-embed-text';
   const keep = settings.embedding_keep ?? false;
+  const source = settings.embedding_source ?? 'ollama';
 
   try {
-    const response = await fetch(`${baseUrl}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        input: uncached,
-        model,
-        keep_alive: keep ? -1 : undefined,
-        truncate: true,
-      }),
-    });
-
-    if (!response.ok) return result;
-
-    const data = await response.json();
-    const embeddings = data?.embeddings;
-    if (!Array.isArray(embeddings)) return result;
+    let vectors;
+    if (source === 'openai_compatible') {
+      // OpenAI-compatible endpoint: /v1/embeddings
+      // Response shape: { data: [{ embedding: [...] }, ...] }
+      const response = await fetch(`${baseUrl}/v1/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: uncached, model }),
+      });
+      if (!response.ok) return result;
+      const data = await response.json();
+      if (!Array.isArray(data?.data)) return result;
+      vectors = data.data.map((entry) => entry?.embedding ?? null);
+    } else {
+      // Ollama endpoint: /api/embed
+      // Response shape: { embeddings: [[...], ...] }
+      const response = await fetch(`${baseUrl}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: uncached,
+          model,
+          keep_alive: keep ? -1 : undefined,
+          truncate: true,
+        }),
+      });
+      if (!response.ok) return result;
+      const data = await response.json();
+      if (!Array.isArray(data?.embeddings)) return result;
+      vectors = data.embeddings;
+    }
 
     for (let i = 0; i < uncached.length; i++) {
-      const vector = embeddings[i];
+      const vector = vectors[i];
       if (Array.isArray(vector) && vector.length > 0) {
         embeddingCache.set(uncached[i], vector);
         result.set(uncached[i], vector);
       }
     }
   } catch {
-    // Network error, model not found, Ollama not running - callers fall back to Jaccard.
+    // Network error, model not found, server not running - callers fall back to Jaccard.
     // Warn once per session so the user knows deduplication quality is degraded.
     if (!embeddingWarnedThisSession) {
       embeddingWarnedThisSession = true;

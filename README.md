@@ -192,15 +192,18 @@ If you do not have an embedding model set up, Smart Memory falls back to keyword
 | Setting                 | Default                         | Description                                                                                                               |
 | ----------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Use semantic embeddings | On                              | Use the helper model to compare memories by meaning rather than by shared words                                           |
-| Ollama URL              | _(blank, uses localhost:11434)_ | Only change if your embedding model is on a different port                                                                |
-| Embedding model         | `nomic-embed-text`              | The Ollama model used for meaning comparison                                                                              |
-| Keep model in memory    | Off                             | Keeps the helper model loaded between calls rather than unloading after each use - faster if Smart Memory runs frequently |
+| Embedding source        | Ollama                          | Which server provides embeddings: Ollama or any OpenAI-compatible endpoint                                                |
+| Embedding URL           | _(blank, uses localhost:11434)_ | Base URL of your embedding server - only change if it is on a different port or host                                      |
+| Embedding model         | `nomic-embed-text`              | The model used for meaning comparison                                                                                     |
+| Keep model in memory    | Off                             | (Ollama only) Keeps the helper model loaded between calls - faster if Smart Memory runs frequently                        |
 
-**Requirements:** The embedding model must be installed in Ollama before enabling this. If you already use SillyTavern's built-in Vector Storage extension with Ollama, you likely have `nomic-embed-text` installed already. If not:
+**Ollama:** The embedding model must be installed before enabling this. If you already use SillyTavern's built-in Vector Storage extension with Ollama, you likely have `nomic-embed-text` installed already. If not:
 
 ```sh
 ollama pull nomic-embed-text
 ```
+
+**OpenAI Compatible:** Set the embedding source to "OpenAI Compatible", enter the base URL of your server, and type the model name it exposes for embeddings. Works with any server that implements the `/v1/embeddings` endpoint.
 
 ### Short-term Memory
 

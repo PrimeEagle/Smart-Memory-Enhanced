@@ -200,6 +200,7 @@ export const defaultSettings = {
 
   // Semantic embedding deduplication
   embedding_enabled: true,
+  embedding_source: 'ollama',
   embedding_url: '',
   embedding_model: 'nomic-embed-text',
   embedding_keep: false,
@@ -1962,6 +1963,26 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Embedding deduplication ----------------------------------------
+
+  /**
+   * Shows or hides source-specific UI elements based on the current embedding_source setting.
+   * Ollama shows the model dropdown + refresh button + keep-in-memory.
+   * OpenAI Compatible shows a plain model text field and hides Ollama-only controls.
+   */
+  function applyEmbeddingSourceUI() {
+    const src = extension_settings[MODULE_NAME].embedding_source ?? 'ollama';
+    const isOllama = src === 'ollama';
+    $('#sm_embedding_model_ollama_row').toggle(isOllama);
+    $('#sm_embedding_model_openai_row').toggle(!isOllama);
+    $('#sm_embedding_keep_row').toggle(isOllama);
+    $('#sm_embedding_install_hint_ollama').toggle(isOllama);
+    $('#sm_embedding_install_hint_openai').toggle(!isOllama);
+    if (!isOllama) {
+      // Sync the OpenAI model text field with the stored setting.
+      $('#sm_embedding_model_openai').val(extension_settings[MODULE_NAME].embedding_model ?? '');
+    }
+  }
+
   $('#sm_embedding_enabled')
     .prop('checked', s.embedding_enabled)
     .on('change', function () {
@@ -1975,6 +1996,19 @@ export function bindSettingsUI(ctrl) {
     });
   $('#sm_embedding_config').toggle(s.embedding_enabled);
 
+  $('#sm_embedding_source')
+    .val(s.embedding_source ?? 'ollama')
+    .on('change', function () {
+      extension_settings[MODULE_NAME].embedding_source = $(this).val();
+      clearEmbeddingFailed();
+      $('#sm_embedding_test_result').text('');
+      applyEmbeddingSourceUI();
+      saveSettingsDebounced();
+      if (extension_settings[MODULE_NAME].embedding_source === 'ollama') {
+        refreshEmbeddingModels();
+      }
+    });
+
   $('#sm_embedding_url')
     .val(s.embedding_url ?? '')
     .on('change', function () {
@@ -1983,7 +2017,9 @@ export function bindSettingsUI(ctrl) {
       $('#sm_embedding_test_result').text('');
       updateEmbeddingNotice();
       saveSettingsDebounced();
-      refreshEmbeddingModels();
+      if ((extension_settings[MODULE_NAME].embedding_source ?? 'ollama') === 'ollama') {
+        refreshEmbeddingModels();
+      }
     });
 
   // Embedding model dropdown - saves on selection change.
@@ -2004,9 +2040,20 @@ export function bindSettingsUI(ctrl) {
     saveSettingsDebounced();
   });
 
-  // Refresh button and auto-load on settings open.
+  // OpenAI Compatible model text field.
+  $('#sm_embedding_model_openai').on('input', function () {
+    extension_settings[MODULE_NAME].embedding_model = $(this).val().trim();
+    clearEmbeddingFailed();
+    $('#sm_embedding_test_result').text('');
+    updateEmbeddingNotice();
+    saveSettingsDebounced();
+  });
+
+  applyEmbeddingSourceUI();
+
+  // Refresh button and auto-load on settings open (Ollama only).
   $('#sm_embedding_refresh').on('click', () => refreshEmbeddingModels());
-  if (s.embedding_enabled) {
+  if (s.embedding_enabled && (s.embedding_source ?? 'ollama') === 'ollama') {
     refreshEmbeddingModels();
   }
 
