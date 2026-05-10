@@ -458,6 +458,12 @@ const MAGNITUDE_KEYWORDS = new Set(['low', 'medium', 'high']);
 // Transitional phrases the model sometimes uses to describe change - strip them.
 const TRANSITION_RE =
   /\b(?:then\s+(?:more\s+)?|increasingly\s+|still\s+|even\s+more\s+|becoming\s+(?:more\s+)?)/gi;
+// Hedge words that should be stripped from descriptor words. Downgrading hedges
+// ("slightly", "somewhat") force magnitude to low; upgrading hedges ("very",
+// "deeply") force magnitude to high. The magnitude override only applies when
+// no explicit inline magnitude was present in the token.
+const DOWNGRADE_HEDGE_RE = /^(?:slightly|somewhat|a\s+bit|a\s+little|mildly)\s+/i;
+const UPGRADE_HEDGE_RE = /^(?:very|extremely|deeply|intensely|profoundly)\s+/i;
 
 /**
  * Parses the model's relationship delta response into an array of update objects.
@@ -511,13 +517,28 @@ export function parseRelationshipDeltaResponse(response) {
 
       // Parse inline magnitude: word(medium) or word (medium)
       const magMatch = INLINE_MAGNITUDE_RE.exec(raw);
-      const magnitude = magMatch ? magMatch[1].trim().toLowerCase() : 'medium';
-      const word = raw
+      let magnitude = magMatch ? magMatch[1].trim().toLowerCase() : 'medium';
+      let word = raw
         .replace(INLINE_MAGNITUDE_RE, '')
         .replace(TRANSITION_RE, '')
         .replace(/[^a-z\s-]/g, '')
         .trim()
         .toLowerCase();
+
+      // Strip hedge words and adjust magnitude when no explicit magnitude was given.
+      // "slightly nervous" → nervous(low); "very nervous" → nervous(high).
+      if (!magMatch) {
+        if (DOWNGRADE_HEDGE_RE.test(word)) {
+          word = word.replace(DOWNGRADE_HEDGE_RE, '').trim();
+          magnitude = 'low';
+        } else if (UPGRADE_HEDGE_RE.test(word)) {
+          word = word.replace(UPGRADE_HEDGE_RE, '').trim();
+          magnitude = 'high';
+        }
+      } else {
+        // Even with an explicit magnitude, strip the hedge from the word itself.
+        word = word.replace(DOWNGRADE_HEDGE_RE, '').replace(UPGRADE_HEDGE_RE, '').trim();
+      }
 
       if (word && !MAGNITUDE_KEYWORDS.has(word)) {
         updates.push({ word, magnitude });

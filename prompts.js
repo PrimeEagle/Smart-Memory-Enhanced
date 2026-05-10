@@ -780,6 +780,7 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `- subject -> target and target -> subject are separate lines - feelings are not always mutual\n` +
     `- Each descriptor gets its own magnitude: (low), (medium), or (high)\n` +
     `- high = deep or persistent; medium = notable; low = mild or fleeting\n` +
+    `- Use magnitude to express intensity, not hedge words: nervous(low) not slightly nervous(medium)\n` +
     `- Capture ALL named characters with observable relationships - NPCs and characters without cards count\n` +
     `- Include named animals and non-human characters if they have a meaningful relationship with someone\n` +
     `- Do not include unnamed extras or background crowd members\n` +
