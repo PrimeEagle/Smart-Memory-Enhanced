@@ -840,32 +840,11 @@ function migrateCharacter_v6(charData) {
 }
 
 function migrateCharacter_v7(charData) {
-  // Add relationship_history map if absent. Keys are "subject→target" strings;
-  // values are { descriptors: string[], magnitude: string, updatedAt: number }.
+  // Add relationship_history map if absent. Keys are "subject→target" strings.
+  // Old-format entries (descriptors: string[]) are normalized at read time by
+  // loadRelationshipHistory, so no data conversion is needed here.
   if (Object.prototype.hasOwnProperty.call(charData, 'relationship_history')) return charData;
   return { ...charData, relationship_history: {} };
-}
-
-function migrateCharacter_v8(charData) {
-  // Convert relationship_history entries from flat { descriptors: string[], magnitude: string }
-  // to per-descriptor { descriptors: Array<{word, magnitude}> }.
-  // The old top-level magnitude is applied to every word in the list.
-  const history = charData.relationship_history ?? {};
-  const upgraded = {};
-  for (const [key, state] of Object.entries(history)) {
-    const oldMagnitude = state.magnitude ?? 'low';
-    const words = Array.isArray(state.descriptors) ? state.descriptors : [];
-    // Already migrated entries have objects instead of strings.
-    if (words.length > 0 && typeof words[0] === 'object') {
-      upgraded[key] = state;
-    } else {
-      upgraded[key] = {
-        descriptors: words.map((w) => ({ word: String(w), magnitude: oldMagnitude })),
-        updatedAt: state.updatedAt ?? Date.now(),
-      };
-    }
-  }
-  return { ...charData, relationship_history: upgraded };
 }
 
 // ---- Step registries --------------------------------------------------------
@@ -879,7 +858,6 @@ const CHARACTER_MIGRATIONS = new Map([
   [4, migrateCharacter_v4],
   [6, migrateCharacter_v6],
   [7, migrateCharacter_v7],
-  [8, migrateCharacter_v8],
 ]);
 
 const CHAT_MIGRATIONS = new Map([
