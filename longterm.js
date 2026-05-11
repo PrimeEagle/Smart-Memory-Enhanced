@@ -587,8 +587,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const existingKeys = new Set(activeMemories.map((m) => `${m.type}|${m.content}`));
     if (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled) {
       for (const mem of finalActive) {
-        if (existingKeys.has(`${mem.type}|${mem.content}`)) continue; // skip existing memories
-        if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue; // already derived
+        // Skip if triggers are already present - covers both new memories with
+        // triggers derived this pass and existing memories that survived consolidation
+        // with their triggers intact. Existing memories that lost triggers through
+        // consolidation (no triggers field) are NOT skipped, allowing recovery.
+        if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue;
         try {
           const triggerPrompt = buildTriggerGenerationPrompt(mem.content);
           const triggerResponse = await generateMemoryExtract(triggerPrompt, {

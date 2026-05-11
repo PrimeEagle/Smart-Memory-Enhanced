@@ -335,9 +335,17 @@ export async function generateMemorySummarize(
     const priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
 
     if (source === memory_sources.ollama) {
-      return generateOllama(quietPrompt, priorMessages, responseLength > 0 ? responseLength : -1);
+      // Use num_predict: -1 so thinking models can finish reasoning before
+      // producing output. Strip thinking blocks afterwards, then truncate.
+      const raw = await generateOllama(quietPrompt, priorMessages, -1);
+      const stripped = stripThinkingBlocks(raw ?? '');
+      const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
+      return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
     }
-    return generateOpenAICompat(quietPrompt, priorMessages, responseLength);
+    const rawOAI = await generateOpenAICompat(quietPrompt, priorMessages, responseLength);
+    const strippedOAI = stripThinkingBlocks(rawOAI ?? '');
+    const charLimitOAI = responseLength > 0 ? responseLength * 4 : Infinity;
+    return strippedOAI.length > charLimitOAI ? strippedOAI.slice(0, charLimitOAI) : strippedOAI;
   }
 
   if (source === memory_sources.webllm) {

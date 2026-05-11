@@ -422,10 +422,19 @@ export async function reconcileTypeEntries(
         (reconciled[idx].entities ?? []).length > 0
           ? reconciled[idx].entities
           : (mem.entities ?? []);
+      // Carry triggers forward from the base entry. Consolidation re-parses memory
+      // content from LLM output which produces trigger-less objects; without this
+      // any triggers from the pre-consolidation version of the memory are silently
+      // dropped and cannot be regenerated (the trigger loop skips existing memories).
+      const inheritedTriggers =
+        (reconciled[idx].triggers ?? []).length > 0
+          ? reconciled[idx].triggers
+          : (mem.triggers ?? undefined);
       reconciled[idx] = {
         ...mem,
         ts: Number.isFinite(existingTs) ? existingTs : inferredTs,
         entities: inheritedEntities,
+        ...(inheritedTriggers !== undefined ? { triggers: inheritedTriggers } : {}),
       };
     } else {
       reconciled.push({ ...mem, ts: inferredTs });
