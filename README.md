@@ -176,9 +176,11 @@ If you are on limited VRAM (8GB or less), keep the Message Limit extension enabl
 
 ### Recommended local models
 
-These three models have been tested against Smart Memory's extraction prompts on limited VRAM hardware. They are listed in order of extraction quality - each step down trades precision for a smaller footprint.
+These models have been tested against Smart Memory's extraction prompts. They are listed in order of extraction quality - each step down trades precision for a smaller footprint.
 
-[**`huihui_ai/qwen3-vl-abliterated:8b-instruct`**](https://ollama.com/huihui_ai/qwen3-vl-abliterated) (6.1 GB) - primary recommendation. Produces accurate character facts, correctly infers preferences from subtext, and reliably identifies open narrative threads. The abliterated variant handles explicit roleplay content without refusals. If you have the VRAM, use this one.
+[**`huihui_ai/qwen3-vl-abliterated:30b`**](https://ollama.com/huihui_ai/qwen3-vl-abliterated) (20 GB) - best quality. Understands complex emotional undercurrents and relationship dynamics with noticeably higher precision than the 8B model. Requires substantial VRAM - only suitable if you have 24 GB or more available.
+
+[**`huihui_ai/qwen3-vl-abliterated:8b-instruct`**](https://ollama.com/huihui_ai/qwen3-vl-abliterated) (6.1 GB) - primary recommendation for most users. Produces accurate character facts, correctly infers preferences from subtext, and reliably identifies open narrative threads. The abliterated variant handles explicit roleplay content without refusals. If you have the VRAM, use this one.
 
 [**`mistral:7b`**](https://ollama.com/library/mistral) (4.1 GB) - solid fallback when VRAM is tight. Extraction quality is lower than Qwen across all tiers - character details are sometimes less precise, session memory undercounts on shorter exchanges, and arc descriptions tend to be vaguer. Still functional and worth using if the 2GB saving matters to you, for example to leave headroom for the embedding model alongside your roleplay model.
 
