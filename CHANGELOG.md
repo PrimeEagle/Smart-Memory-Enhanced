@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content. All model responses are now stripped of thinking blocks before parsing.
   Non-thinking models are unaffected.
 
+- **Thinking models producing empty summaries and recaps**: the same reasoning
+  block issue affected summarization and recap generation - the thinking block
+  consumed the entire generation budget before any actual output was written,
+  resulting in an empty summary or no recap appearing on return to a chat.
+  Thinking block stripping and a generous generation budget now apply to all
+  memory operations, not just extraction.
+
+- **Contextual triggers dropped during consolidation**: triggers generated for
+  long-term memories were silently discarded whenever consolidation ran. The
+  consolidation pass creates new memory objects from LLM-parsed output, and
+  only `ts` and `entities` were carried forward from the pre-consolidation
+  version - `triggers` was not. On the next extraction pass the trigger loop
+  skipped those memories entirely, making recovery impossible. Triggers are
+  now preserved through consolidation. Memories that already lost their
+  triggers will recover them automatically on the next extraction pass.
+
+- **Relationship history buttons misaligned on short rows**: edit and delete
+  buttons drifted left when a pair had few descriptors, producing an uneven
+  layout across the list. The content area now stretches to fill available
+  width so the buttons are always flush to the right edge of the row.
+
 - **Duplicate descriptors after hedge normalization**: when the model output both
   a hedged and unhedged form of the same descriptor in the same extraction pass
   (e.g. `slightly nervous(medium)` and `nervous(medium)`), both survived into
