@@ -2511,12 +2511,23 @@ export function bindSettingsUI(ctrl) {
       updateTokenDisplay();
     });
 
+  // Hides the injection position/depth/role blocks across all tiers when macro
+  // mode is active, since the macro handles placement and those controls have no effect.
+  // Budget and template blocks are intentionally kept visible - they control content
+  // trimming and formatting, which still matters in macro mode.
+  function applyMacroModeUI(enabled) {
+    $('[name$="_position"]').closest('.sm-block').toggle(!enabled);
+  }
+
   $('#sm_macros_enabled')
     .prop('checked', s.macros_enabled ?? false)
     .on('change', function () {
-      extension_settings[MODULE_NAME].macros_enabled = $(this).prop('checked');
+      const enabled = $(this).prop('checked');
+      extension_settings[MODULE_NAME].macros_enabled = enabled;
       saveSettingsDebounced();
+      applyMacroModeUI(enabled);
     });
+  applyMacroModeUI(s.macros_enabled ?? false);
 
   $('#sm_check_continuity').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
