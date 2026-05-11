@@ -1617,7 +1617,10 @@
                 >
               </label>
               <!-- Ollama: dropdown populated from /api/tags with manual fallback -->
-              <div id="sm_embedding_model_ollama_row" style="display: flex; gap: 6px; align-items: center">
+              <div
+                id="sm_embedding_model_ollama_row"
+                style="display: flex; gap: 6px; align-items: center"
+              >
                 <select id="sm_embedding_model" class="text_pole" style="flex: 1">
                   <option value="">— click refresh to load models —</option>
                 </select>
@@ -1673,8 +1676,8 @@
             </div>
             <div class="sm-block" id="sm_embedding_install_hint_openai" style="display: none">
               <i
-                >Enter the base URL of your OpenAI-compatible server and the model name it
-                serves for embeddings.</i
+                >Enter the base URL of your OpenAI-compatible server and the model name it serves
+                for embeddings.</i
               >
             </div>
           </div>
@@ -1706,7 +1709,7 @@
               >
             </label>
           </div>
-          <div class="sm-block sm-advanced-only">
+          <div class="sm-block">
             <label class="checkbox_label">
               <input id="sm_unified_injection" type="checkbox" />
               <span>
