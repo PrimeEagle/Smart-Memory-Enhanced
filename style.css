@@ -308,6 +308,15 @@
   font-size: 0.875em;
 }
 
+#smart_memory_settings .sm_memory_content {
+  flex: 1;
+  min-width: 0;
+}
+
+#smart_memory_settings .sm_memory_action {
+  flex-shrink: 0;
+}
+
 /* Per-type tinted backgrounds - match the badge hue at low opacity. */
 #smart_memory_settings .sm_memory_item:has(.sm_type_fact) {
   background: rgba(74, 111, 165, 0.13);
