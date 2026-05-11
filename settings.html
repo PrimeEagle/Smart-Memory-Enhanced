@@ -1719,6 +1719,39 @@
               </span>
             </label>
           </div>
+          <div id="sm_unified_settings" style="display: none">
+            <div class="sm-block">
+              <label>Injection position</label>
+              <div class="radio_group">
+                <label>
+                  <input type="radio" name="sm_unified_position" value="2" />
+                  <span>Before Main Prompt</span>
+                </label>
+                <label>
+                  <input type="radio" name="sm_unified_position" value="0" />
+                  <span>After Main Prompt</span>
+                </label>
+                <label class="flex-container alignItemsCenter">
+                  <input type="radio" name="sm_unified_position" value="1" />
+                  <span>In-chat @ Depth</span>
+                  <input
+                    id="sm_unified_depth"
+                    class="text_pole widthUnset"
+                    type="number"
+                    min="0"
+                    max="999"
+                    style="width: 4em; margin: 0 4px"
+                  />
+                  <span>as</span>
+                  <select id="sm_unified_role" class="text_pole widthNatural">
+                    <option value="0">System</option>
+                    <option value="1">User</option>
+                    <option value="2">Assistant</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
         </div>
       </details>
 

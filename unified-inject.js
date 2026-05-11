@@ -166,13 +166,14 @@ export function injectUnified() {
 
   const unified = populated.map((t) => t.content).join('\n\n');
 
+  const settings = extension_settings[MODULE_NAME];
   setExtensionPrompt(
     PROMPT_KEY_UNIFIED,
     unified,
-    extension_prompt_types.IN_PROMPT,
-    0,
+    settings.unified_position ?? extension_prompt_types.IN_PROMPT,
+    settings.unified_depth ?? 0,
     false,
-    extension_prompt_roles.SYSTEM,
+    settings.unified_role ?? extension_prompt_roles.SYSTEM,
   );
 }
 

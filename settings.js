@@ -252,6 +252,9 @@ export const defaultSettings = {
   // Experimental: merge all tier content into a single IN_PROMPT block instead
   // of injecting each tier into its own named slot at different depths/positions.
   unified_injection: false,
+  unified_position: 2, // extension_prompt_types.IN_PROMPT (Before Main Prompt)
+  unified_depth: 0,
+  unified_role: 0, // extension_prompt_roles.SYSTEM
 
   // Force macro injection mode for all tiers regardless of character card content.
   // Use this when macros are placed in instruct templates (which cannot be auto-detected
@@ -2486,12 +2489,24 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
     });
 
+  // Hides per-tier injection position/depth/role blocks when either unified
+  // injection or macro mode is active - those controls have no effect in either mode.
+  // Budget and template blocks stay visible: they still affect content trimming and
+  // formatting even when placement is handled externally.
+  function applyInjectionOverrideUI() {
+    const cur = extension_settings[MODULE_NAME];
+    const hide = (cur.unified_injection ?? false) || (cur.macros_enabled ?? false);
+    $('[name$="_position"], #sm_longterm_triggered_depth').closest('.sm-block').toggle(!hide);
+  }
+
   $('#sm_unified_injection')
     .prop('checked', s.unified_injection ?? false)
     .on('change', function () {
       const enabled = $(this).prop('checked');
       extension_settings[MODULE_NAME].unified_injection = enabled;
       saveSettingsDebounced();
+      $('#sm_unified_settings').toggle(enabled);
+      applyInjectionOverrideUI();
       if (enabled) {
         injectUnified();
       } else {
@@ -2510,14 +2525,32 @@ export function bindSettingsUI(ctrl) {
       }
       updateTokenDisplay();
     });
+  $('#sm_unified_settings').toggle(s.unified_injection ?? false);
 
-  // Hides the injection position/depth/role blocks across all tiers when macro
-  // mode is active, since the macro handles placement and those controls have no effect.
-  // Budget and template blocks are intentionally kept visible - they control content
-  // trimming and formatting, which still matters in macro mode.
-  function applyMacroModeUI(enabled) {
-    $('[name$="_position"], #sm_longterm_triggered_depth').closest('.sm-block').toggle(!enabled);
-  }
+  $('[name="sm_unified_position"]')
+    .filter(`[value="${s.unified_position ?? 2}"]`)
+    .prop('checked', true);
+  $('[name="sm_unified_position"]').on('change', function () {
+    extension_settings[MODULE_NAME].unified_position = Number($(this).val());
+    saveSettingsDebounced();
+    maybeInjectUnified();
+  });
+
+  $('#sm_unified_depth')
+    .val(s.unified_depth ?? 0)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].unified_depth = Number($(this).val());
+      saveSettingsDebounced();
+      maybeInjectUnified();
+    });
+
+  $('#sm_unified_role')
+    .val(s.unified_role ?? 0)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].unified_role = Number($(this).val());
+      saveSettingsDebounced();
+      maybeInjectUnified();
+    });
 
   $('#sm_macros_enabled')
     .prop('checked', s.macros_enabled ?? false)
@@ -2525,9 +2558,9 @@ export function bindSettingsUI(ctrl) {
       const enabled = $(this).prop('checked');
       extension_settings[MODULE_NAME].macros_enabled = enabled;
       saveSettingsDebounced();
-      applyMacroModeUI(enabled);
+      applyInjectionOverrideUI();
     });
-  applyMacroModeUI(s.macros_enabled ?? false);
+  applyInjectionOverrideUI();
 
   $('#sm_check_continuity').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
