@@ -38,9 +38,8 @@
 import { generateRaw, generateQuietPrompt, getMaxContextSize } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
-import { estimateTokens } from './constants.js';
+import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
 import { isWebLlmSupported, generateWebLlmChatPrompt } from '../../shared.js';
-import { MODULE_NAME } from './constants.js';
 
 /**
  * Holds the AbortController for the currently running Ollama or OpenAI-compat
@@ -144,7 +143,7 @@ export async function fetchOllamaModels(baseUrl) {
  * @param {number} responseLength
  * @returns {Promise<string>}
  */
-async function generateOllama(prompt, priorMessages = [], numPredict = -1) {
+async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GENERATION_BUDGET) {
   const settings = extension_settings[MODULE_NAME];
   const url = getOllamaUrl();
   const model = settings?.ollama_model;
@@ -162,9 +161,6 @@ async function generateOllama(prompt, priorMessages = [], numPredict = -1) {
         messages,
         stream: false,
         options: {
-          // Default -1 (unlimited) so thinking models have room to reason
-          // before producing output. Extraction callers strip thinking blocks
-          // and truncate afterwards. Summarization passes an explicit limit.
           num_predict: numPredict,
         },
       }),
@@ -188,7 +184,11 @@ async function generateOllama(prompt, priorMessages = [], numPredict = -1) {
  * @param {number} responseLength
  * @returns {Promise<string>}
  */
-async function generateOpenAICompat(prompt, priorMessages = [], responseLength = 600) {
+async function generateOpenAICompat(
+  prompt,
+  priorMessages = [],
+  responseLength = MEMORY_GENERATION_BUDGET,
+) {
   const settings = extension_settings[MODULE_NAME];
   const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '');
   if (!baseUrl) throw new Error('No API URL configured for OpenAI Compatible source.');
@@ -243,7 +243,7 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   if (source === memory_sources.ollama) {
     raw = await generateOllama(prompt, []);
   } else if (source === memory_sources.openai_compatible) {
-    raw = await generateOpenAICompat(prompt, [], responseLength);
+    raw = await generateOpenAICompat(prompt, []);
   } else if (source === memory_sources.webllm) {
     if (!isWebLlmSupported()) {
       console.warn(
@@ -335,14 +335,12 @@ export async function generateMemorySummarize(
     const priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
 
     if (source === memory_sources.ollama) {
-      // Use num_predict: -1 so thinking models can finish reasoning before
-      // producing output. Strip thinking blocks afterwards, then truncate.
-      const raw = await generateOllama(quietPrompt, priorMessages, -1);
+      const raw = await generateOllama(quietPrompt, priorMessages);
       const stripped = stripThinkingBlocks(raw ?? '');
       const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
       return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
     }
-    const rawOAI = await generateOpenAICompat(quietPrompt, priorMessages, responseLength);
+    const rawOAI = await generateOpenAICompat(quietPrompt, priorMessages);
     const strippedOAI = stripThinkingBlocks(rawOAI ?? '');
     const charLimitOAI = responseLength > 0 ? responseLength * 4 : Infinity;
     return strippedOAI.length > charLimitOAI ? strippedOAI.slice(0, charLimitOAI) : strippedOAI;

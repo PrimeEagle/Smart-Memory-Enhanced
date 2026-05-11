@@ -85,6 +85,14 @@ export const META_KEY = 'smartMemory';
 export const SCHEMA_VERSION = 7;
 
 /**
+ * Maximum tokens any external generation source is allowed to produce for a
+ * memory task. Generous enough that thinking/reasoning models can complete
+ * their reasoning block before writing output; finite to prevent runaway
+ * generation from a model that never self-terminates.
+ */
+export const MEMORY_GENERATION_BUDGET = 8192;
+
+/**
  * Rough token estimate for a string. Uses the standard ~4 chars-per-token
  * heuristic - accurate enough for budget enforcement without needing an async
  * tokenizer call.
