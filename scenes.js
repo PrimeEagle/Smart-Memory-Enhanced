@@ -48,6 +48,7 @@ import { detectSceneBreakHeuristic } from './parsers.js';
 import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
+import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -289,6 +290,7 @@ export async function linkMemoriesToLastScene(memoryIds) {
 export function injectSceneHistory() {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.scene_enabled) {
+    setMacroContent(MACRO_NAMES.scenes, '');
     setExtensionPrompt(PROMPT_KEY_SCENES, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_SCENES);
     return;
@@ -296,6 +298,7 @@ export function injectSceneHistory() {
 
   const history = loadSceneHistory();
   if (history.length === 0) {
+    setMacroContent(MACRO_NAMES.scenes, '');
     setExtensionPrompt(PROMPT_KEY_SCENES, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_SCENES);
     return;
@@ -318,6 +321,13 @@ export function injectSceneHistory() {
     text = text.slice(0, Math.floor(text.length * ratio)).trim();
   }
   const content = `Previous scenes:\n${text}`;
+
+  setMacroContent(MACRO_NAMES.scenes, content);
+  if (isMacroActive(MACRO_NAMES.scenes)) {
+    setExtensionPrompt(PROMPT_KEY_SCENES, '', extension_prompt_types.NONE, 0);
+    invalidateUnifiedCache(PROMPT_KEY_SCENES);
+    return;
+  }
 
   setExtensionPrompt(
     PROMPT_KEY_SCENES,

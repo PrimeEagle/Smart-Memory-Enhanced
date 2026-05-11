@@ -48,6 +48,7 @@ import { loadCharacterMemories } from './longterm.js';
 import { loadArcSummaries } from './arcs.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
+import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 
 // ---- Storage ------------------------------------------------------------
 
@@ -158,6 +159,7 @@ export function injectCanon(characterName) {
   const settings = extension_settings[MODULE_NAME];
 
   if (!(settings.canon_enabled ?? true)) {
+    setMacroContent(MACRO_NAMES.canon, '');
     setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_CANON);
     return;
@@ -165,6 +167,7 @@ export function injectCanon(characterName) {
 
   const canon = loadCanon(characterName);
   if (!canon) {
+    setMacroContent(MACRO_NAMES.canon, '');
     setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_CANON);
     return;
@@ -186,6 +189,13 @@ export function injectCanon(characterName) {
 
   const template = settings.canon_template ?? 'Character history:\n{{canon}}';
   const content = template.replace('{{canon}}', text);
+
+  setMacroContent(MACRO_NAMES.canon, content);
+  if (isMacroActive(MACRO_NAMES.canon)) {
+    setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
+    invalidateUnifiedCache(PROMPT_KEY_CANON);
+    return;
+  }
 
   setExtensionPrompt(
     PROMPT_KEY_CANON,

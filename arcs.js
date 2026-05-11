@@ -62,6 +62,7 @@ import { loadSessionMemories } from './session.js';
 import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
+import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 
 // ---- Deduplication ------------------------------------------------------
 
@@ -753,6 +754,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 export function injectArcs() {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.arcs_enabled) {
+    setMacroContent(MACRO_NAMES.arcs, '');
     setExtensionPrompt(PROMPT_KEY_ARCS, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_ARCS);
     return;
@@ -760,6 +762,7 @@ export function injectArcs() {
 
   const arcs = loadArcs().filter((a) => !a.resolved);
   if (arcs.length === 0) {
+    setMacroContent(MACRO_NAMES.arcs, '');
     setExtensionPrompt(PROMPT_KEY_ARCS, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_ARCS);
     return;
@@ -782,6 +785,13 @@ export function injectArcs() {
     text = text.slice(0, Math.floor(text.length * ratio)).trim();
   }
   const content = `Active story threads:\n${text}`;
+
+  setMacroContent(MACRO_NAMES.arcs, content);
+  if (isMacroActive(MACRO_NAMES.arcs)) {
+    setExtensionPrompt(PROMPT_KEY_ARCS, '', extension_prompt_types.NONE, 0);
+    invalidateUnifiedCache(PROMPT_KEY_ARCS);
+    return;
+  }
 
   setExtensionPrompt(
     PROMPT_KEY_ARCS,

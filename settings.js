@@ -253,6 +253,12 @@ export const defaultSettings = {
   // of injecting each tier into its own named slot at different depths/positions.
   unified_injection: false,
 
+  // Force macro injection mode for all tiers regardless of character card content.
+  // Use this when macros are placed in instruct templates (which cannot be auto-detected
+  // from character card fields). Auto-detection handles the common case of macros placed
+  // in the system prompt or other card fields without needing this toggle.
+  macros_enabled: false,
+
   // Per-character memory storage (populated at runtime by longterm.js)
   characters: {},
 };
@@ -2503,6 +2509,13 @@ export function bindSettingsUI(ctrl) {
         injectProfiles(characterName);
       }
       updateTokenDisplay();
+    });
+
+  $('#sm_macros_enabled')
+    .prop('checked', s.macros_enabled ?? false)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].macros_enabled = $(this).prop('checked');
+      saveSettingsDebounced();
     });
 
   $('#sm_check_continuity').on('click', async function () {

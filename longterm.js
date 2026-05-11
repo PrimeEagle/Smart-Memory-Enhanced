@@ -96,6 +96,7 @@ import {
 import { batchVerify, getEmbeddingBatch, getHardwareProfile } from './embeddings.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
+import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 
 // Maximum new entries accepted per type per extraction pass.
 // Profile B (hosted) uses a higher cap because hosted models extract more
@@ -906,6 +907,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   const settings = extension_settings[MODULE_NAME];
 
   if (!settings.longterm_enabled || !characterName) {
+    setMacroContent(MACRO_NAMES.longterm, '');
     setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
     setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_LONG);
@@ -916,6 +918,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   // storage for history but must not appear in the prompt.
   const memories = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
   if (memories.length === 0) {
+    setMacroContent(MACRO_NAMES.longterm, '');
     setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
     setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_LONG);
@@ -1044,17 +1047,26 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   const memoryText = ordered.map((m) => `- ${m.content}`).join('\n');
   const content = template.replace('{{memories}}', memoryText);
 
-  setExtensionPrompt(
-    PROMPT_KEY_LONG,
-    content,
-    settings.longterm_position ?? extension_prompt_types.IN_PROMPT,
-    settings.longterm_depth ?? 2,
-    false,
-    settings.longterm_role ?? extension_prompt_roles.SYSTEM,
-  );
+  setMacroContent(MACRO_NAMES.longterm, content);
+  if (isMacroActive(MACRO_NAMES.longterm)) {
+    setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
+    invalidateUnifiedCache(PROMPT_KEY_LONG);
+    // PROMPT_KEY_TRIGGERED always uses setExtensionPrompt - macros do not cover it.
+    // Fall through to the triggered injection block below.
+  } else {
+    setExtensionPrompt(
+      PROMPT_KEY_LONG,
+      content,
+      settings.longterm_position ?? extension_prompt_types.IN_PROMPT,
+      settings.longterm_depth ?? 2,
+      false,
+      settings.longterm_role ?? extension_prompt_roles.SYSTEM,
+    );
+  }
 
   // Secondary injection for triggered memories only, placed closer to the prompt.
   // Cleared when no triggers fire so stale content never lingers.
+  // This slot is never handled by a macro - it stays as setExtensionPrompt always.
   if (triggered.length > 0) {
     const triggeredText = triggered.map((m) => `- ${m.content}`).join('\n');
     const triggeredContent = template.replace('{{memories}}', triggeredText);
@@ -1088,6 +1100,7 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
   const settings = extension_settings[MODULE_NAME];
 
   const clear = () => {
+    setMacroContent(MACRO_NAMES.relationships, '');
     setExtensionPrompt(PROMPT_KEY_RELATIONSHIPS, '', extension_prompt_types.NONE, 0);
     if (updateTelemetry) updateRelationshipTelemetry(0);
   };
@@ -1146,6 +1159,13 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
 
   const template = settings.relationships_template || 'Relationship history:\n{{relationships}}';
   const content = template.replace('{{relationships}}', lines.join('\n'));
+
+  setMacroContent(MACRO_NAMES.relationships, content);
+  if (isMacroActive(MACRO_NAMES.relationships)) {
+    setExtensionPrompt(PROMPT_KEY_RELATIONSHIPS, '', extension_prompt_types.NONE, 0);
+    if (updateTelemetry) updateRelationshipTelemetry(estimateTokens(content));
+    return;
+  }
 
   setExtensionPrompt(
     PROMPT_KEY_RELATIONSHIPS,

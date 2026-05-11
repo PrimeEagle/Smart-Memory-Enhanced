@@ -123,6 +123,7 @@ import {
 import { generateProfiles, injectProfiles, loadProfiles } from './profiles.js';
 import { classifyTurn, adaptiveBudgets } from './memory-utils.js';
 import { clearUnifiedSlot, maybeInjectUnified } from './unified-inject.js';
+import { registerSmartMemoryMacros } from './macros.js';
 import { smLog } from './logging.js';
 import {
   setStatusMessage,
@@ -1673,6 +1674,7 @@ function onGroupUpdated() {
 
 jQuery(async function () {
   loadSettings();
+  registerSmartMemoryMacros();
 
   const html = await renderExtensionTemplateAsync('third-party/Smart-Memory', 'settings', {
     defaultSettings,

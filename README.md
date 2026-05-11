@@ -461,14 +461,14 @@ The **Generate Canon** button synthesizes a prose narrative from resolved arc su
 
 ### Character and World Profiles
 
-| Setting                | Default    | Description                                                                                               |
-| ---------------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
-| Enable profiles        | On         | Generate and add state snapshots to context after each extraction pass                                    |
-| Stale threshold        | 30 minutes | Regenerate on chat load if profiles are older than this                                                   |
-| Also regenerate every  | Off (0)    | Profile B only. Regenerate every N messages even if extraction has not run. 0 = on extraction passes only |
-| Response length        | 600 tokens | How long the profile generation response can be                                                           |
-| Injection token budget | 400        | Trim profiles if they would exceed this many tokens                                                       |
-| Injection position     | After Main Prompt  | Where in the prompt profiles appear                                                                       |
+| Setting                | Default           | Description                                                                                               |
+| ---------------------- | ----------------- | --------------------------------------------------------------------------------------------------------- |
+| Enable profiles        | On                | Generate and add state snapshots to context after each extraction pass                                    |
+| Stale threshold        | 30 minutes        | Regenerate on chat load if profiles are older than this                                                   |
+| Also regenerate every  | Off (0)           | Profile B only. Regenerate every N messages even if extraction has not run. 0 = on extraction passes only |
+| Response length        | 600 tokens        | How long the profile generation response can be                                                           |
+| Injection token budget | 400               | Trim profiles if they would exceed this many tokens                                                       |
+| Injection position     | After Main Prompt | Where in the prompt profiles appear                                                                       |
 
 A live token count shows how much context the current profiles are using. A **Regenerate Profiles Now** button forces immediate regeneration. The current profiles are shown read-only below the controls.
 
@@ -591,6 +591,7 @@ Supersession detection runs in two passes. First, a quick pattern check looks fo
 | -------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Verbose logging                  | Off     | Print detailed progress to the browser console for extraction, consolidation, and scene detection. Errors are always logged regardless                                                            |
 | Unified injection (experimental) | Off     | Merges all active memory tiers into a single context block ordered from most stable (canon, profiles, long-term) to most immediate (session, arcs). The token bar still shows per-tier breakdowns |
+| Force macro injection mode       | Off     | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). Leave off for card macros - auto-detection handles them. Incompatible |
 
 ---
 

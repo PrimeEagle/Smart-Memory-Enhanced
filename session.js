@@ -82,6 +82,7 @@ import {
 } from './memory-utils.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
+import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 
 /**
  * Filters session memory candidates against existing entries, removing
@@ -634,6 +635,7 @@ function formatSessionMemories(memories) {
 export async function injectSessionMemories(updateTelemetry = false) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.session_enabled) {
+    setMacroContent(MACRO_NAMES.session, '');
     setExtensionPrompt(PROMPT_KEY_SESSION, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_SESSION);
     return;
@@ -643,6 +645,7 @@ export async function injectSessionMemories(updateTelemetry = false) {
   // storage for history but must not appear in the prompt.
   const memories = loadSessionMemories().filter((m) => !m.superseded_by);
   if (memories.length === 0) {
+    setMacroContent(MACRO_NAMES.session, '');
     setExtensionPrompt(PROMPT_KEY_SESSION, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_SESSION);
     return;
@@ -699,6 +702,13 @@ export async function injectSessionMemories(updateTelemetry = false) {
   const sessionBlock = template.replace('{{session}}', formatSessionMemories(trimmed));
   const sceneStateBlock = buildCurrentSceneStateBlock(trimmed);
   const content = sceneStateBlock ? `${sceneStateBlock}\n${sessionBlock}` : sessionBlock;
+
+  setMacroContent(MACRO_NAMES.session, content);
+  if (isMacroActive(MACRO_NAMES.session)) {
+    setExtensionPrompt(PROMPT_KEY_SESSION, '', extension_prompt_types.NONE, 0);
+    invalidateUnifiedCache(PROMPT_KEY_SESSION);
+    return;
+  }
 
   setExtensionPrompt(
     PROMPT_KEY_SESSION,
