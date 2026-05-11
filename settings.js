@@ -2516,7 +2516,7 @@ export function bindSettingsUI(ctrl) {
   // Budget and template blocks are intentionally kept visible - they control content
   // trimming and formatting, which still matters in macro mode.
   function applyMacroModeUI(enabled) {
-    $('[name$="_position"]').closest('.sm-block').toggle(!enabled);
+    $('[name$="_position"], #sm_longterm_triggered_depth').closest('.sm-block').toggle(!enabled);
   }
 
   $('#sm_macros_enabled')
