@@ -188,6 +188,19 @@ These models have been tested against Smart Memory's extraction prompts. They ar
 
 Smart Memory's prompts are longer than typical chat prompts - a model that works fine for roleplay may still struggle with extraction if the combined prompt length exceeds its effective context window. If you get empty or garbled extraction output with a different model, context overflow is the most likely cause. Use the **Test Extraction Model** button to check any model before committing to it.
 
+### Reasoning models
+
+Reasoning models (models that produce a thinking block before their actual response) are supported. Smart Memory automatically gives these models unlimited generation room so they can finish thinking before producing extraction output, then strips the reasoning block before parsing.
+
+Reasoning block stripping uses SillyTavern's own reasoning template system, so any model that ST already recognises will work out of the box. To check or configure this:
+
+1. In SillyTavern, open **User Settings** → **Advanced Formatting** → **Reasoning**
+2. Select the template that matches your model, or set a custom prefix and suffix if your model is not listed
+
+If no template is configured, or the template does not match what your model outputs, the reasoning block will pass through to the parsers. The tagged-line parsers (long-term, session, arcs) will silently discard it since they only match `[type]` tagged lines - but parsers that produce free-form output (profiles, relationship history, continuity) may be affected. Setting the correct template in ST is recommended for any reasoning model.
+
+Note that reasoning models are generally not recommended as the memory LLM - the thinking block consumes significant context and generation time without improving extraction quality over a good non-reasoning model. If you do use one, make sure thinking is not disabled at the model level, as some reasoning models produce poor output without their reasoning enabled.
+
 ### Testing your model
 
 The **Test Extraction Model** button (in the **Configuration** section, below the hardware profile) runs a fixed 30-message roleplay scenario through all enabled extraction tiers using the model you currently have configured. This lets you verify a new model before committing to it, without waiting for a real roleplay to produce extraction output.

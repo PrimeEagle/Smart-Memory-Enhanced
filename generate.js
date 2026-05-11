@@ -28,7 +28,8 @@
  *
  * memory_sources                - enum of supported sources: 'main' | 'webllm' | 'ollama' | 'openai_compatible'
  * generateMemoryExtract         - for extraction tasks (self-contained prompt, no chat context needed);
- *                                 automatically strips <think>...</think> blocks from all responses
+ *                                 automatically strips reasoning blocks on Ollama/OpenAI-compat paths
+ *                                 using ST's reasoning template list (main API path handled by ST itself)
  * generateMemorySummarize       - for summarization tasks (needs the full chat context)
  * fetchOllamaModels             - returns the list of models installed in a local Ollama instance
  * abortCurrentMemoryGeneration  - cancels any in-flight Ollama or OpenAI-compat fetch immediately
@@ -36,6 +37,7 @@
 
 import { generateRaw, generateQuietPrompt, getMaxContextSize } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
 import { estimateTokens } from './constants.js';
 import { isWebLlmSupported, generateWebLlmChatPrompt } from '../../shared.js';
 import { MODULE_NAME } from './constants.js';
@@ -48,19 +50,32 @@ import { MODULE_NAME } from './constants.js';
  */
 let memoryAbortController = null;
 
-// Matches <think>...</think> blocks produced by reasoning models (Qwen3,
-// DeepSeek R1, and others). The block and all its content is stripped before
-// parsing so thinking tokens never reach the extraction parsers.
-const THINK_BLOCK_RE = /<think>[\s\S]*?<\/think>/gi;
-
 /**
- * Strips thinking-model reasoning blocks from a raw model response.
- * Safe to call on any response - returns the string unchanged if no blocks are present.
+ * Strips reasoning blocks from a raw model response using SillyTavern's
+ * reasoning template list. Tries every loaded template (non-strict mode so
+ * the block does not have to be at the very start of the string) and returns
+ * the content with all matched blocks removed.
+ *
+ * This piggybacks on ST's template knowledge so new model families are
+ * supported automatically when ST adds templates for them, without any
+ * changes needed here.
+ *
+ * Only applied on Ollama and OpenAI-compatible paths - the main API path
+ * goes through ST's own pipeline which already strips reasoning blocks.
+ *
  * @param {string} text
  * @returns {string}
  */
 function stripThinkingBlocks(text) {
-  return text.replace(THINK_BLOCK_RE, '').trim();
+  if (!text) return text;
+  let result = text;
+  for (const template of reasoning_templates) {
+    const parsed = parseReasoningFromString(result, { strict: false }, template);
+    if (parsed?.content !== undefined && parsed.content !== result) {
+      result = parsed.content;
+    }
+  }
+  return result.trim();
 }
 
 /**
@@ -129,7 +144,7 @@ export async function fetchOllamaModels(baseUrl) {
  * @param {number} responseLength
  * @returns {Promise<string>}
  */
-async function generateOllama(prompt, priorMessages = [], responseLength = 600) {
+async function generateOllama(prompt, priorMessages = [], numPredict = -1) {
   const settings = extension_settings[MODULE_NAME];
   const url = getOllamaUrl();
   const model = settings?.ollama_model;
@@ -147,10 +162,10 @@ async function generateOllama(prompt, priorMessages = [], responseLength = 600) 
         messages,
         stream: false,
         options: {
-          num_predict: responseLength > 0 ? responseLength : -1,
-          // Cover both Llama-3.1 (<|eot_id|>) and ChatML (<|im_end|>) end-of-turn
-          // tokens explicitly. Listing both is harmless for models that only use one.
-          stop: ['<|eot_id|>', '<|im_end|>'],
+          // Default -1 (unlimited) so thinking models have room to reason
+          // before producing output. Extraction callers strip thinking blocks
+          // and truncate afterwards. Summarization passes an explicit limit.
+          num_predict: numPredict,
         },
       }),
       signal: memoryAbortController.signal,
@@ -226,7 +241,7 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   let raw;
 
   if (source === memory_sources.ollama) {
-    raw = await generateOllama(prompt, [], responseLength);
+    raw = await generateOllama(prompt, []);
   } else if (source === memory_sources.openai_compatible) {
     raw = await generateOpenAICompat(prompt, [], responseLength);
   } else if (source === memory_sources.webllm) {
@@ -250,7 +265,15 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
     raw = await generateRaw({ prompt, instruct: false, quietToLoud: false, responseLength });
   }
 
-  return stripThinkingBlocks(raw ?? '');
+  // Main API path: ST already strips reasoning blocks in its own pipeline.
+  // Ollama and OpenAI-compatible paths bypass ST, so we strip here.
+  const needsStrip = source !== memory_sources.main;
+  const stripped = needsStrip ? stripThinkingBlocks(raw ?? '') : (raw ?? '');
+  // Truncate to responseLength characters as a rough bound - the thinking block
+  // may have inflated the raw output far beyond the intended budget.
+  // 4 chars/token is a conservative estimate; actual token count may be lower.
+  const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
+  return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
 }
 
 /**
@@ -312,7 +335,7 @@ export async function generateMemorySummarize(
     const priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
 
     if (source === memory_sources.ollama) {
-      return generateOllama(quietPrompt, priorMessages, responseLength);
+      return generateOllama(quietPrompt, priorMessages, responseLength > 0 ? responseLength : -1);
     }
     return generateOpenAICompat(quietPrompt, priorMessages, responseLength);
   }

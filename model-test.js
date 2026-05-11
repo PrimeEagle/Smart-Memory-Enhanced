@@ -28,6 +28,7 @@
 import { extension_settings } from '../../../extensions.js';
 import { MODULE_NAME } from './constants.js';
 import { generateMemoryExtract } from './generate.js';
+import { smLog } from './logging.js';
 import {
   buildExtractionPrompt,
   buildSessionExtractionPrompt,
@@ -249,7 +250,11 @@ export async function runModelTest() {
     if (!(settings[def.enabledKey] ?? true)) continue;
 
     const prompt = def.buildPrompt(chatHistory);
+    smLog(
+      `[ModelTest] Prompt length for "${def.name}": ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens)`,
+    );
     const response = await generateMemoryExtract(prompt, { responseLength: def.responseLength });
+    smLog(`[ModelTest] Raw response for tier "${def.name}":`, response);
     const { items, count } = def.parse(response);
 
     tiers.push({
