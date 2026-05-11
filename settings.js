@@ -2495,12 +2495,17 @@ export function bindSettingsUI(ctrl) {
   // formatting even when placement is handled externally.
   function applyInjectionOverrideUI() {
     const cur = extension_settings[MODULE_NAME];
-    const hide = (cur.unified_injection ?? false) || (cur.macros_enabled ?? false);
+    const unified = cur.unified_injection ?? false;
+    const macros = cur.macros_enabled ?? false;
+    const hide = unified || macros;
     // Exclude sm_unified_position - it belongs to the unified block's own settings,
     // not to any per-tier slot, and must stay visible when unified injection is on.
     $('[name$="_position"]:not([name="sm_unified_position"]), #sm_longterm_triggered_depth')
       .closest('.sm-block')
       .toggle(!hide);
+    // Unified sub-settings are only relevant when unified injection is on and
+    // macro mode is off (if macro mode is on, the macro controls placement).
+    $('#sm_unified_settings').toggle(unified && !macros);
   }
 
   $('#sm_unified_injection')
@@ -2509,7 +2514,6 @@ export function bindSettingsUI(ctrl) {
       const enabled = $(this).prop('checked');
       extension_settings[MODULE_NAME].unified_injection = enabled;
       saveSettingsDebounced();
-      $('#sm_unified_settings').toggle(enabled);
       applyInjectionOverrideUI();
       if (enabled) {
         injectUnified();
@@ -2529,8 +2533,6 @@ export function bindSettingsUI(ctrl) {
       }
       updateTokenDisplay();
     });
-  $('#sm_unified_settings').toggle(s.unified_injection ?? false);
-
   $('[name="sm_unified_position"]')
     .filter(`[value="${s.unified_position ?? 2}"]`)
     .prop('checked', true);
