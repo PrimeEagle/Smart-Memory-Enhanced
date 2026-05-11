@@ -1676,3 +1676,12 @@ body.sm-read-only #option_delete_mes,
 body.sm-read-only .mes_edit_delete {
   display: none !important;
 }
+
+/* ── Unified injection sub-settings ─────────────────────────────────────── */
+
+/* Indent the position/depth/role controls under the unified injection toggle
+   so they appear visually nested below its label text rather than flush-left.
+   13px (checkbox) + 5px (column-gap from .checkbox_label) = 18px. */
+#smart_memory_settings #sm_unified_settings {
+  padding-left: 18px;
+}
