@@ -234,7 +234,9 @@ Reasoning block stripping uses SillyTavern's own reasoning template system, so a
 
 If no template is configured, or the template does not match what your model outputs, the reasoning block will pass through to the parsers. The tagged-line parsers (long-term, session, arcs) will silently discard it since they only match `[type]` tagged lines - but parsers that produce free-form output (profiles, relationship history, continuity) may be affected. Setting the correct template in ST is recommended for any reasoning model.
 
-The trade-off with reasoning models is speed: the thinking block adds time before each extraction pass. If you are on limited hardware and extraction latency is a concern, a non-reasoning model like Qwen3 will be faster. If you prioritize extraction quality and can tolerate the wait, Gemma 4's reasoning produces noticeably better output. Either way, make sure thinking is not disabled at the model level - some reasoning models produce poor output without their reasoning enabled.
+Gemma 4 is the exception among reasoning models - most reasoning models are not good choices for extraction. DeepSeek R1 and similar models tend to run extended thinking blocks, consume their generation budget before producing output, and then produce garbled or incorrect structured data. Gemma 4 performs well above what its size would suggest and handles the structured extraction format cleanly. Do not assume another reasoning model will behave the same way - use the model test to verify before committing to one.
+
+The trade-off specific to Gemma 4 is speed: the thinking block adds time before each extraction pass. If extraction latency is a concern, a non-reasoning model like Qwen3 will be faster. Either way, make sure thinking is not disabled at the model level - some reasoning models produce poor output without their reasoning enabled.
 
 ### Testing your model
 
