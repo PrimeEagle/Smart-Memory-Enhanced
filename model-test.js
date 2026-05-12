@@ -293,11 +293,18 @@ export const STATE_TEST_MESSAGES = [
 
 // Each tier defines which setting gates it, how to run it, how to parse it,
 // and what hint to show the user when reviewing the output.
+const MAIN_SCENARIO = {
+  messages: TEST_MESSAGES,
+  characters: TEST_CHARACTERS,
+  showReadWarning: true,
+};
+
 const TIER_DEFS = [
   {
     key: 'longterm',
     name: 'Long-term Memories',
     enabledKey: 'longterm_enabled',
+    scenario: MAIN_SCENARIO,
     hint:
       'Should contain lasting facts about characters, relationships, preferences, and ' +
       'significant events - who these people are, what binds them, what is at stake. ' +
@@ -313,6 +320,7 @@ const TIER_DEFS = [
     key: 'session',
     name: 'Session Memories',
     enabledKey: 'session_enabled',
+    scenario: MAIN_SCENARIO,
     hint:
       'Should contain scene details, revelations about the situation, and how things ' +
       'developed this session - the wayhouse location, the sighting, the timeline, ' +
@@ -328,6 +336,7 @@ const TIER_DEFS = [
     key: 'arcs',
     name: 'Story Arcs',
     enabledKey: 'arcs_enabled',
+    scenario: MAIN_SCENARIO,
     hint:
       'Should identify the open threads in this scenario: Yara must reach Vethara and get ' +
       'Daven out before the Pact moves him; an unknown party is surveilling them and has not ' +
@@ -347,6 +356,11 @@ const TIER_DEFS = [
     name: 'State Ledger',
     // State Ledger has its own enable gate combining state_ledger_enabled and profile.
     enabledKey: null,
+    scenario: {
+      messages: STATE_TEST_MESSAGES,
+      characters: STATE_TEST_ENTITIES.map((e) => e.name),
+      showReadWarning: false,
+    },
     hint:
       'Ideally should extract current physical state for Kael (guard disguise, shoulder graze, ' +
       'carrying the silver key), the Silver Key (owner = Kael), and the Dungeon (sentries present). ' +
@@ -375,6 +389,11 @@ const TIER_DEFS = [
     name: 'Perspectives & Secrets',
     // Epistemic has its own enable gate combining epistemic_enabled and profile.
     enabledKey: null,
+    scenario: {
+      messages: EPISTEMIC_TEST_MESSAGES,
+      characters: EPISTEMIC_TEST_CHARACTERS,
+      showReadWarning: false,
+    },
     hint:
       'Ideally should extract entries covering most or all five tag types from the village healer scene: ' +
       '[knows] facts held by Ryn, Mira, Sera, and Dael; [suspects] for Sera regarding the papers; ' +
@@ -442,6 +461,7 @@ export async function runModelTest(isCancelled = () => false) {
       key: def.key,
       name: def.name,
       hint: def.hint,
+      scenario: def.scenario,
       items,
       empty: count === 0,
     });

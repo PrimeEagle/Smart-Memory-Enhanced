@@ -88,7 +88,7 @@ import {
   detectSceneBreakHeuristic,
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
-import { runModelTest, TEST_MESSAGES, TEST_CHARACTERS } from './model-test.js';
+import { runModelTest } from './model-test.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -898,31 +898,34 @@ export function bindSettingsUI(ctrl) {
       return;
     }
 
-    // All tiers passed - render scenario reference + paginated tier review.
+    // All tiers passed - render paginated tier review.
     const tiers = outcome.tiers;
     let current = 0;
-
-    const scenarioLines = TEST_MESSAGES.map((m) => `${m.name}: ${m.mes ?? m.text}`).join('\n');
-    const charactersNote = `Characters: ${TEST_CHARACTERS.join(', ')}`;
 
     $result.html(`
       <div class="sm_model_test_pass_header">
         <i class="fa-solid fa-circle-check"></i> All tiers returned output.
       </div>
-      <details class="sm_model_test_scenario">
-        <summary>View test scenario</summary>
-        <p class="sm_model_test_scenario_note">${charactersNote}. Read through this before judging each tier - it is the only way to catch invented facts that look plausible.</p>
-        <textarea class="sm_model_test_output text_pole" readonly>${scenarioLines}</textarea>
-      </details>
       <div id="sm_model_test_tier_area"></div>
     `);
 
     function renderTier() {
       const tier = tiers[current];
+      const sc = tier.scenario;
+      const scenarioLines = sc.messages.map((m) => `${m.name}: ${m.mes ?? m.text}`).join('\n');
+      const charactersNote = `Characters: ${sc.characters.join(', ')}`;
+      const readWarning = sc.showReadWarning
+        ? 'Read through this before judging - it is the only way to catch invented facts that look plausible.'
+        : 'Reference scenario for this tier.';
       $('#sm_model_test_tier_area').html(`
         <div class="sm_model_test_tier_name">${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span></div>
         <div class="sm_model_test_tier_hint">${tier.hint}</div>
         <textarea class="sm_model_test_output text_pole" readonly>${tier.items.join('\n')}</textarea>
+        <details class="sm_model_test_scenario">
+          <summary>View test scenario</summary>
+          <p class="sm_model_test_scenario_note">${charactersNote}. ${readWarning}</p>
+          <textarea class="sm_model_test_output text_pole" readonly>${scenarioLines}</textarea>
+        </details>
         <div class="sm_model_test_nav">
           <button class="menu_button sm_model_test_prev"${current === 0 ? ' disabled' : ''}>&#8592; Previous</button>
           <button class="menu_button sm_model_test_next"${current === tiers.length - 1 ? ' disabled' : ''}>Next &#8594;</button>
