@@ -348,8 +348,9 @@ const TIER_DEFS = [
     // State Ledger has its own enable gate combining state_ledger_enabled and profile.
     enabledKey: null,
     hint:
-      'Should extract current physical state for Kael (guard disguise, shoulder graze, ' +
+      'Ideally should extract current physical state for Kael (guard disguise, shoulder graze, ' +
       'carrying the silver key), the Silver Key (owner = Kael), and the Dungeon (sentries present). ' +
+      'Fewer entities is acceptable as long as what is extracted is accurate. ' +
       'Lyria is mentioned but has no observable state - no line should appear for her. ' +
       'The Watch has no mention in the scene - no line should appear for them either. ' +
       'Any field value of "unknown", "none", or similar placeholder means the model is padding ' +
