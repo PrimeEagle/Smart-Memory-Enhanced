@@ -30,10 +30,10 @@
  * by injectUnified rather than a single tier. Individual tier macros are inactive
  * when unified injection is on - unified owns those tiers.
  *
- * MACRO_NAMES              - canonical macro name strings for all 9 macros
+ * MACRO_NAMES              - canonical macro name strings for all 10 macros
  * setMacroContent          - stores tier content in the cache (called by inject fns)
  * isMacroActive            - true when the macro should handle placement for a tier
- * registerSmartMemoryMacros - registers all 9 macros with the ST macro system at init
+ * registerSmartMemoryMacros - registers all 10 macros with the ST macro system at init
  */
 
 import { getContext, extension_settings } from '../../../extensions.js';
@@ -43,7 +43,7 @@ import { power_user } from '../../../../scripts/power-user.js';
 import { MODULE_NAME } from './constants.js';
 
 /**
- * Canonical macro names for all 9 macros (8 individual tiers + unified block).
+ * Canonical macro names for all 10 macros (9 individual tiers + unified block).
  * These strings are what users place in character cards or instruct templates.
  */
 export const MACRO_NAMES = {
@@ -55,6 +55,7 @@ export const MACRO_NAMES = {
   relationships: 'smartmemory-relationships',
   canon: 'smartmemory-canon',
   profiles: 'smartmemory-profiles',
+  epistemic: 'smartmemory-epistemic',
   unified: 'smartmemory-unified',
 };
 

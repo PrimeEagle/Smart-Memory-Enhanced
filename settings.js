@@ -42,6 +42,7 @@ import {
   META_KEY,
   PROMPT_KEY_PROFILES,
   PROMPT_KEY_CANON,
+  generateMemoryId,
 } from './constants.js';
 import { memory_sources, fetchOllamaModels } from './generate.js';
 import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
@@ -61,6 +62,12 @@ import {
   setReadOnlyStartIndex,
   getReadOnlyStartTime,
 } from './longterm.js';
+import {
+  clearEpistemicKnowledge,
+  injectEpistemicKnowledge,
+  loadEpistemicKnowledge,
+  saveEpistemicKnowledge,
+} from './epistemic.js';
 import { hideChatMessageRange } from '../../../../scripts/chats.js';
 import { generateRecap, displayRecap } from './recap.js';
 import {
@@ -92,6 +99,7 @@ import {
   setStatusMessage,
   updateLongTermUI,
   updateRelationshipHistoryUI,
+  updateEpistemicUI,
   updateSessionUI,
   updateScenesUI,
   updateArcsUI,
@@ -234,6 +242,17 @@ export const defaultSettings = {
   profiles_role: extension_prompt_roles.SYSTEM,
   profiles_template: '{{profiles}}',
 
+  // Perspectives & Secrets (epistemic tracking)
+  epistemic_enabled: true,
+  epistemic_profile_a_override: false,
+  epistemic_inject_unaware: true,
+  epistemic_secondhand_framing: true,
+  epistemic_response_length: 400,
+  epistemic_inject_budget: 200,
+  epistemic_depth: 1,
+  epistemic_position: extension_prompt_types.IN_CHAT,
+  epistemic_role: extension_prompt_roles.SYSTEM,
+
   // Hardware profile - 'auto' | 'a' | 'b'
   // 'auto': detect from memory source (ollama/webllm -> A, main/openai_compat -> B)
   // 'a': force Profile A (local/low-VRAM behaviour)
@@ -277,10 +296,11 @@ const BUDGET_RATIOS = {
   longterm: 0.16,
   session: 0.13,
   scenes: 0.1,
-  arcs: 0.18,
-  canon: 0.22,
+  arcs: 0.15,
+  canon: 0.21,
   profiles: 0.13,
   relationships: 0.08,
+  epistemic: 0.06,
 };
 
 /**
@@ -297,7 +317,8 @@ function totalBudgetFromSettings(s) {
     (s.arcs_inject_budget ?? 700) +
     (s.canon_inject_budget ?? 800) +
     (s.profiles_inject_budget ?? 400) +
-    (s.relationships_inject_budget ?? 250)
+    (s.relationships_inject_budget ?? 250) +
+    (s.epistemic_inject_budget ?? 200)
   );
 }
 
@@ -317,6 +338,7 @@ function applyTotalBudget(total, s) {
   s.canon_inject_budget = snap(total * BUDGET_RATIOS.canon);
   s.profiles_inject_budget = snap(total * BUDGET_RATIOS.profiles);
   s.relationships_inject_budget = snap(total * BUDGET_RATIOS.relationships);
+  s.epistemic_inject_budget = snap(total * BUDGET_RATIOS.epistemic);
 }
 
 /**
@@ -398,6 +420,14 @@ export function loadSettings() {
   ) {
     extension_settings[MODULE_NAME].consolidation_enabled =
       extension_settings[MODULE_NAME].longterm_consolidate;
+  }
+
+  // Profile A gating: epistemic extraction requires a reasoning-capable model.
+  // Disable it on Profile A unless the user has explicitly opted in, so that
+  // importing someone else's settings file cannot accidentally activate it.
+  const activeProfile = getHardwareProfile();
+  if (activeProfile === 'a' && !extension_settings[MODULE_NAME].epistemic_profile_a_override) {
+    extension_settings[MODULE_NAME].epistemic_enabled = false;
   }
 }
 
@@ -573,6 +603,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.selectedGroupCharacter = selection;
     updateLongTermUI(ctrl.selectedGroupCharacter);
     updateRelationshipHistoryUI(ctrl.selectedGroupCharacter);
+    updateEpistemicUI(ctrl.selectedGroupCharacter);
     updateSessionUI();
     updateFreshStartUI(isFreshStart());
     updateCanonUI(ctrl.selectedGroupCharacter);
@@ -781,6 +812,9 @@ export function bindSettingsUI(ctrl) {
       $(this).toggleClass('sm-gated', !isB);
       $(this).find('input, select, button').prop('disabled', !isB);
     });
+    // Show the Profile A notice in the Perspectives & Secrets section when
+    // the active profile is A, so the user understands why the toggle is off.
+    $('#sm_epistemic_profile_a_notice').toggle(!isB);
   }
 
   $('#sm_hardware_profile')
@@ -1329,6 +1363,140 @@ export function bindSettingsUI(ctrl) {
     updateRelationshipHistoryUI(characterName);
   });
 
+  // ---- Perspectives & Secrets bindings -----------------------------------
+
+  $('#sm_epistemic_enabled')
+    .prop('checked', s.epistemic_enabled ?? true)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].epistemic_enabled = $(this).prop('checked');
+      saveSettingsDebounced();
+      const characterName = ctrl.getSelectedCharacterName();
+      injectEpistemicKnowledge(characterName, characterName);
+    });
+
+  $('#sm_epistemic_profile_a_override')
+    .prop('checked', s.epistemic_profile_a_override ?? false)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].epistemic_profile_a_override = $(this).prop('checked');
+      saveSettingsDebounced();
+      const characterName = ctrl.getSelectedCharacterName();
+      injectEpistemicKnowledge(characterName, characterName);
+    });
+
+  $('#sm_epistemic_inject_unaware')
+    .prop('checked', s.epistemic_inject_unaware ?? true)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].epistemic_inject_unaware = $(this).prop('checked');
+      saveSettingsDebounced();
+    });
+
+  $('#sm_epistemic_secondhand_framing')
+    .prop('checked', s.epistemic_secondhand_framing ?? true)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].epistemic_secondhand_framing = $(this).prop('checked');
+      saveSettingsDebounced();
+    });
+
+  $('#sm_epistemic_inject_budget_value').text(s.epistemic_inject_budget ?? 200);
+  $('#sm_epistemic_inject_budget')
+    .val(s.epistemic_inject_budget ?? 200)
+    .on('input', function () {
+      const v = parseInt($(this).val(), 10);
+      extension_settings[MODULE_NAME].epistemic_inject_budget = v;
+      $('#sm_epistemic_inject_budget_value').text(v);
+      saveSettingsDebounced();
+    });
+
+  $(`input[name="sm_epistemic_position"][value="${s.epistemic_position ?? 1}"]`).prop(
+    'checked',
+    true,
+  );
+  $('input[name="sm_epistemic_position"]').on('change', function () {
+    extension_settings[MODULE_NAME].epistemic_position = parseInt($(this).val(), 10);
+    saveSettingsDebounced();
+  });
+
+  $('#sm_epistemic_depth')
+    .val(s.epistemic_depth ?? 1)
+    .on('input', function () {
+      extension_settings[MODULE_NAME].epistemic_depth = parseInt($(this).val(), 10);
+      saveSettingsDebounced();
+    });
+
+  $('#sm_epistemic_role')
+    .val(s.epistemic_role ?? 0)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].epistemic_role = parseInt($(this).val(), 10);
+      saveSettingsDebounced();
+    });
+
+  // Show/hide the target field when type changes to/from "hiding".
+  $('#sm_ep_type').on('change', function () {
+    $('.sm_ep_target_field').toggle($(this).val() === 'hiding');
+  });
+
+  $('#sm_epistemic_add').on('click', function () {
+    $('#sm_ep_type').val('knows');
+    $('#sm_ep_subject').val('');
+    $('#sm_ep_target').val('');
+    $('#sm_ep_content').val('');
+    $('.sm_ep_target_field').hide();
+    $('#sm_epistemic_add_form').removeData('editing').show();
+    $('#sm_ep_subject').focus();
+  });
+
+  $('#sm_ep_cancel').on('click', function () {
+    $('#sm_epistemic_add_form').removeData('editing').hide();
+  });
+
+  $('#sm_ep_save').on('click', function () {
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) return;
+
+    const type = $('#sm_ep_type').val();
+    const subject = $('#sm_ep_subject').val().trim();
+    const target = type === 'hiding' ? $('#sm_ep_target').val().trim() : '';
+    const content = $('#sm_ep_content').val().trim();
+
+    if (!subject || !content) return;
+    if (type === 'hiding' && !target) return;
+
+    const entries = loadEpistemicKnowledge(characterName);
+    const editingId = $('#sm_epistemic_add_form').data('editing');
+
+    if (editingId) {
+      // Update the existing entry in place.
+      const idx = entries.findIndex((e) => e.id === editingId);
+      if (idx !== -1) {
+        entries[idx] = { ...entries[idx], type, subject, target, content };
+      }
+    } else {
+      entries.push({ id: generateMemoryId(), type, subject, target, content, ts: Date.now() });
+    }
+
+    saveEpistemicKnowledge(characterName, entries);
+    injectEpistemicKnowledge(characterName, characterName);
+    updateEpistemicUI(characterName);
+    updateTokenDisplay();
+    $('#sm_epistemic_add_form').removeData('editing').hide();
+  });
+
+  $('#sm_epistemic_clear').on('click', async function () {
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) return;
+    if (
+      !(await callGenericPopup(
+        `Clear all Perspectives & Secrets entries for "${characterName}"?`,
+        POPUP_TYPE.CONFIRM,
+      ))
+    )
+      return;
+    clearEpistemicKnowledge(characterName);
+    injectEpistemicKnowledge(null, null);
+    updateEpistemicUI(characterName);
+    updateTokenDisplay();
+  });
+
   $('#sm_read_only').on('change', async function () {
     const val = $(this).prop('checked');
     await setFreshStart(val);
@@ -1396,6 +1564,7 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
       updateLongTermUI(characterName);
       updateRelationshipHistoryUI(characterName);
+      updateEpistemicUI(characterName);
       setStatusMessage(
         count > 0
           ? `${count} new memor${count === 1 ? 'y' : 'ies'} saved for ${characterName}.`
@@ -1418,13 +1587,16 @@ export function bindSettingsUI(ctrl) {
       return;
     clearCharacterMemories(characterName);
     clearRelationshipHistory(characterName);
+    clearEpistemicKnowledge(characterName);
     clearCanon(characterName);
     saveSettingsDebounced();
     updateLongTermUI(characterName);
     updateCanonUI(characterName);
     updateRelationshipHistoryUI(characterName);
+    updateEpistemicUI(characterName);
     injectMemories(null).catch(console.error);
     injectRelationshipHistory(null);
+    injectEpistemicKnowledge(null, null);
     setStatusMessage('Memories cleared.');
   });
 
@@ -2056,6 +2228,7 @@ export function bindSettingsUI(ctrl) {
       injectProfiles(characterName);
       updateLongTermUI(characterName);
       updateRelationshipHistoryUI(characterName);
+      updateEpistemicUI(characterName);
       updateSessionUI();
       updateScenesUI();
       updateArcsUI();
@@ -2157,10 +2330,11 @@ export function bindSettingsUI(ctrl) {
     )
       return;
 
-    // Clear long-term memories, relationship history, and canon for the character.
+    // Clear long-term memories, relationship history, epistemic knowledge, and canon for the character.
     if (characterName) {
       clearCharacterMemories(characterName);
       clearRelationshipHistory(characterName);
+      clearEpistemicKnowledge(characterName);
       clearCanon(characterName);
       saveSettingsDebounced();
     }
@@ -2195,6 +2369,7 @@ export function bindSettingsUI(ctrl) {
     updateShortTermUI(null);
     updateLongTermUI(characterName);
     updateRelationshipHistoryUI(characterName);
+    updateEpistemicUI(characterName);
     updateFreshStartUI(isFreshStart());
     updateSessionUI();
     updateScenesUI();

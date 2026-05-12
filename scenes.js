@@ -33,6 +33,7 @@
  * processSceneBreak          - orchestrates detection + summarization + dedup + storage
  * linkMemoriesToLastScene    - attaches memory ids to the most recent scene entry
  * injectSceneHistory         - pushes scene history into the prompt via setExtensionPrompt
+ * getSceneParticipants       - derives the set of named characters present in a message window
  */
 
 import {
@@ -143,6 +144,26 @@ export async function clearSceneHistory() {
     context.chatMetadata[META_KEY].sceneHistory = [];
     await context.saveMetadata();
   }
+}
+
+/**
+ * Derives the set of named characters present in a message window.
+ * Includes the AI character and any named user personas; excludes system messages.
+ *
+ * Note: NPCs invented mid-scene appear only in prose, not as message senders, so
+ * they will not appear in this list. The extraction model reads the full prose and
+ * catches them regardless - this list is a participant hint, not an exhaustive registry.
+ *
+ * @param {Object[]} messages - Chat message objects.
+ * @returns {string[]} Deduplicated array of character names.
+ */
+export function getSceneParticipants(messages) {
+  const names = new Set();
+  for (const m of messages) {
+    if (m.is_system) continue;
+    if (m.name) names.add(m.name);
+  }
+  return [...names];
 }
 
 // ---- Scene summary ------------------------------------------------------

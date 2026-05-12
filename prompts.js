@@ -41,6 +41,7 @@
  * buildSupersessionConfirmPrompt   - binary UPDATE/INDEPENDENT prompt for model-confirmed supersession (method B)
  * buildTriggerGenerationPrompt     - asks the model for contextual trigger keywords for a single memory (Profile B)
  * buildRelationshipDeltaPrompt     - extracts per-pair relationship state changes with magnitude from a scene
+ * buildEpistemicExtractionPrompt   - extracts a per-character knowledge map (knows/unaware/suspects/believes/hiding)
  *
  * Entity tagging: both extraction prompts instruct the model to append an
  * optional `:entity=Name1,Name2` suffix to the bracket tag for any memory
@@ -788,6 +789,90 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `Format: Subject -> Target: descriptor(magnitude), descriptor(magnitude)\n\n` +
     cardSection +
     stateSection +
+    `Scene:\n${sceneText}\n\n` +
+    `Output:`
+  );
+}
+
+// ---- Epistemic extraction -----------------------------------------------
+
+/**
+ * Builds the epistemic extraction prompt for a scene.
+ *
+ * Produces a per-character knowledge map using five tags: knows, unaware,
+ * suspects, believes, hiding. The prompt body was validated over five rounds
+ * of iterative testing - every rule exists because a specific failure mode was
+ * observed without it. Do not simplify.
+ *
+ * @param {string} sceneText - The scene messages formatted as a chat excerpt.
+ * @param {string[]} participants - Character names present in the scene (hint only).
+ * @returns {string} The complete prompt string.
+ */
+export function buildEpistemicExtractionPrompt(sceneText, participants) {
+  const participantHint =
+    participants.length > 0
+      ? `Characters present in this scene: ${participants.join(', ')}.\n\n`
+      : '';
+
+  return (
+    `[EPISTEMIC EXTRACTION TASK - Output structured data only. Do NOT continue the roleplay.]\n\n` +
+    `You are building a knowledge map: for each named character, what do they know,\n` +
+    `what do they falsely believe, what do they suspect, and what are they concealing?\n\n` +
+    `Output one entry per character per fact, using these tags:\n\n` +
+    `[knows]    Character | fact they have direct knowledge of\n` +
+    `[unaware]  Character | fact they do not know (but others do)\n` +
+    `[suspects] Character | incomplete belief - they sense something but lack proof\n` +
+    `[believes] Character | something they hold as true that is actually false\n` +
+    `[hiding]   Concealer from Target | what they are actively concealing\n\n` +
+    `Rules:\n` +
+    `- Only record what is established by the scene - do not infer beyond what is shown\n` +
+    `- Use the character's name exactly as it appears in the scene\n` +
+    `- Each line covers one character and one fact\n` +
+    `- Do not output the same fact twice for the same character\n\n` +
+    `- WITNESS RULE: if the scene explicitly states a character observed or witnessed\n` +
+    `  something, you MUST output a [knows] line for that character - do not omit it\n\n` +
+    `- UNAWARE COMPLEMENT: when you write [knows] X | fact, ask whether another named\n` +
+    `  character does not know that fact. If the scene establishes they do not, write\n` +
+    `  the corresponding [unaware] line for them\n\n` +
+    `- HIDING RULE: [hiding] means the concealer possesses a fact and is actively\n` +
+    `  keeping it from a specific target. Do NOT write [hiding] for a character the\n` +
+    `  concealer has already told. An explicit oath or promise of secrecy establishes\n` +
+    `  [hiding] for the oath-taker toward the person the secret is being kept from\n\n` +
+    `- KNOWS vs SUSPECTS: if a character is explicitly told a fact, use [knows].\n` +
+    `  Reserve [suspects] only for characters who have a feeling without being\n` +
+    `  directly informed\n\n` +
+    `- DECEPTION RULE: when a character makes a false statement, write [hiding] for\n` +
+    `  the liar. Then check whether the character who heard it accepted it without\n` +
+    `  challenge - if so, also write [believes] for them with the false content.\n` +
+    `  Always write both lines together\n\n` +
+    `- CONTRADICTION RULE: if a character states their location or actions, check\n` +
+    `  whether the scene already established where they actually were. If the\n` +
+    `  statement contradicts that established fact, treat it as a lie and apply the\n` +
+    `  DECEPTION RULE\n\n` +
+    `- BELIEVES RULE: [believes] is ONLY for false beliefs - content that is\n` +
+    `  demonstrably untrue based on the scene. Do not use it for things a character\n` +
+    `  is merely thinking, feeling, or correctly concluding\n\n` +
+    `Example:\n` +
+    `Scene: Kael pocketed the gem while Lyria watched from the doorway. Later he told\n` +
+    `Fen about the theft but swore him to silence. When Lyria asked Kael if anything\n` +
+    `was missing, he shrugged and said he hadn't noticed.\n\n` +
+    `Output:\n` +
+    `[knows] Kael | he took the gem\n` +
+    `[knows] Lyria | Kael took the gem\n` +
+    `[knows] Fen | Kael took the gem\n` +
+    `[unaware] Kael | Lyria saw him take the gem\n` +
+    `[hiding] Kael from Lyria | the theft\n` +
+    `[hiding] Fen from Lyria | Kael told him about the theft\n` +
+    `[believes] Lyria | Kael did not notice anything was missing\n\n` +
+    `Notes:\n` +
+    `- Fen was told directly so [knows] not [suspects]\n` +
+    `- Kael told Fen so [hiding] only applies toward Lyria, not Fen\n` +
+    `- Kael's shrug contradicts the established fact he took the gem\n` +
+    `  (CONTRADICTION RULE) - apply DECEPTION RULE: [hiding] Kael + [believes] Lyria\n` +
+    `- Fen swore silence so [hiding] Fen from Lyria (oath establishes hiding)\n` +
+    `- Lyria's [believes] records a false belief - Kael actually did notice\n\n` +
+    `---\n\n` +
+    participantHint +
     `Scene:\n${sceneText}\n\n` +
     `Output:`
   );

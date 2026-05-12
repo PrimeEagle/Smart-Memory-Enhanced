@@ -98,6 +98,22 @@ When a new memory describes a change - "Alex no longer distrusts Finn", "she mov
 
 Each memory is assigned a set of **activation triggers** - keywords derived automatically from its content. When a trigger appears in the current chat turn, that memory gets a scoring boost so it rises to the top of what gets injected into context. Memories that fire a trigger are also placed in a secondary slot closer to the prompt, so the AI sees them right before it responds. You do not need to configure anything for this - it runs automatically.
 
+### Perspectives & Secrets
+
+At each scene break, Smart Memory extracts a per-character knowledge map: what each named character knows, suspects, falsely believes, is unaware of, and is actively hiding from someone else. The responding character's knowledge block is then injected privately into their prompt, so the AI can maintain perspective-accurate behaviour - knowing what to reveal, what to deflect, and what they genuinely do not know.
+
+The five tags map to distinct epistemic states:
+
+- **Knows** - facts the character is confident about
+- **Suspects** - things they believe but have not confirmed
+- **Believes (false)** - things they are sure of that are actually wrong (dramatic irony)
+- **Unaware** - things they do not know and have not guessed
+- **Hiding** - things they know but are actively concealing from a specific other character
+
+The **Perspectives & Secrets** section in the settings panel shows all extracted entries for the current character. You can add entries manually, edit existing ones, and delete entries that are no longer relevant. The section is collapsed by default on Profile A hardware (local/low-VRAM) where extraction requires a reasoning-capable model - an override toggle in the section enables it when the hardware can handle it.
+
+Long-term memories also benefit: memories extracted from a scene the responding character was not present for are labelled `[secondhand]` in their injection, so the AI knows the character learned this through hearsay rather than direct experience. This can be turned off to omit non-witnessed memories entirely.
+
 ### Session Memory - Within-Chat Details
 
 Granular details from the current session: scene descriptions, things that were revealed, how the relationship shifted, specific objects or places that came up. More detailed than long-term memory, and scoped to this chat only - it does not carry forward to future sessions, but it keeps the AI sharp on the specifics of what is happening right now.
@@ -377,6 +393,18 @@ ollama pull nomic-embed-text
 | Injection position          | In-chat | Where the relationship block appears in the prompt                                  |
 | Injection depth             | 5       | Distance from the user prompt (lower = closer)                                      |
 
+### Perspectives & Secrets
+
+| Setting                               | Default        | Description                                                                                                                |
+| ------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Enable Perspectives & Secrets         | On (Profile B) | Extract and inject per-character knowledge maps at scene breaks. Off by default on Profile A; enable with the override    |
+| Enable on Profile A                   | Off            | Override to run epistemic extraction on Profile A hardware. Requires a reasoning-capable local model                      |
+| Inject "does not know" entries        | On             | Include what each character is unaware of in their knowledge block (for dramatic irony)                                    |
+| Frame secondhand long-term memories   | On             | Prefix long-term memories with `[secondhand]` when the responding character was not present for the scene they came from   |
+| Injection token budget                | 200            | Budget for the knowledge block; funded from within the shared total                                                       |
+| Injection position                    | In-chat        | Where the knowledge block appears in the prompt                                                                            |
+| Injection depth                       | 1              | Distance from the user prompt (lower = closer); depth 1 places it right after the most recent context                     |
+
 ### Long-term Memory
 
 | Setting                    | Default                                               | Description                                                                                                                                                                                        |
@@ -563,15 +591,16 @@ This section covers the technical details behind Smart Memory's behaviour. You d
 
 Smart Memory's defaults are designed to layer cleanly alongside SillyTavern's Vector Storage extension. "Depth" is how far a piece of context sits from the AI's response - depth 0 is right before the AI responds, higher numbers sit further back.
 
-| Tier       | Position                | Notes                                           |
-| ---------- | ----------------------- | ----------------------------------------------- |
-| Arcs       | In-chat @ depth 2       | Shares depth with ST chat vectors intentionally |
-| Session    | In-chat @ depth 3       | Just above ST's default vector depth            |
-| Scenes     | In-chat @ depth 6       | Further back - past scene context               |
-| Long-term  | After Main Prompt       | Near character card                             |
-| Short-term | After Main Prompt       | Rolling narrative summary                       |
-| Canon      | After Main Prompt       | Stable character history, separate slot         |
-| Profiles   | After Main Prompt       | State snapshots, near character card            |
+| Tier                   | Position          | Notes                                           |
+| ---------------------- | ----------------- | ----------------------------------------------- |
+| Perspectives & Secrets | In-chat @ depth 1 | Per-character knowledge block, closest to reply |
+| Arcs                   | In-chat @ depth 2 | Shares depth with ST chat vectors intentionally |
+| Session                | In-chat @ depth 3 | Just above ST's default vector depth            |
+| Scenes                 | In-chat @ depth 6 | Further back - past scene context               |
+| Long-term              | After Main Prompt | Near character card                             |
+| Short-term             | After Main Prompt | Rolling narrative summary                       |
+| Canon                  | After Main Prompt | Stable character history, separate slot         |
+| Profiles               | After Main Prompt | State snapshots, near character card            |
 
 The away recap is shown as a popup to the user, not added to the prompt.
 
@@ -599,6 +628,7 @@ Each memory tier exposes a macro token you can place anywhere in a character car
 | `{{smartmemory-relationships}}` | Relationship history      |
 | `{{smartmemory-canon}}`         | Canon                     |
 | `{{smartmemory-profiles}}`      | Profiles                  |
+| `{{smartmemory-epistemic}}`     | Perspectives & Secrets    |
 | `{{smartmemory-unified}}`       | Unified block (see below) |
 
 Place any token in the **Main Prompt**, **Description**, **Personality summary**, **Scenario**, or **Examples of dialogue** fields of a character card. Smart Memory detects the token automatically and activates macro mode for that tier - no settings change needed.

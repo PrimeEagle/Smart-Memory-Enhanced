@@ -45,6 +45,7 @@
  * updateEntityPanel       - renders the entity registry panel
  * showEntityTimeline      - shows an inline timeline for a single entity
  * renderMemoriesList      - renders the long-term memories list with edit/delete controls
+ * updateEpistemicUI       - re-renders the Perspectives & Secrets entry list with add/edit/delete controls
  */
 
 import { extension_prompts, saveSettingsDebounced } from '../../../../script.js';
@@ -63,6 +64,7 @@ import {
   PROMPT_KEY_ARCS,
   PROMPT_KEY_PROFILES,
   PROMPT_KEY_RELATIONSHIPS,
+  PROMPT_KEY_EPISTEMIC,
 } from './constants.js';
 import {
   loadCharacterMemories,
@@ -101,6 +103,11 @@ import {
 } from './graph-migration.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
+import {
+  loadEpistemicKnowledge,
+  saveEpistemicKnowledge,
+  injectEpistemicKnowledge,
+} from './epistemic.js';
 
 // ---- Local helpers (not exported) ----------------------------------------
 
@@ -142,6 +149,7 @@ export const TOKEN_TIERS = [
   { key: PROMPT_KEY_ARCS, label: 'Arcs', color: '#7a6ea5' },
   { key: PROMPT_KEY_PROFILES, label: 'Profiles', color: '#5a9ea0' },
   { key: PROMPT_KEY_RELATIONSHIPS, label: 'Relationships', color: '#c87941' },
+  { key: PROMPT_KEY_EPISTEMIC, label: 'Perspectives', color: '#7a8c5a' },
 ];
 
 // Personal tiers shown in per-character group rows. Shared tiers (session,
@@ -1502,4 +1510,74 @@ export function renderMemoriesList(memories, characterName) {
     injectMemories(characterName).catch(console.error);
     renderMemoriesList(loadCharacterMemories(characterName), characterName);
   });
+}
+
+// ---- Perspectives & Secrets UI ------------------------------------------
+
+const EPISTEMIC_TYPE_LABELS = {
+  knows: 'Knows',
+  suspects: 'Suspects',
+  unaware: 'Unaware',
+  believes: 'Believes (false)',
+  hiding: 'Hiding',
+};
+
+/**
+ * Re-renders the Perspectives & Secrets entry list for a character.
+ * Each entry gets an edit and delete button. An add form is appended after the list.
+ *
+ * @param {string|null} characterName - Card character name (storage key).
+ */
+export function updateEpistemicUI(characterName) {
+  const $list = $('#sm_epistemic_list');
+  $list.empty();
+
+  const entries = characterName ? loadEpistemicKnowledge(characterName) : [];
+
+  if (entries.length === 0) {
+    $list.append('<div class="sm_no_char">No perspective entries yet.</div>');
+    return;
+  }
+
+  for (const entry of entries) {
+    const typeLabel = EPISTEMIC_TYPE_LABELS[entry.type] ?? entry.type;
+    const displayText =
+      entry.type === 'hiding'
+        ? `${entry.subject} / ${typeLabel} from ${entry.target}: ${entry.content}`
+        : `${entry.subject} / ${typeLabel}: ${entry.content}`;
+
+    const $row = $('<div class="sm_memory_item">');
+    const $content = $('<div class="sm_memory_content">').text(displayText);
+
+    const $editBtn = $('<button class="sm_memory_action menu_button" title="Edit">')
+      .append('<i class="fa-solid fa-pencil"></i>')
+      .on('click', () => {
+        $('#sm_ep_type').val(entry.type);
+        $('#sm_ep_subject').val(entry.subject);
+        $('#sm_ep_target').val(entry.target ?? '');
+        $('#sm_ep_content').val(entry.content);
+        // Show target field only for hiding type.
+        $('.sm_ep_target_field').toggle(entry.type === 'hiding');
+        $('#sm_epistemic_add_form').data('editing', entry.id).show();
+        $('#sm_ep_subject').focus();
+      });
+
+    const $deleteBtn = $(
+      '<button class="sm_memory_action sm_memory_delete menu_button" title="Delete">',
+    )
+      .append('<i class="fa-solid fa-trash-can"></i>')
+      .on('click', () => {
+        const current = loadEpistemicKnowledge(characterName);
+        saveEpistemicKnowledge(
+          characterName,
+          current.filter((e) => e.id !== entry.id),
+        );
+        injectEpistemicKnowledge(characterName, characterName);
+        updateEpistemicUI(characterName);
+        updateTokenDisplay();
+      });
+
+    $row.append($content, $editBtn, $deleteBtn);
+    $list.append($row);
+  }
 }

@@ -35,6 +35,7 @@
  * parseProfileOutput        - extracts character_state, world_state, and relationship_matrix from profile generation output
  * parseTriggerResponse           - parses the comma-separated keyword list from a trigger generation response
  * parseRelationshipDeltaResponse - parses per-pair relationship state changes with magnitude from a delta response
+ * parseEpistemicResponse         - parses the five-tag knowledge map output from an epistemic extraction pass
  *
  * All new memory objects produced by the parse functions carry the full graph
  * field set (id, source_messages, entities, time_scope, valid_from, valid_to,
@@ -604,4 +605,63 @@ const SCENE_BREAK_PATTERNS = [
  */
 export function detectSceneBreakHeuristic(messageText) {
   return SCENE_BREAK_PATTERNS.some((pattern) => pattern.test(messageText));
+}
+
+// ---- Epistemic extraction parser ----------------------------------------
+
+// Matches: [hiding] Concealer from Target | content
+const EPISTEMIC_HIDING_RE = /^\[hiding\]\s+(.+?)\s+from\s+(.+?)\s*\|\s*(.+)$/i;
+// Matches: [tag] Subject | content  (for knows/unaware/suspects/believes)
+const EPISTEMIC_STANDARD_RE = /^\[(\w+)\]\s+(.+?)\s*\|\s*(.+)$/i;
+const EPISTEMIC_VALID_TYPES = new Set(['knows', 'unaware', 'suspects', 'believes', 'hiding']);
+
+/**
+ * Parses the output of an epistemic extraction prompt into structured entries.
+ *
+ * Handles two line shapes:
+ * - Standard: `[tag] Character | content`
+ * - Hiding:   `[hiding] Concealer from Target | content`
+ *
+ * Lines that do not match either pattern, start with '#' or '-' (model notes),
+ * or carry an unrecognised tag are silently skipped. Output 'NONE' returns an
+ * empty array.
+ *
+ * @param {string} text - Raw model output.
+ * @returns {Array<{type: string, subject: string, target: string|null, content: string}>}
+ */
+export function parseEpistemicResponse(text) {
+  if (!text || text.trim().toUpperCase() === 'NONE') return [];
+
+  const entries = [];
+
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('-')) continue;
+
+    // Try hiding pattern first - it has a more specific structure.
+    let match = EPISTEMIC_HIDING_RE.exec(line);
+    if (match) {
+      entries.push({
+        type: 'hiding',
+        subject: match[1].trim(),
+        target: match[2].trim(),
+        content: match[3].trim(),
+      });
+      continue;
+    }
+
+    match = EPISTEMIC_STANDARD_RE.exec(line);
+    if (match) {
+      const type = match[1].toLowerCase();
+      if (!EPISTEMIC_VALID_TYPES.has(type)) continue;
+      entries.push({
+        type,
+        subject: match[2].trim(),
+        target: null,
+        content: match[3].trim(),
+      });
+    }
+  }
+
+  return entries;
 }

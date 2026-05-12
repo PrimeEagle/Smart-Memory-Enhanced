@@ -38,6 +38,7 @@
  * Internal helpers (not exported):
  * assertNonDestructive         - throws if a migration step deleted or overwrote a pre-existing field
  * applyMigrations              - drives the step loop and calls assertNonDestructive after each step
+ * migrateCharacter_v8          - adds epistemic_knowledge array and backfills witnessed_by on memories
  */
 
 import { saveSettingsDebounced } from '../../../../script.js';
@@ -847,6 +848,26 @@ function migrateCharacter_v7(charData) {
   return { ...charData, relationship_history: {} };
 }
 
+/**
+ * CHARACTER migration: version 7 -> 8
+ *
+ * Adds the epistemic_knowledge array for the Perspectives & Secrets subsystem.
+ * Also backfills witnessed_by: [] onto every existing long-term memory that
+ * lacks the field. An empty array means "unknown witnesses" - the injection
+ * filter treats these as unfiltered (inject as normal) so old memories are
+ * unaffected until the next extraction pass tags them properly.
+ *
+ * @param {Object} charData - Character data object.
+ * @returns {Object} Updated character data with schema_version NOT yet set.
+ */
+function migrateCharacter_v8(charData) {
+  if (Object.prototype.hasOwnProperty.call(charData, 'epistemic_knowledge')) return charData;
+  const memories = (charData.memories ?? []).map((m) =>
+    Object.prototype.hasOwnProperty.call(m, 'witnessed_by') ? m : { ...m, witnessed_by: [] },
+  );
+  return { ...charData, epistemic_knowledge: [], memories };
+}
+
 // ---- Step registries --------------------------------------------------------
 // Map<version, stepFn | { fn, deletePaths }> - add new entries here when
 // SCHEMA_VERSION is bumped. Use { fn, deletePaths } only when a step
@@ -858,6 +879,7 @@ const CHARACTER_MIGRATIONS = new Map([
   [4, migrateCharacter_v4],
   [6, migrateCharacter_v6],
   [7, migrateCharacter_v7],
+  [8, migrateCharacter_v8],
 ]);
 
 const CHAT_MIGRATIONS = new Map([

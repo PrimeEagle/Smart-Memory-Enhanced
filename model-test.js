@@ -21,8 +21,12 @@
  * Extraction model test: runs a fixed scenario through the full extraction
  * pipeline and returns structured per-tier results for display in the UI.
  *
- * runModelTest - runs the test against the configured memory LLM and returns
- *                per-tier results plus the name of the first tier that failed
+ * runModelTest               - runs the test against the configured memory LLM and
+ *                              returns per-tier results plus the first failed tier
+ * TEST_CHARACTERS            - characters in the main Yara/Cael scenario
+ * TEST_MESSAGES              - messages for the main scenario
+ * EPISTEMIC_TEST_CHARACTERS  - characters in the Mira/Sera/Ryn/Dael epistemic scenario
+ * EPISTEMIC_TEST_MESSAGES    - messages for the epistemic scenario
  */
 
 import { extension_settings } from '../../../extensions.js';
@@ -33,8 +37,15 @@ import {
   buildExtractionPrompt,
   buildSessionExtractionPrompt,
   buildArcExtractionPrompt,
+  buildEpistemicExtractionPrompt,
 } from './prompts.js';
-import { parseExtractionOutput, parseSessionOutput, parseArcOutput } from './parsers.js';
+import {
+  parseExtractionOutput,
+  parseSessionOutput,
+  parseArcOutput,
+  parseEpistemicResponse,
+} from './parsers.js';
+import { isEpistemicEnabled } from './epistemic.js';
 
 // ---- Test fixture -----------------------------------------------------------
 
@@ -42,6 +53,62 @@ import { parseExtractionOutput, parseSessionOutput, parseArcOutput } from './par
 // Rich enough that a capable model should produce multiple items per tier;
 // long enough to surface models that degrade on larger prompts.
 export const TEST_CHARACTERS = ['Yara', 'Cael'];
+
+// A second fixed scenario for the epistemic tier: a village healer scene with
+// four characters, designed so that every epistemic tag fires at least once.
+//
+// What a capable model should extract:
+//   [knows]   Ryn knows her father has been feverish for seven days.
+//   [knows]   Mira knows how serious the illness is (she is treating him).
+//   [suspects] Sera suspects the situation is worse than Mira is letting on.
+//   [believes] Ryn believes her father will recover.
+//   [unaware]  Ryn is unaware of the mill negotiation.
+//   [hiding]   Dael is hiding from Ryn that he has a notary-sealed agreement
+//              to purchase the mill.
+export const EPISTEMIC_TEST_CHARACTERS = ['Mira', 'Sera', 'Ryn', 'Dael'];
+
+export const EPISTEMIC_TEST_MESSAGES = [
+  {
+    name: 'Ryn',
+    text: 'My father has had the fever for seven days. I sent for Mira the moment his cough turned wet.',
+  },
+  {
+    name: 'Mira',
+    text: 'I arrived yesterday morning and have been with him since. Sera, prepare the breathing tincture - not the fever blend, the breathing one.',
+  },
+  {
+    name: 'Sera',
+    text: "His colour is poor, Mira. Worse than yesterday. I don't think it is just the fever.",
+  },
+  {
+    name: 'Mira',
+    text: 'He is resting. The night will tell us more. Ryn, your presence helps him more than the medicine.',
+  },
+  {
+    name: 'Ryn',
+    text: 'He will recover. He survived the river sickness six years ago with nothing but willowbark and rest. He has always been strong.',
+  },
+  {
+    name: 'Dael',
+    text: 'Forgive the interruption. I came to ask after Aldric. We had spoken last month about the mill - I only wanted him to know there is no hurry on my side. These matters can wait until he is well.',
+  },
+  {
+    name: 'Ryn',
+    text: 'The mill? He said nothing to me about any arrangement. He would never sell that mill.',
+  },
+  {
+    name: 'Dael',
+    text: 'Preliminary only - nothing decided, nothing signed. I should not have raised it at such a moment. Forgive me.',
+  },
+  {
+    name: 'Sera',
+    text: "The saddlebag you left by the door - I saw a notary's seal on the papers inside when I passed.",
+  },
+  {
+    name: 'Dael',
+    text: 'Old contracts from another matter entirely. Nothing to do with Aldric. As I said, it can all wait.',
+  },
+];
 
 // A post-armistice occupied city. Yara is a former resistance fighter looking
 // for her brother Daven, who went into hiding after the war ended and has now
@@ -227,6 +294,36 @@ const TIER_DEFS = [
       return { items: add.map((a) => a.content), count: add.length };
     },
   },
+  {
+    key: 'epistemic',
+    name: 'Perspectives & Secrets',
+    // Epistemic has its own enable gate combining epistemic_enabled and profile.
+    enabledKey: null,
+    hint:
+      'Should extract at least one entry per type using the village healer scene: ' +
+      '[knows] for Ryn and Mira, [suspects] for Sera, [believes] for Ryn, ' +
+      '[unaware] for Ryn about the mill negotiation, and [hiding] for Dael from Ryn. ' +
+      'A capable model finds all six and does not confuse what is known with what is hidden.',
+    responseLength: 400,
+    // Uses a different test scenario than the main tiers to exercise all five tags cleanly.
+    buildPrompt: () => {
+      const epistemicHistory = EPISTEMIC_TEST_MESSAGES.map((m) => `${m.name}: ${m.text}`).join(
+        '\n\n',
+      );
+      return buildEpistemicExtractionPrompt(epistemicHistory, EPISTEMIC_TEST_CHARACTERS);
+    },
+    parse: (response) => {
+      const items = parseEpistemicResponse(response || '');
+      return {
+        items: items.map((e) =>
+          e.type === 'hiding'
+            ? `[${e.type}] ${e.subject} from ${e.target}: ${e.content}`
+            : `[${e.type}] ${e.subject}: ${e.content}`,
+        ),
+        count: items.length,
+      };
+    },
+  },
 ];
 
 // ---- Runner -----------------------------------------------------------------
@@ -247,8 +344,14 @@ export async function runModelTest() {
   const tiers = [];
 
   for (const def of TIER_DEFS) {
-    if (!(settings[def.enabledKey] ?? true)) continue;
+    // Epistemic tier uses isEpistemicEnabled() instead of a plain settings key.
+    if (def.enabledKey === null) {
+      if (!isEpistemicEnabled()) continue;
+    } else if (!(settings[def.enabledKey] ?? true)) {
+      continue;
+    }
 
+    // Epistemic tier uses its own test history; all other tiers use the shared one.
     const prompt = def.buildPrompt(chatHistory);
     smLog(
       `[ModelTest] Prompt length for "${def.name}": ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens)`,

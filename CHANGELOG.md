@@ -235,6 +235,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the toggle, content-word overlap handles the baseline. Trigger generation applies
   to both long-term memories and session memories.
 
+- **Perspectives & Secrets**: a new extraction tier that builds a per-character
+  knowledge map at every scene break. For each named character in the scene, the
+  model emits tagged entries describing five distinct epistemic states: `[knows]`
+  (confirmed facts), `[suspects]` (unconfirmed beliefs), `[believes]` (false beliefs
+  the character is certain of), `[unaware]` (things they do not know at all), and
+  `[hiding]` (things they know but are actively concealing from a specific other
+  character). On injection, only entries where the responding character is the
+  subject are included, so each character receives their own private knowledge block
+  rather than a shared one. This lets the AI maintain perspective-accurate
+  behaviour - playing ignorance correctly, sustaining deceptions, and never acting
+  on information the character could not have.
+
+  Long-term memories now carry a `witnessed_by` field recording which characters
+  were present when the memory was extracted. Memories from scenes the responding
+  character was not in are prefixed `[secondhand]` in the long-term injection block,
+  flagging them as hearsay rather than direct experience. This can be disabled in
+  favour of omitting non-witnessed memories entirely.
+
+  Deduplication uses the same embedding-primary, Jaccard-fallback approach as other
+  tiers with a 0.70 threshold. Entries are stored in the character's persistent
+  record and survive across sessions. The token budget (200 tokens by default) is
+  funded from within the shared total by a small reduction to the arc and canon
+  ratios. Schema v8 adds `epistemic_knowledge: []` to all character records and
+  backfills `witnessed_by: []` on existing long-term memories.
+
+  On Profile A (local/low-VRAM hardware) the feature is off by default; a per-section
+  override toggle enables it when the local model is reasoning-capable. Entries can
+  be added, edited, and deleted manually from the **Perspectives & Secrets** section
+  in the settings panel. The `{{smartmemory-epistemic}}` macro is also available for
+  placement-controlled injection. The extraction model test now includes a separate
+  Mira/Sera/Ryn/Dael scene designed to exercise all five epistemic tags.
+
 ## [1.6.11] - 2026-05-10
 
 ### Added

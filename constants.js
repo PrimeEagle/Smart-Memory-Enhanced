@@ -30,6 +30,8 @@
  * to the prompt when their trigger keywords appear in the current turn.
  * PROMPT_KEY_RELATIONSHIPS is the slot for persistent relationship state -
  * per-pair emotional deltas accumulated across sessions.
+ * PROMPT_KEY_EPISTEMIC is the slot for perspective-scoped knowledge - what
+ * each character knows, suspects, believes, or is concealing.
  */
 
 /** Extension name as registered in extension_settings. */
@@ -58,6 +60,9 @@ export const PROMPT_KEY_TRIGGERED = 'smart_memory_triggered';
 // Persistent relationship state - per-pair emotional deltas accumulated across
 // sessions. Only pairs relevant to the current chat are injected.
 export const PROMPT_KEY_RELATIONSHIPS = 'smart_memory_relationships';
+// Perspective-scoped knowledge block for the responding character: what they
+// know, suspect, believe, and are concealing, extracted at scene breaks.
+export const PROMPT_KEY_EPISTEMIC = 'smart_memory_epistemic';
 
 /** Valid type tags for long-term memory entries. */
 export const MEMORY_TYPES = ['fact', 'relationship', 'preference', 'event'];
@@ -82,7 +87,7 @@ export const META_KEY = 'smartMemory';
  * - Version 0 is the implicit state for any container that has no stored version
  *   (i.e. all data written by v1.3.0 or earlier, before this system existed).
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * Maximum tokens any external generation source is allowed to produce for a

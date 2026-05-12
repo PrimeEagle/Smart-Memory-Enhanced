@@ -60,6 +60,7 @@ import {
   PROMPT_KEY_CANON,
   PROMPT_KEY_TRIGGERED,
   PROMPT_KEY_RELATIONSHIPS,
+  PROMPT_KEY_EPISTEMIC,
 } from './constants.js';
 import { memory_sources, abortCurrentMemoryGeneration } from './generate.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
@@ -126,6 +127,12 @@ import { clearUnifiedSlot, maybeInjectUnified } from './unified-inject.js';
 import { registerSmartMemoryMacros } from './macros.js';
 import { smLog } from './logging.js';
 import {
+  isEpistemicEnabled,
+  extractEpistemicKnowledge,
+  injectEpistemicKnowledge,
+  loadAndInjectEpistemicKnowledge,
+} from './epistemic.js';
+import {
   setStatusMessage,
   updateShortTermUI,
   updateLongTermUI,
@@ -137,6 +144,7 @@ import {
   updateCanonUI,
   updateProfilesUI,
   updateRelationshipHistoryUI,
+  updateEpistemicUI,
   updateEntityPanel,
   updateEmbeddingNotice,
   setContinuityBadge,
@@ -363,6 +371,7 @@ function clearAllInjections() {
   setExtensionPrompt(PROMPT_KEY_CANON, '', none, 0);
   setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', none, 0);
   setExtensionPrompt(PROMPT_KEY_RELATIONSHIPS, '', none, 0);
+  setExtensionPrompt(PROMPT_KEY_EPISTEMIC, '', none, 0);
   clearUnifiedSlot();
   updateTokenDisplay();
 }
@@ -528,6 +537,10 @@ async function onCharacterMessageRendered() {
         injectSceneHistory();
         updateScenesUI();
         updateTokenDisplay();
+        if (isEpistemicEnabled()) {
+          await extractEpistemicKnowledge(sceneMessageBuffer, characterName);
+          injectEpistemicKnowledge(characterName, characterName, true);
+        }
         sceneMessageBuffer = [];
         sceneBufferLastIndex = -1;
         setStatusMessage('Scene break detected.');
@@ -705,6 +718,7 @@ async function onCharacterMessageRendered() {
           injectRelationshipHistory(characterName);
           updateLongTermUI(characterName);
           updateRelationshipHistoryUI(characterName);
+          updateEpistemicUI(characterName);
           total += count;
         }
 
@@ -949,12 +963,14 @@ async function onChatChangedImpl() {
     if (selectedGroupCharacter) ensureCharacterMigrated(selectedGroupCharacter);
     await injectMemories(selectedGroupCharacter);
     injectRelationshipHistory(selectedGroupCharacter);
+    loadAndInjectEpistemicKnowledge(selectedGroupCharacter, selectedGroupCharacter);
     await injectSessionMemories();
     injectCanon(selectedGroupCharacter);
     injectProfiles(selectedGroupCharacter);
     loadAndInjectRepair();
     updateLongTermUI(selectedGroupCharacter);
     updateRelationshipHistoryUI(selectedGroupCharacter);
+    updateEpistemicUI(selectedGroupCharacter);
     updateSessionUI();
     updateFreshStartUI(isFreshStart());
     updateCanonUI(selectedGroupCharacter);
@@ -1034,6 +1050,7 @@ async function onChatChangedImpl() {
 
   await injectMemories(characterName);
   injectRelationshipHistory(characterName);
+  loadAndInjectEpistemicKnowledge(characterName, characterName);
 
   await injectSessionMemories();
   injectSceneHistory();
@@ -1045,6 +1062,7 @@ async function onChatChangedImpl() {
 
   updateLongTermUI(characterName);
   updateRelationshipHistoryUI(characterName);
+  updateEpistemicUI(characterName);
   updateFreshStartUI(freshStart);
   updateSessionUI();
   updateScenesUI();
@@ -1197,6 +1215,7 @@ async function onGroupMemberDrafted(chId) {
 
   await injectMemories(characterName);
   injectRelationshipHistory(characterName);
+  injectEpistemicKnowledge(characterName, characterName);
   await injectSessionMemories();
   injectSceneHistory();
   injectArcs();
@@ -1298,6 +1317,14 @@ async function onGroupWrapperFinished({ type } = {}) {
         updateScenesUI();
         maybeInjectUnified();
         updateTokenDisplay();
+        if (isEpistemicEnabled()) {
+          // Store under the selected character; fall back to first responder this round.
+          const epistemicChar = selectedGroupCharacter || [...roundResponders][0] || null;
+          if (epistemicChar) {
+            await extractEpistemicKnowledge(sceneMessageBuffer, epistemicChar);
+            injectEpistemicKnowledge(epistemicChar, epistemicChar, true);
+          }
+        }
         sceneMessageBuffer = [];
         sceneBufferLastIndex = -1;
         setStatusMessage('Scene break detected.');
@@ -1641,6 +1668,7 @@ async function onGroupWrapperFinished({ type } = {}) {
   if (selectedGroupCharacter) {
     await injectMemories(selectedGroupCharacter);
     injectRelationshipHistory(selectedGroupCharacter);
+    injectEpistemicKnowledge(selectedGroupCharacter, selectedGroupCharacter);
     injectCanon(selectedGroupCharacter);
     injectProfiles(selectedGroupCharacter);
     maybeInjectUnified();

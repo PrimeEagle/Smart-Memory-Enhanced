@@ -43,6 +43,9 @@
  * getReadOnlyStartIndex       - returns the chat index at which read-only mode was last enabled
  * setReadOnlyStartIndex       - stores or clears the read-only window start index (also stores/clears readOnlyStartTime)
  * getReadOnlyStartTime        - returns the Unix ms timestamp at which read-only mode was last enabled
+ *
+ * Internal helpers (not exported):
+ * shouldInjectMemory          - returns 'full' or 'secondhand' based on witnessed_by vs responding character
  */
 
 import {
@@ -97,6 +100,7 @@ import { batchVerify, getEmbeddingBatch, getHardwareProfile } from './embeddings
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { getSceneParticipants } from './scenes.js';
 
 // Maximum new entries accepted per type per extraction pass.
 // Profile B (hosted) uses a higher cap because hosted models extract more
@@ -494,9 +498,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const windowEnd = Math.max(0, chatLen - 2);
     const windowStart = Math.max(0, windowEnd - recentMessages.length + 1);
     const sourceChatId = getCurrentChatId() ?? null;
+    // Derive the characters present in this extraction window so the injection
+    // path can downgrade memories the responding character did not witness.
+    const witnessedBy = getSceneParticipants(recentMessages);
     for (const mem of newMemories) {
       mem.source_messages = [[windowStart, windowEnd]];
       mem.source_chat_id = sourceChatId;
+      mem.witnessed_by = witnessedBy;
     }
 
     const maxMemories = settings.longterm_max_memories || 25;
@@ -903,6 +911,26 @@ export async function consolidateMemories(characterName, force = false) {
  *   Only pass true from the post-extraction path (one real AI response turn). All other callers
  *   (chat load, settings change, etc.) leave telemetry unchanged to avoid inflating the signal.
  */
+/**
+ * Determines how a memory should be handled during injection based on its
+ * witnessed_by field relative to the responding character.
+ *
+ * - 'full'      : inject normally (character was present, or legacy entry with no witness data)
+ * - 'secondhand': character was not present; caller applies secondhand framing or omits
+ *
+ * Legacy entries (witnessed_by empty or absent) are always treated as 'full' so
+ * memories written before this system existed are unaffected.
+ *
+ * @param {Object} memory - Long-term memory entry.
+ * @param {string} respondingChar - Name of the character being injected for.
+ * @returns {'full'|'secondhand'}
+ */
+function shouldInjectMemory(memory, respondingChar) {
+  if (!memory.witnessed_by || memory.witnessed_by.length === 0) return 'full';
+  if (memory.witnessed_by.includes(respondingChar)) return 'full';
+  return 'secondhand';
+}
+
 export async function injectMemories(characterName, updateTelemetry = false) {
   const settings = extension_settings[MODULE_NAME];
 
@@ -1042,9 +1070,23 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   // The [type] format is kept in formatMemoriesForPrompt for the extraction/consolidation
   // pipeline - those prompts need it. The RP model does not, and bracket notation
   // bleeds into story output when the model sees it repeatedly in context.
+  //
+  // Witnessed-by filter: memories the responding character did not witness are
+  // downgraded to secondhand framing (opt-in, default on) or omitted entirely.
+  // Legacy entries with no witnessed_by data are always injected normally.
   const template =
     settings.longterm_template || 'Memories from previous conversations:\n{{memories}}';
-  const memoryText = ordered.map((m) => `- ${m.content}`).join('\n');
+  const memoryLines = [];
+  for (const m of ordered) {
+    const witness = shouldInjectMemory(m, characterName);
+    if (witness === 'full') {
+      memoryLines.push(`- ${m.content}`);
+    } else if (settings.epistemic_secondhand_framing !== false) {
+      memoryLines.push(`- [secondhand] ${m.content}`);
+    }
+    // When epistemic_secondhand_framing is false, non-witnessed memories are omitted.
+  }
+  const memoryText = memoryLines.join('\n');
   const content = template.replace('{{memories}}', memoryText);
 
   setMacroContent(MACRO_NAMES.longterm, content);
