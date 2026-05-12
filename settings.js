@@ -1370,8 +1370,10 @@ export function bindSettingsUI(ctrl) {
       const enabling = $(this).prop('checked');
       if (enabling && getHardwareProfile() === 'a') {
         const confirmed = await callGenericPopup(
-          'Perspectives & Secrets works best with a cloud-based LLM or a strong reasoning-capable local model (e.g. Gemma 4, Qwen3).\n\nWeaker models may produce low-quality extractions. Use the model test in the Configuration section to check whether your model is up to the task.\n\nEnable anyway?',
+          'Perspectives & Secrets works best with a cloud-based LLM or a strong reasoning-capable local model (e.g. Gemma 4, Qwen3).\n\nWeaker models may produce low-quality extractions. Use the model test in the Configuration section to check whether your model is up to the task.',
           POPUP_TYPE.CONFIRM,
+          '',
+          { okButton: 'I understand', cancelButton: 'Cancel' },
         );
         if (!confirmed) {
           $(this).prop('checked', false);
@@ -1439,8 +1441,10 @@ export function bindSettingsUI(ctrl) {
       const enabling = $(this).prop('checked');
       if (enabling && getHardwareProfile() === 'a') {
         const confirmed = await callGenericPopup(
-          'State Ledger works best with a cloud-based LLM or a strong reasoning-capable local model (e.g. Gemma 4, Qwen3).\n\nWeaker models may pad unknown fields with placeholder values rather than omitting them, producing noisy output. Use the model test in the Configuration section to check whether your model is up to the task.\n\nEnable anyway?',
+          'State Ledger works best with a cloud-based LLM or a strong reasoning-capable local model (e.g. Gemma 4, Qwen3).\n\nWeaker models may pad unknown fields with placeholder values rather than omitting them, producing noisy output. Use the model test in the Configuration section to check whether your model is up to the task.',
           POPUP_TYPE.CONFIRM,
+          '',
+          { okButton: 'I understand', cancelButton: 'Cancel' },
         );
         if (!confirmed) {
           $(this).prop('checked', false);
