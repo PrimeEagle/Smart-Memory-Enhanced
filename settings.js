@@ -838,6 +838,13 @@ export function bindSettingsUI(ctrl) {
     const $btn = $(this);
     const $result = $('#sm_model_test_result');
 
+    const resetBtn = () =>
+      $btn
+        .prop('disabled', false)
+        .html(
+          '<i class="fa-solid fa-flask"></i> <span>Test Extraction Model <span class="sm-info" data-tooltip="Runs a fixed test scenario through all extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session.">ⓘ</span></span>',
+        );
+
     // If a test is already running, cancel it and give immediate feedback.
     if (modelTestRunning) {
       modelTestRunning = false;
@@ -845,6 +852,11 @@ export function bindSettingsUI(ctrl) {
       $btn
         .prop('disabled', true)
         .html('<i class="fa-solid fa-spinner fa-spin"></i> <span>Cancelling...</span>');
+      $result
+        .show()
+        .html(
+          '<div class="sm_model_test_running"><i class="fa-solid fa-spinner fa-spin"></i> Cancelling extraction test...</div>',
+        );
       return;
     }
 
@@ -865,16 +877,12 @@ export function bindSettingsUI(ctrl) {
         '<div class="sm_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> Test failed with an error. Check the browser console for details.</div>',
       );
       modelTestRunning = false;
-      $btn.html(
-        '<i class="fa-solid fa-flask"></i> <span>Test Extraction Model <span class="sm-info" data-tooltip="Runs a fixed test scenario through all extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session.">ⓘ</span></span>',
-      );
+      resetBtn();
       return;
     }
 
     modelTestRunning = false;
-    $btn.html(
-      '<i class="fa-solid fa-flask"></i> <span>Test Extraction Model <span class="sm-info" data-tooltip="Runs a fixed test scenario through all extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session.">ⓘ</span></span>',
-    );
+    resetBtn();
 
     if (outcome.cancelled) {
       $result.html(
