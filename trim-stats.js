@@ -69,12 +69,19 @@ export function clearTierTrimStats() {
   for (const k of Object.keys(_stats)) delete _stats[k];
 }
 
+// Tiers excluded from the trim warning toast. Short-term is excluded because
+// the compaction summary self-corrects on the next compaction pass anyway -
+// transient overshoot is normal and not actionable by the user.
+const TOAST_EXEMPT_KEYS = new Set(['smart_memory_short']);
+
 /**
- * Returns true if at least one tier has reported trimmed content this chat.
+ * Returns true if at least one non-exempt tier has reported trimmed content
+ * this chat. Short-term is excluded since it self-corrects on the next
+ * compaction pass.
  * @returns {boolean}
  */
 export function hasAnyTrimmedTier() {
-  return Object.values(_stats).some((s) => s.full > s.injected);
+  return Object.entries(_stats).some(([k, s]) => !TOAST_EXEMPT_KEYS.has(k) && s.full > s.injected);
 }
 
 /** Records that the one-time trim notification has been shown for this chat. */
