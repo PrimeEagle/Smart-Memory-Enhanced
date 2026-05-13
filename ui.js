@@ -155,30 +155,46 @@ function getSelectedCharacterName() {
 
 // ---- Constants -----------------------------------------------------------
 
+// Tier colours use OKLCH for perceptual uniformity: 10 hues at 36-degree
+// intervals (360/10) with fixed lightness and chroma give maximum perceptual
+// separation regardless of the display. oklch(62% 0.14 H).
+const TIER_COLORS = {
+  relationships: 'oklch(62% 0.14 0)',
+  scenes: 'oklch(62% 0.14 36)',
+  state: 'oklch(62% 0.14 72)',
+  epistemic: 'oklch(62% 0.14 108)',
+  shortterm: 'oklch(62% 0.14 144)',
+  profiles: 'oklch(62% 0.14 180)',
+  canon: 'oklch(62% 0.14 216)',
+  longterm: 'oklch(62% 0.14 252)',
+  session: 'oklch(62% 0.14 288)',
+  arcs: 'oklch(62% 0.14 324)',
+};
+
 /**
  * Metadata for each injection tier used by the token usage display.
  * Order determines the visual stacking order in the bar chart.
  */
 export const TOKEN_TIERS = [
-  { key: PROMPT_KEY_LONG, label: 'Long-term', color: '#4a6fa5' },
-  { key: PROMPT_KEY_SESSION, label: 'Session', color: '#8e5a8e' },
-  { key: PROMPT_KEY_SHORT, label: 'Short-term', color: '#5a8e5a' },
-  { key: PROMPT_KEY_CANON, label: 'Canon', color: '#a05870' },
-  { key: PROMPT_KEY_SCENES, label: 'Scenes', color: '#a07840' },
-  { key: PROMPT_KEY_ARCS, label: 'Arcs', color: '#7a6ea5' },
-  { key: PROMPT_KEY_PROFILES, label: 'Profiles', color: '#5a9ea0' },
-  { key: PROMPT_KEY_RELATIONSHIPS, label: 'Relationships', color: '#c87941' },
-  { key: PROMPT_KEY_EPISTEMIC, label: 'Perspectives', color: '#7a8c5a' },
-  { key: PROMPT_KEY_STATE_LEDGER, label: 'State', color: '#7a6a8a' },
+  { key: PROMPT_KEY_LONG, label: 'Long-term', color: TIER_COLORS.longterm },
+  { key: PROMPT_KEY_SESSION, label: 'Session', color: TIER_COLORS.session },
+  { key: PROMPT_KEY_SHORT, label: 'Short-term', color: TIER_COLORS.shortterm },
+  { key: PROMPT_KEY_CANON, label: 'Canon', color: TIER_COLORS.canon },
+  { key: PROMPT_KEY_SCENES, label: 'Scenes', color: TIER_COLORS.scenes },
+  { key: PROMPT_KEY_ARCS, label: 'Arcs', color: TIER_COLORS.arcs },
+  { key: PROMPT_KEY_PROFILES, label: 'Profiles', color: TIER_COLORS.profiles },
+  { key: PROMPT_KEY_RELATIONSHIPS, label: 'Relationships', color: TIER_COLORS.relationships },
+  { key: PROMPT_KEY_EPISTEMIC, label: 'Perspectives', color: TIER_COLORS.epistemic },
+  { key: PROMPT_KEY_STATE_LEDGER, label: 'State', color: TIER_COLORS.state },
 ];
 
 // Personal tiers shown in per-character group rows. Shared tiers (session,
 // scenes, arcs, short-term) are omitted - they are identical across all group
 // members and already represented in the top bar.
 export const PERSONAL_TIERS = [
-  { key: 'longterm', label: 'Long-term', color: '#4a6fa5' },
-  { key: 'canon', label: 'Canon', color: '#a05870' },
-  { key: 'profiles', label: 'Profiles', color: '#5a9ea0' },
+  { key: 'longterm', label: 'Long-term', color: TIER_COLORS.longterm },
+  { key: 'canon', label: 'Canon', color: TIER_COLORS.canon },
+  { key: 'profiles', label: 'Profiles', color: TIER_COLORS.profiles },
 ];
 
 // ---- Display functions ---------------------------------------------------
