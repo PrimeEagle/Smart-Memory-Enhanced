@@ -522,14 +522,16 @@ export function autoTuneBudgets(characterName) {
       const headroomScale = totalHeadroom > 0 ? surplus / totalHeadroom : 0;
       for (const t of targets) {
         const headroom = Math.max(0, t.budget - t.minimum);
-        t.budget = snap(t.minimum + headroom * headroomScale);
+        // Round up to ensure we never snap below the tier's actual demand.
+        t.budget = Math.max(snap(t.minimum), snap(t.minimum + headroom * headroomScale));
       }
     } else {
       // Even bare minimums exceed the cap - scale everything down proportionally.
-      // The total budget slider is the user's safety valve here.
+      // Round up rather than to nearest so we never go below the proportional share.
+      const snapUp = (v) => Math.max(AUTO_TUNE_FLOOR, Math.ceil(v / 50) * 50);
       const scale = totalCap / totalMinimum;
       for (const t of targets) {
-        t.budget = snap(t.minimum * scale);
+        t.budget = snapUp(t.minimum * scale);
       }
     }
   }
