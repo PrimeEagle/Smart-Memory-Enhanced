@@ -371,6 +371,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chat, so it is visible to users who do not regularly open the settings panel
   without becoming intrusive.
 
+- **Auto-tune budget allocation (experimental)**: an opt-in toggle in Developer
+  settings automatically redistributes the per-tier token budget after each
+  extraction pass based on observed demand. Tiers using less than their budget give
+  the surplus to tiers that are trimming content. The configured total budget acts
+  as a hard cap - auto-tune never increases total memory usage beyond what the
+  slider allows. Sliders update live so the reallocation is visible. Disabled by
+  default so manually tuned advanced budgets are not overwritten. Note: the system
+  does not account for the rest of the context window (character card, chat
+  messages, system prompt) - the total budget slider remains the user's safety
+  valve against crowding out actual roleplay.
+
 ## [1.6.11] - 2026-05-10
 
 ### Added
