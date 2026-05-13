@@ -1785,13 +1785,36 @@ export function updateEpistemicUI(characterName) {
 
   for (const entry of open) appendEntryRow(entry, $list);
 
-  if (secret.length > 0) {
-    const $details = $('<details class="sm_epistemic_spoiler">');
-    const $summary = $(
-      '<summary class="sm_epistemic_spoiler_summary">Spoiler - false beliefs and hidden secrets</summary>',
+  // Always render the spoiler block so the user knows it exists and can tell
+  // whether any believes/hiding entries were extracted.
+  const $details = $('<details class="sm_epistemic_spoiler">');
+  const $summary = $(
+    '<summary class="sm_epistemic_spoiler_summary">Spoiler - false beliefs and hidden secrets</summary>',
+  );
+
+  // Intercept the open action to warn before revealing spoiler content.
+  $summary.on('click', (e) => {
+    if (!$details.prop('open')) {
+      e.preventDefault();
+      if (
+        confirm(
+          'This will reveal hidden character secrets - false beliefs and things the character is concealing.\n\nOpen spoiler?',
+        )
+      ) {
+        $details.prop('open', true);
+      }
+    }
+  });
+
+  $details.append($summary);
+
+  if (secret.length === 0) {
+    $details.append(
+      '<div class="sm_no_char" style="padding: 4px 0;">No false beliefs or hidden secrets found.</div>',
     );
-    $details.append($summary);
+  } else {
     for (const entry of secret) appendEntryRow(entry, $details);
-    $list.append($details);
   }
+
+  $list.append($details);
 }
