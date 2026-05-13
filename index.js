@@ -159,7 +159,7 @@ import {
   initTooltips,
   initTypePickers,
 } from './ui.js';
-import { defaultSettings, loadSettings, bindSettingsUI } from './settings.js';
+import { defaultSettings, loadSettings, bindSettingsUI, autoTuneBudgets } from './settings.js';
 import { clearTierTrimStats, resetTrimToastFlag, markChatLoadComplete } from './trim-stats.js';
 
 // ---- Module-level state -------------------------------------------------
@@ -798,6 +798,7 @@ async function onCharacterMessageRendered() {
         updateEntityPanel(characterName);
         maybeInjectUnified();
         updateTokenDisplay();
+        autoTuneBudgets(characterName);
         setStatusMessage(
           total > 0 ? `${total} item${total === 1 ? '' : 's'} stored for ${characterName}.` : '',
         );
@@ -1602,6 +1603,7 @@ async function onGroupWrapperFinished({ type } = {}) {
           updateSessionUI();
 
           setStatusMessage(total > 0 ? `${total} item${total === 1 ? '' : 's'} stored.` : '');
+          autoTuneBudgets(selectedGroupCharacter);
 
           const lastMsgGroup = context.chat[context.chat.length - 1];
           const newCutoffGroup =

@@ -41,8 +41,15 @@ import {
   estimateTokens,
   MODULE_NAME,
   META_KEY,
+  PROMPT_KEY_LONG,
+  PROMPT_KEY_SESSION,
+  PROMPT_KEY_SCENES,
+  PROMPT_KEY_ARCS,
   PROMPT_KEY_PROFILES,
   PROMPT_KEY_CANON,
+  PROMPT_KEY_RELATIONSHIPS,
+  PROMPT_KEY_EPISTEMIC,
+  PROMPT_KEY_STATE_LEDGER,
   generateMemoryId,
 } from './constants.js';
 import { memory_sources, fetchOllamaModels } from './generate.js';
@@ -108,6 +115,7 @@ import {
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
+import { getTierTrimStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
 import {
   setStatusMessage,
@@ -279,6 +287,12 @@ export const defaultSettings = {
   // 'b': force Profile B (hosted/high-performance behaviour)
   hardware_profile: 'auto',
 
+  // Automatically reallocate the per-tier token budget after each extraction pass,
+  // based on actual observed demand. Tiers with unused headroom give it to tiers
+  // that are trimming content. The configured total budget is treated as a hard cap.
+  // Off by default so manually tuned advanced budgets are not overwritten.
+  auto_tune_budgets: false,
+
   // Show a non-blocking activity indicator while background extraction is running.
   // Gives users a visible signal that Smart Memory is working so they know not
   // to send a new message until it finishes.
@@ -388,6 +402,139 @@ function reinjectAfterBudgetChange(characterName) {
   injectStateLedger();
   maybeInjectUnified();
   updateTokenDisplay();
+}
+
+// Minimum budget any tier will be reduced to during auto-tune, and the headroom
+// multiplier applied above actual demand so the next message doesn't immediately
+// hit the limit again.
+const AUTO_TUNE_FLOOR = 50;
+const AUTO_TUNE_HEADROOM = 1.15;
+
+// Maps each tunable tier to its settings key and DOM element IDs.
+// Short-term is excluded - it self-corrects via regeneration rather than budget tuning.
+const TUNABLE_TIERS = [
+  {
+    promptKey: PROMPT_KEY_LONG,
+    setting: 'longterm_inject_budget',
+    slider: 'sm_longterm_inject_budget',
+    display: 'sm_longterm_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_SESSION,
+    setting: 'session_inject_budget',
+    slider: 'sm_session_inject_budget',
+    display: 'sm_session_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_CANON,
+    setting: 'canon_inject_budget',
+    slider: 'sm_canon_inject_budget',
+    display: 'sm_canon_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_SCENES,
+    setting: 'scene_inject_budget',
+    slider: 'sm_scene_inject_budget',
+    display: 'sm_scene_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_ARCS,
+    setting: 'arcs_inject_budget',
+    slider: 'sm_arcs_inject_budget',
+    display: 'sm_arcs_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_PROFILES,
+    setting: 'profiles_inject_budget',
+    slider: 'sm_profiles_inject_budget',
+    display: 'sm_profiles_inject_budget_value',
+    fmt: (v) => `${v} tokens`,
+  },
+  {
+    promptKey: PROMPT_KEY_RELATIONSHIPS,
+    setting: 'relationships_inject_budget',
+    slider: 'sm_relationships_inject_budget',
+    display: 'sm_relationships_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_EPISTEMIC,
+    setting: 'epistemic_inject_budget',
+    slider: 'sm_epistemic_inject_budget',
+    display: 'sm_epistemic_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+  {
+    promptKey: PROMPT_KEY_STATE_LEDGER,
+    setting: 'state_ledger_inject_budget',
+    slider: 'sm_state_ledger_inject_budget',
+    display: 'sm_state_ledger_inject_budget_value',
+    fmt: (v) => String(v),
+  },
+];
+
+/**
+ * Redistributes the per-tier token budget based on observed demand.
+ * Tiers reporting unused headroom give it to tiers that are trimming.
+ * The sum of all tier budgets never exceeds the current configured total.
+ *
+ * Only runs when `auto_tune_budgets` is enabled. Safe to call after every
+ * extraction pass - does nothing if no trim stats have been recorded yet
+ * or if no tier's demand has changed enough to warrant an update.
+ *
+ * @param {string|null} characterName - Active character (or group selection).
+ */
+export function autoTuneBudgets(characterName) {
+  const s = extension_settings[MODULE_NAME];
+  if (!s.auto_tune_budgets) return;
+
+  const snap = (v) => Math.max(AUTO_TUNE_FLOOR, Math.round(v / 50) * 50);
+  const totalCap = totalBudgetFromSettings(s);
+
+  // Compute target budget for each tier from its actual demand.
+  // Tiers with no recorded stats (disabled or never injected) keep their
+  // current budget so they are not silently shrunk to the floor.
+  const targets = TUNABLE_TIERS.map((tier) => {
+    const stats = getTierTrimStats(tier.promptKey);
+    if (!stats || stats.full === 0) {
+      return { tier, budget: s[tier.setting] };
+    }
+    return { tier, budget: snap(stats.full * AUTO_TUNE_HEADROOM) };
+  });
+
+  const totalTarget = targets.reduce((sum, t) => sum + t.budget, 0);
+
+  if (totalTarget > totalCap) {
+    // Over the cap: scale all targets down proportionally, respecting the floor.
+    const scale = totalCap / totalTarget;
+    for (const t of targets) {
+      t.budget = snap(t.budget * scale);
+    }
+  }
+  // Under the cap: targets already sum to less than totalCap - no surplus
+  // redistribution needed. Unused budget just means less total injection,
+  // which is correct when tiers have little to say.
+
+  // Apply any changes and update DOM sliders.
+  let changed = false;
+  for (const { tier, budget } of targets) {
+    if (s[tier.setting] !== budget) {
+      s[tier.setting] = budget;
+      $(`#${tier.slider}`).val(budget);
+      $(`#${tier.display}`).text(tier.fmt(budget));
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveSettingsDebounced();
+    reinjectAfterBudgetChange(characterName);
+  }
 }
 
 /**
@@ -2859,6 +3006,13 @@ export function bindSettingsUI(ctrl) {
     .prop('checked', s.verbose_logging)
     .on('change', function () {
       extension_settings[MODULE_NAME].verbose_logging = $(this).prop('checked');
+      saveSettingsDebounced();
+    });
+
+  $('#sm_auto_tune_budgets')
+    .prop('checked', s.auto_tune_budgets ?? false)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].auto_tune_budgets = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
