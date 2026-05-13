@@ -396,6 +396,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clearly distinct from the bar slices. Type-picker hover states lighten to
   `oklch(70% 0.10)` within the same hue. The force graph uses the same 8 badge
   colors for memory nodes so the graph and the settings panel stay in sync.
+  Because all hues share the same lightness and chroma they read as a cohesive
+  family rather than a collection of unrelated colors.
 
 ## [1.6.11] - 2026-05-10
 
