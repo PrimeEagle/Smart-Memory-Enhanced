@@ -112,6 +112,10 @@ The five tags map to distinct epistemic states:
 
 The **Perspectives & Secrets** section in the settings panel shows all extracted entries for the current character. You can add entries manually, edit existing ones, and delete entries that are no longer relevant. The section is collapsed by default on Profile A hardware (local/low-VRAM) where extraction requires a reasoning-capable model - an override toggle in the section enables it when the hardware can handle it.
 
+**Believes** and **Hiding** entries are kept behind a spoiler block at the bottom of the list. It is collapsed by default and requires confirming a warning before it opens, so you do not accidentally reveal secrets that would spoil a mystery scenario. The block is always visible even when empty so you can tell at a glance whether any spoiler-type entries were extracted.
+
+When the entry list grows beyond the injection budget, Smart Memory will ask whether to increase the budget for this roleplay. In normal play the budget grows in 100-token increments per confirmation; after **Memorize Chat** a single dialog sets the exact size needed plus 100 tokens of headroom. The increase applies only to the current chat and does not change the settings slider.
+
 Long-term memories also benefit: memories extracted from a scene the responding character was not present for are labelled `[secondhand]` in their injection, so the AI knows the character learned this through hearsay rather than direct experience. This can be turned off to omit non-witnessed memories entirely.
 
 ### State Ledger
@@ -147,7 +151,7 @@ The rolling summary sits alongside canon if you have it enabled - both can be ac
 
 ### Scene Detection and History
 
-Smart Memory watches for scene transitions - time skips, location changes, those little `---` dividers between scenes. When one is detected, a short summary of the completed scene is saved. The last few scene summaries are kept in context so the AI always knows where the story has been, not just where it is.
+Smart Memory watches for scene transitions - time skips, location changes, those little `---` dividers between scenes, and intimate partner changes. When one is detected, a short summary of the completed scene is saved. The last few scene summaries are kept in context so the AI always knows where the story has been, not just where it is.
 
 ### Story Arcs - Open Threads
 
@@ -279,7 +283,7 @@ To build long-term memories from multiple older chats, open each one and run Mem
 
 ### Forget This Chat
 
-Clears all Smart Memory context for the current chat - summary, session memories, scene history, story arcs, profiles, and the session entity list. Long-term memories and the persistent entity registry are not touched. Useful before a Memorize Chat run to re-derive everything cleanly from scratch.
+Clears all chat-scoped context - summary, session memories, scene history, story arcs, profiles, and the session entity list. The following are not cleared and carry forward unchanged: long-term memories, relationship history, state cards, canon, pinned arcs, and the persistent entity registry. Useful before a Memorize Chat run to re-derive everything cleanly from scratch.
 
 ### Fresh Start
 

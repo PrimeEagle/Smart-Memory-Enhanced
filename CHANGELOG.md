@@ -117,6 +117,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolve within the conversation, giving a clearer pass/fail baseline for
   the arc tier.
 
+- **AI scene break detection accuracy**: truncation limits in the detection
+  prompt were cutting off transition signals before the model could read them
+  (600/800 character limits). Limits raised to 1000/1200 characters and the
+  YES criteria softened to detect location changes that do not include explicit
+  landmark language. This resolves cases where catch-up found only 1-2 scenes
+  in a long roleplay that had many transitions.
+
+- **Heuristic scene break patterns expanded**: added sleep/fall-asleep patterns,
+  relaxed wake-up detection (no longer requires dawn markers), movement verbs
+  leading to a new location, and extended location-arrival patterns for multi-word
+  place names and possessives. The heuristic is now more likely to catch natural
+  RP transitions during catch-up when AI detection is off.
+
+- **Epistemic extraction on final scene buffer**: the catch-up handler previously
+  only ran epistemic extraction on detected scene breaks mid-history. The final
+  scene buffer (messages after the last detected break) was never processed.
+  Epistemic extraction now always runs on the final buffer before catch-up
+  completes.
+
+- **State Ledger preserved on Forget This Chat**: state cards are no longer
+  cleared by **Forget This Chat**. State cards accumulate knowledge from
+  long-term memories across multiple sessions; clearing them on a chat reset
+  would permanently discard facts that cannot be reconstructed from the current
+  chat alone. The button tooltip and confirmation text now correctly list all
+  data that survives: long-term memories, relationship history, state cards,
+  canon, and pinned arcs.
+
 ### Added
 
 - **Macro injection**: all 9 Smart Memory macros can be placed anywhere in a
@@ -296,6 +323,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placement-controlled injection. The extraction model test now includes a dungeon
   scene designed to exercise current-vs-past state, sparse output, and multiple
   entity types.
+
+- **Catch-up runs Epistemic and State Ledger**: the catch-up handler now runs
+  Perspectives & Secrets and State Ledger extraction alongside all other tiers.
+  Epistemic extraction fires at each detected scene break and once more on the
+  final scene buffer so knowledge from the last scene is never lost. State Ledger
+  extraction runs after each chunk. Both tiers are gated by their feature flags
+  and by `isFreshStart` so they are skipped when the chat has no prior context.
+
+- **AI scene break detection in catch-up**: when **Use AI detection** is enabled
+  for scenes, catch-up now uses `detectSceneBreakAI` instead of the heuristic.
+  A progress counter (`Detecting scene breaks... (n/total)`) updates the status
+  line on every AI message so long catch-up runs stay visible.
+
+- **Partner change as a scene break trigger**: the AI scene detection prompt now
+  recognises a change in intimate partner as a new-scene signal. Two separate
+  encounters with different people in the same location were previously treated
+  as one continuous scene; they are now split at the point where a previous
+  partner has left and a new one arrived.
+
+- **Perspectives & Secrets spoiler wall**: `believes` (false beliefs) and
+  `hiding` (active concealments) entries are now grouped behind a collapsible
+  spoiler block at the bottom of the entry list. The block is always rendered so
+  the user can tell whether any spoiler-type entries exist - when empty it shows
+  "No false beliefs or hidden secrets found." Opening it requires confirming a
+  warning dialog to prevent accidental reveals in mystery or secret-role
+  scenarios. The summary uses a lock/unlock icon and amber styling to distinguish
+  it from the regular list, and swaps to "click to hide" when open.
+
+- **Per-chat Perspectives & Secrets budget auto-grow**: when the knowledge block
+  exceeds the current injection budget, a dialog offers to increase the budget
+  for this roleplay. In normal flow the budget grows by 100 tokens per
+  confirmation; after catch-up a single dialog sets the exact size needed plus
+  100 tokens of headroom so the next scene break does not immediately overflow
+  again. The override is stored per-chat in `chatMetadata` and does not change
+  the settings slider.
 
 ## [1.6.11] - 2026-05-10
 
