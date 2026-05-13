@@ -244,24 +244,37 @@ The trade-off specific to Gemma 4 is speed: the thinking block adds time before 
 
 ### Testing your model
 
-The **Test Extraction Model** button (in the **Configuration** section, below the hardware profile) runs a fixed 30-message roleplay scenario through all extraction tiers using the model you currently have configured - including tiers you have not yet enabled. This lets you verify a new model before committing to it, without waiting for a real roleplay to produce extraction output.
+The **Test Extraction Model** button (in the **Configuration** section, below the hardware profile) runs the extraction pipeline against three fixed roleplay scenarios and shows you the model's raw output for each tier. All five tiers always run regardless of which are enabled in your settings - you can evaluate the full pipeline before committing to a configuration.
 
-The test is safe to run mid-roleplay - it uses its own private scenario and never writes anything to your session, chat history, or stored memories.
+The test is safe to run mid-roleplay - it uses its own private scenarios and never writes anything to your session, chat history, or stored memories.
 
 **What the test does:**
 
-- Sends the same scenario through all tiers (long-term memories, session memories, story arcs, Perspectives & Secrets, State Ledger) in sequence
+- Runs long-term memories, session memories, and story arcs through a 30-message fantasy investigation scenario
+- Runs Perspectives & Secrets through a separate village healer scenario designed to exercise all five epistemic tag types
+- Runs State Ledger through a separate dungeon heist scenario with a small set of known entities
 - Displays results one tier at a time with **Previous** and **Next** buttons to step through them
-- Each tier shows the model's raw output in a text area so you can judge the quality yourself, alongside a hint describing what a capable model should produce
-- If any tier returns empty output the test stops immediately and reports which tier failed - a model that produces nothing on a rich scenario is not suitable for Smart Memory
+- Each tier shows the model's raw output in a text area alongside a hint describing what a capable model should produce
+- If any tier returns empty output the test stops immediately and reports which tier failed
 
 **What to look for:**
 
-The test scenario is a 30-message fantasy investigation scene with multiple named characters, key revelations, explicit promises, and open threads. A capable model should produce:
+**Long-term memories, session memories, story arcs** (investigation scenario - multiple named characters, key revelations, explicit promises, and open threads):
 
 - **Long-term memories**: 5 or more items covering character facts, relationships, and significant events
 - **Session memories**: 4 or more items covering scene details, revelations, and developments
-- **Story arcs**: 3 items identifying unresolved threads (promises made, goals set, mysteries introduced)
+- **Story arcs**: 3-4 items identifying unresolved threads - not events that already happened
+
+**Perspectives & Secrets** (village healer scenario - four characters, secondhand knowledge, a hidden secret):
+
+- Should produce entries across most or all five tag types: `[knows]`, `[suspects]`, `[believes]`, `[unaware]`, `[hiding]`
+- A model that confuses `[knows]` with `[hiding]`, or misses all entries of a tag type entirely, may not be suitable for this tier
+
+**State Ledger** (dungeon heist scenario - small cast with observable physical state):
+
+- Should extract current physical state for the named entities that have observable state
+- Characters mentioned but with no observable state should produce no entry
+- Any field value of "unknown", "none", or a placeholder means the model is padding rather than omitting unknowns - unsuitable for state extraction
 
 You are the judge. The hint on each tier tells you what to expect; the raw output tells you what the model actually did. Look for structured tagged lines (`[fact]`, `[scene]`, `[arc]`, etc.) with meaningful content. Vague items or repeated paraphrases of the same fact are signs of a weaker model; completely empty output means the model is not suitable.
 
