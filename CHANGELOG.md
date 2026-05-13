@@ -136,6 +136,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Epistemic extraction now always runs on the final buffer before catch-up
   completes.
 
+- **Relationship History missing from token usage bar after catch-up**: relationship
+  history was extracted per chunk during catch-up but never re-injected, so the
+  token bar showed no slice for it even when pairs were stored. It is now re-injected
+  after each chunk update and in the final reinject when catch-up completes.
+
 - **State Ledger preserved on Forget This Chat**: state cards are no longer
   cleared by **Forget This Chat**. State cards accumulate knowledge from
   long-term memories across multiple sessions; clearing them on a chat reset
