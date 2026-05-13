@@ -682,7 +682,7 @@
   gap: 6px;
   padding: 4px 8px;
   background: var(--greyCAl, rgba(255, 255, 255, 0.05));
-  border-left: 3px solid #7a6ea5;
+  border-left: 3px solid oklch(62% 0.14 324);
   border-radius: 0 4px 4px 0;
   font-size: 0.875em;
 }
@@ -772,7 +772,7 @@
 #smart_memory_settings .sm_scene_item {
   padding: 4px 8px;
   background: var(--greyCAl, rgba(255, 255, 255, 0.05));
-  border-left: 3px solid #5a8e7a;
+  border-left: 3px solid oklch(62% 0.14 36);
   border-radius: 0 4px 4px 0;
   font-size: 0.875em;
   line-height: 1.4;
