@@ -2378,6 +2378,9 @@ export function bindSettingsUI(ctrl) {
         if (settings.arcs_enabled) {
           injectArcs();
         }
+        if (settings.relationships_enabled) {
+          injectRelationshipHistory(characterName);
+        }
 
         // Update progress and token display after each chunk so the user can
         // see memories accumulating in real time rather than only at the end.
@@ -2554,6 +2557,7 @@ export function bindSettingsUI(ctrl) {
       // Re-inject and refresh UI for everything processed so far, whether the
       // run completed or was cancelled partway through.
       await injectMemories(characterName);
+      injectRelationshipHistory(characterName);
       injectSessionMemories();
       injectSceneHistory();
       injectArcs();
