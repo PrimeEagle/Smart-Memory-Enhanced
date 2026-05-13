@@ -2291,6 +2291,12 @@ export function bindSettingsUI(ctrl) {
               sceneHistory.push({ summary: sceneSummary, ts: Date.now(), source_memory_ids: [] });
               if (sceneHistory.length > max) sceneHistory.splice(0, sceneHistory.length - max);
             }
+            if (isEpistemicEnabled() && !isFreshStart()) {
+              setStatusMessage('Extracting epistemic knowledge from final scene...');
+              await extractEpistemicKnowledge(sceneBuffer, characterName).catch((err) => {
+                console.error('[SmartMemory] Catch-up epistemic extraction error (final):', err);
+              });
+            }
           }
 
           await saveSceneHistory(sceneHistory).catch((err) => {
