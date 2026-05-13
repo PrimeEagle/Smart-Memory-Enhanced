@@ -387,6 +387,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   messages, system prompt) - the total budget slider remains the user's safety
   valve against crowding out actual roleplay.
 
+- **OKLCH perceptually uniform colors throughout**: all colored UI elements -
+  token bar tier slices, memory type badges, row tint backgrounds, the type-picker
+  widget, and the force graph memory node colors - now use the OKLCH color space
+  for perceptually uniform hue separation. Token bar tiers use 10 hues at 36-degree
+  intervals at `oklch(62% 0.14)`. Memory type badges (long-term and session) use
+  8 hues at 45-degree intervals at `oklch(57% 0.10)` - lower chroma so they read as
+  clearly distinct from the bar slices. Type-picker hover states lighten to
+  `oklch(70% 0.10)` within the same hue. The force graph uses the same 8 badge
+  colors for memory nodes so the graph and the settings panel stay in sync.
+
 ## [1.6.11] - 2026-05-10
 
 ### Added

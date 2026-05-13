@@ -323,28 +323,28 @@
 
 /* Per-type tinted backgrounds - match the badge hue at low opacity. */
 #smart_memory_settings .sm_memory_item:has(.sm_type_fact) {
-  background: rgba(74, 111, 165, 0.13);
+  background: oklch(57% 0.10 252 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_relationship) {
-  background: rgba(142, 90, 142, 0.13);
+  background: oklch(57% 0.10 0 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_preference) {
-  background: rgba(90, 142, 90, 0.13);
+  background: oklch(57% 0.10 144 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_event) {
-  background: rgba(142, 110, 58, 0.13);
+  background: oklch(57% 0.10 36 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_scene) {
-  background: rgba(90, 142, 122, 0.13);
+  background: oklch(57% 0.10 180 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_revelation) {
-  background: rgba(142, 90, 90, 0.13);
+  background: oklch(57% 0.10 324 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_development) {
-  background: rgba(122, 122, 58, 0.13);
+  background: oklch(57% 0.10 108 / 0.13);
 }
 #smart_memory_settings .sm_memory_item:has(.sm_type_detail) {
-  background: rgba(58, 122, 142, 0.13);
+  background: oklch(57% 0.10 216 / 0.13);
 }
 
 #smart_memory_settings .sm_memory_type {
@@ -401,30 +401,30 @@
 }
 
 #smart_memory_settings .sm_type_fact {
-  background: #4a6fa5;
+  background: oklch(57% 0.10 252);
 }
 #smart_memory_settings .sm_type_relationship {
-  background: #8e5a8e;
+  background: oklch(57% 0.10 0);
 }
 #smart_memory_settings .sm_type_preference {
-  background: #5a8e5a;
+  background: oklch(57% 0.10 144);
 }
 #smart_memory_settings .sm_type_event {
-  background: #8e6e3a;
+  background: oklch(57% 0.10 36);
 }
 
 /* Session memory type badges */
 #smart_memory_settings .sm_type_scene {
-  background: #5a8e7a;
+  background: oklch(57% 0.10 180);
 }
 #smart_memory_settings .sm_type_revelation {
-  background: #8e5a5a;
+  background: oklch(57% 0.10 324);
 }
 #smart_memory_settings .sm_type_development {
-  background: #7a7a3a;
+  background: oklch(57% 0.10 108);
 }
 #smart_memory_settings .sm_type_detail {
-  background: #3a7a8e;
+  background: oklch(57% 0.10 216);
 }
 
 #smart_memory_settings .sm_memory_text {
@@ -588,66 +588,66 @@
 /* Closed-state and open-list colors per type. */
 #smart_memory_settings .sm-type-picker-current[data-value='fact'],
 #smart_memory_settings .sm-type-option[data-value='fact'] {
-  background: #4a6fa5;
+  background: oklch(57% 0.10 252);
 }
 #smart_memory_settings .sm-type-option[data-value='fact']:hover {
-  background: #6b8fc0;
+  background: oklch(70% 0.10 252);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='relationship'],
 #smart_memory_settings .sm-type-option[data-value='relationship'] {
-  background: #8e5a8e;
+  background: oklch(57% 0.10 0);
 }
 #smart_memory_settings .sm-type-option[data-value='relationship']:hover {
-  background: #aa78aa;
+  background: oklch(70% 0.10 0);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='preference'],
 #smart_memory_settings .sm-type-option[data-value='preference'] {
-  background: #5a8e5a;
+  background: oklch(57% 0.10 144);
 }
 #smart_memory_settings .sm-type-option[data-value='preference']:hover {
-  background: #78aa78;
+  background: oklch(70% 0.10 144);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='event'],
 #smart_memory_settings .sm-type-option[data-value='event'] {
-  background: #8e6e3a;
+  background: oklch(57% 0.10 36);
 }
 #smart_memory_settings .sm-type-option[data-value='event']:hover {
-  background: #aa8e58;
+  background: oklch(70% 0.10 36);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='scene'],
 #smart_memory_settings .sm-type-option[data-value='scene'] {
-  background: #5a8e7a;
+  background: oklch(57% 0.10 180);
 }
 #smart_memory_settings .sm-type-option[data-value='scene']:hover {
-  background: #78aaaa;
+  background: oklch(70% 0.10 180);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='revelation'],
 #smart_memory_settings .sm-type-option[data-value='revelation'] {
-  background: #8e5a5a;
+  background: oklch(57% 0.10 324);
 }
 #smart_memory_settings .sm-type-option[data-value='revelation']:hover {
-  background: #aa7878;
+  background: oklch(70% 0.10 324);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='development'],
 #smart_memory_settings .sm-type-option[data-value='development'] {
-  background: #7a7a3a;
+  background: oklch(57% 0.10 108);
 }
 #smart_memory_settings .sm-type-option[data-value='development']:hover {
-  background: #9a9a58;
+  background: oklch(70% 0.10 108);
 }
 
 #smart_memory_settings .sm-type-picker-current[data-value='detail'],
 #smart_memory_settings .sm-type-option[data-value='detail'] {
-  background: #3a7a8e;
+  background: oklch(57% 0.10 216);
 }
 #smart_memory_settings .sm-type-option[data-value='detail']:hover {
-  background: #589aaa;
+  background: oklch(70% 0.10 216);
 }
 
 #smart_memory_settings .sm_add_memory_input {
