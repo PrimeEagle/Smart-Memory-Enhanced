@@ -2398,6 +2398,7 @@ export function bindSettingsUI(ctrl) {
     await clearArcSummaries();
     await clearProfiles();
     await clearStateLedger();
+    clearEpistemicKnowledge(characterName);
     await context.saveMetadata();
 
     // Clearing chatMetadata means loadAndInjectSummary will clear the slot.
@@ -2407,6 +2408,7 @@ export function bindSettingsUI(ctrl) {
     injectArcs();
     injectProfiles(characterName);
     injectStateLedger();
+    injectEpistemicKnowledge(characterName, characterName);
 
     updateShortTermUI(null);
     updateSessionUI();
