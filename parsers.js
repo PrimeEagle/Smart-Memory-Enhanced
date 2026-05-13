@@ -562,18 +562,25 @@ const SCENE_BREAK_PATTERNS = [
   // Time skips - absolute jumps ("a year passed", "three months went by")
   /\b(a (year|month|week|decade)|several (years?|months?|weeks?|days?)|[a-z]+ (years?|months?|weeks?|days?) (passed|went by|had passed|had gone by))\b/i,
   // Location transitions - arriving at a named or distinct new place.
-  // Deliberately narrow: "entered the room" is not a scene break, but
-  // "arrived at the castle" or "found herself in a foreign city" is.
-  /\b(arrived at (the|a|an)\s+\w+|found (himself|herself|themselves|myself|yourself) (in|at) (a|an|the)\s+\w+|made (his|her|their|my|your) way (to|into) (the|a|an)\s+\w+|fled (to|into) (the|a|an)\s+\w+|escaped (to|into) (the|a|an)\s+\w+)\b/i,
+  // Allows one or two-word place names and possessives ("Asher's cabin").
+  // "entered the room" is still excluded - that is not a scene break.
+  /\b(arrived at (the|a|an|\w+'s)\s+\w+(\s+\w+)?|found (himself|herself|themselves|myself|yourself) (in|at) (a|an|the)\s+\w+(\s+\w+)?|made (his|her|their|my|your) way (to|into) (the|a|an|\w+'s)\s+\w+(\s+\w+)?|fled (to|into) (the|a|an)\s+\w+(\s+\w+)?|escaped (to|into) (the|a|an)\s+\w+(\s+\w+)?)\b/i,
+  // Location transitions - purposeful travel to a new place.
+  // "headed to the door" is a false positive risk but acceptable - in RP
+  // context a door is rarely a destination, and the alternative is missing
+  // every cabin/barn/hall transition.
+  /\b((headed|led (him|her|them|us)|walked|wandered) (over )?(to|into|toward) (the|a|an|\w+'s)\s+\w+(\s+\w+)?)\b/i,
   // Location transitions - establishing a new base or camp.
   /\b(settled (in|into|down in)|made (a|his|her|their|my) (home|camp|base) (in|at)|took (shelter|refuge) (in|at|among))\b/i,
   // Dawn/dusk transitions implying time passage through sleep or rest.
   /\b(as (dawn|morning|daylight|the sun) (broke|crept|arrived|filtered through|rose|spread)|when (dawn|morning) (came|broke|arrived))\b/i,
   /\b(as (night|darkness|dusk|evening) (fell|settled|crept|arrived|descended)|when (night|darkness|dusk) (came|fell|settled))\b/i,
-  // Sleep/wake transitions - only fire when waking implies overnight passage
-  // (dawn/morning/light/sun variants). "Woke from sleep" and "woke to find"
-  // are too broad and fire on brief naps mid-scene.
-  /\b((woke|stirred|roused) (as (dawn|morning|light)|with the (sun|light|dawn)))\b/i,
+  // Sleep transitions - falling asleep signals the end of a scene.
+  /\b(dozed? off|fell asleep|drifted off( to sleep)?|fell into (a |an? )?(deep )?(sleep|slumber))\b/i,
+  // Wake transitions - waking up after sleep, with or without dawn markers.
+  // The previous pattern required dawn/morning/light which missed natural
+  // "they woke up" transitions common in RP.
+  /\b((woke|stirred|roused) (up\b|(as |to find\b|beside\b|from (a |his |her |their )?(sleep|slumber|nap|rest))|(as (dawn|morning|light)|with the (sun|light|dawn))))\b/i,
   // Explicit separator markers (---, ***, * * *)
   /^[-*~]{3,}$/m,
   /\*\s*\*\s*\*/,
