@@ -1844,6 +1844,7 @@ body.sm-read-only .mes_edit_delete {
   user-select: none;
   list-style: none;
   padding: 4px 0;
+  text-align: center;
 }
 
 #smart_memory_settings .sm_epistemic_spoiler_summary::-webkit-details-marker {
