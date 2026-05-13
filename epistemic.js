@@ -60,6 +60,7 @@ import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 // ---- Per-chat budget override -----------------------------------------------
 
@@ -448,6 +449,7 @@ export function injectEpistemicKnowledge(
   // Apply token budget cap, using the per-chat override when set.
   let budget = getEffectiveEpistemicBudget(settings);
   let content = block;
+  const fullTokens = estimateTokens(content);
 
   if (estimateTokens(content) > budget) {
     if (warn && !_epistemicWarnedThisLoad) {
@@ -475,6 +477,8 @@ export function injectEpistemicKnowledge(
     }
     content = blockLines.join('\n');
   }
+
+  reportTierTrimStats(PROMPT_KEY_EPISTEMIC, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.epistemic, content);
   if (isMacroActive(MACRO_NAMES.epistemic)) {

@@ -104,6 +104,7 @@ import {
 } from './graph-migration.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
+import { getTierTrimStats } from './trim-stats.js';
 import {
   loadEpistemicKnowledge,
   saveEpistemicKnowledge,
@@ -264,10 +265,22 @@ export function updateTokenDisplay() {
     const widthPct = total > 0 ? ((tier.tokens / total) * 100).toFixed(1) : 0;
     const sharePct = total > 0 ? ((tier.tokens / total) * 100).toFixed(0) : 0;
     const seg = document.createElement('div');
-    seg.className = 'sm-token-segment';
     seg.style.width = `${widthPct}%`;
     seg.style.background = tier.color;
-    seg.title = `${tier.label}: ~${tier.tokens.toLocaleString()} tokens (${sharePct}%)`;
+
+    const trimStats = getTierTrimStats(tier.key);
+    const isTrimmed = trimStats && trimStats.full > trimStats.injected;
+    seg.className = isTrimmed ? 'sm-token-segment sm-token-trimmed' : 'sm-token-segment';
+
+    if (isTrimmed) {
+      const dropped = trimStats.full - trimStats.injected;
+      seg.title =
+        `${tier.label}: ~${tier.tokens.toLocaleString()} tokens injected (${sharePct}%)\n` +
+        `~${dropped.toLocaleString()} tokens trimmed to fit budget`;
+    } else {
+      seg.title = `${tier.label}: ~${tier.tokens.toLocaleString()} tokens (${sharePct}%)`;
+    }
+
     bar.appendChild(seg);
   }
 

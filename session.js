@@ -83,6 +83,7 @@ import {
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 /**
  * Filters session memory candidates against existing entries, removing
@@ -654,6 +655,7 @@ export async function injectSessionMemories(updateTelemetry = false) {
   // Trim to token budget using hybrid scoring on real AI turns, plain utility
   // scoring on chat load (no "current turn" to extract entity mentions from).
   const budget = settings.session_inject_budget ?? 400;
+  const fullTokens = estimateTokens(formatSessionMemories(memories));
   const protectedSet = new Set(selectProtectedMemories(memories, ['development', 'scene']));
 
   let trimmed;
@@ -702,6 +704,7 @@ export async function injectSessionMemories(updateTelemetry = false) {
   const sessionBlock = template.replace('{{session}}', formatSessionMemories(trimmed));
   const sceneStateBlock = buildCurrentSceneStateBlock(trimmed);
   const content = sceneStateBlock ? `${sceneStateBlock}\n${sessionBlock}` : sessionBlock;
+  reportTierTrimStats(PROMPT_KEY_SESSION, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.session, content);
   if (isMacroActive(MACRO_NAMES.session)) {

@@ -52,6 +52,7 @@ import { generateMemoryExtract } from './generate.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 // ---- Field schema -----------------------------------------------------------
 
@@ -328,13 +329,15 @@ export function injectStateLedger(updateTelemetry = false) {
   // Apply token budget cap.
   const budget = settings.state_ledger_inject_budget ?? 200;
   let content = block;
-  if (estimateTokens(content) > budget) {
+  const fullTokens = estimateTokens(content);
+  if (fullTokens > budget) {
     const blockLines = content.split('\n');
     while (blockLines.length > 1 && estimateTokens(blockLines.join('\n')) > budget) {
       blockLines.pop();
     }
     content = blockLines.join('\n');
   }
+  reportTierTrimStats(PROMPT_KEY_STATE_LEDGER, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.state_ledger, content);
   if (isMacroActive(MACRO_NAMES.state_ledger)) {

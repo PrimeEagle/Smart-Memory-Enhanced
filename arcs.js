@@ -63,6 +63,7 @@ import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 // ---- Deduplication ------------------------------------------------------
 
@@ -772,6 +773,9 @@ export function injectArcs() {
   // If a single arc still exceeds the budget, hard-truncate its content so the
   // injection is always within the cap regardless of individual entry length.
   const budget = settings.arcs_inject_budget ?? 400;
+  const fullTokens = estimateTokens(
+    `Active story threads:\n${arcs.map((a) => `- ${a.content}`).join('\n')}`,
+  );
   const trimmed = [...arcs];
   while (trimmed.length > 1) {
     const text = trimmed.map((a) => `- ${a.content}`).join('\n');
@@ -785,6 +789,7 @@ export function injectArcs() {
     text = text.slice(0, Math.floor(text.length * ratio)).trim();
   }
   const content = `Active story threads:\n${text}`;
+  reportTierTrimStats(PROMPT_KEY_ARCS, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.arcs, content);
   if (isMacroActive(MACRO_NAMES.arcs)) {

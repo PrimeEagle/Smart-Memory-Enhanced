@@ -49,6 +49,7 @@ import { loadArcSummaries } from './arcs.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 // ---- Storage ------------------------------------------------------------
 
@@ -176,6 +177,7 @@ export function injectCanon(characterName) {
   // Trim to the canon token budget.
   const budget = settings.canon_inject_budget ?? 800;
   let text = canon.text;
+  const fullTokens = estimateTokens(text);
   while (estimateTokens(text) > budget) {
     const lastPeriod = text.lastIndexOf('.', text.length - 2);
     if (lastPeriod < 0) {
@@ -189,6 +191,7 @@ export function injectCanon(characterName) {
 
   const template = settings.canon_template ?? 'Character history:\n{{canon}}';
   const content = template.replace('{{canon}}', text);
+  reportTierTrimStats(PROMPT_KEY_CANON, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.canon, content);
   if (isMacroActive(MACRO_NAMES.canon)) {

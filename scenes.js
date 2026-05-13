@@ -51,6 +51,7 @@ import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -330,6 +331,8 @@ export function injectSceneHistory() {
   // If a single scene still exceeds the budget, hard-truncate so the injection
   // is always within the cap regardless of individual summary length.
   const budget = settings.scene_inject_budget ?? 300;
+  const fullText = history.map((sc, i) => `Scene ${i + 1}: ${sc.summary}`).join('\n');
+  const fullTokens = estimateTokens(`Previous scenes:\n${fullText}`);
   const trimmed = [...history];
   while (trimmed.length > 1) {
     const text = trimmed.map((sc, i) => `Scene ${i + 1}: ${sc.summary}`).join('\n');
@@ -343,6 +346,7 @@ export function injectSceneHistory() {
     text = text.slice(0, Math.floor(text.length * ratio)).trim();
   }
   const content = `Previous scenes:\n${text}`;
+  reportTierTrimStats(PROMPT_KEY_SCENES, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.scenes, content);
   if (isMacroActive(MACRO_NAMES.scenes)) {

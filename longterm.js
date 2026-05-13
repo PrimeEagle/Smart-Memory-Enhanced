@@ -101,6 +101,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { getSceneParticipants } from './scenes.js';
+import { reportTierTrimStats } from './trim-stats.js';
 
 // Maximum new entries accepted per type per extraction pass.
 // Profile B (hosted) uses a higher cap because hosted models extract more
@@ -957,6 +958,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   // available. On chat load (updateTelemetry=false) there is no "current turn"
   // to read entity mentions from, so plain utility scoring is used instead.
   const budget = settings.longterm_inject_budget ?? 500;
+  const fullTokens = estimateTokens(memories.map((m) => `- ${m.content}`).join('\n'));
   const protectedSet = new Set(
     selectProtectedMemories(memories, ['relationship', 'preference', 'fact']),
   );
@@ -1089,6 +1091,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   const memoryText = memoryLines.join('\n');
   const content = template.replace('{{memories}}', memoryText);
 
+  reportTierTrimStats(PROMPT_KEY_LONG, estimateTokens(content), fullTokens);
   setMacroContent(MACRO_NAMES.longterm, content);
   if (isMacroActive(MACRO_NAMES.longterm)) {
     setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
@@ -1187,6 +1190,11 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
   if (relevant.length === 0) return clear();
 
   const budget = settings.relationships_inject_budget ?? 250;
+  const fullRelLines = relevant.map(
+    ([key, state]) =>
+      `${key}: ${(state.descriptors ?? []).map((d) => `${d.word}(${d.magnitude})`).join(', ')}`,
+  );
+  const fullTokens = estimateTokens(fullRelLines.join('\n'));
   const lines = [];
   let tokens = 0;
   for (const [key, state] of relevant) {
@@ -1201,6 +1209,7 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
 
   const template = settings.relationships_template || 'Relationship history:\n{{relationships}}';
   const content = template.replace('{{relationships}}', lines.join('\n'));
+  reportTierTrimStats(PROMPT_KEY_RELATIONSHIPS, estimateTokens(content), fullTokens);
 
   setMacroContent(MACRO_NAMES.relationships, content);
   if (isMacroActive(MACRO_NAMES.relationships)) {
