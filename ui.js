@@ -1204,8 +1204,9 @@ export function updateEntityPanel(characterName) {
           const srcCard = getStateCard(entity.name, entity.type);
           const dstCard = getStateCard(target.name, target.type);
 
-          // If both entities have state cards, ask the user which to keep before merging.
-          if (srcCard && dstCard) {
+          // If both entities have state cards and the ledger is enabled, ask which to keep.
+          // When the ledger is disabled, silently keep the destination card.
+          if (isStateLedgerEnabled() && srcCard && dstCard) {
             const $modal = $(`
               <div class="sm_state_merge_modal">
                 <div class="sm_state_merge_modal_inner">
@@ -1310,8 +1311,13 @@ export function updateEntityPanel(characterName) {
         await persistAndRefresh();
       };
 
-      // Warn before discarding a populated state card.
-      if (STATE_CARD_TYPES.has(entity.type) && getStateCard(entity.name, entity.type)) {
+      // Warn before discarding a populated state card - only when the ledger is enabled.
+      // When disabled, the card is silently deleted alongside the entity.
+      if (
+        isStateLedgerEnabled() &&
+        STATE_CARD_TYPES.has(entity.type) &&
+        getStateCard(entity.name, entity.type)
+      ) {
         $row.find('.sm_delete_state_warning').remove();
         const $warn = $(`
           <div class="sm_delete_state_warning">
