@@ -25,6 +25,7 @@
  * completed scene and appends it to the per-chat scene history in chatMetadata.
  *
  * detectSceneBreakHeuristic  - pattern-based scene break check (cheap, no model call); includes dawn/sleep/wake patterns
+ * detectSceneBreakAI         - AI yes/no check for scene breaks; used when scene_ai_detect is enabled
  * loadSceneHistory           - returns the stored scene history array
  * saveSceneHistory           - persists the scene history array to chatMetadata
  * clearSceneHistory          - empties scene history for the current chat
@@ -101,7 +102,7 @@ export async function sceneSimilarity(a, b) {
  * @param {string} [previousMessageText] - The preceding AI message for context.
  * @returns {Promise<boolean>}
  */
-async function detectSceneBreakAI(messageText, previousMessageText) {
+export async function detectSceneBreakAI(messageText, previousMessageText) {
   try {
     const prompt = buildSceneDetectPrompt(messageText, previousMessageText);
     const response = await generateMemoryExtract(prompt, { responseLength: 5 });

@@ -87,6 +87,7 @@ import {
   loadSceneHistory,
   saveSceneHistory,
   clearSceneHistory,
+  detectSceneBreakAI,
   detectSceneBreakHeuristic,
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
@@ -2204,10 +2205,9 @@ export function bindSettingsUI(ctrl) {
       }
 
       if (!ctrl.catchUpCancelled) {
-        // Scene: walk through the full chat using heuristic break detection,
-        // summarizing each detected scene. AI detection is skipped here - it
-        // would cost one model call per message across potentially hundreds of
-        // messages. The heuristic is free and good enough for bulk processing.
+        // Scene: walk through the full chat detecting and summarizing scenes.
+        // When scene_ai_detect is enabled, AI detection runs on each AI message
+        // (matching normal flow). When disabled, the heuristic is used instead.
         if (settings.scene_enabled) {
           setStatusMessage('Detecting scene breaks...');
           const sceneHistory = loadSceneHistory();
@@ -2215,6 +2215,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
+          let prevAiMsg = '';
 
           /**
            * Deduplicates a candidate summary against the last three stored scenes,
@@ -2236,7 +2237,19 @@ export function bindSettingsUI(ctrl) {
             sceneBuffer.push(msg);
 
             const msgText = msg.mes ?? '';
-            if (detectSceneBreakHeuristic(msgText) && sceneBuffer.length >= minMessages) {
+            const isAiMsg = !msg.is_user;
+
+            // AI detection only runs on AI messages - user messages are skipped,
+            // matching the behaviour of the normal CHARACTER_MESSAGE_RENDERED path.
+            const isBreak = settings.scene_ai_detect
+              ? isAiMsg &&
+                sceneBuffer.length >= minMessages &&
+                (await detectSceneBreakAI(msgText, prevAiMsg))
+              : detectSceneBreakHeuristic(msgText) && sceneBuffer.length >= minMessages;
+
+            if (isAiMsg) prevAiMsg = msgText;
+
+            if (isBreak) {
               sceneCount++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
               const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
