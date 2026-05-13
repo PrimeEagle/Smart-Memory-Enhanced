@@ -64,7 +64,7 @@ Embeddings let Smart Memory compare memories by meaning rather than exact wordin
 
 ### 3. Leave the memory context budget alone (for now)
 
-The default **Memory context budget** in simple mode is 3100 tokens - the combined total of all memory tiers at their default sizes. This number was chosen to work well with the recommended local models. If you reduce it, one or more tiers will start getting trimmed or cut off entirely to fit the lower limit, which may noticeably affect quality. Leave it at the default until you have a feel for how Smart Memory works in your setup, then adjust carefully in small steps if needed.
+The default **Memory context budget** in simple mode is 3750 tokens - the combined total of all memory tiers at their default sizes. This number was chosen to work well with the recommended local models. If you reduce it, one or more tiers will start getting trimmed or cut off entirely to fit the lower limit, which may noticeably affect quality. Leave it at the default until you have a feel for how Smart Memory works in your setup, then adjust carefully in small steps if needed.
 
 That's it - Smart Memory will start building memories automatically from your next chat.
 
@@ -406,7 +406,7 @@ ollama pull nomic-embed-text
 | Setting                     | Default | Description                                                                         |
 | --------------------------- | ------- | ----------------------------------------------------------------------------------- |
 | Enable relationship history | On      | Extract and inject per-pair emotional state across sessions                         |
-| Injection token budget      | 250     | Budget for the relationship block; funded from within the shared 3100 token default |
+| Injection token budget      | 250     | Budget for the relationship block; funded from within the shared 3750 token default |
 | Injection position          | In-chat | Where the relationship block appears in the prompt                                  |
 | Injection depth             | 5       | Distance from the user prompt (lower = closer)                                      |
 
