@@ -255,6 +255,7 @@ A NEW SCENE starts when:
 - Time has passed - sleep, waking up, dawn breaking, or any gap between the previous and current message
 - The characters have moved to a different location (a new room, building, outdoor area, or setting)
 - A hard narrative break occurs (transition, loss of consciousness then recovery, etc.)
+- The person the main character is alone with or intimate with has changed (a previous partner has left and a new one has arrived)
 
 NOT a new scene:
 - Action, combat, or drama continuing in the same location and moment
