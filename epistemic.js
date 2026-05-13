@@ -423,7 +423,7 @@ export function injectEpistemicKnowledge(
   if (estimateTokens(content) > budget) {
     if (warn && !_epistemicWarnedThisLoad) {
       const needed = estimateTokens(content);
-      const increment = exactFit ? needed - budget : 100;
+      const increment = exactFit ? needed - budget + 100 : 100;
       const newBudget = budget + increment;
       const grew = confirm(
         exactFit
