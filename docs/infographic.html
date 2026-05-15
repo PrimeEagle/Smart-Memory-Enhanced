@@ -504,6 +504,13 @@
   }
   .footer .right { text-align: right; }
   .footer b { color: var(--ink-2); font-weight: 600; }
+  .footer .copy {
+    grid-column: 1 / -1;
+    text-align: center;
+    letter-spacing: 0.06em;
+  }
+  .footer a { color: var(--ink-3); text-decoration: none; }
+  .footer a:hover { color: var(--ink-2); }
 
   /* ── Stage accents ─────────────────────────────────────── */
   .stage[data-c="01"] { --accent: var(--c-events); }
@@ -909,6 +916,13 @@
     </div>
     <div class="right">
       v1.7.3 · hardware-adaptive · model-agnostic · group-safe
+    </div>
+    <div class="copy">
+      <a href="https://github.com/senjinthedragon/Smart-Memory">github.com/senjinthedragon/Smart-Memory</a>
+      <span style="margin: 0 10px; color: var(--line-2)">·</span>
+      © 2026 Senjin the Dragon
+      <span style="margin: 0 10px; color: var(--line-2)">·</span>
+      <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPL-3.0</a>
     </div>
   </footer>
 

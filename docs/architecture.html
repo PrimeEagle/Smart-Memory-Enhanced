@@ -427,13 +427,21 @@
     padding-top: 24px;
     border-top: 1px solid var(--line);
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 10px;
     font-family: var(--mono);
     font-size: 11px;
     color: var(--ink-3);
     letter-spacing: 0.06em;
   }
+  footer .stamp-row {
+    display: flex;
+    justify-content: space-between;
+  }
   footer .stamp { color: var(--ink-2); }
+  footer .copy { text-align: center; }
+  footer a { color: var(--ink-3); text-decoration: none; }
+  footer a:hover { color: var(--ink-2); }
 
   /* small breakpoint adjustments */
   @media (max-width: 1100px) {
@@ -1312,8 +1320,17 @@
   </div>
 
   <footer>
-    <div class="stamp">SMART_MEMORY · architecture diagram · single-file artifact</div>
-    <div>v1.7.3 · profile-aware · 4-tier extraction · 13-slot injection</div>
+    <div class="stamp-row">
+      <div class="stamp">SMART_MEMORY · architecture diagram · single-file artifact</div>
+      <div>v1.7.3 · profile-aware · 4-tier extraction · 13-slot injection</div>
+    </div>
+    <div class="copy">
+      <a href="https://github.com/senjinthedragon/Smart-Memory">github.com/senjinthedragon/Smart-Memory</a>
+      <span style="margin: 0 10px; color: var(--line-2)">·</span>
+      © 2026 Senjin the Dragon
+      <span style="margin: 0 10px; color: var(--line-2)">·</span>
+      <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPL-3.0</a>
+    </div>
   </footer>
 </div>
 
