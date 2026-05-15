@@ -40,19 +40,14 @@
  * hasEmbeddingFailed       - returns true when an embedding call has failed this session
  * clearEmbeddingFailed     - resets the failure flag (call when the user re-enables or reconfigures)
  * getHardwareProfile       - returns the active hardware profile ('a' or 'b')
- * saveEmbeddingApiKey      - writes the API key to ST's secrets store
- * hasEmbeddingApiKey       - returns true when an API key is stored
- * EMBEDDING_API_KEY_SECRET - secret key name used in ST's secrets store
+ * saveEmbeddingApiKey - writes the API key to extension_settings
+ * hasEmbeddingApiKey  - returns true when an API key is configured
  */
 
-import { extension_settings } from '../../../extensions.js';
-import { findSecret, writeSecret, secret_state, readSecretState } from '/scripts/secrets.js';
+import { extension_settings, saveSettingsDebounced } from '../../../extensions.js';
 import { MODULE_NAME } from './constants.js';
 import { memory_sources } from './generate.js';
 import { cosineSimilarity, jaccardSimilarity, hasStateChangeMarker } from './similarity.js';
-
-// Secret key used to store the embedding API key in ST's secrets system.
-const EMBEDDING_API_KEY_SECRET = 'smart_memory_embedding_api_key';
 
 // In-session embedding cache: normalized text -> vector.
 // Embeddings are deterministic for a given text + model, so caching within a
@@ -103,11 +98,8 @@ export async function getEmbeddingBatch(texts) {
       // OpenAI-compatible endpoint: /v1/embeddings
       // Response shape: { data: [{ embedding: [...] }, ...] }
       const headers = { 'Content-Type': 'application/json' };
-      // Read the API key from ST's secrets store each call - never cache it in memory.
-      if (secret_state[EMBEDDING_API_KEY_SECRET]) {
-        const apiKey = await findSecret(EMBEDDING_API_KEY_SECRET);
-        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-      }
+      const apiKey = settings.embedding_api_key || '';
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
       const response = await fetch(`${baseUrl}/v1/embeddings`, {
         method: 'POST',
         headers,
@@ -166,27 +158,21 @@ export async function getEmbeddingBatch(texts) {
 export { cosineSimilarity } from './similarity.js';
 
 /**
- * Writes the embedding API key to ST's server-side secrets store.
- * Passing an empty string deletes the stored key.
+ * Writes the embedding API key to extension_settings.
  * @param {string} value
- * @returns {Promise<void>}
  */
-export async function saveEmbeddingApiKey(value) {
-  await writeSecret(EMBEDDING_API_KEY_SECRET, value, 'Smart Memory Embedding API Key', {
-    allowEmpty: false,
-  });
-  await readSecretState();
+export function saveEmbeddingApiKey(value) {
+  extension_settings[MODULE_NAME].embedding_api_key = value;
+  saveSettingsDebounced();
 }
 
 /**
- * Returns true when an embedding API key has been stored in ST's secrets.
+ * Returns true when an embedding API key is configured.
  * @returns {boolean}
  */
 export function hasEmbeddingApiKey() {
-  return !!secret_state[EMBEDDING_API_KEY_SECRET];
+  return !!extension_settings[MODULE_NAME]?.embedding_api_key;
 }
-
-export { EMBEDDING_API_KEY_SECRET };
 
 /**
  * Returns true if an embedding API call has failed at least once this session.

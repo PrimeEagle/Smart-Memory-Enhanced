@@ -159,6 +159,9 @@ export const defaultSettings = {
   openai_compat_key: '',
   openai_compat_model: '',
 
+  // OpenAI Compatible embedding API key
+  embedding_api_key: '',
+
   // Short-term (compaction)
   compaction_enabled: true,
   compaction_threshold: 80,
@@ -2862,10 +2865,10 @@ export function bindSettingsUI(ctrl) {
     saveSettingsDebounced();
   });
 
-  // OpenAI Compatible API key field - saved to ST's secrets store, never to extension_settings.
-  $('#sm_embedding_api_key').on('change', async function () {
+  // OpenAI Compatible embedding API key field - stored in extension_settings.
+  $('#sm_embedding_api_key').on('change', function () {
     const value = $(this).val().trim();
-    await saveEmbeddingApiKey(value);
+    saveEmbeddingApiKey(value);
     $(this)
       .val('')
       .attr('placeholder', hasEmbeddingApiKey() ? '(key stored)' : 'sk-...');

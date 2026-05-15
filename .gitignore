@@ -3,7 +3,7 @@
 CLAUDE.md
 
 # Internal planning documents - not for public distribution
-docs/
+dev/
 
 # Dependencies
 node_modules/

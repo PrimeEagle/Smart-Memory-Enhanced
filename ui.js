@@ -1617,10 +1617,10 @@ export function renderMemoriesList(memories, characterName) {
                 ${retiredBadge}${supersededByLink}${conflictBadge}
                 <span class="sm_memory_text">${$('<div>').text(mem.content).html()}</span>
                 ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
-                <button class="sm_edit_memory menu_button" data-index="${idx}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
+                <button class="sm_edit_memory menu_button" data-memory-id="${mem.id || ''}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
                     <i class="fa-solid fa-pencil"></i>
                 </button>
-                <button class="sm_delete_memory menu_button" data-index="${idx}" title="Delete this memory">
+                <button class="sm_delete_memory menu_button" data-memory-id="${mem.id || ''}" title="Delete this memory">
                     <i class="fa-solid fa-trash-can"></i>
                 </button>
             </div>
@@ -1674,14 +1674,15 @@ export function renderMemoriesList(memories, characterName) {
   });
 
   $list.find('.sm_edit_memory').on('click', function () {
-    const idx = parseInt($(this).data('index'), 10);
+    const memId = $(this).data('memory-id');
     const $item = $(this).closest('.sm_memory_item');
     const $textSpan = $item.find('.sm_memory_text');
     const current = loadCharacterMemories(characterName);
-    if (!current[idx]) return;
+    const mem = current.find((m) => m.id === memId);
+    if (!mem) return;
 
     // Replace text span with an inline textarea for editing.
-    const $textarea = $('<textarea class="sm_memory_edit_input">').val(current[idx].content);
+    const $textarea = $('<textarea class="sm_memory_edit_input">').val(mem.content);
     $textSpan.replaceWith($textarea);
     $textarea.trigger('focus');
 
@@ -1698,8 +1699,9 @@ export function renderMemoriesList(memories, characterName) {
       const newContent = $textarea.val().trim();
       if (!newContent) return;
       const memories = loadCharacterMemories(characterName);
-      if (!memories[idx]) return;
-      memories[idx].content = newContent;
+      const target = memories.find((m) => m.id === memId);
+      if (!target) return;
+      target.content = newContent;
       saveCharacterMemories(characterName, memories);
       saveSettingsDebounced();
       injectMemories(characterName).catch(console.error);
@@ -1712,8 +1714,10 @@ export function renderMemoriesList(memories, characterName) {
   });
 
   $list.find('.sm_delete_memory').on('click', function () {
-    const idx = parseInt($(this).data('index'), 10);
+    const memId = $(this).data('memory-id');
     const current = loadCharacterMemories(characterName);
+    const idx = current.findIndex((m) => m.id === memId);
+    if (idx === -1) return;
     current.splice(idx, 1);
     saveCharacterMemories(characterName, current);
     saveSettingsDebounced();

@@ -418,7 +418,7 @@ If you do not have an embedding model set up, Smart Memory falls back to keyword
 ollama pull nomic-embed-text
 ```
 
-**OpenAI Compatible:** Set the embedding source to "OpenAI Compatible", enter the base URL of your server, and type the model name it exposes for embeddings. Works with any server that implements the `/v1/embeddings` endpoint.
+**OpenAI Compatible:** Set the embedding source to "OpenAI Compatible", enter the base URL of your server, and type the model name it exposes for embeddings. Works with any server that implements the `/v1/embeddings` endpoint. If your server requires an API key, enter it in the API key field - it is stored in extension settings alongside other Smart Memory configuration.
 
 ### Relationship History
 
@@ -701,6 +701,12 @@ The `{{smartmemory-unified}}` macro is only active when **Unified injection** is
 **Hiding past messages** - Hiding a message that Smart Memory has already processed does not remove the memories formed from it. The information stays in the character's memory even though the message is no longer in context.
 
 **Checkpoints and branches** - See the [Read-only Mode](#read-only-mode) section.
+
+---
+
+## Architecture
+
+Not required reading for using the extension. The [architecture diagram](https://senjinthedragon.github.io/Smart-Memory/architecture.html) is a technical overview of Smart Memory's internal structure - intended for developers who want to understand how the tiers, extraction pipeline, and storage system fit together.
 
 ---
 

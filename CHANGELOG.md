@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.3] - 2026-05-15
+
+### Fixed
+
+- **Memory edit and delete** now correctly target the selected memory when retired
+  entries are present. Previously, the edit and delete buttons used a sorted display
+  index to look up the memory in storage, causing the wrong memory to be modified
+  whenever the sort order differed from the storage order. Both buttons now look up
+  by memory ID.
+- **Embedding API key** is now correctly sent with requests to OpenAI-compatible
+  embedding backends. The key was previously stored in SillyTavern's secrets store,
+  but ST's secrets API requires `allowKeysExposure: true` in config.yaml to retrieve
+  a secret value client-side - a setting most users do not have. In practice the key
+  was saved but never included in requests, causing 401 errors. The key is now stored
+  in extension settings alongside other Smart Memory configuration. Note: this means
+  the key is no longer in the secrets store and is stored in plain text in ST's
+  settings file, consistent with how the extraction API key has always been handled.
+
 ## [1.7.2] - 2026-05-14
 
 ### Fixed
