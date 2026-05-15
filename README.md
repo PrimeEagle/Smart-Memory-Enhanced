@@ -690,7 +690,7 @@ The `{{smartmemory-unified}}` macro is only active when **Unified injection** is
 | -------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Verbose logging                  | Off     | Print detailed progress to the browser console for extraction, consolidation, and scene detection. Errors are always logged regardless                                                                           |
 | Unified injection (experimental) | Off     | Merges all active memory tiers into a single context block ordered from most stable (canon, profiles, long-term) to most immediate (session, arcs). The token bar still shows per-tier breakdowns                |
-| Force macro injection mode       | Off     | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). Leave off for card macros - auto-detection handles them. Incompatible with unified injection |
+| Force macro injection mode       | Off     | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). When unified injection is on, activates `{{smartmemory-unified}}` for instruct templates - individual tier macros remain inactive. Leave off for card macros - auto-detection handles them |
 
 ---
 

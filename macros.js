@@ -99,12 +99,14 @@ const CARD_FIELDS = ['system_prompt', 'description', 'personality', 'scenario', 
 export function isMacroActive(macroName) {
   const settings = extension_settings[MODULE_NAME];
   const isUnifiedMacro = macroName === MACRO_NAMES.unified;
-  // The unified macro only makes sense when unified injection is on.
+  // The unified macro requires unified injection to be on. Force macro mode does
+  // not override this - if unified injection is off there is no merged block to inject.
   if (isUnifiedMacro && !settings?.unified_injection) return false;
-  // Individual tier macros are incompatible with unified injection - unified owns
-  // those tiers. The unified macro itself is handled by the check above.
+  // Individual tier macros are incompatible with unified injection regardless of
+  // force mode - unified owns all tier content when enabled.
   if (!isUnifiedMacro && settings?.unified_injection) return false;
-  // Manual override: force macro mode for all applicable macros.
+  // Manual override: force macro mode for all applicable macros (including unified,
+  // so {{smartmemory-unified}} works in instruct templates without card auto-detection).
   if (settings?.macros_enabled) return true;
   // Auto-detection: look for the {{macro-name}} token in character card fields.
   const token = `{{${macroName}}}`;
