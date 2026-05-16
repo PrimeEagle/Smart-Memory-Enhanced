@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Auto-tune budgets** applies immediately when the checkbox is enabled, using
+  whatever trim data has already been collected in the current session. Previously
+  it only ran after the next injection pass.
+
+### Fixed
+
+- **Auto-tune budgets** no longer shrinks tier budgets below their defaults.
+  Previously the only lower bound was 50 tokens, so tiers with light content
+  could be squeezed far below their factory values. Each tier's default is now
+  used as a hard floor - auto-tune can grow a budget above the default when
+  demand justifies it, but never below.
+- **Auto-tune budgets in group chats** now sizes budgets for the greediest
+  character seen in the session rather than whichever character injected last.
+  A high water mark tracks the maximum token demand per tier across all injection
+  passes, so a character with lighter memories can no longer push the budget down
+  below what a heavier character in the same chat needs.
+
 ## [1.7.4] - 2026-05-16
 
 ### Fixed

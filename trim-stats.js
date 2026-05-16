@@ -24,9 +24,16 @@
  * The token bar reads these stats to show a visual indicator when a tier is
  * actively dropping content to stay within budget.
  *
+ * In group chats multiple characters inject per round, each overwriting the
+ * current stats for their tiers. Auto-tune must size budgets for the greediest
+ * character seen across the session, not just the last one to inject. The high
+ * water mark (_hwStats) tracks the maximum `full` demand per tier since the
+ * last chat change - auto-tune reads from there, the token bar reads _stats.
+ *
  * reportTierTrimStats    - records injected vs full token counts for a tier
  * getTierTrimStats       - returns the stored stats for a tier key
- * clearTierTrimStats     - resets all stats (call on chat change)
+ * getTierHWStats         - returns the high water mark stats for a tier key
+ * clearTierTrimStats     - resets all stats and HWM (call on chat change)
  * hasAnyTrimmedTier      - returns true when at least one non-exempt tier is over budget
  * markTrimToastFired     - records that the one-time trim toast has been shown
  * hasTrimToastFired      - returns true if the toast has already been shown
@@ -37,6 +44,15 @@
 
 /** @type {Object.<string, {injected: number, full: number}>} */
 const _stats = {};
+
+/**
+ * High water mark: tracks the maximum `full` token demand seen per tier since
+ * the last chat change. Unlike _stats (which is overwritten each injection pass),
+ * _hwStats only moves upward. Auto-tune uses this so group chat budgets are
+ * sized for the greediest character in the session, not the last one to inject.
+ * @type {Object.<string, {injected: number, full: number}>}
+ */
+const _hwStats = {};
 
 /** Prevents the one-time "content trimmed" toast from re-firing mid-chat. */
 let _trimToastFired = false;
@@ -51,7 +67,9 @@ let _chatLoadComplete = false;
 
 /**
  * Records the injected and full (pre-trim) token counts for a tier.
- * Call this from every inject function after building and trimming content.
+ * Also updates the high water mark when the new `full` value exceeds the
+ * previously stored maximum - so group chat budgets account for the greediest
+ * character seen in the session, not just the last one to inject.
  *
  * @param {string} key - The injection slot key (PROMPT_KEY_* constant).
  * @param {number} injected - Tokens actually injected after budget trimming.
@@ -59,10 +77,14 @@ let _chatLoadComplete = false;
  */
 export function reportTierTrimStats(key, injected, full) {
   _stats[key] = { injected, full };
+  if (!_hwStats[key] || full > _hwStats[key].full) {
+    _hwStats[key] = { injected, full };
+  }
 }
 
 /**
  * Returns the stored trim stats for a tier, or null if none recorded yet.
+ * Reflects the most recent injection pass - may vary per character in group chats.
  *
  * @param {string} key
  * @returns {{injected: number, full: number}|null}
@@ -72,11 +94,24 @@ export function getTierTrimStats(key) {
 }
 
 /**
- * Resets all stored trim stats. Call on chat change so stale data from a
- * previous chat does not show false alarms on the new one.
+ * Returns the high water mark stats for a tier: the maximum `full` token demand
+ * seen since the last chat change. Use this for auto-tune budget calculations
+ * so the result accounts for every character that has injected this session.
+ *
+ * @param {string} key
+ * @returns {{injected: number, full: number}|null}
+ */
+export function getTierHWStats(key) {
+  return _hwStats[key] ?? null;
+}
+
+/**
+ * Resets all stored trim stats and high water marks. Call on chat change so
+ * stale data from a previous chat does not show false alarms on the new one.
  */
 export function clearTierTrimStats() {
   for (const k of Object.keys(_stats)) delete _stats[k];
+  for (const k of Object.keys(_hwStats)) delete _hwStats[k];
 }
 
 // Tiers excluded from the trim warning toast. Short-term is excluded because

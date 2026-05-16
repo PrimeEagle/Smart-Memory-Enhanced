@@ -121,7 +121,7 @@ import {
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
-import { getTierTrimStats } from './trim-stats.js';
+import { getTierHWStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
 import {
   setStatusMessage,
@@ -425,6 +425,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_LONG,
     setting: 'longterm_inject_budget',
+    defaultBudget: 500,
     slider: 'sm_longterm_inject_budget',
     display: 'sm_longterm_inject_budget_value',
     fmt: (v) => String(v),
@@ -432,6 +433,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_SESSION,
     setting: 'session_inject_budget',
+    defaultBudget: 400,
     slider: 'sm_session_inject_budget',
     display: 'sm_session_inject_budget_value',
     fmt: (v) => String(v),
@@ -439,6 +441,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_CANON,
     setting: 'canon_inject_budget',
+    defaultBudget: 800,
     slider: 'sm_canon_inject_budget',
     display: 'sm_canon_inject_budget_value',
     fmt: (v) => String(v),
@@ -446,6 +449,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_SCENES,
     setting: 'scene_inject_budget',
+    defaultBudget: 300,
     slider: 'sm_scene_inject_budget',
     display: 'sm_scene_inject_budget_value',
     fmt: (v) => String(v),
@@ -453,6 +457,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_ARCS,
     setting: 'arcs_inject_budget',
+    defaultBudget: 700,
     slider: 'sm_arcs_inject_budget',
     display: 'sm_arcs_inject_budget_value',
     fmt: (v) => String(v),
@@ -460,6 +465,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_PROFILES,
     setting: 'profiles_inject_budget',
+    defaultBudget: 400,
     slider: 'sm_profiles_inject_budget',
     display: 'sm_profiles_inject_budget_value',
     fmt: (v) => `${v} tokens`,
@@ -467,6 +473,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_RELATIONSHIPS,
     setting: 'relationships_inject_budget',
+    defaultBudget: 250,
     slider: 'sm_relationships_inject_budget',
     display: 'sm_relationships_inject_budget_value',
     fmt: (v) => String(v),
@@ -474,6 +481,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_EPISTEMIC,
     setting: 'epistemic_inject_budget',
+    defaultBudget: 200,
     slider: 'sm_epistemic_inject_budget',
     display: 'sm_epistemic_inject_budget_value',
     fmt: (v) => String(v),
@@ -481,6 +489,7 @@ const TUNABLE_TIERS = [
   {
     promptKey: PROMPT_KEY_STATE_LEDGER,
     setting: 'state_ledger_inject_budget',
+    defaultBudget: 200,
     slider: 'sm_state_ledger_inject_budget',
     display: 'sm_state_ledger_inject_budget_value',
     fmt: (v) => String(v),
@@ -502,17 +511,22 @@ export function autoTuneBudgets(characterName) {
   const s = extension_settings[MODULE_NAME];
   if (!s.auto_tune_budgets) return;
 
-  const snap = (v) => Math.max(AUTO_TUNE_FLOOR, Math.round(v / 50) * 50);
+  const snap = (v, floor) => Math.max(floor ?? AUTO_TUNE_FLOOR, Math.round(v / 50) * 50);
 
   // Compute target budget for each tier from its actual demand.
+  // Uses the high water mark so group chat budgets are sized for the greediest
+  // character seen this session, not just whichever character injected last.
   // Tiers with no recorded stats (disabled or never injected) keep their
-  // current budget so they are not silently shrunk to the floor.
+  // current budget so they are not silently shrunk.
+  // The per-tier defaultBudget acts as a hard floor: auto-tune can grow a tier
+  // above its default when demand is high, but never shrinks it below, so
+  // characters with light content do not end up with sub-default budgets.
   const targets = TUNABLE_TIERS.map((tier) => {
-    const stats = getTierTrimStats(tier.promptKey);
+    const stats = getTierHWStats(tier.promptKey);
     if (!stats || stats.full === 0) {
       return { tier, budget: s[tier.setting] };
     }
-    return { tier, budget: snap(stats.full * AUTO_TUNE_HEADROOM) };
+    return { tier, budget: snap(stats.full * AUTO_TUNE_HEADROOM, tier.defaultBudget) };
   });
 
   // In simple mode the user has set an explicit total budget cap; honour it by
@@ -525,7 +539,7 @@ export function autoTuneBudgets(characterName) {
     if (totalTarget > totalCap) {
       const scale = totalCap / totalTarget;
       for (const t of targets) {
-        t.budget = Math.max(snap(t.minimum ?? AUTO_TUNE_FLOOR), snap(t.budget * scale));
+        t.budget = Math.max(snap(t.tier.defaultBudget ?? AUTO_TUNE_FLOOR), snap(t.budget * scale));
       }
     }
   }
@@ -3073,6 +3087,7 @@ export function bindSettingsUI(ctrl) {
     .on('change', function () {
       extension_settings[MODULE_NAME].auto_tune_budgets = $(this).prop('checked');
       saveSettingsDebounced();
+      if ($(this).prop('checked')) autoTuneBudgets(ctrl.getSelectedCharacterName());
     });
 
   // Hides per-tier injection position/depth/role blocks when either unified
