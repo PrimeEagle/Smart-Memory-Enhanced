@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Auto-extraction** now triggers correctly when SillyTavern streaming is
+  disabled. The previous guard used ST's `is_send_press` flag to block
+  intermediate streaming renders, but that flag is still set when
+  `CHARACTER_MESSAGE_RENDERED` fires in non-streaming mode, silently preventing
+  extraction from ever running. Replaced with an internal flag cleared by
+  `MESSAGE_RECEIVED`, which ST guarantees fires before
+  `CHARACTER_MESSAGE_RENDERED` in both streaming and non-streaming paths.
 - **Auto-tune budgets** no longer shrinks tier budgets below their defaults.
   Previously the only lower bound was 50 tokens, so tiers with light content
   could be squeezed far below their factory values. Each tier's default is now
