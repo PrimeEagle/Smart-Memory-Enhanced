@@ -860,6 +860,7 @@ export function bindSettingsUI(ctrl) {
     injectProfiles(selection);
     maybeInjectUnified();
     updateTokenDisplay();
+    autoTuneBudgets(selection);
   });
 
   // ---- LLM source -----------------------------------------------------
