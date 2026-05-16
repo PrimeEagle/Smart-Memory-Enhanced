@@ -324,30 +324,45 @@ export function parseContradictions(text) {
 export function formatSummary(raw) {
   // Strip analysis block - handle both closed and unclosed tags.
   // If the model didn't write </analysis>, strip everything from <analysis>
-  // up to the first <summary> tag so it doesn't bleed into the summary content.
+  // up to the first [SUMMARY] or <summary> marker.
   let result = raw.replace(/<analysis>[\s\S]*?<\/analysis>/i, '').trim();
-  // Fallback: unclosed <analysis> - strip from tag to start of <summary>
-  result = result.replace(/<analysis>[\s\S]*?(?=<summary>)/i, '').trim();
-  // Try a complete <summary>...</summary> block first.
-  const fullMatch = result.match(/<summary>([\s\S]*?)<\/summary>/i);
-  if (fullMatch) {
-    return fullMatch[1].trim();
-  }
-  // If the closing tag is missing the model was cut off mid-response.
-  // Extract whatever content appeared after the opening tag rather than
-  // falling back to the raw string which still contains the opening tag.
-  const partialMatch = result.match(/<summary>([\s\S]*)/i);
-  if (partialMatch) {
-    return partialMatch[1].trim();
-  }
-  // Last resort: if the model omitted tags entirely, strip any preamble before
-  // the first numbered section ("1." at the start of a line).
-  const numberedStart = result.search(/^1\./m);
-  if (numberedStart > 0) {
-    return result.slice(numberedStart).trim();
-  }
+  result = result.replace(/<analysis>[\s\S]*?(?=\[SUMMARY\]|<summary>)/i, '').trim();
 
-  return result;
+  // Primary format: [SUMMARY]...[/SUMMARY] (non-HTML, avoids triggering HTML output).
+  const bracketFull = result.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i);
+  if (bracketFull) return stripHtmlTags(bracketFull[1].trim());
+
+  const bracketPartial = result.match(/\[SUMMARY\]([\s\S]*)/i);
+  if (bracketPartial) return stripHtmlTags(bracketPartial[1].trim());
+
+  // Fallback: <summary>...</summary> for summaries stored before this change.
+  const fullMatch = result.match(/<summary>([\s\S]*?)<\/summary>/i);
+  if (fullMatch) return stripHtmlTags(fullMatch[1].trim());
+
+  const partialMatch = result.match(/<summary>([\s\S]*)/i);
+  if (partialMatch) return stripHtmlTags(partialMatch[1].trim());
+
+  // Last resort: strip any preamble before the first numbered section.
+  const numberedStart = result.search(/^1\./m);
+  if (numberedStart > 0) return stripHtmlTags(result.slice(numberedStart).trim());
+
+  return stripHtmlTags(result);
+}
+
+/**
+ * Removes HTML tags from a string. Some models decorate summary prose with
+ * HTML markup (<p>, <strong>, etc.) despite being asked for plain text.
+ * Replaces block-level tags with newlines to preserve paragraph breaks.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripHtmlTags(text) {
+  return text
+    .replace(/<\/(p|div|br|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 // ---- Profile output parsing ---------------------------------------------
