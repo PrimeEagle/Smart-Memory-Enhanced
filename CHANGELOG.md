@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5] - 2026-05-16
+
+### Added
+
+- **Auto-tune budgets** applies immediately when the checkbox is enabled, using
+  whatever trim data has already been collected in the current session. Previously
+  it only ran after the next injection pass.
+- **Group character token bar rows are now clickable.** Clicking a character's
+  row in the per-character token bar selects that character for memory
+  inspection, replacing the separate "Viewing memories for" dropdown. Rows show
+  a pointer cursor and a hover highlight to signal interactivity.
+
+### Fixed
+
+- **Auto-extraction** now triggers correctly when SillyTavern streaming is
+  disabled. The previous guard used ST's `is_send_press` flag to block
+  intermediate streaming renders, but that flag is still set when
+  `CHARACTER_MESSAGE_RENDERED` fires in non-streaming mode, silently preventing
+  extraction from ever running. Replaced with an internal flag cleared by
+  `MESSAGE_RECEIVED`, which ST guarantees fires before
+  `CHARACTER_MESSAGE_RENDERED` in both streaming and non-streaming paths.
+- **Auto-tune budgets** no longer shrinks tier budgets below their defaults.
+  Previously the only lower bound was 50 tokens, so tiers with light content
+  could be squeezed far below their factory values. Each tier's default is now
+  used as a hard floor - auto-tune can grow a budget above the default when
+  demand justifies it, but never below.
+- **Auto-tune budgets in group chats** now sizes budgets for the greediest
+  character seen in the session rather than whichever character injected last.
+  A high water mark tracks the maximum token demand per tier across all injection
+  passes, so a character with lighter memories can no longer push the budget down
+  below what a heavier character in the same chat needs.
+- **Auto-tune budgets** now re-tunes immediately when switching the group
+  character panel selector. Previously the selector switch would reinject the
+  new character's memories at the wrong budget and leave the trim indicator
+  without self-correcting until the next generation.
+
 ## [1.7.4] - 2026-05-16
 
 ### Fixed

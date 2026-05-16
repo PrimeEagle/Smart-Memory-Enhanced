@@ -237,9 +237,19 @@
   gap: 6px;
   font-size: 0.82em;
   opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+#smart_memory_settings .sm-token-group-row:hover {
+  opacity: 0.85;
 }
 
 #smart_memory_settings .sm-token-group-row.sm-token-active {
+  opacity: 1;
+}
+
+#smart_memory_settings .sm-token-group-row.sm-token-active:hover {
   opacity: 1;
 }
 

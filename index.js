@@ -40,7 +40,6 @@ import {
   saveSettingsDebounced,
   setExtensionPrompt,
   extension_prompt_types,
-  is_send_press,
 } from '../../../../script.js';
 import {
   getContext,
@@ -163,6 +162,14 @@ import { defaultSettings, loadSettings, bindSettingsUI, autoTuneBudgets } from '
 import { clearTierTrimStats, resetTrimToastFlag, markChatLoadComplete } from './trim-stats.js';
 
 // ---- Module-level state -------------------------------------------------
+
+// Set to true by GENERATION_STARTED and cleared by MESSAGE_RECEIVED.
+// Used instead of ST's is_send_press to guard onCharacterMessageRendered
+// against intermediate streaming renders. is_send_press is still true when
+// CHARACTER_MESSAGE_RENDERED fires in non-streaming mode, which would cause
+// extraction to be silently skipped. MESSAGE_RECEIVED always fires before
+// CHARACTER_MESSAGE_RENDERED in both streaming and non-streaming paths.
+let generationInProgress = false;
 
 // Guards prevent re-entrant model calls if ST fires events faster than
 // the previous async job completes.
@@ -414,9 +421,10 @@ function clearAllInjections() {
  * cost is negligible in practice.
  */
 async function onCharacterMessageRendered() {
-  // is_send_press is true while ST is still streaming - skip to avoid
-  // running on intermediate renders.
-  if (is_send_press) return;
+  // Skip intermediate streaming renders - MESSAGE_RECEIVED clears this flag
+  // before the final CHARACTER_MESSAGE_RENDERED fires in both streaming and
+  // non-streaming paths, so extraction only runs once per completed message.
+  if (generationInProgress) return;
 
   const settings = getSettings();
   if (!settings.enabled) return;
@@ -1047,9 +1055,6 @@ async function onChatChangedImpl() {
     return;
   }
 
-  // 1:1 chat - hide the group selector so it doesn't bleed between chat types.
-  $('#sm_group_char_row').hide();
-
   const characterName = getCurrentCharacterName();
 
   // Migrate character data now that we know which character is active.
@@ -1186,8 +1191,6 @@ function updateGroupCharSelector() {
     selectedGroupCharacter = members[0];
     $select.val(selectedGroupCharacter);
   }
-
-  $('#sm_group_char_row').show();
 }
 
 // ---- Group chat handlers ------------------------------------------------
@@ -1279,7 +1282,7 @@ async function onGroupWrapperFinished({ type } = {}) {
   // Skipping them keeps the extraction counter and respondedThisRound in sync with
   // actual story progress rather than firing on every post-round expression classify.
   if (type === 'quiet') return;
-  if (is_send_press) return;
+  if (generationInProgress) return;
   const settings = getSettings();
   if (!settings.enabled) return;
   const context = getContext();
@@ -1820,7 +1823,11 @@ jQuery(async function () {
     if (recapRunningForChat !== null) recapSuppressed = true;
   });
   eventSource.on(event_types.GENERATION_STARTED, (type) => {
+    generationInProgress = true;
     if (type === 'normal') $('#sm_recap_overlay').remove();
+  });
+  eventSource.on(event_types.MESSAGE_RECEIVED, () => {
+    generationInProgress = false;
   });
   eventSource.on(event_types.GROUP_WRAPPER_STARTED, onGroupWrapperStarted);
   eventSource.on(event_types.GROUP_MEMBER_DRAFTED, onGroupMemberDrafted);

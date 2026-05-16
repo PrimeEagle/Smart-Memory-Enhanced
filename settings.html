@@ -121,18 +121,8 @@
         </button>
       </div>
 
-      <!-- Group character selector - shown only in group chats -->
-      <div id="sm_group_char_row" class="sm-block" style="display: none">
-        <label>
-          Viewing memories for
-          <span
-            class="sm-info"
-            data-tooltip="Select which group member's long-term memories, profiles, and continuity to view and manage in the panels below. Does not affect what each character receives in the prompt - that is handled automatically."
-            >ⓘ</span
-          >
-        </label>
-        <select id="sm_group_char_select" class="text_pole"></select>
-      </div>
+      <!-- Hidden backing store for the group character selection - driven by clicking the per-character token bar rows -->
+      <select id="sm_group_char_select" style="display: none"></select>
 
       <!-- ══ LONG-TERM ══ -->
       <details class="sm-section">

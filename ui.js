@@ -349,6 +349,10 @@ export function updateTokenDisplay() {
 
     const row = document.createElement('div');
     row.className = 'sm-token-group-row' + (isActive ? ' sm-token-active' : '');
+    row.title = `Click to view ${member}'s memories`;
+    row.addEventListener('click', () => {
+      $('#sm_group_char_select').val(member).trigger('change');
+    });
 
     const nameEl = document.createElement('span');
     nameEl.className = 'sm-token-group-name';
