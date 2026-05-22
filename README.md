@@ -78,7 +78,7 @@ A small bar in the settings panel shows how many tokens each memory tier is curr
 
 When a tier is actively trimming content to fit its budget, its segment on the bar shows a red strip along the bottom edge. Hovering over the segment shows how many tokens were dropped. This is your signal to consider raising that tier's injection budget in the settings - or lowering another tier's budget to free up room.
 
-**Auto-tune budgets** (experimental, in Developer Settings) adjusts tier budgets automatically based on observed demand. After each injection pass it measures how many tokens each tier actually needed, then sets the budget to that amount plus 15% headroom - enough to stay comfortable without wasting context on unused space. Budgets are never reduced below their defaults, only grown. In group chats it tracks the highest demand seen across all characters in the session, so budgets are sized for the most memory-heavy character rather than whichever one injected last. Enabling auto-tune applies immediately using whatever data has already been collected; after that it re-tunes after every injection pass.
+**Auto-tune budgets** adjusts tier budgets automatically based on observed demand. After each injection pass it measures how many tokens each tier actually needed, then sets the budget to that amount plus 15% headroom - enough to stay comfortable without wasting context on unused space. Budgets are never reduced below their defaults, only grown. In group chats it tracks the highest demand seen across all characters in the session, so budgets are sized for the most memory-heavy character rather than whichever one injected last. Enabling auto-tune applies immediately using whatever data has already been collected; after that it re-tunes after every injection pass.
 
 ### Long-term Memory - Persistent Facts
 
@@ -393,6 +393,10 @@ The settings panel has two modes so you can keep things simple or go deep:
 
 Switching from simple to advanced never overwrites your values - the advanced controls always show the current state.
 
+| Setting           | Default | Description                                                                                                                                                                                                                                                             |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auto-tune budgets | Off     | Automatically adjusts per-tier injection budgets based on observed demand. Each tier's budget is set to its actual usage plus 15% headroom. Budgets never drop below their defaults. In group chats, budgets are sized for the most memory-heavy character seen this session |
+
 ### Hardware Profile
 
 Smart Memory adjusts its behavior based on whether you are using a local model or a hosted service. The profile is auto-detected from your Memory LLM selection but can be overridden manually.
@@ -686,12 +690,11 @@ The `{{smartmemory-unified}}` macro is only active when **Unified injection** is
 
 ### Developer Settings
 
-| Setting                          | Default | Description                                                                                                                                                                                                      |
-| -------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Verbose logging                  | Off     | Print detailed progress to the browser console for extraction, consolidation, and scene detection. Errors are always logged regardless                                                                           |
-| Auto-tune budgets (experimental) | Off     | Automatically adjusts per-tier injection budgets based on observed demand. Budgets grow when content exceeds them and settle back down to their defaults when demand is low - they never drop below defaults. Applies immediately on enable and re-tunes after every injection pass |
-| Unified injection (experimental) | Off     | Merges all active memory tiers into a single context block ordered from most stable (canon, profiles, long-term) to most immediate (session, arcs). The token bar still shows per-tier breakdowns                |
-| Force macro injection mode       | Off     | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). When unified injection is on, activates `{{smartmemory-unified}}` for instruct templates - individual tier macros remain inactive. Leave off for card macros - auto-detection handles them |
+| Setting             | Default | Description                                                                                                                                                                                                      |
+| ------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Verbose logging     | Off     | Print detailed progress to the browser console for extraction, consolidation, and scene detection. Errors are always logged regardless                                                                           |
+| Unified injection   | Off     | Merges all memory tiers into a single block ordered from most stable (canon, long-term) to most immediate (session, arcs). Disables per-tier depth and position settings while active. Available in advanced mode |
+| Force macro injection mode | Off | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). When unified injection is on, activates `{{smartmemory-unified}}` for instruct templates - individual tier macros remain inactive. Leave off for card macros - auto-detection handles them |
 
 ---
 

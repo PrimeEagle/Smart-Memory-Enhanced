@@ -164,7 +164,7 @@
 #sm-tooltip {
   position: fixed;
   z-index: 99999;
-  max-width: 240px;
+  max-width: 360px;
   padding: 7px 10px;
   border-radius: 5px;
   background: rgba(18, 18, 18, 0.93);
@@ -172,7 +172,7 @@
   font-size: 0.78rem;
   font-weight: 400;
   line-height: 1.45;
-  white-space: normal;
+  white-space: pre-line;
   pointer-events: none;
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
   opacity: 0;
