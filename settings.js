@@ -2698,7 +2698,8 @@ export function bindSettingsUI(ctrl) {
     await clearArcs();
     await clearArcSummaries();
     await clearProfiles();
-    clearEpistemicKnowledge(characterName);
+    // Epistemic knowledge is extension_settings-scoped (persists across chats)
+    // and is intentionally NOT cleared here - same reasoning as state ledger.
     await context.saveMetadata();
 
     // Clearing chatMetadata means loadAndInjectSummary will clear the slot.
