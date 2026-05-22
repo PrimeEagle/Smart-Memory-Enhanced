@@ -36,6 +36,7 @@
  * parseTriggerResponse           - parses the comma-separated keyword list from a trigger generation response
  * parseRelationshipDeltaResponse - parses per-pair relationship state changes with magnitude from a delta response
  * parseEpistemicResponse         - parses the five-tag knowledge map output from an epistemic extraction pass
+ * parseEpistemicRetireIndices     - extracts the set of 1-based entry indices the model flagged for retirement
  * parseStateCardResponse         - parses structured current-state field output into a Map of key -> fields
  *
  * All new memory objects produced by the parse functions carry the full graph
@@ -668,6 +669,28 @@ export function parseEpistemicResponse(text) {
   }
 
   return entries;
+}
+
+const EPISTEMIC_RETIRE_RE = /^\[retire\]\s+(\d+)$/i;
+
+/**
+ * Extracts the set of 1-based entry indices the model flagged for retirement.
+ *
+ * Expects lines of the form `[retire] <number>` mixed in with the regular
+ * epistemic output. Invalid or out-of-range indices are silently ignored by
+ * the caller.
+ *
+ * @param {string} text - Raw model output from an epistemic extraction pass.
+ * @returns {Set<number>} 1-based indices to retire from the existing entry list.
+ */
+export function parseEpistemicRetireIndices(text) {
+  const indices = new Set();
+  if (!text) return indices;
+  for (const raw of text.split('\n')) {
+    const match = EPISTEMIC_RETIRE_RE.exec(raw.trim());
+    if (match) indices.add(Number(match[1]));
+  }
+  return indices;
 }
 
 // ---- State card parser ------------------------------------------------------

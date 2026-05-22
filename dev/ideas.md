@@ -203,4 +203,14 @@ so the model knows what names are valid tags.
 
 ---
 
+## Epistemic entry consolidation
+
+**Implemented in 1.8.0.** Existing entries are now passed into each extraction prompt as a numbered list. The model outputs `[retire] <n>` for any entry superseded by the scene - same response, no extra model call. The parser strips retired entries before merging in the new ones.
+
+Weaker local models may miss non-obvious transitions or over-retire entries in edge cases. The failure modes are safe: misses leave stale entries (old behavior), incorrect retirements lose an entry the user can re-add manually. Worth monitoring in practice.
+
+**Status: shipped. Monitor retirement reliability on weaker models.**
+
+---
+
 Last updated: 2026-05-22

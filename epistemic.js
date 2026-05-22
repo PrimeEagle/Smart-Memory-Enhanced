@@ -24,6 +24,11 @@
  * five-tag knowledge map: what each character knows, suspects, believes (falsely),
  * is unaware of, and is actively concealing from a specific target.
  *
+ * Existing entries are passed into each extraction prompt so the model can flag
+ * superseded entries via [retire] tags in the same response. This prevents stale
+ * entries (e.g. [suspects] after confirmation, [unaware] after the character
+ * learns the fact) from accumulating alongside newer, contradicting entries.
+ *
  * Entries are stored per-character in extension_settings and injected as a
  * private knowledge block for the responding character only.
  *
@@ -53,7 +58,7 @@ import {
   generateMemoryId,
 } from './constants.js';
 import { buildEpistemicExtractionPrompt } from './prompts.js';
-import { parseEpistemicResponse } from './parsers.js';
+import { parseEpistemicResponse, parseEpistemicRetireIndices } from './parsers.js';
 import { getSceneParticipants } from './scenes.js';
 import { generateMemoryExtract } from './generate.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
@@ -267,7 +272,13 @@ export async function extractEpistemicKnowledge(
     if (!chatExcerpt.trim()) return 0;
 
     const participants = getSceneParticipants(sceneMessages);
-    const prompt = buildEpistemicExtractionPrompt(chatExcerpt, participants);
+
+    // Load existing entries before building the prompt so they can be passed
+    // in for supersession checking. The model outputs [retire] <n> lines for
+    // any existing entry it determines the scene has resolved or contradicted.
+    const existing = loadEpistemicKnowledge(characterName);
+
+    const prompt = buildEpistemicExtractionPrompt(chatExcerpt, participants, existing);
 
     const response = await generateMemoryExtract(prompt, {
       responseLength: settings.epistemic_response_length ?? 400,
@@ -277,8 +288,22 @@ export async function extractEpistemicKnowledge(
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
+    // Parse retire indices first so the caller can filter before dedup.
+    const retireIndices = parseEpistemicRetireIndices(response);
+    const retiredCount = retireIndices.size;
+
+    // Filter existing entries - remove any the model flagged as superseded.
+    // 1-based indices; out-of-range values are silently ignored.
+    const survivingExisting = existing.filter((_, i) => !retireIndices.has(i + 1));
+
+    if (retiredCount > 0) {
+      smLog(
+        `[SmartMemory] Epistemic: retired ${retiredCount} superseded entries for "${characterName}".`,
+      );
+    }
+
     const parsed = parseEpistemicResponse(response);
-    if (parsed.length === 0) {
+    if (parsed.length === 0 && retiredCount === 0) {
       smLog('[SmartMemory] Epistemic extraction produced no parseable lines.');
       return 0;
     }
@@ -294,14 +319,11 @@ export async function extractEpistemicKnowledge(
       entry.source_messages = [windowStart, windowEnd];
     }
 
-    // Merge with existing entries - skip near-duplicates.
-    const existing = loadEpistemicKnowledge(characterName);
-
     // Fetch embeddings for all content strings in one batch when possible.
-    // Batch order: all existing first, then all incoming, so indices align.
+    // Batch order: all surviving existing first, then all incoming, so indices align.
     let embeddings = null;
     try {
-      const texts = [...existing.map((e) => e.content), ...parsed.map((e) => e.content)];
+      const texts = [...survivingExisting.map((e) => e.content), ...parsed.map((e) => e.content)];
       if (texts.length > 0) {
         embeddings = await getEmbeddingBatch(texts);
       }
@@ -312,8 +334,8 @@ export async function extractEpistemicKnowledge(
     const newEntries = [];
     for (let pi = 0; pi < parsed.length; pi++) {
       const incoming = parsed[pi];
-      const incomingVec = embeddings?.[existing.length + pi] ?? null;
-      const isDup = existing.some((ex, ei) => {
+      const incomingVec = embeddings?.[survivingExisting.length + pi] ?? null;
+      const isDup = survivingExisting.some((ex, ei) => {
         const existingVec = embeddings?.[ei] ?? null;
         const vectors = incomingVec && existingVec ? [existingVec, incomingVec] : null;
         return isEpistemicDuplicate(ex, incoming, vectors);
@@ -321,14 +343,14 @@ export async function extractEpistemicKnowledge(
       if (!isDup) newEntries.push(incoming);
     }
 
-    if (newEntries.length === 0) {
+    if (newEntries.length === 0 && retiredCount === 0) {
       smLog('[SmartMemory] All epistemic candidates were duplicates of existing entries.');
       return 0;
     }
 
-    saveEpistemicKnowledge(characterName, [...existing, ...newEntries]);
+    saveEpistemicKnowledge(characterName, [...survivingExisting, ...newEntries]);
     smLog(
-      `[SmartMemory] Epistemic: added ${newEntries.length} new entries for "${characterName}".`,
+      `[SmartMemory] Epistemic: added ${newEntries.length} new entries, retired ${retiredCount} for "${characterName}".`,
     );
     return newEntries.length;
   } catch (err) {

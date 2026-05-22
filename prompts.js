@@ -818,15 +818,38 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
  * of iterative testing - every rule exists because a specific failure mode was
  * observed without it. Do not simplify.
  *
+ * When existingEntries is non-empty, the prompt also asks the model to flag
+ * superseded entries via `[retire] <number>` lines (1-based index into the
+ * list). No extra model call - retire lines are mixed into the same output.
+ *
  * @param {string} sceneText - The scene messages formatted as a chat excerpt.
  * @param {string[]} participants - Character names present in the scene (hint only).
+ * @param {Array<{type: string, subject: string, target: string|null, content: string}>} [existingEntries] - Current stored entries for context.
  * @returns {string} The complete prompt string.
  */
-export function buildEpistemicExtractionPrompt(sceneText, participants) {
+export function buildEpistemicExtractionPrompt(sceneText, participants, existingEntries = []) {
   const participantHint =
     participants.length > 0
       ? `Characters present in this scene: ${participants.join(', ')}.\n\n`
       : '';
+
+  let existingBlock = '';
+  if (existingEntries.length > 0) {
+    const lines = existingEntries.map((e, i) => {
+      const label =
+        e.type === 'hiding'
+          ? `[hiding] ${e.subject} from ${e.target} | ${e.content}`
+          : `[${e.type}] ${e.subject} | ${e.content}`;
+      return `[${i + 1}] ${label}`;
+    });
+    existingBlock =
+      `Existing knowledge entries (do not repeat these as new entries):\n` +
+      lines.join('\n') +
+      `\n\nAfter your new entries, output [retire] <number> for each existing entry` +
+      ` that is now superseded, contradicted, or resolved by what happened in this` +
+      ` scene. Only retire an entry when the scene explicitly establishes the change` +
+      ` - do not retire based on inference. If nothing is superseded, output nothing extra.\n\n`;
+  }
 
   return (
     NO_ACTION_PREAMBLE +
@@ -887,6 +910,7 @@ export function buildEpistemicExtractionPrompt(sceneText, participants) {
     `- Fen swore silence so [hiding] Fen from Lyria (oath establishes hiding)\n` +
     `- Lyria's [believes] records a false belief - Kael actually did notice\n\n` +
     `---\n\n` +
+    existingBlock +
     participantHint +
     `Scene:\n${sceneText}\n\n` +
     `Output:`
