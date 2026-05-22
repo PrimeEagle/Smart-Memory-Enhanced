@@ -399,12 +399,10 @@ function clearAllInjections() {
  * Memory runs after all other extensions have processed the message).
  *
  * Swipe detection: CHARACTER_MESSAGE_RENDERED fires on swipes (alternative
- * generations) as well as on new messages. A swipe replaces the last message
- * in-place without growing the chat array, so we compare the current chat
- * length against lastKnownChatLength to detect and skip swipes entirely.
- * Only new messages (chat grew) trigger compaction, scene detection, and
- * extraction. lastActive is updated on swipes so the recap threshold stays
- * accurate during long swipe sessions.
+ * generations) as well as on new messages. ST passes a `type` parameter -
+ * 'swipe', 'impersonate', and 'quiet' should not trigger extraction. The type
+ * check is the primary guard; the length comparison is kept as a belt-and-
+ * suspenders fallback for any ST version that omits the parameter.
  *
  * Orchestration order (new messages only):
  *   1. Check for compaction threshold and run if needed (async, non-blocking).
@@ -420,7 +418,7 @@ function clearAllInjections() {
  * Compaction fires infrequently (only at the context threshold) so the latency
  * cost is negligible in practice.
  */
-async function onCharacterMessageRendered() {
+async function onCharacterMessageRendered(messageId, type) {
   // Skip intermediate streaming renders - MESSAGE_RECEIVED clears this flag
   // before the final CHARACTER_MESSAGE_RENDERED fires in both streaming and
   // non-streaming paths, so extraction only runs once per completed message.
@@ -432,15 +430,20 @@ async function onCharacterMessageRendered() {
   const context = getContext();
   if (!context.chat || context.chat.length === 0) return;
 
-  // Swipe detection: CHARACTER_MESSAGE_RENDERED fires on swipes too, but a swipe
-  // replaces the last message in-place - the chat array does not grow. Only
-  // process when the chat actually advanced (new message added by a real turn).
+  // ST passes a type string for non-accepted generations. Skip these - the user
+  // has not committed to the message so nothing should be extracted or stored.
+  if (type === 'swipe' || type === 'impersonate' || type === 'quiet') {
+    updateLastActive().catch(console.error);
+    return;
+  }
+
+  // Belt-and-suspenders fallback: if type is absent (older ST version) fall back
+  // to the length comparison. A swipe replaces the last message in-place without
+  // growing the chat array, so a non-growing length means skip.
   const currentLength = context.chat.length;
   const isSwipe = currentLength <= lastKnownChatLength;
   lastKnownChatLength = currentLength;
   if (isSwipe) {
-    // Still update lastActive so the recap threshold stays accurate during
-    // a long swipe session where the user is clearly present.
     updateLastActive().catch(console.error);
     return;
   }
@@ -956,7 +959,11 @@ async function onChatChangedImpl() {
   respondedThisRound = new Set();
   selectedGroupCharacter = null;
   setContinuityBadge(null);
-  lastKnownChatLength = 0;
+  // Initialise to the current chat length so the first CHARACTER_MESSAGE_RENDERED
+  // after a chat load is not mistaken for a new message when the user swipes
+  // immediately without generating anything first. A swipe does not grow the
+  // chat array, so currentLength <= lastKnownChatLength correctly identifies it.
+  lastKnownChatLength = getContext().chat?.length ?? 0;
   clearEmbeddingCache();
   clearUnifiedSlot();
 
