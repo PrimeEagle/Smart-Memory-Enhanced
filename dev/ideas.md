@@ -119,18 +119,6 @@ should be designed around a real card's needs, not speculatively.
 
 ---
 
-## Pinned epistemic entries that carry across chats
-
-Some epistemic knowledge is session-specific (what a character learned this scene), but some is durable - deep-seated beliefs, long-standing secrets, core convictions that do not reset between sessions. A pinning mechanism would let users mark individual entries as persistent, storing them alongside long-term memories rather than in chatMetadata.
-
-**Why it is interesting:** A character who believes their dead sister is still alive, or who is hiding a crime from years before the story starts, should carry that epistemic state into every new chat without the user having to re-establish it manually.
-
-**Considerations:** Pinned entries would need their own clear/manage UI, and a decision on whether extraction can update or retire them the same way long-term memories are updated.
-
-**Status: parking lot. Not on the roadmap for any current release.**
-
----
-
 ## State ledger storage scope and clear behaviour
 
 State cards are currently stored in chatMetadata (chat-scoped), but they accumulate knowledge from long-term memories across multiple sessions. A character's injury from three sessions ago is reflected in their state card but never appears in the current chat's messages - wiping the ledger on "Forget This Chat" loses that accumulated state permanently, because extraction on the new chat cannot reconstruct facts it never saw.
@@ -154,22 +142,6 @@ The regex heuristic is the fallback when AI detection is disabled and the only d
 Possible directions: a larger and more carefully tested pattern set; a lightweight keyword scoring approach instead of any-match; or a middle ground where a small fast model (not the full extraction model) handles yes/no detection at lower cost than the current AI detection path, making decent scene detection viable even on Profile A without opting into full AI detection.
 
 **Status: ongoing. The heuristic is usable but not good enough to be relied on for chats with natural prose transitions.**
-
----
-
-## Automated token budget allocation
-
-All injection token budgets are currently fixed values set manually by the user (or left at their defaults). In practice, most tiers use far less than their budget on short chats and approach or exceed it on long ones. The total budget is also a single shared number that users must set without knowing how it will be distributed.
-
-A smarter system would observe how much each tier actually uses and reallocate the surplus dynamically. For example: if scenes only uses 80 tokens of its 300-token budget, those 220 tokens could flow to long-term memories where 30 entries are being trimmed. The user sets a single total budget; the system distributes it based on actual demand.
-
-A simpler intermediate step would be preset selectors (Compact / Normal / Detailed) that set all budgets together, replacing the current raw-number sliders. This is already noted in CLAUDE.md under planned UX improvements.
-
-The trim indicator (visual alarm on the token bar when a tier is actively dropping content) is the first step toward this - it gives users visibility into when trimming is happening before any automated reallocation is designed.
-
-**Why deferred:** the distribution algorithm (priority order, minimum floors, what to do when everything is at minimum) needs careful design to avoid surprising behaviour. The wrong allocation can hurt quality worse than a flat budget. Needs a dedicated design session before any implementation.
-
-**Status: parking lot. Trim indicator is the prerequisite - build and observe usage patterns before designing the allocation logic.**
 
 ---
 
