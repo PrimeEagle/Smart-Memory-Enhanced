@@ -34,6 +34,7 @@
  * getTierTrimStats       - returns the stored stats for a tier key
  * getTierHWStats         - returns the high water mark stats for a tier key
  * clearTierTrimStats     - resets all stats and HWM (call on chat change)
+ * clearTierStats         - clears recent-injection stats for one tier (keeps HWM)
  * hasAnyTrimmedTier      - returns true when at least one non-exempt tier is over budget
  * markTrimToastFired     - records that the one-time trim toast has been shown
  * hasTrimToastFired      - returns true if the toast has already been shown
@@ -112,6 +113,19 @@ export function getTierHWStats(key) {
 export function clearTierTrimStats() {
   for (const k of Object.keys(_stats)) delete _stats[k];
   for (const k of Object.keys(_hwStats)) delete _hwStats[k];
+}
+
+/**
+ * Clears the most-recent injection stats for a single tier without touching
+ * the high water mark. Call when auto-tune expands a tier's budget so the
+ * load-pass trim record for that tier is not mistaken for current trim on the
+ * next updateTokenDisplay call. The HWM is preserved so auto-tune still has
+ * demand data for future passes.
+ *
+ * @param {string} key - The injection slot key (PROMPT_KEY_* constant).
+ */
+export function clearTierStats(key) {
+  delete _stats[key];
 }
 
 // Tiers excluded from the trim warning toast. Short-term is excluded because

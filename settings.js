@@ -121,7 +121,7 @@ import {
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
-import { getTierHWStats } from './trim-stats.js';
+import { getTierHWStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
 import {
   setStatusMessage,
@@ -392,17 +392,17 @@ function applyTotalBudget(total, s) {
  * the token bar. Called after any budget slider change so the trim indicators
  * clear immediately without waiting for the next message.
  *
- * Most inject functions are synchronous reads from stored data - no model calls.
- * injectMemories may use embeddings for scoring but falls back to sync scoring,
- * so the token bar updates promptly in all cases.
+ * Awaits the two async inject calls (injectMemories, injectSessionMemories) so
+ * that updateTokenDisplay sees fully populated trim stats rather than the stale
+ * values from the previous injection cycle.
  *
  * @param {string|null} characterName - Active character (or group selection).
  */
-function reinjectAfterBudgetChange(characterName) {
+async function reinjectAfterBudgetChange(characterName) {
   loadAndInjectSummary();
-  injectMemories(characterName);
+  await injectMemories(characterName);
   injectRelationshipHistory(characterName);
-  injectSessionMemories();
+  await injectSessionMemories();
   injectSceneHistory();
   injectArcs();
   injectCanon(characterName);
@@ -551,6 +551,12 @@ export function autoTuneBudgets(characterName) {
       s[tier.setting] = budget;
       $(`#${tier.slider}`).val(budget);
       $(`#${tier.display}`).text(tier.fmt(budget));
+      // Invalidate stale trim stats for this tier. reinjectAfterBudgetChange fires
+      // async inject calls (injectMemories, injectSessionMemories) without awaiting
+      // them, so updateTokenDisplay may run before those Promises resolve and see
+      // the load-pass trim data rather than the fresh post-tune data. Clearing here
+      // ensures the token bar shows no trim until the next real injection reports.
+      clearTierStats(tier.promptKey);
       changed = true;
     }
   }
