@@ -430,9 +430,11 @@ async function onCharacterMessageRendered(messageId, type) {
   const context = getContext();
   if (!context.chat || context.chat.length === 0) return;
 
-  // ST passes a type string for non-accepted generations. Skip these - the user
-  // has not committed to the message so nothing should be extracted or stored.
-  if (type === 'swipe' || type === 'impersonate' || type === 'quiet') {
+  // ST passes a type string for non-committed generations. Skip these - the user
+  // has not settled on a final message so nothing should be extracted or stored.
+  // 'continue' extends the current message in place and may be swiped away;
+  // its content will be captured on the next real extraction pass.
+  if (type === 'swipe' || type === 'continue' || type === 'impersonate' || type === 'quiet') {
     updateLastActive().catch(console.error);
     return;
   }
@@ -1289,10 +1291,11 @@ async function onGroupWrapperFinished({ type } = {}) {
   // Skipping them keeps the extraction counter and respondedThisRound in sync with
   // actual story progress rather than firing on every post-round expression classify.
   if (type === 'quiet') return;
-  // Swipes are alternative generations the user has not accepted - skip the same
-  // way solo chat does. GROUP_WRAPPER_FINISHED fires with type='swipe' for group
-  // swipes, so without this guard every swipe increments the extraction counter.
-  if (type === 'swipe') return;
+  // Swipes and continues are not committed user turns. GROUP_WRAPPER_FINISHED
+  // fires with type='swipe' or type='continue' for these, so without this guard
+  // every swipe or /continue increments the extraction counter. The content will
+  // be captured correctly once the user sends a real message and extraction fires.
+  if (type === 'swipe' || type === 'continue') return;
   if (generationInProgress) return;
   const settings = getSettings();
   if (!settings.enabled) return;

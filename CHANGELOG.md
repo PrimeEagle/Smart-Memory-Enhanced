@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.8] - 2026-05-22
+
+### Fixed
+
+- **Extraction no longer fires on `/continue` generations.** Each `/continue`
+  call was incrementing the extraction counter even though the user had not
+  committed to the message - the same window arithmetic problem as swipes.
+  If the user continued a message twice then swiped it away, the counter was
+  inflated and extraction would fire with a window boundary pointing at the
+  discarded content. `'continue'` is now skipped in both the solo and group
+  chat paths alongside `'swipe'`. The continued content is captured correctly
+  on the next extraction pass after a real user message.
+
 ## [1.7.7] - 2026-05-22
 
 ### Fixed
