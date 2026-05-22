@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
+  now passed into each extraction prompt as a numbered list. The model outputs
+  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
+  a `[suspects]` entry is retired when the character confirms the fact as
+  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
+  entries are removed before new ones are merged in, so the injected knowledge
+  block stays clean rather than accumulating contradictions over a long chat.
+  No extra model call - retire lines are mixed into the same extraction response.
+
+### Changed
+
+- **Auto-tune budgets and unified injection** have been moved from Developer
+  settings to the Configuration section and are no longer marked experimental.
+  Both features are stable. Auto-tune sits directly below the total budget
+  slider; unified injection is in the advanced-only block.
+- **Macro tokens reference** is now visible in both simple and advanced mode
+  (previously advanced-only), repositioned to just above Hardware profile so it
+  no longer appears to group the options below it. Tooltip formatting fixed -
+  newlines now render correctly, macro order matches the extension panel
+  injection order.
+
+### Fixed
+
+- **Trim warning no longer fires spuriously when auto-tune adjusts a budget.**
+  `reinjectAfterBudgetChange` was not awaiting the two async inject calls
+  (`injectMemories`, `injectSessionMemories`), so `updateTokenDisplay` could run
+  before those Promises resolved and see stale load-pass trim data, triggering
+  the one-time trim warning incorrectly on the first message after auto-tune ran.
+- **Forget This Chat no longer clears Perspectives & Secrets.** Epistemic
+  knowledge lives in `extension_settings` and persists across sessions by
+  design, but the handler was still calling `clearEpistemicKnowledge` - silently
+  destroying cross-session knowledge every time the user cleared a chat. Fixed
+  to match the same treatment already applied to state cards.
+
 ## [1.7.8] - 2026-05-22
 
 ### Fixed
