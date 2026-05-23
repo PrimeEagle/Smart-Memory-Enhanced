@@ -2753,6 +2753,7 @@ export function bindSettingsUI(ctrl) {
     delete context.chatMetadata[META_KEY].summary;
     delete context.chatMetadata[META_KEY].summaryEnd;
     delete context.chatMetadata[META_KEY].summaryUpdated;
+    delete context.chatMetadata[META_KEY].lastExtractCutoff;
 
     await clearSessionMemories();
     await clearSessionEntityRegistry();
