@@ -1484,6 +1484,13 @@ export function updateEntityPanel(characterName) {
       });
 
       $panel.append($section);
+    } else if (isStateLedgerEnabled() && entity.type === 'unknown') {
+      // Model failed to classify this entity - hint that retyping it unlocks the state card.
+      $panel.append(
+        '<div class="sm_state_card_section sm-muted" style="font-size:0.85em;padding:2px 0 4px 4px;">' +
+          '<i class="fa-solid fa-circle-info"></i> Change type to enable state card' +
+          '</div>',
+      );
     }
   }
 }
