@@ -597,6 +597,18 @@ const SCENE_BREAK_PATTERNS = [
   // The previous pattern required dawn/morning/light which missed natural
   // "they woke up" transitions common in RP.
   /\b((woke|stirred|roused) (up\b|(as |to find\b|beside\b|from (a |his |her |their )?(sleep|slumber|nap|rest))|(as (dawn|morning|light)|with the (sun|light|dawn))))\b/i,
+  // Wake from unconsciousness/injury - "regained consciousness", "came to".
+  // "opened his eyes" alone is too broad (fires mid-scene); requiring a result
+  // clause ("to find", "and found/saw") keeps it to genuine recovery moments.
+  /\b(regained consciousness|came to (his|her|their|my|your) senses?|opened (his|her|their|my|your) eyes (to find|and (found|saw)))\b/i,
+  // Location transitions - returning to a place after an absence.
+  /\b(returned (to|back to) (the|a|an|\w+'s)\s+\w+(\s+\w+)?|made (his|her|their|my|your) way back (to|into) (the|a|an|\w+'s)\s+\w+(\s+\w+)?)\b/i,
+  // Location transitions - formal arrival phrasing.
+  /\b(upon (arriving|reaching|entering) (at )?(the|a|an|\w+'s)\s+\w+(\s+\w+)?)\b/i,
+  // Time skips - "the morning after", "by morning/nightfall/dawn/dusk".
+  /\b(the morning after|by (morning|nightfall|dawn|dusk|daybreak|sundown|nighttime))\b/i,
+  // Time skips - "in the days/weeks/months that followed".
+  /\b(in the (days?|weeks?|months?|years?) (that|which) followed)\b/i,
   // Explicit separator markers (---, ***, * * *)
   /^[-*~]{3,}$/m,
   /\*\s*\*\s*\*/,
