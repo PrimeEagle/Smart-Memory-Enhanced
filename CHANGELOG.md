@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entries are removed before new ones are merged in, so the injected knowledge
   block stays clean rather than accumulating contradictions over a long chat.
   No extra model call - retire lines are mixed into the same extraction response.
+- **Scene break heuristic patterns expanded.** Five new pattern groups have been
+  added: wake from unconsciousness or injury ("regained consciousness", "came to
+  their senses", "opened their eyes to find"); return transitions ("returned to
+  the X", "made their way back to"); formal arrival phrasing ("upon
+  arriving/reaching/entering the X"); time anchors ("the morning after", "by
+  morning/nightfall/dawn/dusk"); and extended time skips ("in the days/weeks that
+  followed"). Patterns are intentionally narrow to avoid false positives on
+  common mid-scene phrasing.
 
 ### Changed
 
@@ -29,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer appears to group the options below it. Tooltip formatting fixed -
   newlines now render correctly, macro order matches the extension panel
   injection order.
+- **Unknown-typed entities now show a hint in the entity panel** when the state
+  ledger is enabled. Entities the model failed to classify default to type
+  `unknown`, which does not support state cards. Previously the state card
+  section was silently absent; now a small info line prompts the user to change
+  the type via the existing type badge to unlock the state card editor.
 
 ### Fixed
 
@@ -42,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design, but the handler was still calling `clearEpistemicKnowledge` - silently
   destroying cross-session knowledge every time the user cleared a chat. Fixed
   to match the same treatment already applied to state cards.
+- **Fresh Start now clears `lastExtractCutoff`.** The Fresh Start handler deleted
+  all other chat-scoped metadata but left the extraction cutoff pointer intact.
+  On the first extraction run after a Fresh Start the smart window would start
+  from the stale cutoff, skipping messages between it and the current tail and
+  silently under-extracting.
 
 ## [1.7.8] - 2026-05-22
 
