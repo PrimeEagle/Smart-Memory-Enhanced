@@ -416,6 +416,8 @@ Selects which AI model handles all Smart Memory work - summarization, extraction
 Options: **Main API**, **Ollama**, **OpenAI Compatible**, or **WebLLM Extension**.
 
 > **Note:** Some OpenAI Compatible providers (including Nvidia NIM) block direct browser connections due to CORS restrictions. If requests fail, run a local proxy such as LiteLLM and point the URL to that instead.
+>
+> **URL format:** Enter only the base URL - do not include `/v1` at the end. The extension appends the full path automatically. For example, NovelAI should be entered as `https://text.novelai.net/oa`, not `https://text.novelai.net/oa/v1`.
 
 ### Memory Deduplication
 
