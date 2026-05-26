@@ -88,7 +88,9 @@ export async function getEmbeddingBatch(texts) {
 
   if (uncached.length === 0) return result;
 
-  const baseUrl = (settings.embedding_url || 'http://localhost:11434').replace(/\/$/, '');
+  const baseUrl = (settings.embedding_url || 'http://localhost:11434')
+    .replace(/\/$/, '')
+    .replace(/\/v1$/, '');
   const model = settings.embedding_model || 'nomic-embed-text';
   const keep = settings.embedding_keep ?? false;
   const source = settings.embedding_source ?? 'ollama';

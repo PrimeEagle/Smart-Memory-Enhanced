@@ -190,7 +190,7 @@ async function generateOpenAICompat(
   responseLength = MEMORY_GENERATION_BUDGET,
 ) {
   const settings = extension_settings[MODULE_NAME];
-  const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '');
+  const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '').replace(/\/v1$/, '');
   if (!baseUrl) throw new Error('No API URL configured for OpenAI Compatible source.');
   const apiKey = settings?.openai_compat_key || '';
   const model = settings?.openai_compat_model || '';
