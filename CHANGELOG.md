@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On the first extraction run after a Fresh Start the smart window would start
   from the stale cutoff, skipping messages between it and the current tail and
   silently under-extracting.
+- **OpenAI-compatible URLs with a trailing `/v1` now work correctly.** Many
+  providers document their API URL with `/v1` included (e.g.
+  `https://text.novelai.net/oa/v1`). The extension already appends `/v1`
+  itself, so a user-supplied suffix caused doubled paths and 404 errors. Both
+  the Memory LLM and embedding URL fields now strip a trailing `/v1`
+  defensively, so either form works.
 
 ## [1.7.8] - 2026-05-22
 
