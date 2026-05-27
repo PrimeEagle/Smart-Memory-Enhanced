@@ -66,6 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself, so a user-supplied suffix caused doubled paths and 404 errors. Both
   the Memory LLM and embedding URL fields now strip a trailing `/v1`
   defensively, so either form works.
+- **Extraction no longer silently skips when another extension fires a background
+  generation between `MESSAGE_RECEIVED` and `CHARACTER_MESSAGE_RENDERED`.** The
+  `GENERATION_STARTED` guard that prevents extraction from running mid-stream was
+  incorrectly set for all generation types, including `quiet`. Extensions such as
+  Memory Books trigger a quiet generation for their own auto-summary immediately
+  after `MESSAGE_RECEIVED`, which raised the flag before Smart Memory's
+  `CHARACTER_MESSAGE_RENDERED` handler could run - causing every extraction pass
+  to be silently skipped. The guard now only activates for `normal` generations.
 
 ## [1.7.8] - 2026-05-22
 

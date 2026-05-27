@@ -163,12 +163,16 @@ import { clearTierTrimStats, resetTrimToastFlag, markChatLoadComplete } from './
 
 // ---- Module-level state -------------------------------------------------
 
-// Set to true by GENERATION_STARTED and cleared by MESSAGE_RECEIVED.
+// Set to true by GENERATION_STARTED (type='normal' only) and cleared by MESSAGE_RECEIVED.
 // Used instead of ST's is_send_press to guard onCharacterMessageRendered
 // against intermediate streaming renders. is_send_press is still true when
 // CHARACTER_MESSAGE_RENDERED fires in non-streaming mode, which would cause
 // extraction to be silently skipped. MESSAGE_RECEIVED always fires before
 // CHARACTER_MESSAGE_RENDERED in both streaming and non-streaming paths.
+// Quiet generations (background calls from other extensions) are intentionally
+// excluded - setting the flag for them causes extraction to be skipped when
+// another extension fires a quiet generation between MESSAGE_RECEIVED and
+// CHARACTER_MESSAGE_RENDERED.
 let generationInProgress = false;
 
 // Guards prevent re-entrant model calls if ST fires events faster than
@@ -1837,8 +1841,16 @@ jQuery(async function () {
     if (recapRunningForChat !== null) recapSuppressed = true;
   });
   eventSource.on(event_types.GENERATION_STARTED, (type) => {
-    generationInProgress = true;
-    if (type === 'normal') $('#sm_recap_overlay').remove();
+    // Only track normal generations - quiet generations are background calls
+    // from other extensions (e.g. auto-summary) and do not produce the
+    // CHARACTER_MESSAGE_RENDERED events this flag is designed to suppress.
+    // Setting the flag for quiet types causes extraction to be silently
+    // skipped when another extension fires a quiet generation between
+    // MESSAGE_RECEIVED and CHARACTER_MESSAGE_RENDERED.
+    if (type === 'normal') {
+      generationInProgress = true;
+      $('#sm_recap_overlay').remove();
+    }
   });
   eventSource.on(event_types.MESSAGE_RECEIVED, () => {
     generationInProgress = false;
