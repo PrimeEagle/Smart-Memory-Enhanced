@@ -5,62 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
-  now passed into each extraction prompt as a numbered list. The model outputs
-  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
-  a `[suspects]` entry is retired when the character confirms the fact as
-  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
-  entries are removed before new ones are merged in, so the injected knowledge
-  block stays clean rather than accumulating contradictions over a long chat.
-  No extra model call - retire lines are mixed into the same extraction response.
-- **Scene break heuristic patterns expanded.** Five new pattern groups have been
-  added: wake from unconsciousness or injury ("regained consciousness", "came to
-  their senses", "opened their eyes to find"); return transitions ("returned to
-  the X", "made their way back to"); formal arrival phrasing ("upon
-  arriving/reaching/entering the X"); time anchors ("the morning after", "by
-  morning/nightfall/dawn/dusk"); and extended time skips ("in the days/weeks that
-  followed"). Patterns are intentionally narrow to avoid false positives on
-  common mid-scene phrasing.
-
-### Changed
-
-- **Auto-tune budgets and unified injection** have been moved from Developer
-  settings to the Configuration section and are no longer marked experimental.
-  Both features are stable. Auto-tune sits directly below the total budget
-  slider; unified injection is in the advanced-only block.
-- **Macro tokens reference** is now visible in both simple and advanced mode
-  (previously advanced-only), repositioned to just above Hardware profile so it
-  no longer appears to group the options below it. Tooltip formatting fixed -
-  newlines now render correctly, macro order matches the extension panel
-  injection order.
-- **Unknown-typed entities now show a hint in the entity panel** when the state
-  ledger is enabled. Entities the model failed to classify default to type
-  `unknown`, which does not support state cards. Previously the state card
-  section was silently absent; now a small info line prompts the user to change
-  the type via the existing type badge to unlock the state card editor.
-
-### Fixed
-
-- **Trim warning no longer fires spuriously when auto-tune adjusts a budget.**
-  `reinjectAfterBudgetChange` was not awaiting the two async inject calls
-  (`injectMemories`, `injectSessionMemories`), so `updateTokenDisplay` could run
-  before those Promises resolved and see stale load-pass trim data, triggering
-  the one-time trim warning incorrectly on the first message after auto-tune ran.
-- **Forget This Chat no longer clears Perspectives & Secrets.** Epistemic
-  knowledge lives in `extension_settings` and persists across sessions by
-  design, but the handler was still calling `clearEpistemicKnowledge` - silently
-  destroying cross-session knowledge every time the user cleared a chat. Fixed
-  to match the same treatment already applied to state cards.
-- **Fresh Start now clears `lastExtractCutoff`.** The Fresh Start handler deleted
-  all other chat-scoped metadata but left the extraction cutoff pointer intact.
-  On the first extraction run after a Fresh Start the smart window would start
-  from the stale cutoff, skipping messages between it and the current tail and
-  silently under-extracting.
-
 ## [1.7.9] - 2026-05-27
 
 ### Fixed
@@ -79,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after `MESSAGE_RECEIVED`, which raised the flag before Smart Memory's
   `CHARACTER_MESSAGE_RENDERED` handler could run - causing every extraction pass
   to be silently skipped. The guard now only activates for `normal` generations.
+- **Trim warning no longer fires spuriously when auto-tune adjusts a budget.**
+  `reinjectAfterBudgetChange` was not awaiting the two async inject calls
+  (`injectMemories`, `injectSessionMemories`), so `updateTokenDisplay` could run
+  before those Promises resolved and see stale load-pass trim data, triggering
+  the one-time trim warning incorrectly on the first message after auto-tune ran.
+- **Forget This Chat no longer clears Perspectives & Secrets.** Epistemic
+  knowledge lives in `extension_settings` and persists across sessions by
+  design, but the handler was still calling `clearEpistemicKnowledge` - silently
+  destroying cross-session knowledge every time the user cleared a chat. Fixed
+  to match the same treatment already applied to state cards.
+- **Fresh Start now clears `lastExtractCutoff`.** The Fresh Start handler deleted
+  all other chat-scoped metadata but left the extraction cutoff pointer intact.
+  On the first extraction run after a Fresh Start the smart window would start
+  from the stale cutoff, skipping messages between it and the current tail and
+  silently under-extracting.
 
 ## [1.7.8] - 2026-05-22
 
