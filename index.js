@@ -965,6 +965,7 @@ async function onChatChangedImpl() {
   respondedThisRound = new Set();
   selectedGroupCharacter = null;
   setContinuityBadge(null);
+  setStatusMessage('');
   // Initialise to the current chat length so the first CHARACTER_MESSAGE_RENDERED
   // after a chat load is not mistaken for a new message when the user swipes
   // immediately without generating anything first. A swipe does not grow the

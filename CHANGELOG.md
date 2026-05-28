@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section was silently absent; now a small info line prompts the user to change
   the type via the existing type badge to unlock the state card editor.
 
+### Fixed
+
+- **Status bar no longer shows a stale extraction count after switching chats.**
+  The "N items stored for X" message set at the end of an extraction pass was
+  never cleared on chat change, so switching to a different character or a new
+  chat left the previous character's count visible until the next extraction ran.
+
 ## [1.7.9] - 2026-05-27
 
 ### Fixed
