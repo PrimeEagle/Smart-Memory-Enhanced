@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Away recap no longer disappears when another extension re-renders the last
+  message after chat load.** Some extensions (e.g. SillyTavern Expressions)
+  fire `CHARACTER_MESSAGE_RENDERED` on an existing message during their
+  initialization pass. The recap dismissal logic in that handler was redundant -
+  `GENERATION_STARTED` and `MESSAGE_SENT` already handle all legitimate dismissal
+  cases - and has been removed. The recap now stays visible until the user
+  explicitly dismisses it or a real new generation begins.
+- **Away recap can now be dismissed programmatically by external extensions.**
+  Dispatching a `smart_memory:dismiss_recap` DOM event removes the recap overlay.
+  This allows companion extensions (such as Discord Connector) to clear a
+  blocking recap when the user is not physically present to click Dismiss.
 - **Status bar no longer shows a stale extraction count after switching chats.**
   The "N items stored for X" message set at the end of an extraction pass was
   never cleared on chat change, so switching to a different character or a new
