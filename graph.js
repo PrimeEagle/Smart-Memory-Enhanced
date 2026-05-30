@@ -158,7 +158,13 @@ export function showMemoryGraph(characterName) {
   }
 
   const $overlay = $(buildOverlayHTML(characterName));
-  $('body').append($overlay);
+  document.body.appendChild($overlay[0]);
+  // Use showModal() so the overlay renders in the browser's top layer, immune
+  // to ST's transformed ancestors that trap position:fixed divs on mobile.
+  // Prevent the browser's default Escape handling - our keydown handler calls
+  // closeGraph() which does proper canvas/state cleanup before removing.
+  $overlay[0].addEventListener('cancel', (e) => e.preventDefault());
+  $overlay[0].showModal();
 
   const canvas = document.getElementById('sm_graph_canvas');
   const ctx = canvas.getContext('2d');
@@ -978,7 +984,9 @@ function closeGraph() {
   if (!gs) return;
   cancelAnimationFrame(gs.rafId);
   gs._cleanup?.();
-  $('#sm_graph_overlay').remove();
+  const overlay = document.getElementById('sm_graph_overlay');
+  if (overlay?.open) overlay.close();
+  overlay?.remove();
   gs = null;
 }
 
@@ -1017,7 +1025,7 @@ function buildOverlayHTML(characterName) {
     )
     .join('');
 
-  return `<div id="sm_graph_overlay">
+  return `<dialog id="sm_graph_overlay">
   <div id="sm_graph_card">
     <div id="sm_graph_toolbar">
       <span id="sm_graph_title">${$('<div>').text(title).html()}</span>
@@ -1041,5 +1049,5 @@ function buildOverlayHTML(characterName) {
       </span>
     </div>
   </div>
-</div>`;
+</dialog>`;
 }

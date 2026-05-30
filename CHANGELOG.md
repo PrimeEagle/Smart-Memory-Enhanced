@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.12] - 2026-05-30
+
+### Fixed
+
+- **Memory graph, search results, and state card merge overlays now render
+  correctly on mobile.** All three were implemented as `position:fixed` divs
+  and suffered the same stacking context issue as the recap overlay fixed in
+  1.7.11. Converted to `<dialog>` elements with `showModal()`. The graph
+  overlay also no longer requires a page refresh to close - the close button
+  and Escape key work correctly in the browser top layer.
+
 ## [1.7.11] - 2026-05-30
 
 ### Fixed
