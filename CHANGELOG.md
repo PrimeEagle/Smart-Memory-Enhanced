@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
+  now passed into each extraction prompt as a numbered list. The model outputs
+  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
+  a `[suspects]` entry is retired when the character confirms the fact as
+  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
+  entries are removed before new ones are merged in, so the injected knowledge
+  block stays clean rather than accumulating contradictions over a long chat.
+  No extra model call - retire lines are mixed into the same extraction response.
+- **Scene break heuristic patterns expanded.** Five new pattern groups have been
+  added: wake from unconsciousness or injury ("regained consciousness", "came to
+  their senses", "opened their eyes to find"); return transitions ("returned to
+  the X", "made their way back to"); formal arrival phrasing ("upon
+  arriving/reaching/entering the X"); time anchors ("the morning after", "by
+  morning/nightfall/dawn/dusk"); and extended time skips ("in the days/weeks that
+  followed"). Patterns are intentionally narrow to avoid false positives on
+  common mid-scene phrasing.
+
+### Changed
+
+- **Auto-tune budgets and unified injection** have been moved from Developer
+  settings to the Configuration section and are no longer marked experimental.
+  Both features are stable. Auto-tune sits directly below the total budget
+  slider; unified injection is in the advanced-only block.
+- **Macro tokens reference** is now visible in both simple and advanced mode
+  (previously advanced-only), repositioned to just above Hardware profile so it
+  no longer appears to group the options below it. Tooltip formatting fixed -
+  newlines now render correctly, macro order matches the extension panel
+  injection order.
+- **Unknown-typed entities now show a hint in the entity panel** when the state
+  ledger is enabled. Entities the model failed to classify default to type
+  `unknown`, which does not support state cards. Previously the state card
+  section was silently absent; now a small info line prompts the user to change
+  the type via the existing type badge to unlock the state card editor.
+
+## [1.7.10] - 2026-05-30
+
+### Fixed
+
+- **Manually resolving an arc via the checkmark now moves it to the Resolved
+  Threads panel instead of deleting it.** For pinned arcs the resolved state
+  is written to the persistent store so it carries into future chats, matching
+  the behaviour of model-resolved arcs. Non-pinned arcs are resolved within
+  the current chat only.
+- **Away recap no longer disappears when another extension re-renders the last
+  message after chat load.** Some extensions (e.g. SillyTavern Expressions)
+  fire `CHARACTER_MESSAGE_RENDERED` on an existing message during their
+  initialization pass. The recap dismissal logic in that handler was redundant -
+  `GENERATION_STARTED` and `MESSAGE_SENT` already handle all legitimate dismissal
+  cases - and has been removed. The recap now stays visible until the user
+  explicitly dismisses it or a real new generation begins.
+- **Away recap can now be dismissed programmatically by external extensions.**
+  Dispatching a `smart_memory:dismiss_recap` DOM event removes the recap overlay.
+  This allows companion extensions (such as Discord Connector) to clear a
+  blocking recap when the user is not physically present to click Dismiss.
+- **Status bar no longer shows a stale extraction count after switching chats.**
+  The "N items stored for X" message set at the end of an extraction pass was
+  never cleared on chat change, so switching to a different character or a new
+  chat left the previous character's count visible until the next extraction ran.
+
 ## [1.7.9] - 2026-05-27
 
 ### Fixed

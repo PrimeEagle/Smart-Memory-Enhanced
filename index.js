@@ -471,15 +471,9 @@ async function onCharacterMessageRendered(messageId, type) {
       sceneBufferLastIndex = context.chat.length - 1;
     }
 
-    $('#sm_recap_overlay').remove();
     updateLastActive().catch(console.error);
     return;
   }
-
-  // A new AI message has arrived - dismiss any open recap modal so it doesn't
-  // linger while the user reads the response. Recap was only meant as a
-  // pre-response reminder; once the story is moving again it should be gone.
-  $('#sm_recap_overlay').remove();
 
   const characterName = getCurrentCharacterName();
 
@@ -965,6 +959,7 @@ async function onChatChangedImpl() {
   respondedThisRound = new Set();
   selectedGroupCharacter = null;
   setContinuityBadge(null);
+  setStatusMessage('');
   // Initialise to the current chat length so the first CHARACTER_MESSAGE_RENDERED
   // after a chat load is not mistaken for a new message when the user swipes
   // immediately without generating anything first. A swipe does not grow the
@@ -1854,6 +1849,12 @@ jQuery(async function () {
   });
   eventSource.on(event_types.MESSAGE_RECEIVED, () => {
     generationInProgress = false;
+  });
+  // Allow external extensions to dismiss the recap overlay programmatically
+  // (e.g. Discord Connector can dispatch this when the user sends a command
+  // remotely and the blocking modal is preventing it from responding).
+  $(document).on('smart_memory:dismiss_recap', () => {
+    $('#sm_recap_overlay').remove();
   });
   eventSource.on(event_types.GROUP_WRAPPER_STARTED, onGroupWrapperStarted);
   eventSource.on(event_types.GROUP_MEMBER_DRAFTED, onGroupMemberDrafted);

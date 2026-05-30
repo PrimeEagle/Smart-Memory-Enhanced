@@ -81,6 +81,7 @@ import {
   loadArcs,
   saveArcs,
   deleteArc,
+  resolveArc,
   injectArcs,
   promoteArc,
   demoteArc,
@@ -1044,7 +1045,7 @@ export function updateArcsUI() {
 
   $list.find('.sm_delete_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
-    await deleteArc(idx, charName);
+    await resolveArc(idx, charName, groupId);
     injectArcs();
     updateArcsUI();
   });
