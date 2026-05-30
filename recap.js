@@ -110,7 +110,13 @@ export function displayRecap(recap, hoursAway) {
       ? `You've been away for ${Math.round(hoursRounded / 24)} day(s).`
       : `You're returning after a short break (${hoursRounded}h).`;
 
-  const overlay = $('<div id="sm_recap_overlay">');
+  // Use a <dialog> element so it renders in the browser's top layer, which is
+  // always above any CSS stacking context. A plain position:fixed div gets
+  // trapped inside SillyTavern's transformed/animated ancestors on mobile,
+  // causing it to render inside the navbar instead of over the full screen.
+  const dialog = document.createElement('dialog');
+  dialog.id = 'sm_recap_overlay';
+
   const card = $('<div class="sm_recap_card">');
   const title = $('<h3 class="sm_recap_title">Previously on...</h3>');
   const timeLabel = $('<p class="sm_recap_time_label">').text(timeNote);
@@ -118,14 +124,20 @@ export function displayRecap(recap, hoursAway) {
   const footer = $('<div class="sm_recap_footer">');
   const dismissBtn = $('<button>Dismiss</button>').addClass('menu_button');
 
-  dismissBtn.on('click', () => overlay.remove());
+  const dismiss = () => {
+    dialog.close();
+    dialog.remove();
+  };
+
+  dismissBtn.on('click', dismiss);
   // Also dismiss when clicking the backdrop outside the card.
-  overlay.on('click', (e) => {
-    if (e.target === overlay[0]) overlay.remove();
+  $(dialog).on('click', (e) => {
+    if (e.target === dialog) dismiss();
   });
 
   footer.append(dismissBtn);
   card.append(title, timeLabel, content, footer);
-  overlay.append(card);
-  $('body').append(overlay);
+  $(dialog).append(card);
+  document.body.appendChild(dialog);
+  dialog.showModal();
 }
