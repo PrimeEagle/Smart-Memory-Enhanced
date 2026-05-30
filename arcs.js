@@ -43,6 +43,7 @@
  * pruneOrphanedGroupArcs  - removes group arc stores for groups that no longer exist
  * promoteArc             - marks a chat arc as persistent and saves it to character or group level
  * demoteArc              - removes the persistent flag from an arc and cleans character or group level
+ * resolveArc             - manually marks a persistent arc as resolved (moves to resolved panel)
  * reopenArc              - removes the resolved flag from a persistent arc and reactivates it
  */
 
@@ -436,6 +437,39 @@ export async function demoteArc(index, characterName, groupId = null) {
   if (filtered.length !== persistent.length) {
     if (groupId) saveGroupPersistentArcs(groupId, filtered);
     else savePersistentArcs(characterName, filtered);
+  }
+}
+
+/**
+ * Manually marks an arc as resolved, mirroring what the model does during
+ * extraction. The arc moves to the Resolved Threads panel in the current chat.
+ * For persistent arcs the resolved state is also written to the persistent
+ * store so it carries into future chats. Non-persistent arcs are resolved
+ * only within the current chat's chatMetadata.
+ * @param {number} index - Index in the current chat arc array.
+ * @param {string|null} characterName
+ * @param {string|null} [groupId]
+ */
+export async function resolveArc(index, characterName = null, groupId = null) {
+  const arcs = loadArcs();
+  const arc = arcs[index];
+  if (!arc) return;
+
+  arcs[index] = { ...arc, resolved: true };
+  await saveArcs(arcs);
+
+  if (!arc.persistent) return;
+
+  if (groupId) {
+    const gP = loadGroupPersistentArcs(groupId);
+    const match = gP.find((p) => p.content === arc.content);
+    if (match) match.resolved = true;
+    saveGroupPersistentArcs(groupId, gP);
+  } else if (characterName) {
+    const cP = loadPersistentArcs(characterName);
+    const match = cP.find((p) => p.content === arc.content);
+    if (match) match.resolved = true;
+    savePersistentArcs(characterName, cP);
   }
 }
 

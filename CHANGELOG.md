@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Manually resolving an arc via the checkmark now moves it to the Resolved
+  Threads panel instead of deleting it.** For pinned arcs the resolved state
+  is written to the persistent store so it carries into future chats, matching
+  the behaviour of model-resolved arcs. Non-pinned arcs are resolved within
+  the current chat only.
 - **Away recap no longer disappears when another extension re-renders the last
   message after chat load.** Some extensions (e.g. SillyTavern Expressions)
   fire `CHARACTER_MESSAGE_RENDERED` on an existing message during their
