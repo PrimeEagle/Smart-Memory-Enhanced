@@ -434,7 +434,10 @@ export function setContinuityBadge(count) {
 export function showSearchResults(query, results) {
   $('#sm_search_overlay').remove();
 
-  const overlay = $('<div id="sm_search_overlay">');
+  // Use a <dialog> element so it renders in the browser's top layer, immune
+  // to ST's transformed ancestors that trap position:fixed divs on mobile.
+  const dialog = document.createElement('dialog');
+  dialog.id = 'sm_search_overlay';
 
   const card = $('<div class="sm_search_card">');
   card.append($('<h3>Memory Search Results</h3>'));
@@ -463,14 +466,19 @@ export function showSearchResults(query, results) {
 
   const $footer = $('<div class="sm_search_footer">');
   const $dismiss = $('<button>Dismiss</button>').addClass('menu_button');
-  $dismiss.on('click', () => overlay.remove());
-  overlay.on('click', (e) => {
-    if (e.target === overlay[0]) overlay.remove();
+  const dismiss = () => {
+    dialog.close();
+    dialog.remove();
+  };
+  $dismiss.on('click', dismiss);
+  $(dialog).on('click', (e) => {
+    if (e.target === dialog) dismiss();
   });
   $footer.append($dismiss);
   card.append($footer);
-  overlay.append(card);
-  $('body').append(overlay);
+  $(dialog).append(card);
+  document.body.appendChild(dialog);
+  dialog.showModal();
 }
 
 /**
@@ -1262,7 +1270,7 @@ export function updateEntityPanel(characterName) {
           // When the ledger is disabled, silently keep the destination card.
           if (isStateLedgerEnabled() && srcCard && dstCard) {
             const $modal = $(`
-              <div class="sm_state_merge_modal">
+              <dialog class="sm_state_merge_modal">
                 <div class="sm_state_merge_modal_inner">
                   <div class="sm_state_merge_title">Both entities have state cards</div>
                   <div class="sm_state_merge_body">
@@ -1276,11 +1284,18 @@ export function updateEntityPanel(characterName) {
                     <button class="menu_button sm_state_cancel">Cancel</button>
                   </div>
                 </div>
-              </div>
+              </dialog>
             `);
 
-            const doMerge = async (keepSrc) => {
+            const closeModal = () => {
+              $modal[0].close();
               $modal.remove();
+            };
+            // Escape key: treat as cancel.
+            $modal[0].addEventListener('cancel', closeModal);
+
+            const doMerge = async (keepSrc) => {
+              closeModal();
               const ltReg = characterName ? loadCharacterEntityRegistry(characterName) : [];
               const ltMems = characterName ? loadCharacterMemories(characterName) : [];
               const sessReg = loadSessionEntityRegistry();
@@ -1302,8 +1317,9 @@ export function updateEntityPanel(characterName) {
 
             $modal.find('.sm_state_keep_src').on('click', () => doMerge(true));
             $modal.find('.sm_state_keep_dst').on('click', () => doMerge(false));
-            $modal.find('.sm_state_cancel').on('click', () => $modal.remove());
-            $('body').append($modal);
+            $modal.find('.sm_state_cancel').on('click', closeModal);
+            document.body.appendChild($modal[0]);
+            $modal[0].showModal();
             return;
           }
 

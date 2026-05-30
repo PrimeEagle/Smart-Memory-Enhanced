@@ -5,43 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.7.12] - 2026-05-30
 
-### Added
+### Fixed
 
-- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
-  now passed into each extraction prompt as a numbered list. The model outputs
-  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
-  a `[suspects]` entry is retired when the character confirms the fact as
-  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
-  entries are removed before new ones are merged in, so the injected knowledge
-  block stays clean rather than accumulating contradictions over a long chat.
-  No extra model call - retire lines are mixed into the same extraction response.
-- **Scene break heuristic patterns expanded.** Five new pattern groups have been
-  added: wake from unconsciousness or injury ("regained consciousness", "came to
-  their senses", "opened their eyes to find"); return transitions ("returned to
-  the X", "made their way back to"); formal arrival phrasing ("upon
-  arriving/reaching/entering the X"); time anchors ("the morning after", "by
-  morning/nightfall/dawn/dusk"); and extended time skips ("in the days/weeks that
-  followed"). Patterns are intentionally narrow to avoid false positives on
-  common mid-scene phrasing.
-
-### Changed
-
-- **Auto-tune budgets and unified injection** have been moved from Developer
-  settings to the Configuration section and are no longer marked experimental.
-  Both features are stable. Auto-tune sits directly below the total budget
-  slider; unified injection is in the advanced-only block.
-- **Macro tokens reference** is now visible in both simple and advanced mode
-  (previously advanced-only), repositioned to just above Hardware profile so it
-  no longer appears to group the options below it. Tooltip formatting fixed -
-  newlines now render correctly, macro order matches the extension panel
-  injection order.
-- **Unknown-typed entities now show a hint in the entity panel** when the state
-  ledger is enabled. Entities the model failed to classify default to type
-  `unknown`, which does not support state cards. Previously the state card
-  section was silently absent; now a small info line prompts the user to change
-  the type via the existing type badge to unlock the state card editor.
+- **Memory graph, search results, and state card merge overlays now render
+  correctly on mobile.** All three were implemented as `position:fixed` divs
+  and suffered the same stacking context issue as the recap overlay fixed in
+  1.7.11. Converted to `<dialog>` elements with `showModal()`. The graph
+  overlay also no longer requires a page refresh to close - the close button
+  and Escape key work correctly in the browser top layer.
 
 ## [1.7.11] - 2026-05-30
 
