@@ -678,7 +678,10 @@ function renderTooltip() {
 
   if (left + tipW > canvas.width + overlayLeft - 4)
     left = sx - tipW - node.radius * camera.scale - pad + overlayLeft;
-  top = Math.max(4, Math.min(top, canvas.height + overlayTop - tipH - 4));
+  // Final clamp keeps tooltip inside canvas bounds on all sides, including
+  // after a left-flip that would push it off the left edge on small screens.
+  left = Math.max(overlayLeft + 4, Math.min(left, canvas.width + overlayLeft - tipW - 4));
+  top = Math.max(overlayTop + 4, Math.min(top, canvas.height + overlayTop - tipH - 4));
 
   $tip.css({ left, top }).show();
 }

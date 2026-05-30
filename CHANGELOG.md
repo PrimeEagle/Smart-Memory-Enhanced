@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section was silently absent; now a small info line prompts the user to change
   the type via the existing type badge to unlock the state card editor.
 
+## [1.7.14] - 2026-05-30
+
+### Fixed
+
+- **Memory graph node tooltip no longer clips on small screens.** The tooltip
+  was already flipped to the left when a node was near the right edge, but a
+  missing final clamp meant nodes near the left edge could still push it
+  off-screen. The tooltip now stays within canvas bounds on all sides.
+
 ## [1.7.13] - 2026-05-30
 
 ### Fixed
