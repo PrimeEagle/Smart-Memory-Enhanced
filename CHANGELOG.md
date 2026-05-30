@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section was silently absent; now a small info line prompts the user to change
   the type via the existing type badge to unlock the state card editor.
 
+## [1.7.11] - 2026-05-30
+
+### Fixed
+
+- **Away recap now renders correctly on mobile.** The overlay was implemented
+  as a `position:fixed` div, which gets trapped inside SillyTavern's
+  transformed ancestors on mobile and renders inside the navbar rather than
+  over the full screen. Switched to a `<dialog>` element with `showModal()`,
+  which renders in the browser's top layer and is immune to ancestor stacking
+  contexts.
+
 ## [1.7.10] - 2026-05-30
 
 ### Fixed
