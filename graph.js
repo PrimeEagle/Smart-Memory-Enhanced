@@ -658,7 +658,10 @@ function renderTooltip() {
     <span class="sm_graph_tip_type">${esc(typeLabel)}</span>
     <span class="sm_graph_tip_detail">${esc(node.detail)}</span>${triggersLine}`;
 
-  $tip.html(content);
+  // Render off-screen first so outerWidth/Height return accurate dimensions.
+  // When the tooltip is hidden, jQuery returns 0 and the fallback value is
+  // used instead - causing bottom-clamp miscalculation for tall tooltips.
+  $tip.html(content).css({ left: -9999, top: -9999 }).show();
 
   // Position tooltip: prefer above/right of node, clamp to canvas bounds.
   const tipW = $tip.outerWidth(true) || 220;
@@ -683,7 +686,7 @@ function renderTooltip() {
   left = Math.max(overlayLeft + 4, Math.min(left, canvas.width + overlayLeft - tipW - 4));
   top = Math.max(overlayTop + 4, Math.min(top, canvas.height + overlayTop - tipH - 4));
 
-  $tip.css({ left, top }).show();
+  $tip.css({ left, top });
 }
 
 // ---- Animation loop ---------------------------------------------------------
