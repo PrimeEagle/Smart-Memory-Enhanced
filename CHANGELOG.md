@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.15] - 2026-05-30
+
+### Fixed
+
+- **Memory graph node tooltip no longer clips at the bottom for tall nodes.**
+  The tooltip height was measured while the element was hidden, returning 0
+  and falling back to an 80px estimate. Tooltips taller than that were
+  positioned incorrectly and clipped at the bottom of the canvas. The tooltip
+  is now rendered off-screen before measuring so the clamp uses the real height.
+
 ## [1.7.14] - 2026-05-30
 
 ### Fixed
