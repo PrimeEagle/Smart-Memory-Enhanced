@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section was silently absent; now a small info line prompts the user to change
   the type via the existing type badge to unlock the state card editor.
 
+## [1.7.10] - 2026-05-30
+
 ### Fixed
 
 - **Manually resolving an arc via the checkmark now moves it to the Resolved
