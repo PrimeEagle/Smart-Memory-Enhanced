@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.13] - 2026-05-30
+
+### Fixed
+
+- **Docs pages now show the correct version number.** The version references in
+  `docs/index.html`, `docs/infographic.html`, and `docs/architecture.html` were
+  not updated during the 1.7.9-1.7.12 release cycle.
+
 ## [1.7.12] - 2026-05-30
 
 ### Fixed
