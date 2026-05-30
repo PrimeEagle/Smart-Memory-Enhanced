@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section was silently absent; now a small info line prompts the user to change
   the type via the existing type badge to unlock the state card editor.
 
+## [1.7.13] - 2026-05-30
+
+### Fixed
+
+- **Docs pages now show the correct version number.** The version references in
+  `docs/index.html`, `docs/infographic.html`, and `docs/architecture.html` were
+  not updated during the 1.7.9-1.7.12 release cycle.
+
 ## [1.7.12] - 2026-05-30
 
 ### Fixed
