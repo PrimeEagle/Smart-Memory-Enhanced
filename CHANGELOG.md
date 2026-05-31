@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI Compatible source no longer requires a local proxy for cloud APIs.**
+  Remote/cloud providers (Nvidia NIM, OpenRouter, OpenAI, etc.) are now routed
+  through SillyTavern's own server-side proxy, which avoids the CORS
+  restrictions those services impose on direct browser connections. Local
+  servers (localhost and private network addresses) are still contacted
+  directly as before - no behaviour change for KoboldCpp, llama.cpp, or any
+  other locally hosted server.
 - **Manually resolving an arc now generates an arc summary for canon.**
   The arc checkmark previously moved the arc to the Resolved Threads panel
   but never produced an arc summary, so canon generation had nothing to work

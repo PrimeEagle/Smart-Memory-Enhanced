@@ -35,7 +35,12 @@
  * abortCurrentMemoryGeneration  - cancels any in-flight Ollama or OpenAI-compat fetch immediately
  */
 
-import { generateRaw, generateQuietPrompt, getMaxContextSize } from '../../../../script.js';
+import {
+  generateRaw,
+  generateQuietPrompt,
+  getMaxContextSize,
+  getRequestHeaders,
+} from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
 import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
@@ -187,7 +192,43 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
 }
 
 /**
+ * Returns true if the given URL points to a local or private network address.
+ * Local URLs are fetched directly from the browser; remote URLs are routed
+ * through ST's server-side proxy to avoid CORS restrictions.
+ * Covers IPv4 loopback, all RFC-1918 private ranges, and IPv6 loopback,
+ * link-local, and unique-local ranges.
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isLocalUrl(url) {
+  try {
+    const { hostname } = new URL(url);
+    // Strip brackets from IPv6 addresses (e.g. [::1] -> ::1)
+    const host = hostname.replace(/^\[|\]$/g, '');
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      /^192\.168\./.test(host) ||
+      /^10\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^fc/i.test(host) || // IPv6 unique local fc00::/7
+      /^fd/i.test(host) || // IPv6 unique local fd00::/8
+      /^fe80/i.test(host) // IPv6 link-local
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Sends a prompt to an OpenAI-compatible API and returns the response text.
+ *
+ * Local URLs (localhost, private network ranges) are fetched directly from
+ * the browser - no CORS issue since they are same-network. Remote/cloud URLs
+ * are routed through ST's server-side proxy (/api/backends/chat-completions/generate)
+ * to avoid CORS restrictions that cloud providers impose on browser origins.
+ *
  * @param {string} prompt
  * @param {Array} [priorMessages] - Optional prior messages for summarization context.
  * @param {number} responseLength
@@ -204,26 +245,52 @@ async function generateOpenAICompat(
   const apiKey = settings?.openai_compat_key || '';
   const model = settings?.openai_compat_model || '';
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
   const messages = [...priorMessages, { role: 'user', content: prompt }];
 
   memoryAbortController = new AbortController();
   try {
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: model || undefined,
+    let response;
+    if (isLocalUrl(baseUrl)) {
+      // Direct fetch for local servers - no CORS issue on private network addresses.
+      const headers = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: model || undefined,
+          messages,
+          max_tokens: responseLength > 0 ? responseLength : undefined,
+          stream: false,
+        }),
+        signal: memoryAbortController.signal,
+      });
+    } else {
+      // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
+      // ST's CUSTOM source appends /chat/completions to custom_url, so pass baseUrl/v1.
+      const proxyBody = {
+        chat_completion_source: 'custom',
+        custom_url: `${baseUrl}/v1`,
         messages,
+        model: model || undefined,
         max_tokens: responseLength > 0 ? responseLength : undefined,
         stream: false,
-      }),
-      signal: memoryAbortController.signal,
-    });
+      };
+      // Pass the API key via custom_include_headers (YAML key: value format) so it
+      // overrides the empty Authorization header ST builds from its stored CUSTOM secret.
+      if (apiKey) {
+        proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
+      }
+      response = await fetch('/api/backends/chat-completions/generate', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(proxyBody),
+        signal: memoryAbortController.signal,
+      });
+    }
     if (!response.ok) throw new Error(`OpenAI Compatible API responded with ${response.status}`);
     const data = await response.json();
+    if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
     return data.choices?.[0]?.message?.content ?? '';
   } catch (err) {
     if (err.name === 'AbortError') return '';
