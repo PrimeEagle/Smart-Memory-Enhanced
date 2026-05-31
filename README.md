@@ -718,6 +718,12 @@ Not required reading for using the extension. The [architecture diagram](https:/
 
 ---
 
+## Contributors
+
+- **[ravenrevenge](https://github.com/ravenrevenge)** - identified the mobile overlay rendering issue and had the `<dialog>`-based fix ready before it was independently implemented
+
+---
+
 ## License
 
 Licensed under the [GNU Affero General Public License v3.0](LICENSE).
