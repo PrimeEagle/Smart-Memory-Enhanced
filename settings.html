@@ -1645,6 +1645,24 @@
             </label>
           </div>
 
+          <!-- Generation budget (advanced) -->
+          <div class="sm-block sm-advanced-only">
+            <label>
+              Generation budget:
+              <b><span id="sm_generation_budget_value"></span></b>
+              <span
+                class="sm-info"
+                data-tooltip="Maximum tokens the Memory LLM may generate per extraction call. 8192 is generous enough for any thinking model. Raise it if extractions abort mid-output on very verbose thinking models. Set to -1 (Unlimited) only if you trust your model not to run indefinitely - runaway generation will lock up Ollama until manually stopped."
+                >ⓘ</span
+              >
+            </label>
+            <input id="sm_generation_budget" type="range" min="1024" max="32768" step="1024" />
+            <label class="checkbox_label" style="margin-top: 4px">
+              <input id="sm_generation_budget_unlimited" type="checkbox" />
+              <span>Unlimited (-1, use with caution)</span>
+            </label>
+          </div>
+
           <!-- Model test -->
           <div class="sm-block sm-btn-row">
             <button id="sm_model_test_btn" class="menu_button menu_button_icon">

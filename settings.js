@@ -159,6 +159,10 @@ export const defaultSettings = {
   openai_compat_key: '',
   openai_compat_model: '',
 
+  // Maximum tokens the Memory LLM may generate per extraction call.
+  // 8192 covers any thinking model comfortably. -1 means unlimited (Ollama only).
+  generation_budget: 8192,
+
   // OpenAI Compatible embedding API key
   embedding_api_key: '',
 
@@ -1038,6 +1042,34 @@ export function bindSettingsUI(ctrl) {
       extension_settings[MODULE_NAME].openai_compat_model = $(this).val().trim();
       saveSettingsDebounced();
     });
+
+  // Generation budget slider + unlimited checkbox
+  const genBudget = s.generation_budget ?? 8192;
+  const isUnlimited = genBudget === -1;
+  $('#sm_generation_budget')
+    .val(isUnlimited ? 8192 : genBudget)
+    .prop('disabled', isUnlimited)
+    .on('input', function () {
+      const val = parseInt($(this).val(), 10);
+      $('#sm_generation_budget_value').text(val.toLocaleString() + ' tokens');
+      extension_settings[MODULE_NAME].generation_budget = val;
+      saveSettingsDebounced();
+    });
+  $('#sm_generation_budget_unlimited')
+    .prop('checked', isUnlimited)
+    .on('change', function () {
+      const unlimited = $(this).is(':checked');
+      $('#sm_generation_budget').prop('disabled', unlimited);
+      const val = unlimited ? -1 : parseInt($('#sm_generation_budget').val(), 10);
+      $('#sm_generation_budget_value').text(
+        unlimited ? 'Unlimited' : val.toLocaleString() + ' tokens',
+      );
+      extension_settings[MODULE_NAME].generation_budget = val;
+      saveSettingsDebounced();
+    });
+  $('#sm_generation_budget_value').text(
+    isUnlimited ? 'Unlimited' : genBudget.toLocaleString() + ' tokens',
+  );
 
   // Hardware profile override
   const PROFILE_LABELS = {

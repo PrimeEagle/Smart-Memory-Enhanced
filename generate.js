@@ -42,6 +42,15 @@ import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constan
 import { isWebLlmSupported, generateWebLlmChatPrompt } from '../../shared.js';
 
 /**
+ * Returns the configured generation budget from settings, falling back to
+ * MEMORY_GENERATION_BUDGET if the setting has not been set.
+ * @returns {number} Token limit, or -1 for unlimited.
+ */
+function getGenerationBudget() {
+  return extension_settings[MODULE_NAME]?.generation_budget ?? MEMORY_GENERATION_BUDGET;
+}
+
+/**
  * Holds the AbortController for the currently running Ollama or OpenAI-compat
  * fetch, or null when no external generation is in progress. This is module-level
  * rather than per-call so index.js can cancel it from outside the call stack via
@@ -143,7 +152,7 @@ export async function fetchOllamaModels(baseUrl) {
  * @param {number} responseLength
  * @returns {Promise<string>}
  */
-async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GENERATION_BUDGET) {
+async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget()) {
   const settings = extension_settings[MODULE_NAME];
   const url = getOllamaUrl();
   const model = settings?.ollama_model;
@@ -187,7 +196,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GE
 async function generateOpenAICompat(
   prompt,
   priorMessages = [],
-  responseLength = MEMORY_GENERATION_BUDGET,
+  responseLength = getGenerationBudget(),
 ) {
   const settings = extension_settings[MODULE_NAME];
   const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '').replace(/\/v1$/, '');

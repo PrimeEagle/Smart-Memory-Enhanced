@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Configurable Memory LLM generation budget.** A new advanced-mode slider
+  in the Memory LLM settings section lets users raise the token ceiling for
+  extraction calls beyond the default 8192. Users who run verbose thinking
+  models that abort before producing output can increase this limit. An
+  Unlimited (-1) checkbox is also available for users who accept the risk of
+  runaway generation on their local hardware.
 - **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
   now passed into each extraction prompt as a numbered list. The model outputs
   `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
