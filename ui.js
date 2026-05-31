@@ -944,7 +944,7 @@ export function updateArcsUI() {
                   <button class="sm_edit_arc menu_button" data-index="${idx}" title="Edit this arc">
                       <i class="fa-solid fa-pencil"></i>
                   </button>
-                  <button class="sm_resolve_arc menu_button" data-index="${idx}" title="Resolve this thread and generate an arc summary">
+                  <button class="sm_resolve_arc menu_button" data-index="${idx}" title="Resolve this thread and generate an arc summary. Best used right after the thread concludes in the story - the summary is built from recent scene context, so resolving old threads may produce vague results.">
                       <i class="fa-solid fa-check"></i>
                   </button>
                   <button class="sm_delete_arc menu_button" data-index="${idx}" title="Delete this thread without summarising">
