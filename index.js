@@ -1856,6 +1856,23 @@ jQuery(async function () {
   $(document).on('smart_memory:dismiss_recap', () => {
     $('#sm_recap_overlay').remove();
   });
+  // Profile B: auto-regenerate canon when the user manually resolves an arc
+  // and a summary was successfully generated for it.
+  $(document).on('smart_memory:arc_resolved_with_summary', async (e, characterName, groupId) => {
+    const settings = getSettings();
+    const charName = groupId ? selectedGroupCharacter : characterName;
+    if (
+      settings.canon_enabled &&
+      settings.arcs_enabled &&
+      charName &&
+      !isFreshStart() &&
+      getHardwareProfile() === 'b'
+    ) {
+      await generateCanon(charName)
+        .then(() => injectCanon(charName))
+        .catch((err) => console.error('[SmartMemory] Auto-canon after manual resolve error:', err));
+    }
+  });
   eventSource.on(event_types.GROUP_WRAPPER_STARTED, onGroupWrapperStarted);
   eventSource.on(event_types.GROUP_MEMBER_DRAFTED, onGroupMemberDrafted);
   eventSource.on(event_types.GROUP_WRAPPER_FINISHED, onGroupWrapperFinished);

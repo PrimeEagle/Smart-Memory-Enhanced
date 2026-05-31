@@ -365,7 +365,8 @@ For the full chat backlog, use **Memorize Chat** instead.
 Every entry in the long-term memory, session memory, and story arc lists has action buttons:
 
 - **Pencil (edit)** - replaces the entry with an inline text editor. Edit the content and click **Save**, or **Cancel** to discard changes. Not shown on retired memories.
-- **Trash / Checkmark (delete/resolve)** - removes the entry immediately. For story arcs the button is a checkmark to indicate resolving the thread rather than discarding it.
+- **Trash** - removes the entry immediately without generating a summary. For story arcs this permanently discards the thread.
+- **Checkmark (story arcs only)** - resolves the arc: generates an arc summary, moves it to the Resolved Threads panel, and on Profile B triggers automatic canon regeneration. Use this when a thread has genuinely concluded in the story. Use the trash button instead if you just want to remove it without summarising.
 - **Pin (active story arcs only)** - marks the arc as persistent so it carries into future chats. The pin icon turns gold and the arc gets a gold left border when pinned. Click again to unpin. In group chats, the pin stores the arc against the group rather than an individual character.
 - **Re-open (resolved arcs only)** - moves the arc back to the active list. If an equivalent thread is already active the resolved copy is discarded instead.
 - **Remove (resolved arcs only)** - discards the resolved arc from the panel and the persistent store.

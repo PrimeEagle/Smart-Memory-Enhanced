@@ -43,7 +43,8 @@
  * pruneOrphanedGroupArcs  - removes group arc stores for groups that no longer exist
  * promoteArc             - marks a chat arc as persistent and saves it to character or group level
  * demoteArc              - removes the persistent flag from an arc and cleans character or group level
- * resolveArc             - manually marks a persistent arc as resolved (moves to resolved panel)
+ * resolveArc             - manually marks an arc as resolved (moves to resolved panel)
+ * resolveArcWithSummary  - resolves an arc and generates an arc summary for canon
  * reopenArc              - removes the resolved flag from a persistent arc and reactivates it
  */
 
@@ -219,7 +220,7 @@ export function loadArcSummaries() {
  * Persists the arc summaries array to chatMetadata.
  * @param {Array} summaries
  */
-async function saveArcSummaries(summaries) {
+export async function saveArcSummaries(summaries) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
@@ -474,6 +475,43 @@ export async function resolveArc(index, characterName = null, groupId = null) {
 }
 
 /**
+ * Resolves an arc and generates an arc summary for it so it can contribute
+ * to canon generation. Combines resolveArc with a generateArcSummary call.
+ * Callers should trigger canon regeneration on Profile B after this returns.
+ * Returns true if the summary was generated successfully, false otherwise.
+ * @param {number} index - Index in the current chat arc array.
+ * @param {string|null} characterName
+ * @param {string|null} [groupId]
+ * @returns {Promise<boolean>}
+ */
+export async function resolveArcWithSummary(index, characterName = null, groupId = null) {
+  const arcs = loadArcs();
+  const arc = arcs[index];
+  if (!arc) return false;
+
+  const content = arc.content;
+  await resolveArc(index, characterName, groupId);
+
+  try {
+    const result = await generateArcSummary(content);
+    if (!result) return false;
+    const summaries = loadArcSummaries();
+    summaries.push({
+      content: result.summary,
+      arcContent: content,
+      ts: Date.now(),
+      sourceSceneTs: result.sourceSceneTs,
+      sourceMemoryIds: result.sourceMemoryIds,
+    });
+    await saveArcSummaries(summaries);
+    return true;
+  } catch (err) {
+    console.error('[SmartMemory] Arc summary generation failed:', err);
+    return false;
+  }
+}
+
+/**
  * Re-opens a resolved pinned arc. If an equivalent active arc already exists,
  * the resolved copy is removed instead to avoid duplication. Otherwise the
  * resolved flag is stripped and the arc rejoins the active list. The persistent
@@ -546,7 +584,7 @@ export async function reopenArc(index, characterName, groupId = null) {
  * @param {string} arcContent - The resolved arc's content string.
  * @returns {Promise<{summary: string, sourceSceneTs: number[], sourceMemoryIds: string[]}|null>}
  */
-async function generateArcSummary(arcContent) {
+export async function generateArcSummary(arcContent) {
   const settings = extension_settings[MODULE_NAME];
 
   // Use only the most recent scenes as context. The arc being summarized was

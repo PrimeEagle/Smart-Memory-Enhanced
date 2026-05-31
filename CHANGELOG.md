@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Manually resolving an arc now generates an arc summary for canon.**
+  The arc checkmark previously moved the arc to the Resolved Threads panel
+  but never produced an arc summary, so canon generation had nothing to work
+  with. The checkmark now generates a summary on resolution, and on Profile B
+  canon regenerates automatically. A separate trash button has been added to
+  delete an arc without summarising it.
 - **Configurable Memory LLM generation budget.** A new advanced-mode slider
   in the Memory LLM settings section lets users raise the token ceiling for
   extraction calls beyond the default 8192. Users who run verbose thinking

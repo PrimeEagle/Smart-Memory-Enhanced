@@ -81,7 +81,7 @@ import {
   loadArcs,
   saveArcs,
   deleteArc,
-  resolveArc,
+  resolveArcWithSummary,
   injectArcs,
   promoteArc,
   demoteArc,
@@ -944,8 +944,11 @@ export function updateArcsUI() {
                   <button class="sm_edit_arc menu_button" data-index="${idx}" title="Edit this arc">
                       <i class="fa-solid fa-pencil"></i>
                   </button>
-                  <button class="sm_delete_arc menu_button" data-index="${idx}" title="Resolve / remove this arc">
+                  <button class="sm_resolve_arc menu_button" data-index="${idx}" title="Resolve this thread and generate an arc summary">
                       <i class="fa-solid fa-check"></i>
+                  </button>
+                  <button class="sm_delete_arc menu_button" data-index="${idx}" title="Delete this thread without summarising">
+                      <i class="fa-solid fa-trash-can"></i>
                   </button>
               </div>
           `);
@@ -1051,9 +1054,19 @@ export function updateArcsUI() {
     $cancel.on('click', () => updateArcsUI());
   });
 
+  $list.find('.sm_resolve_arc').on('click', async function () {
+    const idx = parseInt($(this).data('index'), 10);
+    const summaryGenerated = await resolveArcWithSummary(idx, charName, groupId);
+    if (summaryGenerated) {
+      $(document).trigger('smart_memory:arc_resolved_with_summary', [charName, groupId]);
+    }
+    injectArcs();
+    updateArcsUI();
+  });
+
   $list.find('.sm_delete_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
-    await resolveArc(idx, charName, groupId);
+    await deleteArc(idx, charName);
     injectArcs();
     updateArcsUI();
   });
