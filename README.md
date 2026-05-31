@@ -419,6 +419,8 @@ Options: **Main API**, **Ollama**, **OpenAI Compatible**, or **WebLLM Extension*
 >
 > **URL format:** Enter only the base URL - do not include `/v1` at the end. The extension appends the full path automatically. For example, NovelAI should be entered as `https://text.novelai.net/oa`, not `https://text.novelai.net/oa/v1`.
 
+**Advanced:** A **Generation budget** slider is available in advanced mode. It sets the maximum tokens the Memory LLM may generate per extraction call. The default of 8192 is generous enough for any thinking model under normal conditions. Raise it only if extractions are consistently aborting before producing output on a very verbose thinking model. An **Unlimited (-1)** checkbox is also available - use it with caution on local hardware, as a runaway generation will lock up Ollama until it is manually stopped.
+
 ### Memory Deduplication
 
 Smart Memory uses a small helper model to understand whether two memories are saying the same thing, even if the wording is completely different. For example, "Finn is Senjin's anchor" and "Finn serves as Senjin's emotional foundation" look nothing alike as text, but the helper model recognises them as the same fact and prevents the duplicate from being stored. The same helper model is also used to measure how relevant each stored memory is to the current moment in the story, which affects which memories get prioritised in context.
