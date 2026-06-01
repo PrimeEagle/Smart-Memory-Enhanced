@@ -69,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Continuity checker now includes the active user persona in established
+  facts.** Previously only the AI character's card and extracted memories were
+  checked against - accurate descriptions of the user's character could be
+  flagged as contradictions if they hadn't been extracted into long-term
+  memories. The user persona description is now always included so the checker
+  has the full picture of both sides of the conversation.
 - **Auto-continuity check results now appear in the settings panel.** When
   the Profile B auto-check finds contradictions, they are now listed in the
   Continuity section of the settings panel so the user can read them - the
