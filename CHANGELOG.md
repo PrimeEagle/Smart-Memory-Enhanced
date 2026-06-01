@@ -67,6 +67,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section was silently absent; now a small info line prompts the user to change
   the type via the existing type badge to unlock the state card editor.
 
+### Fixed
+
+- **Auto-continuity check results now appear in the settings panel.** When
+  the Profile B auto-check finds contradictions, they are now listed in the
+  Continuity section of the settings panel so the user can read them - the
+  same display as the manual Check button. Previously only the badge count
+  was updated and the actual contradictions were invisible.
+- **Activity loader toasts no longer cross-dismiss each other.** The toast
+  for a finished continuity check was not being dismissed because
+  `toastr.clear()` resolves by queue position rather than element identity.
+  When extraction then started and finished, it dismissed the stale
+  continuity toast instead of its own, leaving the extraction toast lingering.
+  Switched to direct DOM removal which targets the correct element every time.
+
 ## [1.7.15] - 2026-05-30
 
 ### Fixed

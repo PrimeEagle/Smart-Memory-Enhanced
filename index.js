@@ -251,7 +251,11 @@ function startActivityLoader(settings, message = 'Processing...') {
  * @param {JQuery|null} handle
  */
 function stopActivityLoader(handle) {
-  if (handle) toastr.clear(handle);
+  // Use direct DOM removal rather than toastr.clear() - toastr's clear()
+  // resolves by queue position rather than by element identity, which causes
+  // it to dismiss the wrong toast when multiple toasts exist concurrently
+  // (e.g. a continuity check toast still lingering when extraction starts).
+  if (handle) handle.remove();
 }
 
 /**
@@ -892,9 +896,25 @@ async function onCharacterMessageRendered(messageId, type) {
     checkContinuity(characterName)
       .then(async (contradictions) => {
         setContinuityBadge(contradictions.length);
-        if (contradictions.length > 0 && getSettings().continuity_auto_repair) {
-          const note = await generateRepair(contradictions, characterName);
-          injectRepair(note);
+        // Populate the result panel so the user can read the contradictions
+        // when they open the settings panel - same display as the manual check.
+        const $result = $('#sm_continuity_result');
+        $result.empty().removeClass('sm_continuity_clean sm_continuity_warn');
+        if (contradictions.length === 0) {
+          $result.addClass('sm_continuity_clean').text('No contradictions found.').show();
+        } else {
+          $result.addClass('sm_continuity_warn');
+          $result.append('<b>Contradictions found:</b>');
+          const $ul = $('<ul>');
+          contradictions.forEach((c) => $ul.append($('<li>').text(c)));
+          $result.append($ul).show();
+          if (getSettings().continuity_auto_repair) {
+            const note = await generateRepair(contradictions, characterName);
+            injectRepair(note);
+            $result.append(
+              $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
+            );
+          }
         }
       })
       .catch((err) => {
