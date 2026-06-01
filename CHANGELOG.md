@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Continuity section of the settings panel so the user can read them - the
   same display as the manual Check button. Previously only the badge count
   was updated and the actual contradictions were invisible.
+- **Auto-repair failure is now reported in the settings panel** instead of
+  silently logging as "Auto-continuity check failed" (which was misleading -
+  the check had succeeded). If repair generation fails the contradictions
+  panel now shows a message indicating the correction could not be generated.
 - **Activity loader toasts no longer cross-dismiss each other.** The toast
   for a finished continuity check was not being dismissed because
   `toastr.clear()` resolves by queue position rather than element identity.

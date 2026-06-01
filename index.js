@@ -909,11 +909,20 @@ async function onCharacterMessageRendered(messageId, type) {
           contradictions.forEach((c) => $ul.append($('<li>').text(c)));
           $result.append($ul).show();
           if (getSettings().continuity_auto_repair) {
-            const note = await generateRepair(contradictions, characterName);
-            injectRepair(note);
-            $result.append(
-              $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
-            );
+            try {
+              const note = await generateRepair(contradictions, characterName);
+              injectRepair(note);
+              $result.append(
+                $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
+              );
+            } catch (repairErr) {
+              console.error('[SmartMemory] Auto-repair failed:', repairErr);
+              $result.append(
+                $('<p class="sm_repair_queued">').text(
+                  'Correction could not be generated - check console.',
+                ),
+              );
+            }
           }
         }
       })
