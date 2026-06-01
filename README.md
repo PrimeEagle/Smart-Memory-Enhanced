@@ -421,6 +421,8 @@ Options: **Main API**, **Ollama**, **OpenAI Compatible**, or **WebLLM Extension*
 > **Cloud providers and CORS:** Remote/cloud APIs (such as Nvidia NIM, OpenRouter, or OpenAI) are automatically routed through SillyTavern's server-side proxy, which avoids the CORS restrictions those services impose on browser connections. Local servers (localhost and private network addresses) are contacted directly as before - no proxy or extra setup needed for either case.
 >
 > **Free tier rate limits:** Free tier accounts on cloud providers typically allow only a few requests per minute. Smart Memory makes several sequential requests during catch-up and other multi-pass operations, which can exceed these limits and cause errors partway through. A paid tier or a provider with generous rate limits is recommended for regular use.
+>
+> **Privacy:** Chat history is included in extraction prompts and sent to the configured API. Users with sensitive or adult content should use a local model (Ollama) to keep all data on their own machine.
 
 **Advanced:** A **Generation budget** slider is available in advanced mode. It sets the maximum tokens the Memory LLM may generate per extraction call. The default of 8192 is generous enough for any thinking model under normal conditions. Raise it only if extractions are consistently aborting before producing output on a very verbose thinking model. An **Unlimited (-1)** checkbox is also available - use it with caution on local hardware, as a runaway generation will lock up Ollama until it is manually stopped.
 
