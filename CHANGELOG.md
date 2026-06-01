@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI Compatible source retries on transient server errors.** Failed
+  requests due to 5xx responses or network-level errors (gateway timeouts,
+  connection resets) are retried up to 3 times with a 3 second delay between
+  attempts. This handles free-tier cloud providers that occasionally drop
+  requests under load without permanently failing the extraction pass.
 - **OpenAI Compatible source no longer requires a local proxy for cloud APIs.**
   Remote/cloud providers (Nvidia NIM, OpenRouter, OpenAI, etc.) are now routed
   through SillyTavern's own server-side proxy, which avoids the CORS

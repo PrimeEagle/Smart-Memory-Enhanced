@@ -247,57 +247,81 @@ async function generateOpenAICompat(
 
   const messages = [...priorMessages, { role: 'user', content: prompt }];
 
-  memoryAbortController = new AbortController();
-  try {
-    let response;
-    if (isLocalUrl(baseUrl)) {
-      // Direct fetch for local servers - no CORS issue on private network addresses.
-      const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-      response = await fetch(`${baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: model || undefined,
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 3000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    memoryAbortController = new AbortController();
+    try {
+      let response;
+      if (isLocalUrl(baseUrl)) {
+        // Direct fetch for local servers - no CORS issue on private network addresses.
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        response = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: model || undefined,
+            messages,
+            max_tokens: responseLength > 0 ? responseLength : undefined,
+            stream: false,
+          }),
+          signal: memoryAbortController.signal,
+        });
+      } else {
+        // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
+        // ST's CUSTOM source appends /chat/completions to custom_url, so pass baseUrl/v1.
+        const proxyBody = {
+          chat_completion_source: 'custom',
+          custom_url: `${baseUrl}/v1`,
           messages,
+          model: model || undefined,
           max_tokens: responseLength > 0 ? responseLength : undefined,
           stream: false,
-        }),
-        signal: memoryAbortController.signal,
-      });
-    } else {
-      // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
-      // ST's CUSTOM source appends /chat/completions to custom_url, so pass baseUrl/v1.
-      const proxyBody = {
-        chat_completion_source: 'custom',
-        custom_url: `${baseUrl}/v1`,
-        messages,
-        model: model || undefined,
-        max_tokens: responseLength > 0 ? responseLength : undefined,
-        stream: false,
-      };
-      // Pass the API key via custom_include_headers (YAML key: value format) so it
-      // overrides the empty Authorization header ST builds from its stored CUSTOM secret.
-      if (apiKey) {
-        proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
+        };
+        // Pass the API key via custom_include_headers (YAML key: value format) so it
+        // overrides the empty Authorization header ST builds from its stored CUSTOM secret.
+        if (apiKey) {
+          proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
+        }
+        response = await fetch('/api/backends/chat-completions/generate', {
+          method: 'POST',
+          headers: getRequestHeaders(),
+          body: JSON.stringify(proxyBody),
+          signal: memoryAbortController.signal,
+        });
       }
-      response = await fetch('/api/backends/chat-completions/generate', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(proxyBody),
-        signal: memoryAbortController.signal,
-      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
+        return data.choices?.[0]?.message?.content ?? '';
+      }
+
+      // Retry on 5xx - transient server errors from cloud providers (rate limiting,
+      // gateway timeouts, overloaded free tiers). Do not retry 4xx - those are
+      // permanent errors (auth failure, bad request) that retrying won't fix.
+      if (response.status >= 500 && attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw new Error(`OpenAI Compatible API responded with ${response.status}`);
+    } catch (err) {
+      if (err.name === 'AbortError') return '';
+      // Retry on network-level errors (ETIMEDOUT, ECONNRESET, etc.) - same reasoning
+      // as 5xx: transient failures that a retry may resolve.
+      if (attempt < MAX_RETRIES && !err.message.includes('responded with 4')) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw err;
+    } finally {
+      memoryAbortController = null;
     }
-    if (!response.ok) throw new Error(`OpenAI Compatible API responded with ${response.status}`);
-    const data = await response.json();
-    if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
-    return data.choices?.[0]?.message?.content ?? '';
-  } catch (err) {
-    if (err.name === 'AbortError') return '';
-    throw err;
-  } finally {
-    memoryAbortController = null;
   }
+  // Unreachable but satisfies linters.
+  return '';
 }
 
 /**
