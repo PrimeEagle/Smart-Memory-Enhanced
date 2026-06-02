@@ -80,6 +80,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Continuity section of the settings panel so the user can read them - the
   same display as the manual Check button. Previously only the badge count
   was updated and the actual contradictions were invisible.
+- **The continuity repair note is now shown in the settings panel with a
+  Cancel button.** When a correction is queued, the panel shows the exact
+  text that will be injected into the next prompt, so users can read it and
+  cancel it if they disagree. Clicking Cancel removes the queued correction
+  before it fires.
 - **A toast notification appears when a continuity repair is queued.** Both
   the auto-check and manual check paths now show a brief toast when a
   correction is successfully queued for the next response, so users know a

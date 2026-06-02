@@ -103,7 +103,7 @@ import { runModelTest } from './model-test.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
-import { checkContinuity, generateRepair, injectRepair } from './continuity.js';
+import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
   getHardwareProfile,
   getEmbeddingBatch,
@@ -3247,9 +3247,19 @@ export function bindSettingsUI(ctrl) {
           try {
             const note = await generateRepair(contradictions, characterName);
             injectRepair(note);
-            $result.append(
-              $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
+            const $repairBlock = $('<div class="sm_repair_queued">');
+            $repairBlock.append($('<p>').text('Correction queued for next response:'));
+            $repairBlock.append($('<p class="sm_repair_note">').text(note));
+            const $cancel = $(
+              '<button class="menu_button sm_repair_cancel">Cancel correction</button>',
             );
+            $cancel.on('click', () => {
+              clearRepair();
+              $repairBlock.remove();
+              setStatusMessage('Correction cancelled.');
+            });
+            $repairBlock.append($cancel);
+            $result.append($repairBlock);
             setStatusMessage('Correction queued.');
             toastr.info('Correction queued for next response.', 'Smart Memory');
           } catch (repairErr) {
