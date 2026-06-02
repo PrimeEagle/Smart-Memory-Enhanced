@@ -208,9 +208,11 @@ A manual tool for when something feels off. Click **Check Last Response** (or us
 
 Enable **Auto-repair contradictions** to go one step further: when contradictions are found, Smart Memory generates a brief corrective note and slips it into the next AI response. The note is cleared automatically after that response - it is a one-shot nudge, not a permanent change. This costs one extra model call per check, so it is disabled by default.
 
+When a repair is queued, a toast notification appears so you know it fired. Opening the Continuity section of the settings panel shows the full list of contradictions found and the exact correction text that will be injected. A **Cancel correction** button lets you discard the queued note before it fires if you disagree with it. If you do nothing, the correction goes through automatically on the next response.
+
 On **Profile B** (hosted models), the continuity check runs automatically after every AI response - no button click required. A small badge appears in the settings panel header: **clean** (fades after a few seconds) or **N conflicts** (stays visible until the next check). The **Auto-check after each response** checkbox lets you turn this off while staying on Profile B if you would rather check manually. On Profile A (local hardware) the check is manual-only.
 
-> **Note:** The continuity checker is only as good as the model doing the checking, and it only knows what is stored in Smart Memory - not what is on the character card by heart. Think of it as a sanity check, not a guarantee.
+> **Note:** The continuity checker is only as good as the model doing the checking. It checks against your stored memories, the AI character card, and your active user persona - but it is still a sanity check, not a guarantee.
 
 ---
 
