@@ -3251,6 +3251,7 @@ export function bindSettingsUI(ctrl) {
               $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
             );
             setStatusMessage('Correction queued.');
+            toastr.info('Correction queued for next response.', 'Smart Memory');
           } catch (repairErr) {
             console.error('[SmartMemory] Repair generation failed:', repairErr);
             setStatusMessage('Repair failed - see console.');

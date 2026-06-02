@@ -915,6 +915,10 @@ async function onCharacterMessageRendered(messageId, type) {
               $result.append(
                 $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
               );
+              toastr.info(
+                `${contradictions.length} contradiction${contradictions.length === 1 ? '' : 's'} found - correction queued for next response.`,
+                'Smart Memory',
+              );
             } catch (repairErr) {
               console.error('[SmartMemory] Auto-repair failed:', repairErr);
               $result.append(

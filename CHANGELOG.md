@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Continuity section of the settings panel so the user can read them - the
   same display as the manual Check button. Previously only the badge count
   was updated and the actual contradictions were invisible.
+- **A toast notification appears when a continuity repair is queued.** Both
+  the auto-check and manual check paths now show a brief toast when a
+  correction is successfully queued for the next response, so users know a
+  repair fired without having to keep the settings panel open.
 - **Auto-repair failure is now reported in the settings panel** instead of
   silently logging as "Auto-continuity check failed" (which was misleading -
   the check had succeeded). If repair generation fails the contradictions
