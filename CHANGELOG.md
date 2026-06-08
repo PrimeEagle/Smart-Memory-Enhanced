@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Per-tier injection budget sliders now go up to 4000 tokens** (previously
+  capped between 600 and 2000 depending on the tier). Users running cloud models
+  or large local context windows can now set higher per-tier budgets in advanced
+  mode without editing settings directly.
 - **Auto-tune budgets and unified injection** have been moved from Developer
   settings to the Configuration section and are no longer marked experimental.
   Both features are stable. Auto-tune sits directly below the total budget
