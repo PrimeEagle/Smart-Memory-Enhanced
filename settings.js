@@ -902,8 +902,10 @@ export function bindSettingsUI(ctrl) {
     const $select = $('#sm_connection_profile_id');
     $select.empty();
     const profiles = extension_settings?.['connection-manager']?.profiles ?? [];
-    const supportedApis = new Set(['openai', 'textgenerationwebui']);
-    const compatible = profiles.filter((p) => supportedApis.has(p.api));
+    // Filter by mode (cc = Chat Completion, tc = Text Completion). This covers all
+    // sub-types including ollama, koboldcpp, etc. - profile.api holds the sub-type
+    // string, not the top-level mode, so filtering by api would exclude most profiles.
+    const compatible = profiles.filter((p) => p.mode === 'cc' || p.mode === 'tc');
     if (compatible.length === 0) {
       $select.append('<option value="">- no compatible profiles found -</option>');
       return;
