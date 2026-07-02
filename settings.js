@@ -3192,12 +3192,9 @@ export function bindSettingsUI(ctrl) {
     // Per-tier position/depth/role blocks are advanced-only and hidden by override modes.
     // Both conditions must be met to show them: advanced mode on and no override active.
     // Exclude sm_unified_position - it belongs to the unified block's own settings.
-    $('[name$="_position"]:not([name="sm_unified_position"])')
+    $('[name$="_position"]:not([name="sm_unified_position"]), #sm_longterm_triggered_depth')
       .closest('.sm-block')
       .toggle(!hide && advanced);
-    // Triggered depth always uses setExtensionPrompt regardless of macro or unified mode,
-    // so it stays visible in advanced mode even when injection overrides are active.
-    $('#sm_longterm_triggered_depth').closest('.sm-block').toggle(advanced);
     // Unified sub-settings are only relevant when unified injection is on,
     // macro mode is off, and advanced mode is active.
     $('#sm_unified_settings').toggle(unified && !macros && advanced);

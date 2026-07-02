@@ -7,15 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Triggered memories injection depth now visible in Force Macro mode.**
-  The depth setting for the triggered long-term memory slot was hidden whenever
-  Force Macro Injection was enabled, alongside the position settings that macros
-  genuinely replace. Triggered memories always use `setExtensionPrompt` directly
-  - there is no macro equivalent - so their depth setting remains meaningful in
-  macro mode and is now shown correctly.
-
 ## [1.8.0] - 2026-07-02
 
 ### Added
