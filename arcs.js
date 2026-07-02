@@ -109,6 +109,8 @@ async function arcSimilarity(a, b) {
 /**
  * Returns true when two arc strings are similar enough to be considered
  * duplicates. Cosine threshold 0.82 for semantic, 0.4 for Jaccard fallback.
+ * Used for single one-off checks (e.g. promoteArc, reopenArc). Bulk operations
+ * should use arcIsDuplicateSync with a precomputed vectorMap instead.
  * @param {string} a
  * @param {string} b
  * @returns {Promise<boolean>}
@@ -119,8 +121,25 @@ async function arcIsDuplicate(a, b) {
 }
 
 /**
+ * Sync duplicate check using a precomputed embedding map.
+ * Falls back to Jaccard when either text is missing from the map.
+ * @param {string} a
+ * @param {string} b
+ * @param {Map<string, number[]>} vectorMap
+ * @returns {boolean}
+ */
+function arcIsDuplicateSync(a, b, vectorMap) {
+  const aVec = vectorMap?.get(a.toLowerCase().trim());
+  const bVec = vectorMap?.get(b.toLowerCase().trim());
+  if (aVec && bVec) return cosineSimilarity(aVec, bVec) >= 0.82;
+  return arcJaccard(a, b) >= 0.4;
+}
+
+/**
  * Removes duplicate entries from an arc array, keeping the first occurrence
- * when two arcs are flagged as duplicates by arcIsDuplicate.
+ * when two arcs are flagged as duplicates. Batch-fetches all embeddings in one
+ * call so the O(n^2) comparison loop incurs only one round-trip to the embedding
+ * backend regardless of array length.
  * Resolved arcs are excluded from deduplication and appended unchanged.
  * @param {Array<{content: string, resolved?: boolean}>} arcs
  * @returns {Promise<Array<{content: string}>>} Deduplicated arc array.
@@ -128,11 +147,16 @@ async function arcIsDuplicate(a, b) {
 async function deduplicateArcs(arcs) {
   const active = arcs.filter((a) => !a.resolved);
   const resolved = arcs.filter((a) => a.resolved);
+  if (active.length <= 1) return arcs;
+
+  const keys = active.map((a) => a.content.toLowerCase().trim());
+  const vectorMap = await getEmbeddingBatch(keys);
+
   const result = [];
   for (const arc of active) {
     let isDup = false;
     for (const prev of result) {
-      if (await arcIsDuplicate(arc.content, prev.content)) {
+      if (arcIsDuplicateSync(arc.content, prev.content, vectorMap)) {
         isDup = true;
         break;
       }
@@ -770,18 +794,25 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // Resolved arcs are excluded - a resolved thread does not block a genuinely
     // new instance of the same arc from being added as active.
     const activeAfterResolve = afterResolve.filter((a) => !a.resolved);
+
+    // Batch-fetch embeddings for all texts we'll compare in the dedup loops below.
+    // Avoids one getEmbeddingBatch call per pair (O(n*m) calls reduced to one).
+    const addKeys = add.map((a) => a.content.toLowerCase().trim());
+    const activeKeys = activeAfterResolve.map((a) => a.content.toLowerCase().trim());
+    const addVectorMap = await getEmbeddingBatch([...addKeys, ...activeKeys]);
+
     const dedupedAdd = [];
     for (const newArc of add) {
       let isDup = false;
       for (const ex of activeAfterResolve) {
-        if (await arcIsDuplicate(newArc.content, ex.content)) {
+        if (arcIsDuplicateSync(newArc.content, ex.content, addVectorMap)) {
           isDup = true;
           break;
         }
       }
       if (!isDup) {
         for (const prev of dedupedAdd) {
-          if (await arcIsDuplicate(newArc.content, prev.content)) {
+          if (arcIsDuplicateSync(newArc.content, prev.content, addVectorMap)) {
             isDup = true;
             break;
           }

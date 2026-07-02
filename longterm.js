@@ -65,6 +65,7 @@ import {
   PROMPT_KEY_RELATIONSHIPS,
   MEMORY_TYPES,
   META_KEY,
+  MAX_RETIRED_POOL,
 } from './constants.js';
 import {
   applyGraphDefaults,
@@ -708,10 +709,16 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     }
 
     // Newly retired active memories are moved to the retired pool.
-    const updatedRetired = [
+    let updatedRetired = [
       ...retiredMemories,
       ...activeMemories.filter((m) => newlyRetiredIds.has(m.id)),
     ];
+
+    // Cap the retired pool so it does not grow unbounded when consolidation is
+    // disabled. Drop the oldest entries (from the front) to stay within the limit.
+    if (updatedRetired.length > MAX_RETIRED_POOL) {
+      updatedRetired = updatedRetired.slice(updatedRetired.length - MAX_RETIRED_POOL);
+    }
 
     // Count new entries that made it into the final active set.
     const added = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`)).length;

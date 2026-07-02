@@ -415,28 +415,37 @@ function trimToBudget(messages, budget) {
  */
 export async function generateMemorySummarize(
   quietPrompt,
-  { responseLength = 1500, skipWIAN = true, includeLastMessage = false } = {},
+  { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null } = {},
 ) {
   const source = getSource();
 
   // For direct API sources, build the chat context ourselves and append the
   // quiet prompt as the final user message - same approach as WebLLM.
   if (source === memory_sources.ollama || source === memory_sources.openai_compatible) {
-    const context = getContext();
-    const chat = context.chat ?? [];
-    const lastMsg = chat[chat.length - 1];
-    const stableChat =
-      !includeLastMessage && lastMsg && !lastMsg.is_user && !lastMsg.is_system
-        ? chat.slice(0, -1)
-        : chat;
-    const allMessages = stableChat
-      .filter((msg) => !msg.is_system)
-      .map((msg) => ({ role: msg.is_user ? 'user' : 'assistant', content: msg.mes ?? '' }));
+    let priorMessages;
+    if (chatMessages !== null) {
+      // Caller provides the messages directly. An empty array is valid - used
+      // by progressive compaction where the prompt body already embeds both the
+      // existing summary and the new events, so sending the full chat again
+      // would duplicate the new messages.
+      priorMessages = chatMessages;
+    } else {
+      const context = getContext();
+      const chat = context.chat ?? [];
+      const lastMsg = chat[chat.length - 1];
+      const stableChat =
+        !includeLastMessage && lastMsg && !lastMsg.is_user && !lastMsg.is_system
+          ? chat.slice(0, -1)
+          : chat;
+      const allMessages = stableChat
+        .filter((msg) => !msg.is_system)
+        .map((msg) => ({ role: msg.is_user ? 'user' : 'assistant', content: msg.mes ?? '' }));
 
-    // Trim to the most recent messages that fit within 60% of the context window.
-    // Short-term memory is about recent context, not the entire chat history - sending
-    // all messages from a long RP would overflow a local model's context completely.
-    const priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+      // Trim to the most recent messages that fit within 60% of the context window.
+      // Short-term memory is about recent context, not the entire chat history - sending
+      // all messages from a long RP would overflow a local model's context completely.
+      priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+    }
 
     if (source === memory_sources.ollama) {
       const raw = await generateOllama(quietPrompt, priorMessages);

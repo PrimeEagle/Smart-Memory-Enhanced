@@ -48,6 +48,7 @@ import {
   META_KEY,
   PROMPT_KEY_SESSION,
   SESSION_TYPES,
+  MAX_RETIRED_POOL,
 } from './constants.js';
 import {
   applyGraphDefaults,
@@ -442,10 +443,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     }
 
     // Newly retired active memories move to the retired pool.
-    const updatedRetired = [
-      ...retiredMemories,
-      ...existing.filter((m) => newlyRetiredIds.has(m.id)),
-    ];
+    let updatedRetired = [...retiredMemories, ...existing.filter((m) => newlyRetiredIds.has(m.id))];
+
+    // Cap the retired pool - same reason as longterm.js.
+    if (updatedRetired.length > MAX_RETIRED_POOL) {
+      updatedRetired = updatedRetired.slice(updatedRetired.length - MAX_RETIRED_POOL);
+    }
 
     const added = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`)).length;
     if (abortCheck?.()) return 0;

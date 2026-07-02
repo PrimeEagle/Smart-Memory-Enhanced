@@ -52,6 +52,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Progressive compaction no longer double-sends new messages on Ollama and
+  OpenAI-compat sources.** The update prompt embeds the new conversation events
+  as text via `{{new_events}}`, but `generateMemorySummarize` was also prepending
+  the full recent chat as prior messages for context. The new messages were
+  therefore sent twice, inflating the request and confusing some models. The
+  update path now passes an empty prior-message list - the prompt body already
+  has both the existing summary and the new events.
+- **Compaction threshold check now skips the async tokenizer when clearly below
+  budget.** `shouldCompact` runs on every AI message. It was calling ST's async
+  `getTokenCountAsync` even on short chats that can't possibly be over the
+  threshold. A cheap character-count estimate now short-circuits the check when
+  the rough token count is under 60% of the threshold, eliminating the tokenizer
+  call for most messages.
+- **Arc deduplication now batches embedding lookups per operation.** The
+  `deduplicateArcs` function and the new-arc comparison loop inside `extractArcs`
+  were calling `getEmbeddingBatch` once per pair of arc strings. Both now
+  collect all texts and issue a single batch call before the comparison loop,
+  reducing embedding round-trips from O(n^2) to O(1) per operation.
+- **Retired memory pool is now capped at 100 entries per tier.** Previously the
+  pool grew without bound when consolidation was disabled - every superseded
+  memory stayed in storage forever. The pool is now trimmed from the front
+  (oldest first) when it exceeds 100 entries in either the long-term or session
+  tier. The cap is high enough that a user would need to supersede hundreds of
+  memories in one chat before anything is dropped.
 - **Per-tier injection budget sliders now go up to 4000 tokens** (previously
   capped between 600 and 2000 depending on the tier). Users running cloud models
   or large local context windows can now set higher per-tier budgets in advanced
