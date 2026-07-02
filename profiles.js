@@ -146,7 +146,7 @@ export async function generateProfiles(characterName, abortCheck = null) {
 
   try {
     const response = await generateMemoryExtract(prompt, {
-      responseLength: settings.profiles_response_length ?? 400,
+      responseLength: settings.profiles_response_length ?? 600,
     });
 
     smLog('[SmartMemory] Profile generation response:', response);

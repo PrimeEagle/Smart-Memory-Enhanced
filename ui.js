@@ -1626,8 +1626,6 @@ export function renderMemoriesList(memories, characterName) {
     $toggle.on('click', function () {
       const showing = $list.find('.sm_memory_item.sm_memory_retired').first().is(':visible');
       $list.find('.sm_memory_item.sm_memory_retired').toggle(!showing);
-      $(this).find('i').toggleClass('fa-eye-slash', !showing).toggleClass('fa-eye', !showing);
-      $(this).find('i').toggleClass('fa-eye-slash fa-eye');
       $(this).html(
         `<i class="fa-solid ${showing ? 'fa-eye-slash' : 'fa-eye'}"></i> ${showing ? 'Show' : 'Hide'} retired memories`,
       );

@@ -439,7 +439,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     // than waiting for the next consolidation cycle.
     if (entityRegistry.length > 0) {
       reconcileEntityRegistry(entityRegistry, finalActive);
-      await saveSessionEntityRegistry(entityRegistry);
+      if (!abortCheck?.()) await saveSessionEntityRegistry(entityRegistry);
     }
 
     // Newly retired active memories move to the retired pool.

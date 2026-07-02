@@ -76,6 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (oldest first) when it exceeds 100 entries in either the long-term or session
   tier. The cap is high enough that a user would need to supersede hundreds of
   memories in one chat before anything is dropped.
+- **The extraction and compaction pipeline is now deferred past ST's event
+  emit.** SillyTavern awaits all `CHARACTER_MESSAGE_RENDERED` listeners before
+  saving the chat file. Previously, Smart Memory's multi-second model calls ran
+  inside that await, blocking ST's save in non-streaming mode. The pipeline now
+  starts via `setTimeout(fn, 0)` so the handler returns immediately and ST
+  proceeds to save without waiting. Compaction and scene detection are also
+  gated on `!extractionRunning` so a re-entrant handler call cannot start either
+  one concurrently with an in-progress extraction from the previous turn.
 - **Per-tier injection budget sliders now go up to 4000 tokens** (previously
   capped between 600 and 2000 depending on the tier). Users running cloud models
   or large local context windows can now set higher per-tier budgets in advanced

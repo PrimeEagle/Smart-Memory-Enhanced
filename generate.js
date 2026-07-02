@@ -154,7 +154,7 @@ export async function fetchOllamaModels(baseUrl) {
  * Uses the /api/chat endpoint with a single user message.
  * @param {string} prompt
  * @param {Array} [priorMessages] - Optional prior messages for summarization context.
- * @param {number} responseLength
+ * @param {number} [numPredict] - Token generation limit passed as Ollama's num_predict option.
  * @returns {Promise<string>}
  */
 async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget()) {
