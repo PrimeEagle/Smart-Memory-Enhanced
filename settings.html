@@ -1555,6 +1555,7 @@
               <option value="ollama">Ollama</option>
               <option value="openai_compatible">OpenAI Compatible</option>
               <option value="webllm">WebLLM Extension</option>
+              <option value="connection_profile">ST Connection Profile</option>
             </select>
           </div>
 
@@ -1642,6 +1643,21 @@
                 class="text_pole"
                 placeholder="model-name (optional)"
               />
+            </label>
+          </div>
+
+          <!-- ST Connection Profile settings (shown when source = connection_profile) -->
+          <div id="sm_connection_profile_settings" class="sm-block" style="display: none">
+            <label>
+              Connection Profile
+              <span
+                class="sm-info"
+                data-tooltip="Select a saved SillyTavern connection profile to use for memory extraction. The profile's URL, model, and API key are used automatically. Only Chat Completion (openai) and Text Completion (textgenerationwebui) profile types are supported."
+                >ⓘ</span
+              >
+              <select id="sm_connection_profile_id" class="text_pole">
+                <option value="">- no compatible profiles found -</option>
+              </select>
             </label>
           </div>
 

@@ -404,9 +404,9 @@ Switching from simple to advanced never overwrites your values - the advanced co
 
 Smart Memory adjusts its behavior based on whether you are using a local model or a hosted service. The profile is auto-detected from your Memory LLM selection but can be overridden manually.
 
-| Setting          | Default | Description                                                                                                                                                                                                                                                                                   |
-| ---------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hardware profile | Auto    | Auto-detects from your memory source. Ollama or WebLLM selects Profile A (fewer model calls, lighter extraction). Main API or OpenAI Compatible selects Profile B (richer extraction, automatic continuity checks, auto-canon). Override manually if auto-detection does not match your setup |
+| Setting          | Default | Description                                                                                                                                                                                                                                                                                           |
+| ---------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hardware profile | Auto    | Auto-detects from your memory source. Ollama or WebLLM selects Profile A (fewer model calls, lighter extraction). Main API, OpenAI Compatible, or ST Connection Profile selects Profile B (richer extraction, automatic continuity checks, auto-canon). Override manually if auto-detection does not match your setup |
 
 **Profile A** (local hardware - Ollama, WebLLM) is designed to be conservative with model calls. Extraction runs on a schedule, scene AI detection is off by default, the continuity check is manual-only, and canon generation is triggered manually. This keeps things running smoothly on limited VRAM.
 
@@ -416,7 +416,9 @@ Smart Memory adjusts its behavior based on whether you are using a local model o
 
 Selects which AI model handles all Smart Memory work - summarization, extraction, and recap generation. Setting this to a lighter model leaves your main roleplay model free for the actual story.
 
-Options: **Main API**, **Ollama**, **OpenAI Compatible**, or **WebLLM Extension**.
+Options: **Main API**, **Ollama**, **OpenAI Compatible**, **WebLLM Extension**, or **ST Connection Profile**.
+
+**ST Connection Profile** lets you pick any saved SillyTavern connection profile to use for memory work. The profile's server URL, model, and API credentials are used automatically - no re-entry needed. This is the easiest option if you already have your extraction model saved as an ST profile. Select the source, then choose a profile from the dropdown that appears. Only Chat Completion and Text Completion profile types are supported.
 
 > **URL format:** Enter only the base URL - do not include `/v1` at the end. The extension appends the full path automatically. For example, NovelAI should be entered as `https://text.novelai.net/oa`, not `https://text.novelai.net/oa/v1`.
 >

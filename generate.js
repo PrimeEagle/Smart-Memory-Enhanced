@@ -26,9 +26,9 @@
  * roleplay - for example, a dedicated local model via Ollama while the main
  * chat uses a larger roleplay-tuned model.
  *
- * memory_sources                - enum of supported sources: 'main' | 'webllm' | 'ollama' | 'openai_compatible'
+ * memory_sources                - enum of supported sources: 'main' | 'webllm' | 'ollama' | 'openai_compatible' | 'connection_profile'
  * generateMemoryExtract         - for extraction tasks (self-contained prompt, no chat context needed);
- *                                 automatically strips reasoning blocks on Ollama/OpenAI-compat paths
+ *                                 automatically strips reasoning blocks on non-main paths
  *                                 using ST's reasoning template list (main API path handled by ST itself)
  * generateMemorySummarize       - for summarization tasks (needs the full chat context)
  * fetchOllamaModels             - returns the list of models installed in a local Ollama instance
@@ -44,7 +44,11 @@ import {
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
 import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
-import { isWebLlmSupported, generateWebLlmChatPrompt } from '../../shared.js';
+import {
+  isWebLlmSupported,
+  generateWebLlmChatPrompt,
+  ConnectionManagerRequestService,
+} from '../../shared.js';
 
 /**
  * Returns the configured generation budget from settings, falling back to
@@ -111,6 +115,7 @@ export const memory_sources = {
   webllm: 'webllm',
   ollama: 'ollama',
   openai_compatible: 'openai_compatible',
+  connection_profile: 'connection_profile',
 };
 
 /**
@@ -119,6 +124,44 @@ export const memory_sources = {
  */
 function getSource() {
   return extension_settings[MODULE_NAME]?.source ?? memory_sources.main;
+}
+
+/**
+ * Returns the configured ST connection profile ID, or null if not set.
+ * @returns {string|null}
+ */
+function getConnectionProfileId() {
+  return extension_settings[MODULE_NAME]?.connection_profile_id ?? null;
+}
+
+/**
+ * Sends a prompt through a saved ST connection profile using ConnectionManagerRequestService.
+ * Works with any profile type the connection manager supports (Ollama, OpenAI-compatible,
+ * cloud providers, etc.). The profile must exist and have a supported API type.
+ * @param {string} prompt
+ * @param {Array} [priorMessages] - Optional prior turn messages (chat completion profiles only).
+ * @param {number} [maxTokens]
+ * @returns {Promise<string>}
+ */
+async function generateWithConnectionProfile(
+  prompt,
+  priorMessages = [],
+  maxTokens = getGenerationBudget(),
+) {
+  const profileId = getConnectionProfileId();
+  if (!profileId)
+    throw new Error(
+      'No ST connection profile selected. Choose a profile in Smart Memory settings.',
+    );
+
+  // Build a messages array so chat completion profiles get conversational context.
+  // For text completion profiles, ConnectionManagerRequestService constructs the
+  // prompt string internally using the profile's instruct template.
+  const messages = [...priorMessages, { role: 'user', content: prompt }];
+  const limit = maxTokens > 0 ? maxTokens : undefined;
+  const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
+  // result is ExtractedData with a `.content` field containing the response text.
+  return result?.content ?? '';
 }
 
 /**
@@ -348,6 +391,8 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
     raw = await generateOllama(prompt, []);
   } else if (source === memory_sources.openai_compatible) {
     raw = await generateOpenAICompat(prompt, []);
+  } else if (source === memory_sources.connection_profile) {
+    raw = await generateWithConnectionProfile(prompt, [], responseLength);
   } else if (source === memory_sources.webllm) {
     if (!isWebLlmSupported()) {
       console.warn(
@@ -370,7 +415,7 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   }
 
   // Main API path: ST already strips reasoning blocks in its own pipeline.
-  // Ollama and OpenAI-compatible paths bypass ST, so we strip here.
+  // All other paths (Ollama, OpenAI-compat, connection profile, WebLLM) bypass ST, so we strip here.
   const needsStrip = source !== memory_sources.main;
   const stripped = needsStrip ? stripThinkingBlocks(raw ?? '') : (raw ?? '');
   // Truncate to responseLength characters as a rough bound - the thinking block
@@ -425,9 +470,13 @@ export async function generateMemorySummarize(
 ) {
   const source = getSource();
 
-  // For direct API sources, build the chat context ourselves and append the
-  // quiet prompt as the final user message - same approach as WebLLM.
-  if (source === memory_sources.ollama || source === memory_sources.openai_compatible) {
+  // For direct API sources (Ollama, OpenAI-compat, connection profile), build the chat
+  // context ourselves and append the quiet prompt as the final user message.
+  if (
+    source === memory_sources.ollama ||
+    source === memory_sources.openai_compatible ||
+    source === memory_sources.connection_profile
+  ) {
     let priorMessages;
     if (chatMessages !== null) {
       // Caller provides the messages directly. An empty array is valid - used
@@ -453,22 +502,22 @@ export async function generateMemorySummarize(
       priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
     }
 
+    let rawDirect;
     if (source === memory_sources.ollama) {
-      const raw = await generateOllama(quietPrompt, priorMessages);
-      const stripped = stripThinkingBlocks(raw ?? '');
-      const charLimit =
-        responseLength > 0 && getGenerationBudget() !== -1
-          ? Math.max(responseLength, getGenerationBudget()) * 4
-          : Infinity;
-      return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
+      rawDirect = await generateOllama(quietPrompt, priorMessages);
+    } else if (source === memory_sources.connection_profile) {
+      rawDirect = await generateWithConnectionProfile(quietPrompt, priorMessages, responseLength);
+    } else {
+      rawDirect = await generateOpenAICompat(quietPrompt, priorMessages);
     }
-    const rawOAI = await generateOpenAICompat(quietPrompt, priorMessages);
-    const strippedOAI = stripThinkingBlocks(rawOAI ?? '');
-    const charLimitOAI =
+    const strippedDirect = stripThinkingBlocks(rawDirect ?? '');
+    const charLimitDirect =
       responseLength > 0 && getGenerationBudget() !== -1
         ? Math.max(responseLength, getGenerationBudget()) * 4
         : Infinity;
-    return strippedOAI.length > charLimitOAI ? strippedOAI.slice(0, charLimitOAI) : strippedOAI;
+    return strippedDirect.length > charLimitDirect
+      ? strippedDirect.slice(0, charLimitDirect)
+      : strippedDirect;
   }
 
   if (source === memory_sources.webllm) {

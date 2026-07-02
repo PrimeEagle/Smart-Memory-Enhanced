@@ -159,6 +159,9 @@ export const defaultSettings = {
   openai_compat_key: '',
   openai_compat_model: '',
 
+  // ST connection profile source: ID of the saved profile to use for extraction
+  connection_profile_id: null,
+
   // Maximum tokens the Memory LLM may generate per extraction call.
   // 8192 covers any thinking model comfortably. -1 means unlimited (Ollama only).
   generation_budget: 8192,
@@ -888,6 +891,34 @@ export function bindSettingsUI(ctrl) {
   function updateSourceSections(source) {
     $('#sm_ollama_settings').toggle(source === memory_sources.ollama);
     $('#sm_openai_compat_settings').toggle(source === memory_sources.openai_compatible);
+    $('#sm_connection_profile_settings').toggle(source === memory_sources.connection_profile);
+  }
+
+  /**
+   * Populates the connection profile picker with all profiles saved in the connection manager.
+   * Shows a placeholder if the connection manager has no profiles or is unavailable.
+   */
+  function populateConnectionProfilePicker() {
+    const $select = $('#sm_connection_profile_id');
+    $select.empty();
+    const profiles = extension_settings?.connectionManager?.profiles ?? [];
+    const supportedApis = new Set(['openai', 'textgenerationwebui']);
+    const compatible = profiles.filter((p) => supportedApis.has(p.api));
+    if (compatible.length === 0) {
+      $select.append('<option value="">- no compatible profiles found -</option>');
+      return;
+    }
+    compatible
+      .slice()
+      .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
+      .forEach((p) => {
+        $select.append($('<option>', { value: p.id, text: p.name ?? p.id }));
+      });
+    // Restore previously saved selection if it still exists.
+    const saved = extension_settings[MODULE_NAME].connection_profile_id;
+    if (saved && compatible.some((p) => p.id === saved)) {
+      $select.val(saved);
+    }
   }
 
   /**
@@ -995,6 +1026,13 @@ export function bindSettingsUI(ctrl) {
     });
 
   updateSourceSections(currentSource);
+
+  // Connection profile picker
+  populateConnectionProfilePicker();
+  $('#sm_connection_profile_id').on('change', function () {
+    extension_settings[MODULE_NAME].connection_profile_id = $(this).val() || null;
+    saveSettingsDebounced();
+  });
 
   // Ollama URL field
   $('#sm_ollama_url')
