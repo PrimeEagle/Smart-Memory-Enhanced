@@ -9,27 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Configurable injection refresh period for cloud API prompt cache stability.**
-  A new advanced-mode slider sets the minimum number of AI messages that must pass
-  before long-term and session memory slots are re-injected into the prompt. Default
-  is 1 (every message, current behaviour). Setting it higher keeps the injected block
-  stable between updates so cloud API providers can cache the prompt and charge less
-  per token. Recent events are still visible in chat history during the gap between
-  refreshes - the freeze only affects content that has already scrolled out of the
-  history window. Short-term (compaction) and other tiers inject immediately when
-  they update and are unaffected by this setting.
-- **OpenAI Compatible source retries on transient server errors.** Failed
-  requests due to 5xx responses or network-level errors (gateway timeouts,
-  connection resets) are retried up to 3 times with a 3 second delay between
-  attempts. This handles free-tier cloud providers that occasionally drop
-  requests under load without permanently failing the extraction pass.
-- **OpenAI Compatible source no longer requires a local proxy for cloud APIs.**
-  Remote/cloud providers (Nvidia NIM, OpenRouter, OpenAI, etc.) are now routed
-  through SillyTavern's own server-side proxy, which avoids the CORS
-  restrictions those services impose on direct browser connections. Local
-  servers (localhost and private network addresses) are still contacted
-  directly as before - no behaviour change for KoboldCpp, llama.cpp, or any
-  other locally hosted server.
+- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
+  now passed into each extraction prompt as a numbered list. The model outputs
+  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
+  a `[suspects]` entry is retired when the character confirms the fact as
+  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
+  entries are removed before new ones are merged in, so the injected knowledge
+  block stays clean rather than accumulating contradictions over a long chat.
+  No extra model call - retire lines are mixed into the same extraction response.
 - **Manually resolving an arc now generates an arc summary for canon.**
   The arc checkmark previously moved the arc to the Resolved Threads panel
   but never produced an arc summary, so canon generation had nothing to work
@@ -42,14 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   models that abort before producing output can increase this limit. An
   Unlimited (-1) checkbox is also available for users who accept the risk of
   runaway generation on their local hardware.
-- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
-  now passed into each extraction prompt as a numbered list. The model outputs
-  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
-  a `[suspects]` entry is retired when the character confirms the fact as
-  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
-  entries are removed before new ones are merged in, so the injected knowledge
-  block stays clean rather than accumulating contradictions over a long chat.
-  No extra model call - retire lines are mixed into the same extraction response.
+- **Configurable injection refresh period for cloud API prompt cache stability.**
+  A new advanced-mode slider sets the minimum number of AI messages that must pass
+  before long-term and session memory slots are re-injected into the prompt. Default
+  is 1 (every message, current behaviour). Setting it higher keeps the injected block
+  stable between updates so cloud API providers can cache the prompt and charge less
+  per token. Recent events are still visible in chat history during the gap between
+  refreshes. Short-term (compaction) and other tiers inject immediately when they
+  update and are unaffected by this setting.
+- **OpenAI Compatible source retries on transient errors.** Failed requests due
+  to 5xx responses, network-level errors (gateway timeouts, connection resets),
+  or HTTP 429 rate-limit responses are retried up to 3 times with a 3-second
+  delay between attempts. This handles free-tier cloud providers that occasionally
+  drop or throttle requests without permanently failing the extraction pass.
+- **OpenAI Compatible source no longer requires a local proxy for cloud APIs.**
+  Remote/cloud providers (Nvidia NIM, OpenRouter, OpenAI, etc.) are now routed
+  through SillyTavern's own server-side proxy, which avoids the CORS restrictions
+  those services impose on direct browser connections. Local servers (localhost
+  and private network addresses) are still contacted directly as before - no
+  behaviour change for KoboldCpp, llama.cpp, or any other locally hosted server.
 - **Scene break heuristic patterns expanded.** Five new pattern groups have been
   added: wake from unconsciousness or injury ("regained consciousness", "came to
   their senses", "opened their eyes to find"); return transitions ("returned to
@@ -58,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   morning/nightfall/dawn/dusk"); and extended time skips ("in the days/weeks that
   followed"). Patterns are intentionally narrow to avoid false positives on
   common mid-scene phrasing.
+- **The continuity repair note is now shown in the settings panel with a
+  Cancel button.** When a correction is queued, the panel shows the exact
+  text that will be injected into the next prompt, so users can read it and
+  cancel it if they disagree. Clicking Cancel removes the queued correction
+  before it fires.
+- **A toast notification appears when a continuity repair is queued.** Both
+  the auto-check and manual check paths now show a brief toast when a
+  correction is successfully queued for the next response, so users know a
+  repair fired without having to keep the settings panel open.
 
 ### Changed
 
@@ -93,6 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proceeds to save without waiting. Compaction and scene detection are also
   gated on `!extractionRunning` so a re-entrant handler call cannot start either
   one concurrently with an in-progress extraction from the previous turn.
+- **Char-truncation floor raised to generation budget on Ollama and OpenAI-compat
+  paths.** Extraction and summarization output was truncated at `responseLength * 4`
+  characters after stripping thinking blocks. On thinking models the tight per-tier
+  `responseLength` values (300-600 tokens) could silently cut off items at the end
+  of a dense extraction response. The floor is now
+  `Math.max(responseLength, generation_budget) * 4` so the user-configured
+  generation budget is always the effective ceiling.
 - **Per-tier injection budget sliders now go up to 4000 tokens** (previously
   capped between 600 and 2000 depending on the tier). Users running cloud models
   or large local context windows can now set higher per-tier budgets in advanced
@@ -121,13 +135,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Show retired memories" toggle was always empty as a result, and supersession
   history was silently lost. Both functions now reload the full (unfiltered)
   array before saving, preserving the retired pool.
-- **Manual arc resolution now contributes to canon correctly.** The manual
-  resolution path was pushing arc summary objects with different field names
-  (`content`/`arcContent`/`sourceSceneTs`/`sourceMemoryIds`) than the
-  model-resolved path and the canon reader expect (`summary`/`arc`/
-  `source_scene_ids`/`source_memory_ids`). Canon generation read `s.summary`
-  and received `undefined` for every manually resolved arc. Field names are
-  now aligned across both resolution paths.
 - **Epistemic deduplication now correctly uses semantic embeddings.**
   `getEmbeddingBatch` returns a `Map<string, number[]>` keyed by text, but
   the epistemic dedup path was indexing it with numeric positions
@@ -142,10 +149,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write old-chat data into the new chat's `chatMetadata`. All four functions
   now accept an `abortCheck` callback and skip their final write if the chat has
   changed. The catch-up runner also now cancels automatically on chat switch.
-- **OpenAI Compatible source now retries on HTTP 429 (rate limiting).** The
-  retry logic covered 5xx and network errors but not 429, which is the most
-  common transient error from free-tier cloud providers. 429 responses are now
-  retried up to 3 times with the existing 3-second delay.
 - **Re-running compaction when the summary is already current no longer
   replaces it with a narrower window.** When `summaryEnd` was at or beyond the
   current chat length (e.g. after Memorize Chat run twice), the progressive
@@ -164,12 +167,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   injection formatter was recovering the display name from that lowercased key.
   The original-case name is now stored as `_name` in each ledger entry and used
   for display, so names like "Elara" appear correctly rather than "elara".
-- **Epistemic retire index parser is more lenient.** The strict regex
-  `^\[retire\]\s+(\d+)$` rejected plausible weak-model variations such as
-  `[retire]3`, `[retire] #2`, `[retire] 1, 3`, and entries with trailing
-  punctuation. The parser now extracts all digit sequences from any line
-  starting with `[retire]`, supporting comma lists and optional formatting
-  characters.
 - **Continuity checker now includes the active user persona in established
   facts.** Previously only the AI character's card and extracted memories were
   checked against - accurate descriptions of the user's character could be
@@ -181,15 +178,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Continuity section of the settings panel so the user can read them - the
   same display as the manual Check button. Previously only the badge count
   was updated and the actual contradictions were invisible.
-- **The continuity repair note is now shown in the settings panel with a
-  Cancel button.** When a correction is queued, the panel shows the exact
-  text that will be injected into the next prompt, so users can read it and
-  cancel it if they disagree. Clicking Cancel removes the queued correction
-  before it fires.
-- **A toast notification appears when a continuity repair is queued.** Both
-  the auto-check and manual check paths now show a brief toast when a
-  correction is successfully queued for the next response, so users know a
-  repair fired without having to keep the settings panel open.
 - **Auto-repair failure is now reported in the settings panel** instead of
   silently logging as "Auto-continuity check failed" (which was misleading -
   the check had succeeded). If repair generation fails the contradictions
@@ -214,7 +202,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller after the second one set a new one, making the new request
   unabortable. Each call now captures its own controller reference and only
   nulls the module-level variable if it still holds that same reference.
-  Aborting during the retry sleep between failed attempts is also fixed.
 - **Extraction cutoff is now snapshotted before model calls begin.** The index
   marking how far extraction has progressed was being computed from
   `context.chat` after all model calls completed. On slow local hardware,
@@ -230,15 +217,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacement target ID was never added. The memories became entity-orphans
   invisible in the graph. The merge now adds the target ID after removing the
   source ID, matching the behaviour of the session-to-long-term direction.
-- **Char-truncation floor raised to generation budget on Ollama and OpenAI-compat
-  paths.** Extraction and summarization output was truncated at `responseLength * 4`
-  characters after stripping thinking blocks. On thinking models where reasoning
-  inflates the raw response, the tight per-tier `responseLength` values (300-600
-  tokens) could silently cut off items at the end of a dense extraction response.
-  The floor is now `Math.max(responseLength, generation_budget) * 4` so the
-  user-configured generation budget is always the effective ceiling, not the smaller
-  per-tier value. The generation budget slider added in 1.8.0 already lets users
-  control this limit; per-tier sliders would be redundant.
 - **Catch-up inject failures no longer abort the entire catch-up run.** The
   `injectMemories` and `injectSessionMemories` calls inside the catch-up loop
   had no error handling, so a transient failure in either would throw and stop
