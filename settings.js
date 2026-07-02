@@ -901,7 +901,7 @@ export function bindSettingsUI(ctrl) {
   function populateConnectionProfilePicker() {
     const $select = $('#sm_connection_profile_id');
     $select.empty();
-    const profiles = extension_settings?.['connection-manager']?.profiles ?? [];
+    const profiles = extension_settings?.connectionManager?.profiles ?? [];
     // Filter by mode (cc = Chat Completion, tc = Text Completion). This covers all
     // sub-types including ollama, koboldcpp, etc. - profile.api holds the sub-type
     // string, not the top-level mode, so filtering by api would exclude most profiles.
