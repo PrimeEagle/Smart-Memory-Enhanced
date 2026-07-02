@@ -57,6 +57,7 @@ export const MACRO_NAMES = {
   profiles: 'smartmemory-profiles',
   epistemic: 'smartmemory-epistemic',
   state_ledger: 'smartmemory-stateledger',
+  triggered: 'smartmemory-triggered',
   unified: 'smartmemory-unified',
 };
 

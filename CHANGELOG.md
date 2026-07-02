@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-07-02
+
+### Added
+
+- **`{{smartmemory-triggered}}` macro for contextually triggered memories.**
+  Keyword-triggered long-term memories can now be placed via macro in instruct
+  templates, consistent with all other memory tiers. Previously the triggered
+  slot had no macro equivalent, so Force Macro Injection mode hid the depth
+  setting with no alternative. The depth setting remains available in advanced
+  mode for non-macro users.
+- **ST Connection Profile as Memory LLM source.** A new "ST Connection Profile"
+  option in the Memory LLM source dropdown lets users select any saved SillyTavern
+  connection profile for extraction and summarization. The profile's URL, model,
+  and API credentials are used automatically - no re-entry needed. Supports all
+  Chat Completion and Text Completion profile types. Useful for users who already
+  have their extraction model configured as an ST connection profile and want to
+  avoid duplicating settings.
+
 ## [1.8.0] - 2026-07-02
 
 ### Added
