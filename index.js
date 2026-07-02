@@ -644,6 +644,15 @@ async function onCharacterMessageRendered(messageId, type) {
             20,
           );
 
+          // Determine whether to refresh injection slots this pass. When the
+          // refresh period is > 1, long-term and session slots stay stable between
+          // refreshes so cloud API prompt caches remain valid. Recent events are
+          // covered by chat history during the gap.
+          const injRefreshPeriod = settings.injection_refresh_period ?? 1;
+          const injLastRefresh = context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0;
+          const shouldRefreshInjections =
+            injRefreshPeriod <= 1 || context.chat.length - 1 - injLastRefresh >= injRefreshPeriod;
+
           // Snapshot the cutoff index now, before any awaits, so messages that
           // arrive during extraction are not silently swallowed by advancing the
           // window boundary after the model calls complete.
@@ -726,7 +735,7 @@ async function onCharacterMessageRendered(messageId, type) {
                 });
                 consolidationRunning = false;
               }
-              await injectSessionMemories(true);
+              if (shouldRefreshInjections) await injectSessionMemories(true);
               updateSessionUI();
               total += count;
 
@@ -778,10 +787,13 @@ async function onCharacterMessageRendered(messageId, type) {
                   );
                 }
               }
-              // Inject once after extraction (and any consolidation) - this is the
-              // one call per AI response turn where telemetry should be updated.
-              await injectMemories(characterName, true);
-              injectRelationshipHistory(characterName);
+              // Inject once after extraction (and any consolidation). Gated by the
+              // refresh period so the slot stays stable between refreshes for
+              // cloud API prompt cache hits.
+              if (shouldRefreshInjections) {
+                await injectMemories(characterName, true);
+                injectRelationshipHistory(characterName);
+              }
               updateLongTermUI(characterName);
               updateRelationshipHistoryUI(characterName);
               updateEpistemicUI(characterName);
@@ -857,7 +869,7 @@ async function onCharacterMessageRendered(messageId, type) {
 
             // Refresh entity panel after extraction since new entities may have been linked.
             updateEntityPanel(characterName);
-            maybeInjectUnified();
+            if (shouldRefreshInjections) maybeInjectUnified();
             updateTokenDisplay();
             autoTuneBudgets(characterName);
             setStatusMessage(
@@ -872,6 +884,7 @@ async function onCharacterMessageRendered(messageId, type) {
             const metaAfter = context.chatMetadata?.[META_KEY];
             if (metaAfter) {
               metaAfter.lastExtractCutoff = snapshotCutoff;
+              if (shouldRefreshInjections) metaAfter.lastInjectionRefresh = snapshotCutoff;
               context.saveMetadata();
             }
           } catch (err) {
@@ -1528,6 +1541,13 @@ async function onGroupWrapperFinished({ type } = {}) {
             longtermRawSize,
           );
 
+          // Injection refresh period check - same logic as solo path.
+          const injRefreshPeriodGroup = settings.injection_refresh_period ?? 1;
+          const injLastRefreshGroup = context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0;
+          const shouldRefreshInjectionsGroup =
+            injRefreshPeriodGroup <= 1 ||
+            context.chat.length - 1 - injLastRefreshGroup >= injRefreshPeriodGroup;
+
           // Snapshot before any awaits - same reason as solo path.
           const snapshotLastGroup = context.chat[context.chat.length - 1];
           const snapshotCutoffGroup =
@@ -1587,7 +1607,7 @@ async function onGroupWrapperFinished({ type } = {}) {
                   });
                   consolidationRunning = false;
                 }
-                await injectSessionMemories(true);
+                if (shouldRefreshInjectionsGroup) await injectSessionMemories(true);
                 updateSessionUI();
                 total += count;
 
@@ -1747,6 +1767,8 @@ async function onGroupWrapperFinished({ type } = {}) {
               const metaAfterGroup = context.chatMetadata?.[META_KEY];
               if (metaAfterGroup) {
                 metaAfterGroup.lastExtractCutoff = snapshotCutoffGroup;
+                if (shouldRefreshInjectionsGroup)
+                  metaAfterGroup.lastInjectionRefresh = snapshotCutoffGroup;
                 context.saveMetadata();
               }
             } catch (err) {

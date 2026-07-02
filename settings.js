@@ -163,6 +163,12 @@ export const defaultSettings = {
   // 8192 covers any thinking model comfortably. -1 means unlimited (Ollama only).
   generation_budget: 8192,
 
+  // Minimum number of AI messages between long-term and session injection refreshes.
+  // 1 = refresh on every extraction pass (default / current behaviour).
+  // Higher values keep the injected block stable for longer, preserving prompt cache
+  // hits on cloud APIs. Chat history covers the gap for recent events.
+  injection_refresh_period: 1,
+
   // OpenAI Compatible embedding API key
   embedding_api_key: '',
 
@@ -3243,6 +3249,17 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
       maybeInjectUnified();
     });
+
+  const refreshPeriod = s.injection_refresh_period ?? 1;
+  $('#sm_injection_refresh_period')
+    .val(refreshPeriod)
+    .on('input', function () {
+      const val = parseInt($(this).val(), 10);
+      $('#sm_injection_refresh_period_value').text(val);
+      extension_settings[MODULE_NAME].injection_refresh_period = val;
+      saveSettingsDebounced();
+    });
+  $('#sm_injection_refresh_period_value').text(refreshPeriod);
 
   $('#sm_macros_enabled')
     .prop('checked', s.macros_enabled ?? false)

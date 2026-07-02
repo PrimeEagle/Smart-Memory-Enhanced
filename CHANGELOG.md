@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Configurable injection refresh period for cloud API prompt cache stability.**
+  A new advanced-mode slider sets the minimum number of AI messages that must pass
+  before long-term and session memory slots are re-injected into the prompt. Default
+  is 1 (every message, current behaviour). Setting it higher keeps the injected block
+  stable between updates so cloud API providers can cache the prompt and charge less
+  per token. Recent events are still visible in chat history during the gap between
+  refreshes - the freeze only affects content that has already scrolled out of the
+  history window. Short-term (compaction) and other tiers inject immediately when
+  they update and are unaffected by this setting.
 - **OpenAI Compatible source retries on transient server errors.** Failed
   requests due to 5xx responses or network-level errors (gateway timeouts,
   connection resets) are retried up to 3 times with a 3 second delay between
