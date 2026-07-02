@@ -916,10 +916,17 @@ export function bindSettingsUI(ctrl) {
       .forEach((p) => {
         $select.append($('<option>', { value: p.id, text: p.name ?? p.id }));
       });
-    // Restore previously saved selection if it still exists.
+    // Restore previously saved selection, or auto-save the first option so the
+    // setting is never null when profiles are available (the browser auto-selects
+    // the first option but does not fire a change event, so we save it explicitly).
     const saved = extension_settings[MODULE_NAME].connection_profile_id;
     if (saved && compatible.some((p) => p.id === saved)) {
       $select.val(saved);
+    } else {
+      const firstId = compatible[0].id;
+      $select.val(firstId);
+      extension_settings[MODULE_NAME].connection_profile_id = firstId;
+      saveSettingsDebounced();
     }
   }
 
