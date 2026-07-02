@@ -528,6 +528,12 @@ async function onCharacterMessageRendered(messageId, type) {
   // returning here lets that proceed while extraction runs in the background.
   setTimeout(() => {
     (async () => {
+      // Guard: if the user switched chats in the gap between the event handler
+      // returning and this timeout firing, bail immediately. Without this check,
+      // compaction evaluates the new chat and injectCanon briefly injects the
+      // previous character's canon into the wrong chat.
+      if (chatChanged()) return;
+
       // Step 1: compaction - awaited before extraction to prevent concurrent use
       // of ST's TempResponseLength singleton, which would corrupt amount_gen.
       // Also gated on !extractionRunning: after the deferral a re-entrant handler
@@ -651,7 +657,8 @@ async function onCharacterMessageRendered(messageId, type) {
           const injRefreshPeriod = settings.injection_refresh_period ?? 1;
           const injLastRefresh = context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0;
           const shouldRefreshInjections =
-            injRefreshPeriod <= 1 || context.chat.length - 1 - injLastRefresh >= injRefreshPeriod;
+            injRefreshPeriod <= 1 ||
+            Math.max(0, context.chat.length - 1 - injLastRefresh) >= injRefreshPeriod;
 
           // Snapshot the cutoff index now, before any awaits, so messages that
           // arrive during extraction are not silently swallowed by advancing the
@@ -1435,6 +1442,9 @@ async function onGroupWrapperFinished({ type } = {}) {
   // Defer the async pipeline - same reason as the solo handler.
   setTimeout(() => {
     (async () => {
+      // Guard: bail if the user switched chats during the deferral window.
+      if (chatChanged()) return;
+
       // Step 1: compaction - once per round rather than per character response.
       // Gated by !isFreshStart() and !extractionRunning matching the solo path.
       if (
@@ -1546,7 +1556,7 @@ async function onGroupWrapperFinished({ type } = {}) {
           const injLastRefreshGroup = context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0;
           const shouldRefreshInjectionsGroup =
             injRefreshPeriodGroup <= 1 ||
-            context.chat.length - 1 - injLastRefreshGroup >= injRefreshPeriodGroup;
+            Math.max(0, context.chat.length - 1 - injLastRefreshGroup) >= injRefreshPeriodGroup;
 
           // Snapshot before any awaits - same reason as solo path.
           const snapshotLastGroup = context.chat[context.chat.length - 1];

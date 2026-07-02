@@ -106,7 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `responseLength` values (300-600 tokens) could silently cut off items at the end
   of a dense extraction response. The floor is now
   `Math.max(responseLength, generation_budget) * 4` so the user-configured
-  generation budget is always the effective ceiling.
+  generation budget is always the effective ceiling. When the generation budget is
+  set to Unlimited (-1), truncation is skipped entirely.
 - **Per-tier injection budget sliders now go up to 4000 tokens** (previously
   capped between 600 and 2000 depending on the tier). Users running cloud models
   or large local context windows can now set higher per-tier budgets in advanced
