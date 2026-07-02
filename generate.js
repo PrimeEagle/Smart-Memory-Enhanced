@@ -376,7 +376,10 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   // Truncate to responseLength characters as a rough bound - the thinking block
   // may have inflated the raw output far beyond the intended budget.
   // 4 chars/token is a conservative estimate; actual token count may be lower.
-  const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
+  // Floor at generation_budget so thinking models that produce long reasoning blocks
+  // don't have their actual output silently truncated when responseLength is tuned tightly.
+  const charLimit =
+    responseLength > 0 ? Math.max(responseLength, getGenerationBudget()) * 4 : Infinity;
   return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
 }
 
@@ -450,12 +453,14 @@ export async function generateMemorySummarize(
     if (source === memory_sources.ollama) {
       const raw = await generateOllama(quietPrompt, priorMessages);
       const stripped = stripThinkingBlocks(raw ?? '');
-      const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
+      const charLimit =
+        responseLength > 0 ? Math.max(responseLength, getGenerationBudget()) * 4 : Infinity;
       return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
     }
     const rawOAI = await generateOpenAICompat(quietPrompt, priorMessages);
     const strippedOAI = stripThinkingBlocks(rawOAI ?? '');
-    const charLimitOAI = responseLength > 0 ? responseLength * 4 : Infinity;
+    const charLimitOAI =
+      responseLength > 0 ? Math.max(responseLength, getGenerationBudget()) * 4 : Infinity;
     return strippedOAI.length > charLimitOAI ? strippedOAI.slice(0, charLimitOAI) : strippedOAI;
   }
 

@@ -221,6 +221,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacement target ID was never added. The memories became entity-orphans
   invisible in the graph. The merge now adds the target ID after removing the
   source ID, matching the behaviour of the session-to-long-term direction.
+- **Char-truncation floor raised to generation budget on Ollama and OpenAI-compat
+  paths.** Extraction and summarization output was truncated at `responseLength * 4`
+  characters after stripping thinking blocks. On thinking models where reasoning
+  inflates the raw response, the tight per-tier `responseLength` values (300-600
+  tokens) could silently cut off items at the end of a dense extraction response.
+  The floor is now `Math.max(responseLength, generation_budget) * 4` so the
+  user-configured generation budget is always the effective ceiling, not the smaller
+  per-tier value. The generation budget slider added in 1.8.0 already lets users
+  control this limit; per-tier sliders would be redundant.
 - **Catch-up inject failures no longer abort the entire catch-up run.** The
   `injectMemories` and `injectSessionMemories` calls inside the catch-up loop
   had no error handling, so a transient failure in either would throw and stop
