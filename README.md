@@ -683,6 +683,7 @@ Each memory tier exposes a macro token you can place anywhere in a character car
 | ------------------------------- | ------------------------- |
 | `{{smartmemory-shortterm}}`     | Short-term summary        |
 | `{{smartmemory-longterm}}`      | Long-term memories        |
+| `{{smartmemory-triggered}}`     | Contextually triggered memories (keyword-matched subset of long-term, re-injected closer to the prompt) |
 | `{{smartmemory-session}}`       | Session memories          |
 | `{{smartmemory-scenes}}`        | Scene history             |
 | `{{smartmemory-arcs}}`          | Story arcs                |

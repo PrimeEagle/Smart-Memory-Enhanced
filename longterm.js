@@ -944,6 +944,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
 
   if (!settings.longterm_enabled || !characterName) {
     setMacroContent(MACRO_NAMES.longterm, '');
+    setMacroContent(MACRO_NAMES.triggered, '');
     setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
     setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_LONG);
@@ -955,6 +956,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   const memories = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
   if (memories.length === 0) {
     setMacroContent(MACRO_NAMES.longterm, '');
+    setMacroContent(MACRO_NAMES.triggered, '');
     setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
     setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_LONG);
@@ -1121,11 +1123,10 @@ export async function injectMemories(characterName, updateTelemetry = false) {
     );
   }
 
-  // Secondary injection for triggered memories only, placed closer to the prompt.
-  // Cleared when no triggers fire so stale content never lingers.
-  // This slot is never handled by a macro - it stays as setExtensionPrompt always.
-  // Apply the same witnessed-by filter as the main block: omit non-witnessed
-  // memories when secondhand framing is disabled, prefix when it is enabled.
+  // Secondary injection for contextually triggered memories, placed closer to
+  // the prompt. Supports both setExtensionPrompt (depth-based) and macro mode
+  // via {{smartmemory-triggered}}. Cleared when no triggers fire.
+  // Apply the same witnessed-by filter as the main block.
   if (triggered.length > 0) {
     const triggeredLines = [];
     for (const m of triggered) {
@@ -1137,20 +1138,27 @@ export async function injectMemories(characterName, updateTelemetry = false) {
       }
     }
     if (triggeredLines.length === 0) {
+      setMacroContent(MACRO_NAMES.triggered, '');
       setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
       return;
     }
     const triggeredText = triggeredLines.join('\n');
     const triggeredContent = template.replace('{{memories}}', triggeredText);
-    setExtensionPrompt(
-      PROMPT_KEY_TRIGGERED,
-      triggeredContent,
-      extension_prompt_types.IN_CHAT,
-      settings.longterm_triggered_depth ?? 4,
-      false,
-      settings.longterm_role ?? extension_prompt_roles.SYSTEM,
-    );
+    setMacroContent(MACRO_NAMES.triggered, triggeredContent);
+    if (isMacroActive(MACRO_NAMES.triggered)) {
+      setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
+    } else {
+      setExtensionPrompt(
+        PROMPT_KEY_TRIGGERED,
+        triggeredContent,
+        extension_prompt_types.IN_CHAT,
+        settings.longterm_triggered_depth ?? 4,
+        false,
+        settings.longterm_role ?? extension_prompt_roles.SYSTEM,
+      );
+    }
   } else {
+    setMacroContent(MACRO_NAMES.triggered, '');
     setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
   }
 }

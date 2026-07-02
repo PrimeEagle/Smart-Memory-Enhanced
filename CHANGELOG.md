@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`{{smartmemory-triggered}}` macro for contextually triggered memories.**
+  Keyword-triggered long-term memories can now be placed via macro in instruct
+  templates, consistent with all other memory tiers. Previously the triggered
+  slot had no macro equivalent, so Force Macro Injection mode hid the depth
+  setting with no alternative. The depth setting remains available in advanced
+  mode for non-macro users.
+
 ## [1.8.0] - 2026-07-02
 
 ### Added
