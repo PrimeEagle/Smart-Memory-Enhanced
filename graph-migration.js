@@ -579,13 +579,16 @@ export function mergeEntitiesById(
   };
 
   if (ltSource && !ltTarget && sessTarget) {
-    // Source only in LT, target only in session: absorb into session target
-    // and rewrite any LT memory refs, then remove source from LT.
+    // Source only in LT, target only in session: absorb into session target,
+    // relink LT memory refs to the session target id, then remove source from LT.
     absorbAliases(ltSource, sessTarget);
     for (const mem of ltMemories) {
       if (!Array.isArray(mem.entities)) continue;
       const idx = mem.entities.indexOf(sourceId);
-      if (idx >= 0) mem.entities.splice(idx, 1);
+      if (idx >= 0) {
+        mem.entities.splice(idx, 1);
+        if (!mem.entities.includes(targetId)) mem.entities.push(targetId);
+      }
     }
     ltRegistry.splice(
       ltRegistry.findIndex((e) => e.id === sourceId),

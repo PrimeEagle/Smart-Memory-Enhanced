@@ -159,6 +159,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When extraction then started and finished, it dismissed the stale
   continuity toast instead of its own, leaving the extraction toast lingering.
   Switched to direct DOM removal which targets the correct element every time.
+- **Model test output no longer breaks out of its display panel.** The model
+  test tier renderer was injecting raw model output into an HTML template
+  string containing a `<textarea>`. A response containing `</textarea>` would
+  break out of the element, allowing arbitrary HTML to render. All dynamic
+  content is now set via jQuery `.text()` and `.val()` instead of string
+  interpolation.
+- **Aborting an in-flight generation no longer clears a concurrent request's
+  controller.** The `memoryAbortController` was being set to `null`
+  unconditionally in the `finally` block of both `generateOllama` and
+  `generateOpenAICompat`. A second concurrent request (for example, a
+  continuity check overlapping with an extraction) could clear the first's
+  controller after the second one set a new one, making the new request
+  unabortable. Each call now captures its own controller reference and only
+  nulls the module-level variable if it still holds that same reference.
+  Aborting during the retry sleep between failed attempts is also fixed.
+- **Extraction cutoff is now snapshotted before model calls begin.** The index
+  marking how far extraction has progressed was being computed from
+  `context.chat` after all model calls completed. On slow local hardware,
+  messages arriving during a multi-second extraction pass were silently
+  skipped: the cutoff advanced past them before they were ever fed to the
+  model. The cutoff is now captured at the start of each extraction pass,
+  before any `await`, so late-arriving messages are always included in the
+  next pass.
+- **Cross-registry entity merge now relinks memory refs in both directions.**
+  When merging an entity that exists only in the long-term registry into a
+  target that exists only in the session registry, the long-term memories
+  referencing the source entity had their entity ID removed but the
+  replacement target ID was never added. The memories became entity-orphans
+  invisible in the graph. The merge now adds the target ID after removing the
+  source ID, matching the behaviour of the session-to-long-term direction.
 
 ## [1.7.15] - 2026-05-30
 

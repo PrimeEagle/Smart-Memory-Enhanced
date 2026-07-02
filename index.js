@@ -623,6 +623,15 @@ async function onCharacterMessageRendered(messageId, type) {
         20,
       );
 
+      // Snapshot the cutoff index now, before any awaits, so messages that
+      // arrive during extraction are not silently swallowed by advancing the
+      // window boundary after the model calls complete.
+      const snapshotLast = context.chat[context.chat.length - 1];
+      const snapshotCutoff =
+        context.chat.length > 0 && snapshotLast && !snapshotLast.is_user && !snapshotLast.is_system
+          ? context.chat.length - 1
+          : context.chat.length;
+
       // If only a fresh assistant reply exists beyond the stable boundary,
       // postpone extraction until the next turn so swipes settle first.
       // Do NOT reset the counter here - no extraction happened, so the next
@@ -824,14 +833,11 @@ async function onCharacterMessageRendered(messageId, type) {
         );
 
         // Persist the cutoff so the next extraction pass knows where this one ended.
-        const lastMsg = context.chat[context.chat.length - 1];
-        const newCutoff =
-          context.chat.length > 0 && lastMsg && !lastMsg.is_user && !lastMsg.is_system
-            ? context.chat.length - 1
-            : context.chat.length;
+        // Use the index snapshotted before the model calls so messages that arrived
+        // during extraction are not skipped on the next pass.
         const metaAfter = context.chatMetadata?.[META_KEY];
         if (metaAfter) {
-          metaAfter.lastExtractCutoff = newCutoff;
+          metaAfter.lastExtractCutoff = snapshotCutoff;
           context.saveMetadata();
         }
       } catch (err) {
@@ -1474,6 +1480,16 @@ async function onGroupWrapperFinished({ type } = {}) {
         longtermRawSize,
       );
 
+      // Snapshot before any awaits - same reason as solo path.
+      const snapshotLastGroup = context.chat[context.chat.length - 1];
+      const snapshotCutoffGroup =
+        context.chat.length > 0 &&
+        snapshotLastGroup &&
+        !snapshotLastGroup.is_user &&
+        !snapshotLastGroup.is_system
+          ? context.chat.length - 1
+          : context.chat.length;
+
       if (longtermWindow.length === 0 && sessionWindow.length === 0) {
         extractionRunning = false;
       } else {
@@ -1678,17 +1694,9 @@ async function onGroupWrapperFinished({ type } = {}) {
           setStatusMessage(total > 0 ? `${total} item${total === 1 ? '' : 's'} stored.` : '');
           autoTuneBudgets(selectedGroupCharacter);
 
-          const lastMsgGroup = context.chat[context.chat.length - 1];
-          const newCutoffGroup =
-            context.chat.length > 0 &&
-            lastMsgGroup &&
-            !lastMsgGroup.is_user &&
-            !lastMsgGroup.is_system
-              ? context.chat.length - 1
-              : context.chat.length;
           const metaAfterGroup = context.chatMetadata?.[META_KEY];
           if (metaAfterGroup) {
-            metaAfterGroup.lastExtractCutoff = newCutoffGroup;
+            metaAfterGroup.lastExtractCutoff = snapshotCutoffGroup;
             context.saveMetadata();
           }
         } catch (err) {

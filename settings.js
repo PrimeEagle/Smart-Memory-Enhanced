@@ -1192,27 +1192,45 @@ export function bindSettingsUI(ctrl) {
       const readWarning = sc.showReadWarning
         ? 'Read through this before judging - it is the only way to catch invented facts that look plausible.'
         : 'Reference scenario for this tier.';
-      $('#sm_model_test_tier_area').html(`
-        <div class="sm_model_test_tier_name">${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span></div>
-        <details class="sm_model_test_scenario">
-          <summary>View test scenario</summary>
-          <p class="sm_model_test_scenario_note">${charactersNote}. ${readWarning}</p>
-          <textarea class="sm_model_test_output text_pole" readonly>${scenarioLines}</textarea>
-        </details>
-        <div class="sm_model_test_tier_hint">${tier.hint}</div>
-        <textarea class="sm_model_test_output text_pole" readonly>${tier.items.join('\n')}</textarea>
-        <div class="sm_model_test_nav">
-          <button class="menu_button sm_model_test_prev"${current === 0 ? ' disabled' : ''}>&#8592; Previous</button>
-          <button class="menu_button sm_model_test_next"${current === tiers.length - 1 ? ' disabled' : ''}>Next &#8594;</button>
-        </div>
-      `);
-      $result.find('.sm_model_test_prev').on('click', () => {
+      const $area = $('<div>');
+      $area.append(
+        $('<div class="sm_model_test_tier_name">').html(
+          `${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span>`,
+        ),
+      );
+      const $details = $('<details class="sm_model_test_scenario">');
+      $details.append($('<summary>').text('View test scenario'));
+      $details.append(
+        $('<p class="sm_model_test_scenario_note">').text(`${charactersNote}. ${readWarning}`),
+      );
+      $details.append(
+        $('<textarea class="sm_model_test_output text_pole" readonly>').val(scenarioLines),
+      );
+      $area.append($details);
+      $area.append($('<div class="sm_model_test_tier_hint">').text(tier.hint));
+      $area.append(
+        $('<textarea class="sm_model_test_output text_pole" readonly>').val(tier.items.join('\n')),
+      );
+      const $nav = $('<div class="sm_model_test_nav">');
+      $nav.append(
+        $('<button class="menu_button sm_model_test_prev">')
+          .prop('disabled', current === 0)
+          .html('&#8592; Previous'),
+      );
+      $nav.append(
+        $('<button class="menu_button sm_model_test_next">')
+          .prop('disabled', current === tiers.length - 1)
+          .html('Next &#8594;'),
+      );
+      $area.append($nav);
+      $('#sm_model_test_tier_area').empty().append($area);
+      $area.find('.sm_model_test_prev').on('click', () => {
         if (current > 0) {
           current--;
           renderTier();
         }
       });
-      $result.find('.sm_model_test_next').on('click', () => {
+      $area.find('.sm_model_test_next').on('click', () => {
         if (current < tiers.length - 1) {
           current++;
           renderTier();

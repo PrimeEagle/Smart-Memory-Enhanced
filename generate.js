@@ -165,7 +165,8 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
 
   const messages = [...priorMessages, { role: 'user', content: prompt }];
 
-  memoryAbortController = new AbortController();
+  const thisController = new AbortController();
+  memoryAbortController = thisController;
   try {
     const response = await fetch(`${url}/api/chat`, {
       method: 'POST',
@@ -178,7 +179,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
           num_predict: numPredict,
         },
       }),
-      signal: memoryAbortController.signal,
+      signal: thisController.signal,
     });
     if (!response.ok) throw new Error(`Ollama responded with ${response.status}`);
     const data = await response.json();
@@ -187,7 +188,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
     if (err.name === 'AbortError') return '';
     throw err;
   } finally {
-    memoryAbortController = null;
+    if (memoryAbortController === thisController) memoryAbortController = null;
   }
 }
 
@@ -251,7 +252,8 @@ async function generateOpenAICompat(
   const RETRY_DELAY_MS = 3000;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    memoryAbortController = new AbortController();
+    const thisController = new AbortController();
+    memoryAbortController = thisController;
     try {
       let response;
       if (isLocalUrl(baseUrl)) {
@@ -267,7 +269,7 @@ async function generateOpenAICompat(
             max_tokens: responseLength > 0 ? responseLength : undefined,
             stream: false,
           }),
-          signal: memoryAbortController.signal,
+          signal: thisController.signal,
         });
       } else {
         // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
@@ -289,7 +291,7 @@ async function generateOpenAICompat(
           method: 'POST',
           headers: getRequestHeaders(),
           body: JSON.stringify(proxyBody),
-          signal: memoryAbortController.signal,
+          signal: thisController.signal,
         });
       }
 
@@ -303,6 +305,7 @@ async function generateOpenAICompat(
       // free-tier cloud providers). Do not retry other 4xx - those are
       // permanent errors (auth failure, bad request) that retrying won't fix.
       if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
+        if (thisController.signal.aborted) return '';
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         continue;
       }
@@ -312,12 +315,13 @@ async function generateOpenAICompat(
       // Retry on network-level errors (ETIMEDOUT, ECONNRESET, etc.) - same reasoning
       // as 5xx: transient failures that a retry may resolve.
       if (attempt < MAX_RETRIES && !err.message.includes('responded with 4')) {
+        if (thisController.signal.aborted) return '';
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         continue;
       }
       throw err;
     } finally {
-      memoryAbortController = null;
+      if (memoryAbortController === thisController) memoryAbortController = null;
     }
   }
   // Unreachable but satisfies linters.
