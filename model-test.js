@@ -396,7 +396,7 @@ const TIER_DEFS = [
     },
     hint:
       'Ideally should extract entries covering most or all five tag types from the village healer scene: ' +
-      '[knows] facts held by Ryn, Mira, Sera, and Dael; [suspects] for Sera regarding the papers; ' +
+      '[knows] facts held by Ryn, Mira, Sera, and Dael; [suspects] for Sera that the illness is worse than the fever alone; ' +
       '[believes] for a character holding an incorrect assumption; [unaware] for characters who do not ' +
       'know something relevant; and [hiding] for Dael concealing the purpose of his saddlebag from Ryn. ' +
       'Fewer entries is acceptable as long as the tags are used correctly. ' +

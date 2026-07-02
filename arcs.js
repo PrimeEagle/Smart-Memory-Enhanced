@@ -43,7 +43,8 @@
  * pruneOrphanedGroupArcs  - removes group arc stores for groups that no longer exist
  * promoteArc             - marks a chat arc as persistent and saves it to character or group level
  * demoteArc              - removes the persistent flag from an arc and cleans character or group level
- * resolveArc             - manually marks a persistent arc as resolved (moves to resolved panel)
+ * resolveArc             - manually marks an arc as resolved (moves to resolved panel)
+ * resolveArcWithSummary  - resolves an arc and generates an arc summary for canon
  * reopenArc              - removes the resolved flag from a persistent arc and reactivates it
  */
 
@@ -108,6 +109,8 @@ async function arcSimilarity(a, b) {
 /**
  * Returns true when two arc strings are similar enough to be considered
  * duplicates. Cosine threshold 0.82 for semantic, 0.4 for Jaccard fallback.
+ * Used for single one-off checks (e.g. promoteArc, reopenArc). Bulk operations
+ * should use arcIsDuplicateSync with a precomputed vectorMap instead.
  * @param {string} a
  * @param {string} b
  * @returns {Promise<boolean>}
@@ -118,8 +121,25 @@ async function arcIsDuplicate(a, b) {
 }
 
 /**
+ * Sync duplicate check using a precomputed embedding map.
+ * Falls back to Jaccard when either text is missing from the map.
+ * @param {string} a
+ * @param {string} b
+ * @param {Map<string, number[]>} vectorMap
+ * @returns {boolean}
+ */
+function arcIsDuplicateSync(a, b, vectorMap) {
+  const aVec = vectorMap?.get(a.toLowerCase().trim());
+  const bVec = vectorMap?.get(b.toLowerCase().trim());
+  if (aVec && bVec) return cosineSimilarity(aVec, bVec) >= 0.82;
+  return arcJaccard(a, b) >= 0.4;
+}
+
+/**
  * Removes duplicate entries from an arc array, keeping the first occurrence
- * when two arcs are flagged as duplicates by arcIsDuplicate.
+ * when two arcs are flagged as duplicates. Batch-fetches all embeddings in one
+ * call so the O(n^2) comparison loop incurs only one round-trip to the embedding
+ * backend regardless of array length.
  * Resolved arcs are excluded from deduplication and appended unchanged.
  * @param {Array<{content: string, resolved?: boolean}>} arcs
  * @returns {Promise<Array<{content: string}>>} Deduplicated arc array.
@@ -127,11 +147,16 @@ async function arcIsDuplicate(a, b) {
 async function deduplicateArcs(arcs) {
   const active = arcs.filter((a) => !a.resolved);
   const resolved = arcs.filter((a) => a.resolved);
+  if (active.length <= 1) return arcs;
+
+  const keys = active.map((a) => a.content.toLowerCase().trim());
+  const vectorMap = await getEmbeddingBatch(keys);
+
   const result = [];
   for (const arc of active) {
     let isDup = false;
     for (const prev of result) {
-      if (await arcIsDuplicate(arc.content, prev.content)) {
+      if (arcIsDuplicateSync(arc.content, prev.content, vectorMap)) {
         isDup = true;
         break;
       }
@@ -219,7 +244,7 @@ export function loadArcSummaries() {
  * Persists the arc summaries array to chatMetadata.
  * @param {Array} summaries
  */
-async function saveArcSummaries(summaries) {
+export async function saveArcSummaries(summaries) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
@@ -474,6 +499,43 @@ export async function resolveArc(index, characterName = null, groupId = null) {
 }
 
 /**
+ * Resolves an arc and generates an arc summary for it so it can contribute
+ * to canon generation. Combines resolveArc with a generateArcSummary call.
+ * Callers should trigger canon regeneration on Profile B after this returns.
+ * Returns true if the summary was generated successfully, false otherwise.
+ * @param {number} index - Index in the current chat arc array.
+ * @param {string|null} characterName
+ * @param {string|null} [groupId]
+ * @returns {Promise<boolean>}
+ */
+export async function resolveArcWithSummary(index, characterName = null, groupId = null) {
+  const arcs = loadArcs();
+  const arc = arcs[index];
+  if (!arc) return false;
+
+  const content = arc.content;
+  await resolveArc(index, characterName, groupId);
+
+  try {
+    const result = await generateArcSummary(content);
+    if (!result) return false;
+    const summaries = loadArcSummaries();
+    summaries.push({
+      summary: result.summary,
+      arc: content,
+      ts: Date.now(),
+      source_scene_ids: result.sourceSceneTs,
+      source_memory_ids: result.sourceMemoryIds,
+    });
+    await saveArcSummaries(summaries);
+    return true;
+  } catch (err) {
+    console.error('[SmartMemory] Arc summary generation failed:', err);
+    return false;
+  }
+}
+
+/**
  * Re-opens a resolved pinned arc. If an equivalent active arc already exists,
  * the resolved copy is removed instead to avoid duplication. Otherwise the
  * resolved flag is stripped and the arc rejoins the active list. The persistent
@@ -546,7 +608,7 @@ export async function reopenArc(index, characterName, groupId = null) {
  * @param {string} arcContent - The resolved arc's content string.
  * @returns {Promise<{summary: string, sourceSceneTs: number[], sourceMemoryIds: string[]}|null>}
  */
-async function generateArcSummary(arcContent) {
+export async function generateArcSummary(arcContent) {
   const settings = extension_settings[MODULE_NAME];
 
   // Use only the most recent scenes as context. The arc being summarized was
@@ -732,18 +794,25 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // Resolved arcs are excluded - a resolved thread does not block a genuinely
     // new instance of the same arc from being added as active.
     const activeAfterResolve = afterResolve.filter((a) => !a.resolved);
+
+    // Batch-fetch embeddings for all texts we'll compare in the dedup loops below.
+    // Avoids one getEmbeddingBatch call per pair (O(n*m) calls reduced to one).
+    const addKeys = add.map((a) => a.content.toLowerCase().trim());
+    const activeKeys = activeAfterResolve.map((a) => a.content.toLowerCase().trim());
+    const addVectorMap = await getEmbeddingBatch([...addKeys, ...activeKeys]);
+
     const dedupedAdd = [];
     for (const newArc of add) {
       let isDup = false;
       for (const ex of activeAfterResolve) {
-        if (await arcIsDuplicate(newArc.content, ex.content)) {
+        if (arcIsDuplicateSync(newArc.content, ex.content, addVectorMap)) {
           isDup = true;
           break;
         }
       }
       if (!isDup) {
         for (const prev of dedupedAdd) {
-          if (await arcIsDuplicate(newArc.content, prev.content)) {
+          if (arcIsDuplicateSync(newArc.content, prev.content, addVectorMap)) {
             isDup = true;
             break;
           }

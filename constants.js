@@ -103,6 +103,13 @@ export const SCHEMA_VERSION = 9;
 export const MEMORY_GENERATION_BUDGET = 8192;
 
 /**
+ * Maximum number of superseded (retired) entries kept in storage per memory tier.
+ * Older retired entries are dropped from the front when the pool exceeds this limit.
+ * Keeps storage and the "Show retired" panel manageable when consolidation is disabled.
+ */
+export const MAX_RETIRED_POOL = 100;
+
+/**
  * Rough token estimate for a string. Uses the standard ~4 chars-per-token
  * heuristic - accurate enough for budget enforcement without needing an async
  * tokenizer call.

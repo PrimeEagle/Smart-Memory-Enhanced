@@ -816,7 +816,7 @@ const INTIMATE_PATTERNS = [
 ];
 
 const ACTION_PATTERNS = [
-  /\b(stab(?:s|bed)?|slash(?:es|ed)?|shoot[s]?|shot|explod(?:es|ed)?|punch(?:es|ed)?|run(?:s|ning)?|flee[s]?|fled|dodge[sd]?|dodge[sd]?|charge[sd]?|attack(?:s|ed)?|fight(?:s|ing)?|battle[sd]?)\b/i,
+  /\b(stab(?:s|bed)?|slash(?:es|ed)?|shoot[s]?|shot|explod(?:es|ed)?|punch(?:es|ed)?|run(?:s|ning)?|flee[s]?|fled|dodge[sd]?|charge[sd]?|attack(?:s|ed)?|fight(?:s|ing)?|battle[sd]?)\b/i,
   /\b(blood(?:y)?|wound(?:s|ed)?|injur(?:es|ed|y)?|sweat(?:s|ing)?|adrenaline|chaos|panic(?:s|ked)?|urgent(?:ly)?)\b/i,
 ];
 

@@ -208,9 +208,11 @@ A manual tool for when something feels off. Click **Check Last Response** (or us
 
 Enable **Auto-repair contradictions** to go one step further: when contradictions are found, Smart Memory generates a brief corrective note and slips it into the next AI response. The note is cleared automatically after that response - it is a one-shot nudge, not a permanent change. This costs one extra model call per check, so it is disabled by default.
 
+When a repair is queued, a toast notification appears so you know it fired. Opening the Continuity section of the settings panel shows the full list of contradictions found and the exact correction text that will be injected. A **Cancel correction** button lets you discard the queued note before it fires if you disagree with it. If you do nothing, the correction goes through automatically on the next response.
+
 On **Profile B** (hosted models), the continuity check runs automatically after every AI response - no button click required. A small badge appears in the settings panel header: **clean** (fades after a few seconds) or **N conflicts** (stays visible until the next check). The **Auto-check after each response** checkbox lets you turn this off while staying on Profile B if you would rather check manually. On Profile A (local hardware) the check is manual-only.
 
-> **Note:** The continuity checker is only as good as the model doing the checking, and it only knows what is stored in Smart Memory - not what is on the character card by heart. Think of it as a sanity check, not a guarantee.
+> **Note:** The continuity checker is only as good as the model doing the checking. It checks against your stored memories, the AI character card, and your active user persona - but it is still a sanity check, not a guarantee.
 
 ---
 
@@ -365,7 +367,8 @@ For the full chat backlog, use **Memorize Chat** instead.
 Every entry in the long-term memory, session memory, and story arc lists has action buttons:
 
 - **Pencil (edit)** - replaces the entry with an inline text editor. Edit the content and click **Save**, or **Cancel** to discard changes. Not shown on retired memories.
-- **Trash / Checkmark (delete/resolve)** - removes the entry immediately. For story arcs the button is a checkmark to indicate resolving the thread rather than discarding it.
+- **Trash** - removes the entry immediately without generating a summary. For story arcs this permanently discards the thread.
+- **Checkmark (story arcs only)** - resolves the arc: generates an arc summary, moves it to the Resolved Threads panel, and on Profile B triggers automatic canon regeneration. Use this when a thread has genuinely concluded in the story. The summary is built from recent scene context, so it works best when clicked shortly after the thread resolves in the roleplay - resolving old threads retroactively may produce vague summaries. Use the trash button instead if you just want to remove an arc without summarising it.
 - **Pin (active story arcs only)** - marks the arc as persistent so it carries into future chats. The pin icon turns gold and the arc gets a gold left border when pinned. Click again to unpin. In group chats, the pin stores the arc against the group rather than an individual character.
 - **Re-open (resolved arcs only)** - moves the arc back to the active list. If an equivalent thread is already active the resolved copy is discarded instead.
 - **Remove (resolved arcs only)** - discards the resolved arc from the panel and the persistent store.
@@ -415,9 +418,15 @@ Selects which AI model handles all Smart Memory work - summarization, extraction
 
 Options: **Main API**, **Ollama**, **OpenAI Compatible**, or **WebLLM Extension**.
 
-> **Note:** Some OpenAI Compatible providers (including Nvidia NIM) block direct browser connections due to CORS restrictions. If requests fail, run a local proxy such as LiteLLM and point the URL to that instead.
->
 > **URL format:** Enter only the base URL - do not include `/v1` at the end. The extension appends the full path automatically. For example, NovelAI should be entered as `https://text.novelai.net/oa`, not `https://text.novelai.net/oa/v1`.
+>
+> **Cloud providers and CORS:** Remote/cloud APIs (such as Nvidia NIM, OpenRouter, or OpenAI) are automatically routed through SillyTavern's server-side proxy, which avoids the CORS restrictions those services impose on browser connections. Local servers (localhost and private network addresses) are contacted directly as before - no proxy or extra setup needed for either case.
+>
+> **Free tier rate limits:** Free tier accounts on cloud providers typically allow only a few requests per minute. Smart Memory makes several sequential requests during catch-up and other multi-pass operations, which can exceed these limits and cause errors partway through. A paid tier or a provider with generous rate limits is recommended for regular use.
+>
+> **Privacy:** Chat history is included in extraction prompts and sent to the configured API. Users with sensitive or adult content should use a local model (Ollama) to keep all data on their own machine.
+
+**Advanced:** A **Generation budget** slider is available in advanced mode. It sets the maximum tokens the Memory LLM may generate per extraction call. The default of 8192 is generous enough for any thinking model under normal conditions. Raise it only if extractions are consistently aborting before producing output on a very verbose thinking model. An **Unlimited (-1)** checkbox is also available - use it with caution on local hardware, as a runaway generation will lock up Ollama until it is manually stopped.
 
 ### Memory Deduplication
 
@@ -695,6 +704,7 @@ The `{{smartmemory-unified}}` macro is only active when **Unified injection** is
 | Setting             | Default | Description                                                                                                                                                                                                      |
 | ------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Verbose logging     | Off     | Print detailed progress to the browser console for extraction, consolidation, and scene detection. Errors are always logged regardless                                                                           |
+| Injection refresh period | 1 | Minimum AI messages between long-term and session slot updates. 1 = refresh every message (default). Raise this if you are on a cloud API and want to preserve prompt cache hits between extraction passes - recent events are still visible in chat history during the gap. Note: character and world profiles re-inject every extraction pass regardless of this setting, so enabling profiles alongside a high refresh period will still invalidate the top of the prompt on each pass. Available in advanced mode |
 | Unified injection   | Off     | Merges all memory tiers into a single block ordered from most stable (canon, long-term) to most immediate (session, arcs). Disables per-tier depth and position settings while active. Available in advanced mode |
 | Force macro injection mode | Off | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). When unified injection is on, activates `{{smartmemory-unified}}` for instruct templates - individual tier macros remain inactive. Leave off for card macros - auto-detection handles them |
 
@@ -713,6 +723,12 @@ The `{{smartmemory-unified}}` macro is only active when **Unified injection** is
 ## Architecture
 
 Not required reading for using the extension. The [architecture diagram](https://senjinthedragon.github.io/Smart-Memory/architecture.html) is a technical overview of Smart Memory's internal structure - intended for developers who want to understand how the tiers, extraction pipeline, and storage system fit together.
+
+---
+
+## Contributors
+
+- **[ravenrevenge](https://github.com/ravenrevenge)** - identified the mobile overlay rendering issue and had the `<dialog>`-based fix ready before it was independently implemented
 
 ---
 

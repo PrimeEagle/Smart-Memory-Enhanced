@@ -35,11 +35,25 @@
  * abortCurrentMemoryGeneration  - cancels any in-flight Ollama or OpenAI-compat fetch immediately
  */
 
-import { generateRaw, generateQuietPrompt, getMaxContextSize } from '../../../../script.js';
+import {
+  generateRaw,
+  generateQuietPrompt,
+  getMaxContextSize,
+  getRequestHeaders,
+} from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
 import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
 import { isWebLlmSupported, generateWebLlmChatPrompt } from '../../shared.js';
+
+/**
+ * Returns the configured generation budget from settings, falling back to
+ * MEMORY_GENERATION_BUDGET if the setting has not been set.
+ * @returns {number} Token limit, or -1 for unlimited.
+ */
+function getGenerationBudget() {
+  return extension_settings[MODULE_NAME]?.generation_budget ?? MEMORY_GENERATION_BUDGET;
+}
 
 /**
  * Holds the AbortController for the currently running Ollama or OpenAI-compat
@@ -140,10 +154,10 @@ export async function fetchOllamaModels(baseUrl) {
  * Uses the /api/chat endpoint with a single user message.
  * @param {string} prompt
  * @param {Array} [priorMessages] - Optional prior messages for summarization context.
- * @param {number} responseLength
+ * @param {number} [numPredict] - Token generation limit passed as Ollama's num_predict option.
  * @returns {Promise<string>}
  */
-async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GENERATION_BUDGET) {
+async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget()) {
   const settings = extension_settings[MODULE_NAME];
   const url = getOllamaUrl();
   const model = settings?.ollama_model;
@@ -151,7 +165,8 @@ async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GE
 
   const messages = [...priorMessages, { role: 'user', content: prompt }];
 
-  memoryAbortController = new AbortController();
+  const thisController = new AbortController();
+  memoryAbortController = thisController;
   try {
     const response = await fetch(`${url}/api/chat`, {
       method: 'POST',
@@ -164,7 +179,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GE
           num_predict: numPredict,
         },
       }),
-      signal: memoryAbortController.signal,
+      signal: thisController.signal,
     });
     if (!response.ok) throw new Error(`Ollama responded with ${response.status}`);
     const data = await response.json();
@@ -173,12 +188,48 @@ async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GE
     if (err.name === 'AbortError') return '';
     throw err;
   } finally {
-    memoryAbortController = null;
+    if (memoryAbortController === thisController) memoryAbortController = null;
+  }
+}
+
+/**
+ * Returns true if the given URL points to a local or private network address.
+ * Local URLs are fetched directly from the browser; remote URLs are routed
+ * through ST's server-side proxy to avoid CORS restrictions.
+ * Covers IPv4 loopback, all RFC-1918 private ranges, and IPv6 loopback,
+ * link-local, and unique-local ranges.
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isLocalUrl(url) {
+  try {
+    const { hostname } = new URL(url);
+    // Strip brackets from IPv6 addresses (e.g. [::1] -> ::1)
+    const host = hostname.replace(/^\[|\]$/g, '');
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      /^192\.168\./.test(host) ||
+      /^10\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^fc/i.test(host) || // IPv6 unique local fc00::/7
+      /^fd/i.test(host) || // IPv6 unique local fd00::/8
+      /^fe80/i.test(host) // IPv6 link-local
+    );
+  } catch {
+    return false;
   }
 }
 
 /**
  * Sends a prompt to an OpenAI-compatible API and returns the response text.
+ *
+ * Local URLs (localhost, private network ranges) are fetched directly from
+ * the browser - no CORS issue since they are same-network. Remote/cloud URLs
+ * are routed through ST's server-side proxy (/api/backends/chat-completions/generate)
+ * to avoid CORS restrictions that cloud providers impose on browser origins.
+ *
  * @param {string} prompt
  * @param {Array} [priorMessages] - Optional prior messages for summarization context.
  * @param {number} responseLength
@@ -187,7 +238,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = MEMORY_GE
 async function generateOpenAICompat(
   prompt,
   priorMessages = [],
-  responseLength = MEMORY_GENERATION_BUDGET,
+  responseLength = getGenerationBudget(),
 ) {
   const settings = extension_settings[MODULE_NAME];
   const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '').replace(/\/v1$/, '');
@@ -195,33 +246,86 @@ async function generateOpenAICompat(
   const apiKey = settings?.openai_compat_key || '';
   const model = settings?.openai_compat_model || '';
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
   const messages = [...priorMessages, { role: 'user', content: prompt }];
 
-  memoryAbortController = new AbortController();
-  try {
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: model || undefined,
-        messages,
-        max_tokens: responseLength > 0 ? responseLength : undefined,
-        stream: false,
-      }),
-      signal: memoryAbortController.signal,
-    });
-    if (!response.ok) throw new Error(`OpenAI Compatible API responded with ${response.status}`);
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content ?? '';
-  } catch (err) {
-    if (err.name === 'AbortError') return '';
-    throw err;
-  } finally {
-    memoryAbortController = null;
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 3000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const thisController = new AbortController();
+    memoryAbortController = thisController;
+    try {
+      let response;
+      if (isLocalUrl(baseUrl)) {
+        // Direct fetch for local servers - no CORS issue on private network addresses.
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        response = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: model || undefined,
+            messages,
+            max_tokens: responseLength > 0 ? responseLength : undefined,
+            stream: false,
+          }),
+          signal: thisController.signal,
+        });
+      } else {
+        // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
+        // ST's CUSTOM source appends /chat/completions to custom_url, so pass baseUrl/v1.
+        const proxyBody = {
+          chat_completion_source: 'custom',
+          custom_url: `${baseUrl}/v1`,
+          messages,
+          model: model || undefined,
+          max_tokens: responseLength > 0 ? responseLength : undefined,
+          stream: false,
+        };
+        // Pass the API key via custom_include_headers (YAML key: value format) so it
+        // overrides the empty Authorization header ST builds from its stored CUSTOM secret.
+        if (apiKey) {
+          proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
+        }
+        response = await fetch('/api/backends/chat-completions/generate', {
+          method: 'POST',
+          headers: getRequestHeaders(),
+          body: JSON.stringify(proxyBody),
+          signal: thisController.signal,
+        });
+      }
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
+        return data.choices?.[0]?.message?.content ?? '';
+      }
+
+      // Retry on 5xx (transient server errors) and 429 (rate limiting from
+      // free-tier cloud providers). Do not retry other 4xx - those are
+      // permanent errors (auth failure, bad request) that retrying won't fix.
+      if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
+        if (thisController.signal.aborted) return '';
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw new Error(`OpenAI Compatible API responded with ${response.status}`);
+    } catch (err) {
+      if (err.name === 'AbortError') return '';
+      // Retry on network-level errors (ETIMEDOUT, ECONNRESET, etc.) - same reasoning
+      // as 5xx: transient failures that a retry may resolve.
+      if (attempt < MAX_RETRIES && !err.message.includes('responded with 4')) {
+        if (thisController.signal.aborted) return '';
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw err;
+    } finally {
+      if (memoryAbortController === thisController) memoryAbortController = null;
+    }
   }
+  // Unreachable but satisfies linters.
+  return '';
 }
 
 /**
@@ -272,7 +376,13 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   // Truncate to responseLength characters as a rough bound - the thinking block
   // may have inflated the raw output far beyond the intended budget.
   // 4 chars/token is a conservative estimate; actual token count may be lower.
-  const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
+  // Floor at generation_budget so thinking models that produce long reasoning blocks
+  // don't have their actual output silently truncated when responseLength is tuned tightly.
+  // When the generation budget is -1 (unlimited), skip truncation entirely.
+  const charLimit =
+    responseLength > 0 && getGenerationBudget() !== -1
+      ? Math.max(responseLength, getGenerationBudget()) * 4
+      : Infinity;
   return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
 }
 
@@ -311,38 +421,53 @@ function trimToBudget(messages, budget) {
  */
 export async function generateMemorySummarize(
   quietPrompt,
-  { responseLength = 1500, skipWIAN = true, includeLastMessage = false } = {},
+  { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null } = {},
 ) {
   const source = getSource();
 
   // For direct API sources, build the chat context ourselves and append the
   // quiet prompt as the final user message - same approach as WebLLM.
   if (source === memory_sources.ollama || source === memory_sources.openai_compatible) {
-    const context = getContext();
-    const chat = context.chat ?? [];
-    const lastMsg = chat[chat.length - 1];
-    const stableChat =
-      !includeLastMessage && lastMsg && !lastMsg.is_user && !lastMsg.is_system
-        ? chat.slice(0, -1)
-        : chat;
-    const allMessages = stableChat
-      .filter((msg) => !msg.is_system)
-      .map((msg) => ({ role: msg.is_user ? 'user' : 'assistant', content: msg.mes ?? '' }));
+    let priorMessages;
+    if (chatMessages !== null) {
+      // Caller provides the messages directly. An empty array is valid - used
+      // by progressive compaction where the prompt body already embeds both the
+      // existing summary and the new events, so sending the full chat again
+      // would duplicate the new messages.
+      priorMessages = chatMessages;
+    } else {
+      const context = getContext();
+      const chat = context.chat ?? [];
+      const lastMsg = chat[chat.length - 1];
+      const stableChat =
+        !includeLastMessage && lastMsg && !lastMsg.is_user && !lastMsg.is_system
+          ? chat.slice(0, -1)
+          : chat;
+      const allMessages = stableChat
+        .filter((msg) => !msg.is_system)
+        .map((msg) => ({ role: msg.is_user ? 'user' : 'assistant', content: msg.mes ?? '' }));
 
-    // Trim to the most recent messages that fit within 60% of the context window.
-    // Short-term memory is about recent context, not the entire chat history - sending
-    // all messages from a long RP would overflow a local model's context completely.
-    const priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+      // Trim to the most recent messages that fit within 60% of the context window.
+      // Short-term memory is about recent context, not the entire chat history - sending
+      // all messages from a long RP would overflow a local model's context completely.
+      priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+    }
 
     if (source === memory_sources.ollama) {
       const raw = await generateOllama(quietPrompt, priorMessages);
       const stripped = stripThinkingBlocks(raw ?? '');
-      const charLimit = responseLength > 0 ? responseLength * 4 : Infinity;
+      const charLimit =
+        responseLength > 0 && getGenerationBudget() !== -1
+          ? Math.max(responseLength, getGenerationBudget()) * 4
+          : Infinity;
       return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
     }
     const rawOAI = await generateOpenAICompat(quietPrompt, priorMessages);
     const strippedOAI = stripThinkingBlocks(rawOAI ?? '');
-    const charLimitOAI = responseLength > 0 ? responseLength * 4 : Infinity;
+    const charLimitOAI =
+      responseLength > 0 && getGenerationBudget() !== -1
+        ? Math.max(responseLength, getGenerationBudget()) * 4
+        : Infinity;
     return strippedOAI.length > charLimitOAI ? strippedOAI.slice(0, charLimitOAI) : strippedOAI;
   }
 

@@ -113,9 +113,10 @@ export function areProfilesStale(thresholdMs = DEFAULT_STALE_THRESHOLD_MS, chara
  * Returns null and logs a warning if the model produces unparseable output.
  *
  * @param {string} characterName - Active character name.
+ * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
  * @returns {Promise<{character_state: string, world_state: string, relationship_matrix: string, generated_at: number}|null>}
  */
-export async function generateProfiles(characterName) {
+export async function generateProfiles(characterName, abortCheck = null) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.profiles_enabled || !characterName) return null;
 
@@ -145,7 +146,7 @@ export async function generateProfiles(characterName) {
 
   try {
     const response = await generateMemoryExtract(prompt, {
-      responseLength: settings.profiles_response_length ?? 400,
+      responseLength: settings.profiles_response_length ?? 600,
     });
 
     smLog('[SmartMemory] Profile generation response:', response);
@@ -161,6 +162,7 @@ export async function generateProfiles(characterName) {
     }
 
     const profiles = { ...parsed, generated_at: Date.now() };
+    if (abortCheck?.()) return null;
     await saveProfiles(profiles, characterName);
     return profiles;
   } catch (err) {

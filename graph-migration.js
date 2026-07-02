@@ -30,6 +30,7 @@
  * reconcileEntityRegistry      - repairs entity registry links after memories are replaced (e.g. post-consolidation)
  * setEntityType                - changes the type of an entity in a registry by id
  * deleteEntityById              - removes an entity from a registry and scrubs its id from all memory entities arrays
+ * mergeEntitiesById            - merges a source entity into a target by id across both registries; source id is removed
  * mergeEntitiesByName          - merges a source entity into a target across both registries; source name becomes an alias
  * seedCharacterEntity          - ensures the active character card name exists in the long-term registry on chat load
  * ensureCharacterMigrated      - runs any pending migration steps for a single character's data container
@@ -511,28 +512,6 @@ function mergeInRegistry(sourceId, targetId, registry, memories) {
 }
 
 /**
- * Merges two entities by canonical name across both the long-term and
- * session-scoped registries. The source name (and its aliases) become aliases
- * on the target entity, so future extractions that mention the source name
- * resolve to the target automatically.
- *
- * Operates on both registries independently: if the source name exists in the
- * lt registry, it is merged into the lt target (creating the target if it only
- * exists in session). Vice-versa for session. In the rare case where target
- * only exists in one registry and source only exists in the other, the source
- * entity is renamed to the target name and the canonical name is updated.
- *
- * Mutates all four arrays in place. Caller is responsible for persisting.
- *
- * @param {string} sourceName   - Canonical name of the entity to absorb.
- * @param {string} targetName   - Canonical name of the entity to keep.
- * @param {Array<Object>} ltRegistry       - Long-term entity registry (mutated).
- * @param {Array<Object>} ltMemories       - Long-term memory array (mutated).
- * @param {Array<Object>} sessionRegistry  - Session entity registry (mutated).
- * @param {Array<Object>} sessionMemories  - Session memory array (mutated).
- */
-
-/**
  * Merges a source entity into a target entity across both registries, identified
  * by their IDs rather than names. Safe to use when two entities share the same
  * name (which would cause mergeEntitiesByName to return early).
@@ -579,13 +558,16 @@ export function mergeEntitiesById(
   };
 
   if (ltSource && !ltTarget && sessTarget) {
-    // Source only in LT, target only in session: absorb into session target
-    // and rewrite any LT memory refs, then remove source from LT.
+    // Source only in LT, target only in session: absorb into session target,
+    // relink LT memory refs to the session target id, then remove source from LT.
     absorbAliases(ltSource, sessTarget);
     for (const mem of ltMemories) {
       if (!Array.isArray(mem.entities)) continue;
       const idx = mem.entities.indexOf(sourceId);
-      if (idx >= 0) mem.entities.splice(idx, 1);
+      if (idx >= 0) {
+        mem.entities.splice(idx, 1);
+        if (!mem.entities.includes(targetId)) mem.entities.push(targetId);
+      }
     }
     ltRegistry.splice(
       ltRegistry.findIndex((e) => e.id === sourceId),
@@ -611,6 +593,28 @@ export function mergeEntitiesById(
     );
   }
 }
+
+/**
+ * Merges two entities by canonical name across both the long-term and
+ * session-scoped registries. The source name (and its aliases) become aliases
+ * on the target entity, so future extractions that mention the source name
+ * resolve to the target automatically.
+ *
+ * Operates on both registries independently: if the source name exists in the
+ * lt registry, it is merged into the lt target (creating the target if it only
+ * exists in session). Vice-versa for session. In the rare case where target
+ * only exists in one registry and source only exists in the other, the source
+ * entity is renamed to the target name and the canonical name is updated.
+ *
+ * Mutates all four arrays in place. Caller is responsible for persisting.
+ *
+ * @param {string} sourceName   - Canonical name of the entity to absorb.
+ * @param {string} targetName   - Canonical name of the entity to keep.
+ * @param {Array<Object>} ltRegistry       - Long-term entity registry (mutated).
+ * @param {Array<Object>} ltMemories       - Long-term memory array (mutated).
+ * @param {Array<Object>} sessionRegistry  - Session entity registry (mutated).
+ * @param {Array<Object>} sessionMemories  - Session memory array (mutated).
+ */
 export function mergeEntitiesByName(
   sourceName,
   targetName,

@@ -21,6 +21,8 @@ export default [
         alert: 'readonly',
         fetch: 'readonly',
         AbortController: 'readonly',
+        // URL parsing - available in modern browsers and Node.js
+        URL: 'readonly',
         // Web Crypto API and structured clone - available in modern browsers and Electron
         crypto: 'readonly',
         structuredClone: 'readonly',

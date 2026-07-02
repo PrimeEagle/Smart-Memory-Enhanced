@@ -48,6 +48,7 @@ import {
   META_KEY,
   PROMPT_KEY_SESSION,
   SESSION_TYPES,
+  MAX_RETIRED_POOL,
 } from './constants.js';
 import {
   applyGraphDefaults,
@@ -438,14 +439,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     // than waiting for the next consolidation cycle.
     if (entityRegistry.length > 0) {
       reconcileEntityRegistry(entityRegistry, finalActive);
-      await saveSessionEntityRegistry(entityRegistry);
+      if (!abortCheck?.()) await saveSessionEntityRegistry(entityRegistry);
     }
 
     // Newly retired active memories move to the retired pool.
-    const updatedRetired = [
-      ...retiredMemories,
-      ...existing.filter((m) => newlyRetiredIds.has(m.id)),
-    ];
+    let updatedRetired = [...retiredMemories, ...existing.filter((m) => newlyRetiredIds.has(m.id))];
+
+    // Cap the retired pool - same reason as longterm.js.
+    if (updatedRetired.length > MAX_RETIRED_POOL) {
+      updatedRetired = updatedRetired.slice(updatedRetired.length - MAX_RETIRED_POOL);
+    }
 
     const added = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`)).length;
     if (abortCheck?.()) return 0;
@@ -515,9 +518,10 @@ function getSessionConsolidationThresholds(settings) {
  * @param {boolean} [force=false] - If true, consolidate all types regardless of threshold.
  *   Used by the catch-up final pass to flush any entries that never accumulated enough
  *   to hit the threshold during per-chunk consolidation.
+ * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
  * @returns {Promise<number>} Number of memories removed by consolidation (0 on no change or failure).
  */
-export async function consolidateSessionMemories(force = false) {
+export async function consolidateSessionMemories(force = false, abortCheck = null) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.session_enabled) return 0;
   if (!settings.consolidation_enabled) return 0;
@@ -595,6 +599,7 @@ export async function consolidateSessionMemories(force = false) {
   const max = settings.session_max_memories ?? 30;
   const finalMemories = sortByTimeline(trimByPriority(memories, max));
   if (dirty || finalMemories.length !== memories.length) {
+    if (abortCheck?.()) return totalRemoved;
     // Repair session entity registry links - same stale-ID problem as long-term:
     // consolidation replaces memories with new IDs, orphaning the registry.
     const entityRegistry = loadSessionEntityRegistry();
@@ -686,9 +691,14 @@ export async function injectSessionMemories(updateTelemetry = false) {
   }
 
   // Only update retrieval telemetry when called from a real AI response turn.
+  // Load the full (unfiltered) array so retired memories are preserved - the
+  // filtered 'memories' variable only contains active entries and saving it
+  // would permanently delete the retired pool.
   if (updateTelemetry) {
     const recalled = new Set(trimmed.map((m) => `${m.type}|${m.content}`));
-    const updated = memories.map((m) => {
+    const allMemories = loadSessionMemories();
+    const updated = allMemories.map((m) => {
+      if (m.superseded_by) return m;
       const key = `${m.type}|${m.content}`;
       if (!recalled.has(key)) return m;
       return {

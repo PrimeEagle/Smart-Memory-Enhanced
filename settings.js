@@ -103,7 +103,7 @@ import { runModelTest } from './model-test.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
-import { checkContinuity, generateRepair, injectRepair } from './continuity.js';
+import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
   getHardwareProfile,
   getEmbeddingBatch,
@@ -158,6 +158,16 @@ export const defaultSettings = {
   openai_compat_url: '',
   openai_compat_key: '',
   openai_compat_model: '',
+
+  // Maximum tokens the Memory LLM may generate per extraction call.
+  // 8192 covers any thinking model comfortably. -1 means unlimited (Ollama only).
+  generation_budget: 8192,
+
+  // Minimum number of AI messages between long-term and session injection refreshes.
+  // 1 = refresh on every extraction pass (default / current behaviour).
+  // Higher values keep the injected block stable for longer, preserving prompt cache
+  // hits on cloud APIs. Chat history covers the gap for recent events.
+  injection_refresh_period: 1,
 
   // OpenAI Compatible embedding API key
   embedding_api_key: '',
@@ -1039,6 +1049,34 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
     });
 
+  // Generation budget slider + unlimited checkbox
+  const genBudget = s.generation_budget ?? 8192;
+  const isUnlimited = genBudget === -1;
+  $('#sm_generation_budget')
+    .val(isUnlimited ? 8192 : genBudget)
+    .prop('disabled', isUnlimited)
+    .on('input', function () {
+      const val = parseInt($(this).val(), 10);
+      $('#sm_generation_budget_value').text(val.toLocaleString() + ' tokens');
+      extension_settings[MODULE_NAME].generation_budget = val;
+      saveSettingsDebounced();
+    });
+  $('#sm_generation_budget_unlimited')
+    .prop('checked', isUnlimited)
+    .on('change', function () {
+      const unlimited = $(this).is(':checked');
+      $('#sm_generation_budget').prop('disabled', unlimited);
+      const val = unlimited ? -1 : parseInt($('#sm_generation_budget').val(), 10);
+      $('#sm_generation_budget_value').text(
+        unlimited ? 'Unlimited' : val.toLocaleString() + ' tokens',
+      );
+      extension_settings[MODULE_NAME].generation_budget = val;
+      saveSettingsDebounced();
+    });
+  $('#sm_generation_budget_value').text(
+    isUnlimited ? 'Unlimited' : genBudget.toLocaleString() + ' tokens',
+  );
+
   // Hardware profile override
   const PROFILE_LABELS = {
     a: 'Profile A: local / low-VRAM - minimal model calls, heuristic-only signals.',
@@ -1160,27 +1198,45 @@ export function bindSettingsUI(ctrl) {
       const readWarning = sc.showReadWarning
         ? 'Read through this before judging - it is the only way to catch invented facts that look plausible.'
         : 'Reference scenario for this tier.';
-      $('#sm_model_test_tier_area').html(`
-        <div class="sm_model_test_tier_name">${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span></div>
-        <details class="sm_model_test_scenario">
-          <summary>View test scenario</summary>
-          <p class="sm_model_test_scenario_note">${charactersNote}. ${readWarning}</p>
-          <textarea class="sm_model_test_output text_pole" readonly>${scenarioLines}</textarea>
-        </details>
-        <div class="sm_model_test_tier_hint">${tier.hint}</div>
-        <textarea class="sm_model_test_output text_pole" readonly>${tier.items.join('\n')}</textarea>
-        <div class="sm_model_test_nav">
-          <button class="menu_button sm_model_test_prev"${current === 0 ? ' disabled' : ''}>&#8592; Previous</button>
-          <button class="menu_button sm_model_test_next"${current === tiers.length - 1 ? ' disabled' : ''}>Next &#8594;</button>
-        </div>
-      `);
-      $result.find('.sm_model_test_prev').on('click', () => {
+      const $area = $('<div>');
+      $area.append(
+        $('<div class="sm_model_test_tier_name">').html(
+          `${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span>`,
+        ),
+      );
+      const $details = $('<details class="sm_model_test_scenario">');
+      $details.append($('<summary>').text('View test scenario'));
+      $details.append(
+        $('<p class="sm_model_test_scenario_note">').text(`${charactersNote}. ${readWarning}`),
+      );
+      $details.append(
+        $('<textarea class="sm_model_test_output text_pole" readonly>').val(scenarioLines),
+      );
+      $area.append($details);
+      $area.append($('<div class="sm_model_test_tier_hint">').text(tier.hint));
+      $area.append(
+        $('<textarea class="sm_model_test_output text_pole" readonly>').val(tier.items.join('\n')),
+      );
+      const $nav = $('<div class="sm_model_test_nav">');
+      $nav.append(
+        $('<button class="menu_button sm_model_test_prev">')
+          .prop('disabled', current === 0)
+          .html('&#8592; Previous'),
+      );
+      $nav.append(
+        $('<button class="menu_button sm_model_test_next">')
+          .prop('disabled', current === tiers.length - 1)
+          .html('Next &#8594;'),
+      );
+      $area.append($nav);
+      $('#sm_model_test_tier_area').empty().append($area);
+      $area.find('.sm_model_test_prev').on('click', () => {
         if (current > 0) {
           current--;
           renderTier();
         }
       });
-      $result.find('.sm_model_test_next').on('click', () => {
+      $area.find('.sm_model_test_next').on('click', () => {
         if (current < tiers.length - 1) {
           current++;
           renderTier();
@@ -2429,17 +2485,41 @@ export function bindSettingsUI(ctrl) {
 
         // Re-inject after each chunk so the token display reflects what is
         // actually stored, not just what was injected before catch-up started.
+        // Wrap with .catch so an embedding failure here does not abort the
+        // entire catch-up run via the outer catch block.
         if (settings.longterm_enabled && characterName) {
-          await injectMemories(characterName);
+          await injectMemories(characterName).catch((err) => {
+            console.error('[SmartMemory] Catch-up inject long-term error:', err);
+          });
         }
         if (settings.session_enabled) {
-          await injectSessionMemories();
+          await injectSessionMemories().catch((err) => {
+            console.error('[SmartMemory] Catch-up inject session error:', err);
+          });
         }
         if (settings.arcs_enabled) {
           injectArcs();
         }
         if (settings.relationships_enabled) {
           injectRelationshipHistory(characterName);
+        }
+
+        // Advance lastExtractCutoff so the normal extraction window starts from
+        // where catch-up left off rather than re-processing the same messages.
+        const cuMeta = catchUpContext.chatMetadata?.[META_KEY];
+        if (cuMeta) {
+          const lastChunkMsg = chunk[chunk.length - 1];
+          const chatIdx = lastChunkMsg
+            ? catchUpContext.chat.lastIndexOf(lastChunkMsg)
+            : catchUpContext.chat.length - 1;
+          const cuCutoff =
+            chatIdx >= 0 && lastChunkMsg && !lastChunkMsg.is_user && !lastChunkMsg.is_system
+              ? chatIdx
+              : chatIdx + 1;
+          if (cuCutoff > (cuMeta.lastExtractCutoff ?? 0)) {
+            cuMeta.lastExtractCutoff = cuCutoff;
+            catchUpContext.saveMetadata().catch(console.error);
+          }
         }
 
         // Update progress and token display after each chunk so the user can
@@ -3170,6 +3250,17 @@ export function bindSettingsUI(ctrl) {
       maybeInjectUnified();
     });
 
+  const refreshPeriod = s.injection_refresh_period ?? 1;
+  $('#sm_injection_refresh_period')
+    .val(refreshPeriod)
+    .on('input', function () {
+      const val = parseInt($(this).val(), 10);
+      $('#sm_injection_refresh_period_value').text(val);
+      extension_settings[MODULE_NAME].injection_refresh_period = val;
+      saveSettingsDebounced();
+    });
+  $('#sm_injection_refresh_period_value').text(refreshPeriod);
+
   $('#sm_macros_enabled')
     .prop('checked', s.macros_enabled ?? false)
     .on('change', function () {
@@ -3215,10 +3306,21 @@ export function bindSettingsUI(ctrl) {
           try {
             const note = await generateRepair(contradictions, characterName);
             injectRepair(note);
-            $result.append(
-              $('<p class="sm_repair_queued">').text('Correction queued for next response.'),
+            const $repairBlock = $('<div class="sm_repair_queued">');
+            $repairBlock.append($('<p>').text('Correction queued for next response:'));
+            $repairBlock.append($('<p class="sm_repair_note">').text(note));
+            const $cancel = $(
+              '<button class="menu_button sm_repair_cancel">Cancel correction</button>',
             );
+            $cancel.on('click', () => {
+              clearRepair();
+              $repairBlock.remove();
+              setStatusMessage('Correction cancelled.');
+            });
+            $repairBlock.append($cancel);
+            $result.append($repairBlock);
             setStatusMessage('Correction queued.');
+            toastr.info('Correction queued for next response.', 'Smart Memory');
           } catch (repairErr) {
             console.error('[SmartMemory] Repair generation failed:', repairErr);
             setStatusMessage('Repair failed - see console.');

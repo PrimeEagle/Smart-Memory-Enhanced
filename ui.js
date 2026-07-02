@@ -81,7 +81,7 @@ import {
   loadArcs,
   saveArcs,
   deleteArc,
-  resolveArc,
+  resolveArcWithSummary,
   injectArcs,
   promoteArc,
   demoteArc,
@@ -944,8 +944,11 @@ export function updateArcsUI() {
                   <button class="sm_edit_arc menu_button" data-index="${idx}" title="Edit this arc">
                       <i class="fa-solid fa-pencil"></i>
                   </button>
-                  <button class="sm_delete_arc menu_button" data-index="${idx}" title="Resolve / remove this arc">
+                  <button class="sm_resolve_arc menu_button" data-index="${idx}" title="Resolve this thread and generate an arc summary. Best used right after the thread concludes in the story - the summary is built from recent scene context, so resolving old threads may produce vague results.">
                       <i class="fa-solid fa-check"></i>
+                  </button>
+                  <button class="sm_delete_arc menu_button" data-index="${idx}" title="Delete this thread without summarising">
+                      <i class="fa-solid fa-trash-can"></i>
                   </button>
               </div>
           `);
@@ -1051,9 +1054,19 @@ export function updateArcsUI() {
     $cancel.on('click', () => updateArcsUI());
   });
 
+  $list.find('.sm_resolve_arc').on('click', async function () {
+    const idx = parseInt($(this).data('index'), 10);
+    const summaryGenerated = await resolveArcWithSummary(idx, charName, groupId);
+    if (summaryGenerated) {
+      $(document).trigger('smart_memory:arc_resolved_with_summary', [charName, groupId]);
+    }
+    injectArcs();
+    updateArcsUI();
+  });
+
   $list.find('.sm_delete_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
-    await resolveArc(idx, charName, groupId);
+    await deleteArc(idx, charName);
     injectArcs();
     updateArcsUI();
   });
@@ -1613,8 +1626,6 @@ export function renderMemoriesList(memories, characterName) {
     $toggle.on('click', function () {
       const showing = $list.find('.sm_memory_item.sm_memory_retired').first().is(':visible');
       $list.find('.sm_memory_item.sm_memory_retired').toggle(!showing);
-      $(this).find('i').toggleClass('fa-eye-slash', !showing).toggleClass('fa-eye', !showing);
-      $(this).find('i').toggleClass('fa-eye-slash fa-eye');
       $(this).html(
         `<i class="fa-solid ${showing ? 'fa-eye-slash' : 'fa-eye'}"></i> ${showing ? 'Show' : 'Hide'} retired memories`,
       );

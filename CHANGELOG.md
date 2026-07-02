@@ -5,6 +5,232 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.8.0] - 2026-07-02
+
+### Added
+
+- **Epistemic entry supersession.** Existing Perspectives & Secrets entries are
+  now passed into each extraction prompt as a numbered list. The model outputs
+  `[retire] <n>` for any entry the scene explicitly resolves or contradicts -
+  a `[suspects]` entry is retired when the character confirms the fact as
+  `[knows]`, a `[hiding]` entry when the secret is revealed, and so on. Retired
+  entries are removed before new ones are merged in, so the injected knowledge
+  block stays clean rather than accumulating contradictions over a long chat.
+  No extra model call - retire lines are mixed into the same extraction response.
+- **Manually resolving an arc now generates an arc summary for canon.**
+  The arc checkmark previously moved the arc to the Resolved Threads panel
+  but never produced an arc summary, so canon generation had nothing to work
+  with. The checkmark now generates a summary on resolution, and on Profile B
+  canon regenerates automatically. A separate trash button has been added to
+  delete an arc without summarising it.
+- **Configurable Memory LLM generation budget.** A new advanced-mode slider
+  in the Memory LLM settings section lets users raise the token ceiling for
+  extraction calls beyond the default 8192. Users who run verbose thinking
+  models that abort before producing output can increase this limit. An
+  Unlimited (-1) checkbox is also available for users who accept the risk of
+  runaway generation on their local hardware.
+- **Configurable injection refresh period for cloud API prompt cache stability.**
+  A new advanced-mode slider sets the minimum number of AI messages that must pass
+  before long-term and session memory slots are re-injected into the prompt. Default
+  is 1 (every message, current behaviour). Setting it higher keeps the injected block
+  stable between updates so cloud API providers can cache the prompt and charge less
+  per token. Recent events are still visible in chat history during the gap between
+  refreshes. Short-term (compaction) and other tiers inject immediately when they
+  update and are unaffected by this setting.
+- **OpenAI Compatible source retries on transient errors.** Failed requests due
+  to 5xx responses, network-level errors (gateway timeouts, connection resets),
+  or HTTP 429 rate-limit responses are retried up to 3 times with a 3-second
+  delay between attempts. This handles free-tier cloud providers that occasionally
+  drop or throttle requests without permanently failing the extraction pass.
+- **OpenAI Compatible source no longer requires a local proxy for cloud APIs.**
+  Remote/cloud providers (Nvidia NIM, OpenRouter, OpenAI, etc.) are now routed
+  through SillyTavern's own server-side proxy, which avoids the CORS restrictions
+  those services impose on direct browser connections. Local servers (localhost
+  and private network addresses) are still contacted directly as before - no
+  behaviour change for KoboldCpp, llama.cpp, or any other locally hosted server.
+- **Scene break heuristic patterns expanded.** Five new pattern groups have been
+  added: wake from unconsciousness or injury ("regained consciousness", "came to
+  their senses", "opened their eyes to find"); return transitions ("returned to
+  the X", "made their way back to"); formal arrival phrasing ("upon
+  arriving/reaching/entering the X"); time anchors ("the morning after", "by
+  morning/nightfall/dawn/dusk"); and extended time skips ("in the days/weeks that
+  followed"). Patterns are intentionally narrow to avoid false positives on
+  common mid-scene phrasing.
+- **The continuity repair note is now shown in the settings panel with a
+  Cancel button.** When a correction is queued, the panel shows the exact
+  text that will be injected into the next prompt, so users can read it and
+  cancel it if they disagree. Clicking Cancel removes the queued correction
+  before it fires.
+- **A toast notification appears when a continuity repair is queued.** Both
+  the auto-check and manual check paths now show a brief toast when a
+  correction is successfully queued for the next response, so users know a
+  repair fired without having to keep the settings panel open.
+
+### Changed
+
+- **Progressive compaction no longer double-sends new messages on Ollama and
+  OpenAI-compat sources.** The update prompt embeds the new conversation events
+  as text via `{{new_events}}`, but `generateMemorySummarize` was also prepending
+  the full recent chat as prior messages for context. The new messages were
+  therefore sent twice, inflating the request and confusing some models. The
+  update path now passes an empty prior-message list - the prompt body already
+  has both the existing summary and the new events.
+- **Compaction threshold check now skips the async tokenizer when clearly below
+  budget.** `shouldCompact` runs on every AI message. It was calling ST's async
+  `getTokenCountAsync` even on short chats that can't possibly be over the
+  threshold. A cheap character-count estimate now short-circuits the check when
+  the rough token count is under 60% of the threshold, eliminating the tokenizer
+  call for most messages.
+- **Arc deduplication now batches embedding lookups per operation.** The
+  `deduplicateArcs` function and the new-arc comparison loop inside `extractArcs`
+  were calling `getEmbeddingBatch` once per pair of arc strings. Both now
+  collect all texts and issue a single batch call before the comparison loop,
+  reducing embedding round-trips from O(n^2) to O(1) per operation.
+- **Retired memory pool is now capped at 100 entries per tier.** Previously the
+  pool grew without bound when consolidation was disabled - every superseded
+  memory stayed in storage forever. The pool is now trimmed from the front
+  (oldest first) when it exceeds 100 entries in either the long-term or session
+  tier. The cap is high enough that a user would need to supersede hundreds of
+  memories in one chat before anything is dropped.
+- **The extraction and compaction pipeline is now deferred past ST's event
+  emit.** SillyTavern awaits all `CHARACTER_MESSAGE_RENDERED` listeners before
+  saving the chat file. Previously, Smart Memory's multi-second model calls ran
+  inside that await, blocking ST's save in non-streaming mode. The pipeline now
+  starts via `setTimeout(fn, 0)` so the handler returns immediately and ST
+  proceeds to save without waiting. Compaction and scene detection are also
+  gated on `!extractionRunning` so a re-entrant handler call cannot start either
+  one concurrently with an in-progress extraction from the previous turn.
+- **Char-truncation floor raised to generation budget on Ollama and OpenAI-compat
+  paths.** Extraction and summarization output was truncated at `responseLength * 4`
+  characters after stripping thinking blocks. On thinking models the tight per-tier
+  `responseLength` values (300-600 tokens) could silently cut off items at the end
+  of a dense extraction response. The floor is now
+  `Math.max(responseLength, generation_budget) * 4` so the user-configured
+  generation budget is always the effective ceiling. When the generation budget is
+  set to Unlimited (-1), truncation is skipped entirely.
+- **Per-tier injection budget sliders now go up to 4000 tokens** (previously
+  capped between 600 and 2000 depending on the tier). Users running cloud models
+  or large local context windows can now set higher per-tier budgets in advanced
+  mode without editing settings directly.
+- **Auto-tune budgets and unified injection** have been moved from Developer
+  settings to the Configuration section and are no longer marked experimental.
+  Both features are stable. Auto-tune sits directly below the total budget
+  slider; unified injection is in the advanced-only block.
+- **Macro tokens reference** is now visible in both simple and advanced mode
+  (previously advanced-only), repositioned to just above Hardware profile so it
+  no longer appears to group the options below it. Tooltip formatting fixed -
+  newlines now render correctly, macro order matches the extension panel
+  injection order.
+- **Unknown-typed entities now show a hint in the entity panel** when the state
+  ledger is enabled. Entities the model failed to classify default to type
+  `unknown`, which does not support state cards. Previously the state card
+  section was silently absent; now a small info line prompts the user to change
+  the type via the existing type badge to unlock the state card editor.
+
+### Fixed
+
+- **Retired memories are no longer permanently deleted by the injection
+  telemetry pass.** The telemetry branch in `injectMemories` and
+  `injectSessionMemories` was saving only the filtered active-memory array back
+  to storage, wiping every superseded entry on each AI response turn. The
+  "Show retired memories" toggle was always empty as a result, and supersession
+  history was silently lost. Both functions now reload the full (unfiltered)
+  array before saving, preserving the retired pool.
+- **Epistemic deduplication now correctly uses semantic embeddings.**
+  `getEmbeddingBatch` returns a `Map<string, number[]>` keyed by text, but
+  the epistemic dedup path was indexing it with numeric positions
+  (`embeddings?.[i]`), which always returns `undefined` on a `Map`. Dedup
+  silently fell back to Jaccard for every epistemic extraction pass even when
+  embeddings were configured and working. Fixed to use `.get(content.trim())`
+  matching every other caller in the codebase.
+- **Chat-switch data corruption in several unguarded modules.** A family of
+  functions did not have the `chatLoadId` abort guard introduced for the main
+  extraction path in v1.7.x: `consolidateSessionMemories`, `processSceneBreak`,
+  `runStateCardExtraction`, and `generateProfiles`. A mid-run chat switch could
+  write old-chat data into the new chat's `chatMetadata`. All four functions
+  now accept an `abortCheck` callback and skip their final write if the chat has
+  changed. The catch-up runner also now cancels automatically on chat switch.
+- **Re-running compaction when the summary is already current no longer
+  replaces it with a narrower window.** When `summaryEnd` was at or beyond the
+  current chat length (e.g. after Memorize Chat run twice), the progressive
+  path condition failed and the full-compaction path re-summarized from a
+  60%-context window, potentially replacing a comprehensive summary with a
+  worse one. An early return now preserves the existing summary when there is
+  nothing new to process.
+- **Triggered long-term memories now respect the witnessed-by filter.** The
+  secondary `PROMPT_KEY_TRIGGERED` injection slot was formatting triggered
+  memories as plain bullets without applying `shouldInjectMemory`, injecting
+  memories the responding character should not have seen even when secondhand
+  framing was set to omit non-witnessed memories. The triggered slot now
+  applies the same witness check as the main block.
+- **State ledger entity names are now injected with correct capitalization.**
+  The ledger key lowercases the entity name for stable merging, and the
+  injection formatter was recovering the display name from that lowercased key.
+  The original-case name is now stored as `_name` in each ledger entry and used
+  for display, so names like "Elara" appear correctly rather than "elara".
+- **Continuity checker now includes the active user persona in established
+  facts.** Previously only the AI character's card and extracted memories were
+  checked against - accurate descriptions of the user's character could be
+  flagged as contradictions if they hadn't been extracted into long-term
+  memories. The user persona description is now always included so the checker
+  has the full picture of both sides of the conversation.
+- **Auto-continuity check results now appear in the settings panel.** When
+  the Profile B auto-check finds contradictions, they are now listed in the
+  Continuity section of the settings panel so the user can read them - the
+  same display as the manual Check button. Previously only the badge count
+  was updated and the actual contradictions were invisible.
+- **Auto-repair failure is now reported in the settings panel** instead of
+  silently logging as "Auto-continuity check failed" (which was misleading -
+  the check had succeeded). If repair generation fails the contradictions
+  panel now shows a message indicating the correction could not be generated.
+- **Activity loader toasts no longer cross-dismiss each other.** The toast
+  for a finished continuity check was not being dismissed because
+  `toastr.clear()` resolves by queue position rather than element identity.
+  When extraction then started and finished, it dismissed the stale
+  continuity toast instead of its own, leaving the extraction toast lingering.
+  Switched to direct DOM removal which targets the correct element every time.
+- **Model test output no longer breaks out of its display panel.** The model
+  test tier renderer was injecting raw model output into an HTML template
+  string containing a `<textarea>`. A response containing `</textarea>` would
+  break out of the element, allowing arbitrary HTML to render. All dynamic
+  content is now set via jQuery `.text()` and `.val()` instead of string
+  interpolation.
+- **Aborting an in-flight generation no longer clears a concurrent request's
+  controller.** The `memoryAbortController` was being set to `null`
+  unconditionally in the `finally` block of both `generateOllama` and
+  `generateOpenAICompat`. A second concurrent request (for example, a
+  continuity check overlapping with an extraction) could clear the first's
+  controller after the second one set a new one, making the new request
+  unabortable. Each call now captures its own controller reference and only
+  nulls the module-level variable if it still holds that same reference.
+- **Extraction cutoff is now snapshotted before model calls begin.** The index
+  marking how far extraction has progressed was being computed from
+  `context.chat` after all model calls completed. On slow local hardware,
+  messages arriving during a multi-second extraction pass were silently
+  skipped: the cutoff advanced past them before they were ever fed to the
+  model. The cutoff is now captured at the start of each extraction pass,
+  before any `await`, so late-arriving messages are always included in the
+  next pass.
+- **Cross-registry entity merge now relinks memory refs in both directions.**
+  When merging an entity that exists only in the long-term registry into a
+  target that exists only in the session registry, the long-term memories
+  referencing the source entity had their entity ID removed but the
+  replacement target ID was never added. The memories became entity-orphans
+  invisible in the graph. The merge now adds the target ID after removing the
+  source ID, matching the behaviour of the session-to-long-term direction.
+- **Catch-up inject failures no longer abort the entire catch-up run.** The
+  `injectMemories` and `injectSessionMemories` calls inside the catch-up loop
+  had no error handling, so a transient failure in either would throw and stop
+  processing all remaining chunks. Both calls are now wrapped with `.catch` so
+  the run continues even if an inject step fails.
+- **Catch-up now advances `lastExtractCutoff` after each processed chunk.**
+  Previously the cutoff was never updated during catch-up, so the next normal
+  extraction pass would re-process the entire window that catch-up had already
+  covered. The cutoff is now updated per chunk using the chat index of the last
+  message processed, matching the behaviour of the normal extraction path.
+
 ## [1.7.15] - 2026-05-30
 
 ### Fixed

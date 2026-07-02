@@ -830,8 +830,18 @@
 
 #smart_memory_settings .sm_repair_queued {
   margin: 8px 0 0 0;
+}
+
+#smart_memory_settings .sm_repair_note {
   font-style: italic;
   color: #a0b8cc;
+  margin: 4px 0 8px 0;
+  font-size: 0.9em;
+}
+
+#smart_memory_settings .sm_repair_cancel {
+  font-size: 0.85em;
+  padding: 2px 8px;
 }
 
 /* Auto-continuity badge shown in the header after Profile B checks. */

@@ -46,6 +46,7 @@ import {
   extension_prompt_types,
   extension_prompt_roles,
 } from '../../../../script.js';
+import { power_user } from '../../../../scripts/power-user.js';
 import { MODULE_NAME, META_KEY, PROMPT_KEY_REPAIR } from './constants.js';
 import { buildContinuityPrompt, buildRepairPrompt } from './prompts.js';
 import { loadCharacterMemories } from './longterm.js';
@@ -79,6 +80,13 @@ function gatherEstablishedFacts(characterName) {
     if (cardParts.length > 0) {
       parts.push('-- CHARACTER CARD --\n' + cardParts.join('\n'));
     }
+  }
+
+  // Include the active user persona description so the checker does not flag
+  // accurate descriptions of the user's character as contradictions.
+  const personaDesc = power_user?.persona_description?.trim();
+  if (personaDesc) {
+    parts.push('-- USER PERSONA --\n' + personaDesc);
   }
 
   if (meta?.summary) {

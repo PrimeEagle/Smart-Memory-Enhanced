@@ -81,10 +81,20 @@ export async function shouldCompact() {
   const newMessages = context.chat.slice(summaryEnd);
   if (newMessages.length === 0) return false;
 
-  const tokens = await getChatTokenCount(newMessages);
   const maxTokens = getMaxContextSize(settings.compaction_response_length || 0);
   if (maxTokens <= 0) return false;
 
+  // Cheap char-based pre-check: if the rough estimate is below 60% of the
+  // threshold there is no way the real tokenizer will disagree enough to matter.
+  // Saves the async tokenizer call on the vast majority of messages.
+  const roughText = newMessages
+    .filter((m) => m.mes && !m.is_system)
+    .map((m) => `${m.name}: ${m.mes}`)
+    .join('\n');
+  const roughRatio = estimateTokens(roughText) / maxTokens;
+  if (roughRatio < (settings.compaction_threshold / 100) * 0.6) return false;
+
+  const tokens = await getChatTokenCount(newMessages);
   const ratio = tokens / maxTokens;
   return ratio >= settings.compaction_threshold / 100;
 }
@@ -156,6 +166,11 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
 
     let raw;
 
+    // If the summary already covers the full chat, there is nothing new to
+    // process. Return the existing summary unchanged rather than falling through
+    // to the full-compaction path, which would replace it with a narrower window.
+    if (existingSummary && summaryEnd >= context.chat.length) return existingSummary;
+
     if (existingSummary && summaryEnd > 0 && summaryEnd < context.chat.length) {
       // Progressive path: feed only the new messages to the update prompt.
       // Exclude the trailing AI message unless the caller explicitly wants the
@@ -180,6 +195,9 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
       raw = await generateMemorySummarize(updatePrompt, {
         responseLength: settings.compaction_response_length || 2000,
         includeLastMessage,
+        // The prompt body already contains {{new_events}} and {{existing_summary}},
+        // so sending the full chat as priorMessages would duplicate the new messages.
+        chatMessages: [],
       });
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
