@@ -2479,17 +2479,41 @@ export function bindSettingsUI(ctrl) {
 
         // Re-inject after each chunk so the token display reflects what is
         // actually stored, not just what was injected before catch-up started.
+        // Wrap with .catch so an embedding failure here does not abort the
+        // entire catch-up run via the outer catch block.
         if (settings.longterm_enabled && characterName) {
-          await injectMemories(characterName);
+          await injectMemories(characterName).catch((err) => {
+            console.error('[SmartMemory] Catch-up inject long-term error:', err);
+          });
         }
         if (settings.session_enabled) {
-          await injectSessionMemories();
+          await injectSessionMemories().catch((err) => {
+            console.error('[SmartMemory] Catch-up inject session error:', err);
+          });
         }
         if (settings.arcs_enabled) {
           injectArcs();
         }
         if (settings.relationships_enabled) {
           injectRelationshipHistory(characterName);
+        }
+
+        // Advance lastExtractCutoff so the normal extraction window starts from
+        // where catch-up left off rather than re-processing the same messages.
+        const cuMeta = catchUpContext.chatMetadata?.[META_KEY];
+        if (cuMeta) {
+          const lastChunkMsg = chunk[chunk.length - 1];
+          const chatIdx = lastChunkMsg
+            ? catchUpContext.chat.lastIndexOf(lastChunkMsg)
+            : catchUpContext.chat.length - 1;
+          const cuCutoff =
+            chatIdx >= 0 && lastChunkMsg && !lastChunkMsg.is_user && !lastChunkMsg.is_system
+              ? chatIdx
+              : chatIdx + 1;
+          if (cuCutoff > (cuMeta.lastExtractCutoff ?? 0)) {
+            cuMeta.lastExtractCutoff = cuCutoff;
+            catchUpContext.saveMetadata().catch(console.error);
+          }
         }
 
         // Update progress and token display after each chunk so the user can

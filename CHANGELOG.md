@@ -221,6 +221,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacement target ID was never added. The memories became entity-orphans
   invisible in the graph. The merge now adds the target ID after removing the
   source ID, matching the behaviour of the session-to-long-term direction.
+- **Catch-up inject failures no longer abort the entire catch-up run.** The
+  `injectMemories` and `injectSessionMemories` calls inside the catch-up loop
+  had no error handling, so a transient failure in either would throw and stop
+  processing all remaining chunks. Both calls are now wrapped with `.catch` so
+  the run continues even if an inject step fails.
+- **Catch-up now advances `lastExtractCutoff` after each processed chunk.**
+  Previously the cutoff was never updated during catch-up, so the next normal
+  extraction pass would re-process the entire window that catch-up had already
+  covered. The cutoff is now updated per chunk using the chat index of the last
+  message processed, matching the behaviour of the normal extraction path.
 
 ## [1.7.15] - 2026-05-30
 
