@@ -901,7 +901,7 @@ export function bindSettingsUI(ctrl) {
   function populateConnectionProfilePicker() {
     const $select = $('#sm_connection_profile_id');
     $select.empty();
-    const profiles = extension_settings?.connectionManager?.profiles ?? [];
+    const profiles = extension_settings?.['connection-manager']?.profiles ?? [];
     const supportedApis = new Set(['openai', 'textgenerationwebui']);
     const compatible = profiles.filter((p) => supportedApis.has(p.api));
     if (compatible.length === 0) {
