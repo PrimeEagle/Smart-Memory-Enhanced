@@ -683,7 +683,7 @@ export function parseEpistemicResponse(text) {
   return entries;
 }
 
-const EPISTEMIC_RETIRE_RE = /^\[retire\]\s+(\d+)$/i;
+const EPISTEMIC_RETIRE_LINE_RE = /^\[retire\]/i;
 
 /**
  * Extracts the set of 1-based entry indices the model flagged for retirement.
@@ -692,6 +692,10 @@ const EPISTEMIC_RETIRE_RE = /^\[retire\]\s+(\d+)$/i;
  * epistemic output. Invalid or out-of-range indices are silently ignored by
  * the caller.
  *
+ * Lenient parsing: accepts `[retire]3`, `[retire] #2`, `[retire] 1, 3`,
+ * trailing punctuation, and other weak-model variations by extracting all
+ * digit sequences from any line that starts with `[retire]`.
+ *
  * @param {string} text - Raw model output from an epistemic extraction pass.
  * @returns {Set<number>} 1-based indices to retire from the existing entry list.
  */
@@ -699,8 +703,10 @@ export function parseEpistemicRetireIndices(text) {
   const indices = new Set();
   if (!text) return indices;
   for (const raw of text.split('\n')) {
-    const match = EPISTEMIC_RETIRE_RE.exec(raw.trim());
-    if (match) indices.add(Number(match[1]));
+    const trimmed = raw.trim();
+    if (!EPISTEMIC_RETIRE_LINE_RE.test(trimmed)) continue;
+    const nums = trimmed.replace(EPISTEMIC_RETIRE_LINE_RE, '').match(/\d+/g);
+    if (nums) nums.forEach((n) => indices.add(Number(n)));
   }
   return indices;
 }
@@ -773,8 +779,10 @@ export function parseStateCardResponse(raw) {
 
     const key = `${name.toLowerCase().trim()}|${type}`;
     // Merge with any earlier line for the same key (model may split across lines).
+    // _name stores the original-case display name - the key itself is lowercased
+    // for stable merging but the prompt should show the character's real name.
     const existing = result.get(key) ?? {};
-    result.set(key, { ...existing, ...fields });
+    result.set(key, { _name: name, ...existing, ...fields });
   }
 
   return result;

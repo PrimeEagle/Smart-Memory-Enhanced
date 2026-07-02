@@ -320,7 +320,6 @@ export async function extractEpistemicKnowledge(
     }
 
     // Fetch embeddings for all content strings in one batch when possible.
-    // Batch order: all surviving existing first, then all incoming, so indices align.
     let embeddings = null;
     try {
       const texts = [...survivingExisting.map((e) => e.content), ...parsed.map((e) => e.content)];
@@ -334,9 +333,9 @@ export async function extractEpistemicKnowledge(
     const newEntries = [];
     for (let pi = 0; pi < parsed.length; pi++) {
       const incoming = parsed[pi];
-      const incomingVec = embeddings?.[survivingExisting.length + pi] ?? null;
-      const isDup = survivingExisting.some((ex, ei) => {
-        const existingVec = embeddings?.[ei] ?? null;
+      const incomingVec = embeddings?.get(incoming.content.trim()) ?? null;
+      const isDup = survivingExisting.some((ex) => {
+        const existingVec = embeddings?.get(ex.content.trim()) ?? null;
         const vectors = incomingVec && existingVec ? [existingVec, incomingVec] : null;
         return isEpistemicDuplicate(ex, incoming, vectors);
       });

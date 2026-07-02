@@ -210,9 +210,10 @@ export async function clearStateLedger() {
  *
  * @param {string|null} characterName - Card character name for LT registry lookup.
  * @param {Object[]} messages - Recent messages to extract state from.
+ * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
  * @returns {Promise<number>} Number of entity cards updated.
  */
-export async function runStateCardExtraction(characterName, messages) {
+export async function runStateCardExtraction(characterName, messages, abortCheck = null) {
   if (!isStateLedgerEnabled()) return 0;
 
   try {
@@ -252,6 +253,7 @@ export async function runStateCardExtraction(characterName, messages) {
     }
 
     // Merge updates into the existing ledger.
+    if (abortCheck?.()) return 0;
     const ledger = loadStateLedger();
     let count = 0;
     for (const [key, fields] of updates) {
@@ -290,7 +292,8 @@ function buildStateLedgerBlock(ledger) {
     if (!schema) continue;
     const values = schema.map((f) => fields[f]).filter((v) => v && v.trim());
     if (values.length === 0) continue;
-    const line = `${name} [${type}]: ${values.join(' | ')}`;
+    const displayName = fields._name || name;
+    const line = `${displayName} [${type}]: ${values.join(' | ')}`;
     if (!byType[type]) byType[type] = [];
     byType[type].push(line);
   }

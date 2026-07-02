@@ -73,6 +73,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Retired memories are no longer permanently deleted by the injection
+  telemetry pass.** The telemetry branch in `injectMemories` and
+  `injectSessionMemories` was saving only the filtered active-memory array back
+  to storage, wiping every superseded entry on each AI response turn. The
+  "Show retired memories" toggle was always empty as a result, and supersession
+  history was silently lost. Both functions now reload the full (unfiltered)
+  array before saving, preserving the retired pool.
+- **Manual arc resolution now contributes to canon correctly.** The manual
+  resolution path was pushing arc summary objects with different field names
+  (`content`/`arcContent`/`sourceSceneTs`/`sourceMemoryIds`) than the
+  model-resolved path and the canon reader expect (`summary`/`arc`/
+  `source_scene_ids`/`source_memory_ids`). Canon generation read `s.summary`
+  and received `undefined` for every manually resolved arc. Field names are
+  now aligned across both resolution paths.
+- **Epistemic deduplication now correctly uses semantic embeddings.**
+  `getEmbeddingBatch` returns a `Map<string, number[]>` keyed by text, but
+  the epistemic dedup path was indexing it with numeric positions
+  (`embeddings?.[i]`), which always returns `undefined` on a `Map`. Dedup
+  silently fell back to Jaccard for every epistemic extraction pass even when
+  embeddings were configured and working. Fixed to use `.get(content.trim())`
+  matching every other caller in the codebase.
+- **Chat-switch data corruption in several unguarded modules.** A family of
+  functions did not have the `chatLoadId` abort guard introduced for the main
+  extraction path in v1.7.x: `consolidateSessionMemories`, `processSceneBreak`,
+  `runStateCardExtraction`, and `generateProfiles`. A mid-run chat switch could
+  write old-chat data into the new chat's `chatMetadata`. All four functions
+  now accept an `abortCheck` callback and skip their final write if the chat has
+  changed. The catch-up runner also now cancels automatically on chat switch.
+- **OpenAI Compatible source now retries on HTTP 429 (rate limiting).** The
+  retry logic covered 5xx and network errors but not 429, which is the most
+  common transient error from free-tier cloud providers. 429 responses are now
+  retried up to 3 times with the existing 3-second delay.
+- **Re-running compaction when the summary is already current no longer
+  replaces it with a narrower window.** When `summaryEnd` was at or beyond the
+  current chat length (e.g. after Memorize Chat run twice), the progressive
+  path condition failed and the full-compaction path re-summarized from a
+  60%-context window, potentially replacing a comprehensive summary with a
+  worse one. An early return now preserves the existing summary when there is
+  nothing new to process.
+- **Triggered long-term memories now respect the witnessed-by filter.** The
+  secondary `PROMPT_KEY_TRIGGERED` injection slot was formatting triggered
+  memories as plain bullets without applying `shouldInjectMemory`, injecting
+  memories the responding character should not have seen even when secondhand
+  framing was set to omit non-witnessed memories. The triggered slot now
+  applies the same witness check as the main block.
+- **State ledger entity names are now injected with correct capitalization.**
+  The ledger key lowercases the entity name for stable merging, and the
+  injection formatter was recovering the display name from that lowercased key.
+  The original-case name is now stored as `_name` in each ledger entry and used
+  for display, so names like "Elara" appear correctly rather than "elara".
+- **Epistemic retire index parser is more lenient.** The strict regex
+  `^\[retire\]\s+(\d+)$` rejected plausible weak-model variations such as
+  `[retire]3`, `[retire] #2`, `[retire] 1, 3`, and entries with trailing
+  punctuation. The parser now extracts all digit sequences from any line
+  starting with `[retire]`, supporting comma lists and optional formatting
+  characters.
 - **Continuity checker now includes the active user persona in established
   facts.** Previously only the AI character's card and extracted memories were
   checked against - accurate descriptions of the user's character could be

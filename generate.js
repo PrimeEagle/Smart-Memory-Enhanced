@@ -299,10 +299,10 @@ async function generateOpenAICompat(
         return data.choices?.[0]?.message?.content ?? '';
       }
 
-      // Retry on 5xx - transient server errors from cloud providers (rate limiting,
-      // gateway timeouts, overloaded free tiers). Do not retry 4xx - those are
+      // Retry on 5xx (transient server errors) and 429 (rate limiting from
+      // free-tier cloud providers). Do not retry other 4xx - those are
       // permanent errors (auth failure, bad request) that retrying won't fix.
-      if (response.status >= 500 && attempt < MAX_RETRIES) {
+      if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         continue;
       }

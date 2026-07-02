@@ -1024,9 +1024,14 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   // Only update retrieval telemetry when called from a real AI response turn.
   // Skipping on chat load, settings changes etc. prevents the signal from
   // saturating too quickly and becoming meaningless.
+  // Load the full (unfiltered) array so retired memories are preserved - the
+  // filtered 'memories' variable only contains active entries and saving it
+  // would permanently delete the retired pool.
   if (updateTelemetry) {
     const recalled = new Set(trimmed.map((m) => `${m.type}|${m.content}`));
-    const updated = memories.map((m) => {
+    const allMemories = loadCharacterMemories(characterName);
+    const updated = allMemories.map((m) => {
+      if (m.superseded_by) return m;
       const key = `${m.type}|${m.content}`;
       if (!recalled.has(key)) return m;
       return {
@@ -1112,8 +1117,23 @@ export async function injectMemories(characterName, updateTelemetry = false) {
   // Secondary injection for triggered memories only, placed closer to the prompt.
   // Cleared when no triggers fire so stale content never lingers.
   // This slot is never handled by a macro - it stays as setExtensionPrompt always.
+  // Apply the same witnessed-by filter as the main block: omit non-witnessed
+  // memories when secondhand framing is disabled, prefix when it is enabled.
   if (triggered.length > 0) {
-    const triggeredText = triggered.map((m) => `- ${m.content}`).join('\n');
+    const triggeredLines = [];
+    for (const m of triggered) {
+      const witness = shouldInjectMemory(m, characterName);
+      if (witness === 'full') {
+        triggeredLines.push(`- ${m.content}`);
+      } else if (settings.epistemic_secondhand_framing !== false) {
+        triggeredLines.push(`- [secondhand] ${m.content}`);
+      }
+    }
+    if (triggeredLines.length === 0) {
+      setExtensionPrompt(PROMPT_KEY_TRIGGERED, '', extension_prompt_types.NONE, 0);
+      return;
+    }
+    const triggeredText = triggeredLines.join('\n');
     const triggeredContent = template.replace('{{memories}}', triggeredText);
     setExtensionPrompt(
       PROMPT_KEY_TRIGGERED,

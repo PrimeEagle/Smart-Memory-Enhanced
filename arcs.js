@@ -497,11 +497,11 @@ export async function resolveArcWithSummary(index, characterName = null, groupId
     if (!result) return false;
     const summaries = loadArcSummaries();
     summaries.push({
-      content: result.summary,
-      arcContent: content,
+      summary: result.summary,
+      arc: content,
       ts: Date.now(),
-      sourceSceneTs: result.sourceSceneTs,
-      sourceMemoryIds: result.sourceMemoryIds,
+      source_scene_ids: result.sourceSceneTs,
+      source_memory_ids: result.sourceMemoryIds,
     });
     await saveArcSummaries(summaries);
     return true;

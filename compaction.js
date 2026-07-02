@@ -156,6 +156,11 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
 
     let raw;
 
+    // If the summary already covers the full chat, there is nothing new to
+    // process. Return the existing summary unchanged rather than falling through
+    // to the full-compaction path, which would replace it with a narrower window.
+    if (existingSummary && summaryEnd >= context.chat.length) return existingSummary;
+
     if (existingSummary && summaryEnd > 0 && summaryEnd < context.chat.length) {
       // Progressive path: feed only the new messages to the update prompt.
       // Exclude the trailing AI message unless the caller explicitly wants the

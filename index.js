@@ -481,6 +481,11 @@ async function onCharacterMessageRendered(messageId, type) {
 
   const characterName = getCurrentCharacterName();
 
+  // Capture the current chat generation so we can abort before any write if
+  // the user switches chats while a model call is in progress.
+  const capturedGen = chatLoadId;
+  const chatChanged = () => chatLoadId !== capturedGen;
+
   const lastMsg = context.chat
     .slice()
     .reverse()
@@ -556,7 +561,12 @@ async function onCharacterMessageRendered(messageId, type) {
   const sceneCheckText = [lastUserMsgText, lastMsgText].filter(Boolean).join('\n');
   if (settings.scene_enabled && sceneCheckText && !isFreshStart()) {
     try {
-      const wasBreak = await processSceneBreak(sceneCheckText, sceneMessageBuffer, prevAiMsgText);
+      const wasBreak = await processSceneBreak(
+        sceneCheckText,
+        sceneMessageBuffer,
+        prevAiMsgText,
+        chatChanged,
+      );
       if (wasBreak) {
         injectSceneHistory();
         updateScenesUI();
@@ -592,11 +602,6 @@ async function onCharacterMessageRendered(messageId, type) {
     if (messagesSinceLastExtraction >= extractEvery) {
       extractionRunning = true;
       smLog(`[SmartMemory] Solo extraction starting at ${new Date().toISOString()}`);
-
-      // Capture the current chat generation so we can abort before any write if
-      // the user switches chats while a model call is in progress.
-      const capturedGen = chatLoadId;
-      const chatChanged = () => chatLoadId !== capturedGen;
 
       // Use separate windows per tier. Both memory tiers use a smart window
       // that starts from just after the last processed message so already-seen
@@ -681,7 +686,7 @@ async function onCharacterMessageRendered(messageId, type) {
           // Run session consolidation after extraction - fires per-type when threshold is reached.
           if (!consolidationRunning) {
             consolidationRunning = true;
-            await consolidateSessionMemories().catch((err) => {
+            await consolidateSessionMemories(false, chatChanged).catch((err) => {
               console.error('[SmartMemory] Session consolidation error:', err);
             });
             consolidationRunning = false;
@@ -768,7 +773,7 @@ async function onCharacterMessageRendered(messageId, type) {
 
         if (chatChanged()) throw CHAT_SWITCHED;
         if (!isFreshStart()) {
-          await runStateCardExtraction(characterName, longtermWindow).catch((err) => {
+          await runStateCardExtraction(characterName, longtermWindow, chatChanged).catch((err) => {
             console.error('[SmartMemory] State ledger extraction error:', err);
           });
           injectStateLedger(true);
@@ -780,7 +785,7 @@ async function onCharacterMessageRendered(messageId, type) {
         // regeneration would waste a model call producing the same output.
         if (chatChanged()) throw CHAT_SWITCHED;
         if (settings.profiles_enabled && characterName && !isFreshStart()) {
-          await generateProfiles(characterName)
+          await generateProfiles(characterName, chatChanged)
             .then((profiles) => {
               if (profiles) {
                 injectProfiles(characterName);
@@ -867,7 +872,7 @@ async function onCharacterMessageRendered(messageId, type) {
   ) {
     messagesSinceLastProfileRegen = 0;
     const schedProfileHandle = startActivityLoader(settings, 'Updating profiles...');
-    generateProfiles(characterName)
+    generateProfiles(characterName, chatChanged)
       .then((profiles) => {
         stopActivityLoader(schedProfileHandle);
         if (profiles) {
@@ -994,6 +999,7 @@ async function onChatChangedImpl() {
   extractionRunning = false;
   continuityCheckRunning = false;
   recapSuppressed = false;
+  catchUpCancelled = true;
   stopActivityLoader(activeRecapHandle);
   activeRecapHandle = null;
   sceneMessageBuffer = [];
@@ -1343,6 +1349,11 @@ async function onGroupWrapperFinished({ type } = {}) {
   const context = getContext();
   if (!context.chat || context.chat.length === 0) return;
 
+  // Capture the current chat generation so we can abort before any write if
+  // the user switches chats while a model call is in progress.
+  const capturedGen = chatLoadId;
+  const chatChanged = () => chatLoadId !== capturedGen;
+
   // Snapshot before any await - onGroupWrapperStarted resets respondedThisRound
   // for the next round and can fire while this function is mid-await if the user
   // sends a new message quickly. Everything below uses the snapshot.
@@ -1399,7 +1410,12 @@ async function onGroupWrapperFinished({ type } = {}) {
   const sceneCheckText = [lastUserMsgText, lastMsgText].filter(Boolean).join('\n');
   if (settings.scene_enabled && sceneCheckText && !isFreshStart()) {
     try {
-      const wasBreak = await processSceneBreak(sceneCheckText, sceneMessageBuffer, prevAiMsgText);
+      const wasBreak = await processSceneBreak(
+        sceneCheckText,
+        sceneMessageBuffer,
+        prevAiMsgText,
+        chatChanged,
+      );
       if (wasBreak) {
         injectSceneHistory();
         updateScenesUI();
@@ -1464,9 +1480,6 @@ async function onGroupWrapperFinished({ type } = {}) {
         messagesSinceLastExtraction = 0;
         setStatusMessage('Extracting memories...');
 
-        const capturedGen = chatLoadId;
-        const chatChanged = () => chatLoadId !== capturedGen;
-
         const originalBudgets = {
           longterm_inject_budget: settings.longterm_inject_budget,
           session_inject_budget: settings.session_inject_budget,
@@ -1503,7 +1516,7 @@ async function onGroupWrapperFinished({ type } = {}) {
             });
             if (!consolidationRunning) {
               consolidationRunning = true;
-              await consolidateSessionMemories().catch((err) => {
+              await consolidateSessionMemories(false, chatChanged).catch((err) => {
                 console.error('[SmartMemory] Session consolidation error:', err);
               });
               consolidationRunning = false;
@@ -1571,7 +1584,7 @@ async function onGroupWrapperFinished({ type } = {}) {
             }
 
             if (settings.profiles_enabled && characterName && !isFreshStart()) {
-              await generateProfiles(characterName)
+              await generateProfiles(characterName, chatChanged)
                 .then((profiles) => {
                   if (profiles) {
                     // Only update the UI panel if this is the character currently
@@ -1628,7 +1641,7 @@ async function onGroupWrapperFinished({ type } = {}) {
 
           if (chatChanged()) throw CHAT_SWITCHED;
           if (!isFreshStart()) {
-            await runStateCardExtraction(null, longtermWindow).catch((err) => {
+            await runStateCardExtraction(null, longtermWindow, chatChanged).catch((err) => {
               console.error('[SmartMemory] State ledger extraction error:', err);
             });
             injectStateLedger(true);
@@ -1711,7 +1724,7 @@ async function onGroupWrapperFinished({ type } = {}) {
     messagesSinceLastProfileRegen = 0;
     for (const characterName of roundResponders) {
       const schedProfileHandle = startActivityLoader(settings, 'Updating profiles...');
-      generateProfiles(characterName)
+      generateProfiles(characterName, chatChanged)
         .then((profiles) => {
           stopActivityLoader(schedProfileHandle);
           if (profiles) {

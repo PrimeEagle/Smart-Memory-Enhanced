@@ -212,9 +212,15 @@ export async function summarizeScene(sceneMessages) {
  * @param {string} lastMessageText - Text of the last AI message.
  * @param {Array} recentMessages - Messages accumulated since the last scene break.
  * @param {string} [previousAiMessage] - The preceding AI message for context (AI detection only).
+ * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
  * @returns {Promise<boolean>} True if a scene break was detected and processed.
  */
-export async function processSceneBreak(lastMessageText, recentMessages, previousAiMessage) {
+export async function processSceneBreak(
+  lastMessageText,
+  recentMessages,
+  previousAiMessage,
+  abortCheck = null,
+) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.scene_enabled) return false;
 
@@ -269,6 +275,7 @@ export async function processSceneBreak(lastMessageText, recentMessages, previou
   history.push({ summary, ts: Date.now(), source_memory_ids: [] });
   if (history.length > max) history.splice(0, history.length - max);
 
+  if (abortCheck?.()) return false;
   await saveSceneHistory(history);
   return true;
 }
