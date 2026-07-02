@@ -655,10 +655,15 @@ async function onCharacterMessageRendered(messageId, type) {
           // refreshes so cloud API prompt caches remain valid. Recent events are
           // covered by chat history during the gap.
           const injRefreshPeriod = settings.injection_refresh_period ?? 1;
-          const injLastRefresh = context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0;
+          // Clamp the stored index to the current chat tip so message deletions
+          // reset the delta to 0 rather than stalling refreshes until the chat
+          // regrows past the stale index.
+          const injLastRefresh = Math.min(
+            context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0,
+            Math.max(0, context.chat.length - 1),
+          );
           const shouldRefreshInjections =
-            injRefreshPeriod <= 1 ||
-            Math.max(0, context.chat.length - 1 - injLastRefresh) >= injRefreshPeriod;
+            injRefreshPeriod <= 1 || context.chat.length - 1 - injLastRefresh >= injRefreshPeriod;
 
           // Snapshot the cutoff index now, before any awaits, so messages that
           // arrive during extraction are not silently swallowed by advancing the
@@ -1553,10 +1558,13 @@ async function onGroupWrapperFinished({ type } = {}) {
 
           // Injection refresh period check - same logic as solo path.
           const injRefreshPeriodGroup = settings.injection_refresh_period ?? 1;
-          const injLastRefreshGroup = context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0;
+          const injLastRefreshGroup = Math.min(
+            context.chatMetadata?.[META_KEY]?.lastInjectionRefresh ?? 0,
+            Math.max(0, context.chat.length - 1),
+          );
           const shouldRefreshInjectionsGroup =
             injRefreshPeriodGroup <= 1 ||
-            Math.max(0, context.chat.length - 1 - injLastRefreshGroup) >= injRefreshPeriodGroup;
+            context.chat.length - 1 - injLastRefreshGroup >= injRefreshPeriodGroup;
 
           // Snapshot before any awaits - same reason as solo path.
           const snapshotLastGroup = context.chat[context.chat.length - 1];
