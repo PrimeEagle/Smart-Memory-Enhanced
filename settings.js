@@ -58,6 +58,10 @@ import {
   onMemoryRequestRetry,
   retryTransientMemoryOperation,
 } from './generate.js';
+import {
+  beginCatchUpTransaction,
+  commitCatchUpTransaction,
+} from './catchup-transaction.js';
 import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
 import {
   extractAndStoreMemories,
@@ -2535,6 +2539,7 @@ export function bindSettingsUI(ctrl) {
         }
         const processed = Math.min(i + chunk.length, total);
         const pct = Math.round((processed / total) * 100);
+        const chunkTransaction = beginCatchUpTransaction(catchUpContext);
         setStatusMessage(
           `Catching up... (${i}/${total} messages, ${Math.round((i / total) * 100)}%)`,
         );
@@ -2621,10 +2626,15 @@ export function bindSettingsUI(ctrl) {
               : chatIdx + 1;
           if (cuCutoff > (cuMeta.lastExtractCutoff ?? 0)) {
             cuMeta.lastExtractCutoff = cuCutoff;
-            await retryTransientMemoryOperation(() => catchUpContext.saveMetadata()).catch((err) =>
-              recordCatchUpError('metadata save error', err, null, true),
-            );
           }
+        }
+
+        try {
+          await retryTransientMemoryOperation(() => commitCatchUpTransaction(chunkTransaction));
+        } catch (err) {
+          // The transaction restores both chat metadata and extension state.
+          // This chunk is deliberately not treated as completed or committed.
+          recordCatchUpError('chunk persistence error', err, null, true);
         }
 
         // Update progress and token display after each chunk so the user can

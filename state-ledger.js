@@ -44,6 +44,7 @@ import {
   extension_prompt_roles,
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import { MODULE_NAME, META_KEY, PROMPT_KEY_STATE_LEDGER, estimateTokens } from './constants.js';
 import { buildStateCardPrompt } from './prompts.js';
 import { parseStateCardResponse } from './parsers.js';
@@ -117,7 +118,7 @@ export async function saveStateLedger(ledger) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].state_ledger = ledger;
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 /**

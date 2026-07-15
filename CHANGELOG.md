@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-15
+
+### Fixed
+
+- Stage session, arc, and state-ledger metadata during each Memorize Chat chunk, then commit it as one explicit chat save.
+- Retry failed group-chat persistence and roll back the chunk's in-memory metadata and extension state if all save attempts fail.
+
 ## [0.2.4] - 2026-07-15
 
 ### Added

@@ -42,6 +42,7 @@ import {
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -173,7 +174,7 @@ export async function saveSessionMemories(memories) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].sessionMemories = memories;
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 /**
@@ -183,7 +184,7 @@ export async function clearSessionMemories() {
   const context = getContext();
   if (context.chatMetadata?.[META_KEY]) {
     context.chatMetadata[META_KEY].sessionMemories = [];
-    await context.saveMetadata();
+    await saveChatMetadata(context);
   }
 }
 
