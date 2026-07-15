@@ -313,6 +313,7 @@ export const defaultSettings = {
 
   // State Ledger (structured entity state cards)
   state_ledger_enabled: false,
+  state_ledger_requires_grounding: true,
   state_ledger_inject_budget: 200,
   state_ledger_depth: 1,
   state_ledger_position: extension_prompt_types.IN_CHAT,

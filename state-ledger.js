@@ -217,6 +217,14 @@ export async function clearStateLedger() {
 export async function runStateCardExtraction(characterName, messages, abortCheck = null) {
   if (!isStateLedgerEnabled()) return 0;
 
+  // State-card output currently has no source-reference contract. Until the
+  // ledger parser can validate message evidence, treating it as grounded would
+  // let an unverified provider response alter structured state.
+  if (extension_settings[MODULE_NAME]?.state_ledger_requires_grounding !== false) {
+    smLog('[SmartMemory] State ledger extraction skipped: source grounding is required.');
+    return 0;
+  }
+
   try {
     const chatExcerpt = messages
       .filter((m) => m.mes && !m.is_system)

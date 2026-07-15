@@ -74,6 +74,7 @@ import {
   resolveEntityNames,
   reconcileEntityRegistry,
 } from './graph-migration.js';
+import { applyDirectProvenance, isGrounded } from './grounding.js';
 import {
   buildExtractionPrompt,
   buildLongtermConsolidationPrompt,
@@ -447,7 +448,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
   try {
     const chatHistory = recentMessages
       .filter((m) => m.mes && !m.is_system)
-      .map((m) => `${m.name}: ${m.mes}`)
+      .map((m, index) => `[${index}] ${m.name}: ${m.mes}`)
       .join('\n\n');
 
     if (!chatHistory.trim()) return 0;
@@ -503,8 +504,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Derive the characters present in this extraction window so the injection
     // path can downgrade memories the responding character did not witness.
     const witnessedBy = getSceneParticipants(recentMessages);
+    applyDirectProvenance(newMemories, recentMessages, windowStart);
     for (const mem of newMemories) {
-      mem.source_messages = [[windowStart, windowEnd]];
       mem.source_chat_id = sourceChatId;
       mem.witnessed_by = witnessedBy;
     }
@@ -694,7 +695,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // updated in place, then persisted alongside the memories.
     const entityRegistry = loadCharacterEntityRegistry(characterName);
     for (const mem of finalActive) {
-      if (Array.isArray(mem._raw_entity_names)) {
+      if (isGrounded(mem) && Array.isArray(mem._raw_entity_names)) {
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
       }
     }
@@ -800,9 +801,9 @@ export async function consolidateMemories(characterName, force = false) {
   for (const type of MEMORY_TYPES) {
     // Exclude retired memories from consolidation - they've already been
     // replaced and should not be re-evaluated or re-injected.
-    const base = memories.filter((m) => m.type === type && m.consolidated && !m.superseded_by);
+    const base = memories.filter((m) => m.type === type && m.consolidated && !m.superseded_by && isGrounded(m));
     const unprocessed = memories.filter(
-      (m) => m.type === type && !m.consolidated && !m.superseded_by,
+      (m) => m.type === type && !m.consolidated && !m.superseded_by && isGrounded(m),
     );
 
     const threshold = thresholds[type] ?? DEFAULT_CONSOLIDATION_THRESHOLDS.fact;
@@ -862,9 +863,15 @@ export async function consolidateMemories(characterName, force = false) {
         if (match && Array.isArray(match.source_messages) && match.source_messages.length > 0) {
           entry.source_messages = match.source_messages;
           entry.source_chat_id = match.source_chat_id ?? null;
+          entry.grounding_status = 'derived';
+          entry.parent_memory_ids = [match.id];
         } else if (!entry.source_messages?.length && mostRecentSource) {
           entry.source_messages = [mostRecentSource];
           entry.source_chat_id = mostRecentChatId;
+          entry.grounding_status = 'derived';
+          entry.parent_memory_ids = unprocessed.filter(isGrounded).map((m) => m.id);
+        } else {
+          entry.grounding_status = 'ungrounded';
         }
       }
 
@@ -953,7 +960,9 @@ export async function injectMemories(characterName, updateTelemetry = false) {
 
   // Only inject active memories - retired ones (superseded_by set) are kept in
   // storage for history but must not appear in the prompt.
-  const memories = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
+  const memories = loadCharacterMemories(characterName).filter(
+    (m) => !m.superseded_by && isGrounded(m),
+  );
   if (memories.length === 0) {
     setMacroContent(MACRO_NAMES.longterm, '');
     setMacroContent(MACRO_NAMES.triggered, '');

@@ -97,6 +97,13 @@ export function parseExtractionOutput(text) {
           .map((n) => n.trim())
           .filter((n) => n.length > 0)
       : [];
+    const sourceMatch = modifiers.match(/sources=([^\]\s:]*)/i);
+    const source_message_indices = sourceMatch
+      ? sourceMatch[1]
+          .split(',')
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isInteger(value) && value >= 0)
+      : [];
 
     // New entries start as unprocessed - they will be evaluated against the
     // consolidated base before being promoted.
@@ -113,6 +120,9 @@ export function parseExtractionOutput(text) {
       // Graph fields - supersession links are added by the verifier pass.
       id: generateMemoryId(),
       source_messages: [],
+      grounding_status: source_message_indices.length ? 'direct' : 'ungrounded',
+      source_message_indices,
+      parent_memory_ids: [],
       entities: [],
       time_scope: 'global',
       valid_from: null,
@@ -167,6 +177,13 @@ export function parseSessionOutput(text) {
           .map((n) => n.trim())
           .filter((n) => n.length > 0)
       : [];
+    const sourceMatch = modifiers.match(/sources=([^\]\s:]*)/i);
+    const source_message_indices = sourceMatch
+      ? sourceMatch[1]
+          .split(',')
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isInteger(value) && value >= 0)
+      : [];
 
     // New entries start as unprocessed - they will be evaluated against the
     // consolidated base before being promoted.
@@ -183,6 +200,9 @@ export function parseSessionOutput(text) {
       // Graph fields - session memories use 'session' scope by default.
       id: generateMemoryId(),
       source_messages: [],
+      grounding_status: source_message_indices.length ? 'direct' : 'ungrounded',
+      source_message_indices,
+      parent_memory_ids: [],
       entities: [],
       time_scope: 'session',
       valid_from: null,

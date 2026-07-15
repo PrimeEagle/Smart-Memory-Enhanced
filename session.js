@@ -43,6 +43,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { applyDirectProvenance, isGrounded } from './grounding.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -299,7 +300,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
   try {
     const chatHistory = recentMessages
       .filter((m) => m.mes && !m.is_system)
-      .map((m) => `${m.name}: ${m.mes}`)
+      .map((m, index) => `[${index}] ${m.name}: ${m.mes}`)
       .join('\n\n');
 
     if (!chatHistory.trim()) return 0;
@@ -346,9 +347,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     const chatLen = context.chat?.length ?? 1;
     const windowEnd = Math.max(0, chatLen - 2);
     const windowStart = Math.max(0, windowEnd - recentMessages.length + 1);
-    for (const mem of incoming) {
-      mem.source_messages = [[windowStart, windowEnd]];
-    }
+    applyDirectProvenance(incoming, recentMessages, windowStart);
 
     const max = settings.session_max_memories ?? 30;
     const merged = await deduplicateSession(existing, incoming, max);
@@ -431,7 +430,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     // loaded from chatMetadata, updated in place, then persisted.
     const entityRegistry = loadSessionEntityRegistry();
     for (const mem of finalActive) {
-      if (Array.isArray(mem._raw_entity_names)) {
+      if (isGrounded(mem) && Array.isArray(mem._raw_entity_names)) {
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
       }
     }
@@ -534,9 +533,9 @@ export async function consolidateSessionMemories(force = false, abortCheck = nul
 
   for (const type of SESSION_TYPES) {
     // Exclude retired memories from consolidation - they've already been replaced.
-    const base = memories.filter((m) => m.type === type && m.consolidated && !m.superseded_by);
+    const base = memories.filter((m) => m.type === type && m.consolidated && !m.superseded_by && isGrounded(m));
     const unprocessed = memories.filter(
-      (m) => m.type === type && !m.consolidated && !m.superseded_by,
+      (m) => m.type === type && !m.consolidated && !m.superseded_by && isGrounded(m),
     );
 
     if (!force && unprocessed.length < (thresholds[type] ?? 3)) continue;
@@ -650,7 +649,9 @@ export async function injectSessionMemories(updateTelemetry = false) {
 
   // Only inject active memories - retired ones (superseded_by set) are kept in
   // storage for history but must not appear in the prompt.
-  const memories = loadSessionMemories().filter((m) => !m.superseded_by);
+  const memories = loadSessionMemories().filter(
+    (m) => !m.superseded_by && isGrounded(m),
+  );
   if (memories.length === 0) {
     setMacroContent(MACRO_NAMES.session, '');
     setExtensionPrompt(PROMPT_KEY_SESSION, '', extension_prompt_types.NONE, 0);

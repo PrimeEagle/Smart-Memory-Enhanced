@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-15
+
+### Added
+
+- Source-index provenance (`grounding_status`, source message indices, and parent-memory IDs) for newly extracted long-term and session memories.
+
+### Changed
+
+- Replaced concrete extraction and consolidation examples with abstract placeholders and explicit anti-copy grounding rules.
+
+### Fixed
+
+- Ungrounded memories are quarantined from prompt injection, consolidation, entity creation, and graph linking.
+- State Ledger extraction is conservatively disabled by default until its output can be source-validated.
+
 ## [0.2.5] - 2026-07-15
 
 ### Fixed

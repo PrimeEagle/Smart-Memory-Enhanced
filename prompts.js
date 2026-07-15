@@ -217,15 +217,19 @@ EXPIRATION CLASS (choose one):
 - permanent  - should persist as a durable memory
 
 ENTITY TAGGING (optional but encouraged):
-If the memory involves specific NAMED entities (proper nouns with a specific name - a character, a named location, a named object, an organisation), append :entity=Name/type pairs inside the bracket. Use the exact names as they appear in the conversation. Classify each as: character, place, object, faction, or concept. Do NOT tag generic nouns (whiskey, sword, horse, money, fire) - only tag them if they have a specific proper name (Jack Daniel's, Excalibur, Shadowmere). Omit this field entirely if no named entities are relevant - do not invent names.
+If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use exact names from the conversation only. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
+
+GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
+
+Number the supplied conversation messages from 0 upward in order. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
 
 One item per line, exact format:
-[scene:2:scene] We are in a candlelit tavern, late evening, rain outside.
-[detail:3:permanent:entity=Ember/character] The character's horse is named Ember, a chestnut mare.
-[revelation:3:permanent:entity=Senjin/character,Kael/character] Senjin revealed that Kael is his estranged brother.
-[revelation:1:session] He mentioned in passing that it rained last week.
+[scene:2:scene] <ENTITY_A> is at <LOCATION> during the current scene.
+[detail:3:permanent:entity=<ENTITY_A>/character] <ENTITY_A> has the explicitly described <EXPLICIT_OBJECT>.
+[revelation:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character] <ENTITY_A> revealed the stated relationship to <ENTITY_B>.
+[revelation:1:session] A minor event explicitly mentioned in the conversation occurred.
 
-FINAL RULE: Output ONLY [type:score:expiration] or [type:score:expiration:entity=...] lines. No headers. No intros. No explanations.
+FINAL RULE: Output ONLY [type:score:expiration:sources=0] or [type:score:expiration:entity=Name/type:sources=0,2] lines. No headers. No intros. No explanations.
 If nothing new, output exactly: NONE`
   );
 }
@@ -298,7 +302,7 @@ An arc is something still in motion across the story - a question not yet answer
 
 These are NOT arcs - do not output them:
 - Tactical details or logistical information ("the south gate is unguarded after midnight")
-- Single-scene contingencies that may or may not become relevant ("Fen might be useful")
+- Single-scene contingencies that may or may not become relevant
 - Consequences or sub-threads of the same arc - group them into one entry
 - Facts about events that already occurred, even dramatic ones
 
@@ -306,8 +310,8 @@ Output format - one entry per line, two tags allowed:
   [arc] <new unresolved thread from this conversation, not already listed above>
   [resolved] <title or brief description of an existing arc that was explicitly closed>
 
-Examples:
-  [arc] Mira swore revenge on the merchant - she has not acted on it yet.
+Examples (abstract only; never copy these details):
+  [arc] <ENTITY_A> made an unresolved threat against <ENTITY_B>.
   [arc] The identity of whoever burned the granary is still unknown.
   [resolved] The missing heir was found alive in the northern keep.
   NOT an arc: "Kira was captured by the guards." - this is a fact, not an open thread.
@@ -434,6 +438,7 @@ Rules:
 - When merging, rewrite as one unified statement - do not append details with "also" or "additionally".
 - NEW information OVERRIDES outdated or conflicting base information.
 - Never invent information not present in the base or new entries.
+- Never copy names, facts, objects, relationships, or events from these instructions or examples.
 - One line per distinct subject.
 
 Scoring for output entries:
@@ -442,9 +447,9 @@ Scoring for output entries:
 
 Output ONLY the entries to ADD or UPDATE in the base, one per line.
 
-Example output:
-[fact:3:permanent] Mira lost her sister to the plague three winters ago.
-[relationship:2:permanent] Kael distrusts Mira but owes her a debt.
+Example output (abstract only; never copy these details):
+[fact:3:permanent] <ENTITY_A> has an explicitly stated past loss.
+[relationship:2:permanent] <ENTITY_A> has the stated relationship with <ENTITY_B>.
 
 FINAL RULE: Output ONLY [${type}:score:expiration] lines. No headers. No intros. No explanations.
 If all new entries are duplicates and nothing needs to be added, output exactly: NONE`
@@ -490,6 +495,7 @@ Rules:
 - When merging, rewrite as one unified statement - do not append details with "also" or "additionally".
 - NEW information OVERRIDES outdated or conflicting base information.
 - Never invent information not present in the base or new entries.
+- Never copy names, facts, objects, relationships, or events from these instructions or examples.
 - One line per distinct subject.
 
 Scoring for output entries:
@@ -498,9 +504,9 @@ Scoring for output entries:
 
 Output ONLY the entries to ADD or UPDATE in the base, one per line.
 
-Example output:
-[scene:2:session] Candlelit tavern, late evening, rain hammering the shutters.
-[detail:1:session] Senjin left his pack by the door when they entered.
+Example output (abstract only; never copy these details):
+[scene:2:session] The explicitly described scene context.
+[detail:1:session] <ENTITY_A> left <EXPLICIT_OBJECT> at <LOCATION>.
 
 FINAL RULE: Output ONLY [${type}:score:expiration] lines. No headers. No intros. No explanations.
 If all new entries are duplicates and nothing needs to be added, output exactly: NONE`
@@ -626,17 +632,21 @@ Also classify expiration:
 - permanent  - durable fact that should persist long-term
 
 ENTITY TAGGING (optional but encouraged):
-If the memory involves specific NAMED entities (proper nouns with a specific name - a character, a named location, a named object, an organisation), append :entity=Name/type pairs inside the bracket. Use the exact names as they appear in the conversation. Classify each as: character, place, object, faction, or concept. Do NOT tag generic nouns (whiskey, sword, horse, money, fire) - only tag them if they have a specific proper name (Jack Daniel's, Excalibur, Shadowmere). Omit this field entirely if no named entities are relevant - do not invent names.
+If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use exact names from the conversation only. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
+
+GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
+
+Number the supplied conversation messages from 0 upward in order. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
 
 Output ONLY one memory per line using this exact format (nothing else):
-[fact:2:permanent] The character's name is Elara and she works as a blacksmith.
-[fact:2:permanent:entity=Elara/character] Elara has a burn scar on her right forearm from an accident at the forge.
-[relationship:3:permanent:entity=Elara/character] We have developed a close friendship after helping each other escape the dungeon.
-[event:2:permanent:entity=Elara/character,Kael/character] Elara and Kael fought side by side at the bridge.
-[preference:2:session] The user enjoys slow-burn romance and witty banter.
-[event:1:scene] They briefly discussed the weather near the harbour.
+[fact:2:permanent] <ENTITY_A> has the explicitly stated role or attribute.
+[fact:2:permanent:entity=<ENTITY_A>/character] <ENTITY_A> has the explicitly described characteristic.
+[relationship:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character] The conversation states the relationship between <ENTITY_A> and <ENTITY_B>.
+[event:2:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character] <ENTITY_A> and <ENTITY_B> took the explicitly described action.
+[preference:2:session] The user explicitly expressed a preference.
+[event:1:scene] The conversation explicitly mentions a minor scene event.
 
-FINAL RULE: Output ONLY [type:score:expiration] or [type:score:expiration:entity=...] lines. No headers. No intros. No explanations.
+FINAL RULE: Output ONLY [type:score:expiration:sources=0] or [type:score:expiration:entity=Name/type:sources=0,2] lines. No headers. No intros. No explanations.
 If there is nothing new worth preserving, output exactly: NONE`
   );
 }
@@ -891,24 +901,21 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
     `  demonstrably untrue based on the scene. Do not use it for things a character\n` +
     `  is merely thinking, feeling, or correctly concluding\n\n` +
     `Example:\n` +
-    `Scene: Kael pocketed the gem while Lyria watched from the doorway. Later he told\n` +
-    `Fen about the theft but swore him to silence. When Lyria asked Kael if anything\n` +
+    `Scene: <ENTITY_A> took <EXPLICIT_OBJECT> while <ENTITY_B> watched. Later <ENTITY_A> told\n` +
+    `<ENTITY_C> about it but swore <ENTITY_C> to silence. When <ENTITY_B> asked <ENTITY_A> if anything\n` +
     `was missing, he shrugged and said he hadn't noticed.\n\n` +
     `Output:\n` +
-    `[knows] Kael | he took the gem\n` +
-    `[knows] Lyria | Kael took the gem\n` +
-    `[knows] Fen | Kael took the gem\n` +
-    `[unaware] Kael | Lyria saw him take the gem\n` +
-    `[hiding] Kael from Lyria | the theft\n` +
-    `[hiding] Fen from Lyria | Kael told him about the theft\n` +
-    `[believes] Lyria | Kael did not notice anything was missing\n\n` +
+    `[knows] <ENTITY_A> | <ENTITY_A> took <EXPLICIT_OBJECT>\n` +
+    `[knows] <ENTITY_B> | <ENTITY_A> took <EXPLICIT_OBJECT>\n` +
+    `[knows] <ENTITY_C> | <ENTITY_A> took <EXPLICIT_OBJECT>\n` +
+    `[unaware] <ENTITY_A> | <ENTITY_B> saw the action\n` +
+    `[hiding] <ENTITY_A> from <ENTITY_B> | the action\n` +
+    `[hiding] <ENTITY_C> from <ENTITY_B> | <ENTITY_A> told <ENTITY_C> about the action\n` +
+    `[believes] <ENTITY_B> | <ENTITY_A> did not notice anything was missing\n\n` +
     `Notes:\n` +
-    `- Fen was told directly so [knows] not [suspects]\n` +
-    `- Kael told Fen so [hiding] only applies toward Lyria, not Fen\n` +
-    `- Kael's shrug contradicts the established fact he took the gem\n` +
-    `  (CONTRADICTION RULE) - apply DECEPTION RULE: [hiding] Kael + [believes] Lyria\n` +
-    `- Fen swore silence so [hiding] Fen from Lyria (oath establishes hiding)\n` +
-    `- Lyria's [believes] records a false belief - Kael actually did notice\n\n` +
+    `- <ENTITY_C> was told directly so [knows] not [suspects]\n` +
+    `- A secret applies only toward people who were not told\n` +
+    `- A false belief may differ from the established fact\n\n` +
     `---\n\n` +
     existingBlock +
     participantHint +
@@ -948,8 +955,8 @@ export function buildStateCardPrompt(excerpt, entityList) {
     `- faction: leadership, objective, alliances, hostility_level\n\n` +
     `Output one line per entity. One tag at the start of the line containing the entity\n` +
     `name and type, then all known fields after it separated by |:\n\n` +
-    `[state:Kael:character] location=dungeon | injuries=graze on left shoulder | carried_items=silver key\n` +
-    `[state:Silver Key:object] owner=Kael | location=on Kael's person\n` +
+    `[state:<ENTITY_A>:character] location=<LOCATION> | injuries=<EXPLICIT_INJURY> | carried_items=<EXPLICIT_OBJECT>\n` +
+    `[state:<EXPLICIT_OBJECT>:object] owner=<ENTITY_A> | location=with <ENTITY_A>\n` +
     `NONE\n\n` +
     `STRICT RULES - violations produce unusable output:\n` +
     `- ONLY include fields that are EXPLICITLY stated or DIRECTLY shown in the text.\n` +
