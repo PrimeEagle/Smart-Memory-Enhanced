@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-15
+
+### Added
+
+- Per-connection-profile context-size setting for context-aware memory requests.
+
+### Fixed
+
+- First-time connection-profile compaction now summarizes oversized chats incrementally instead of sending the entire chat in one request.
+
 ## [0.3.1] - 2026-07-15
 
 ### Fixed

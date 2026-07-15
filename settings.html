@@ -1659,6 +1659,11 @@
                 <option value="">- no compatible profiles found -</option>
               </select>
             </label>
+            <label>
+              Profile context size
+              <span class="sm-info" data-tooltip="Set this to the context window of the model loaded by this connection profile. Smart Memory uses it to keep summaries within the model's limit.">?</span>
+              <input id="sme_connection_profile_context_size" class="text_pole" type="number" min="1024" step="1024" placeholder="Use SillyTavern default" />
+            </label>
           </div>
 
           <!-- Generation budget (advanced) -->
