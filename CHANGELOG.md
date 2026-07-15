@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-15
+
+### Added
+
+- Grounding-validation reasons and an inline review queue for long-term and session memories.
+- Approve/reject controls for memories whose source claims are missing or invalid; rejected records remain quarantined and approved records can propagate deliberately.
+
+### Fixed
+
+- Source claims that refer outside the current extraction chunk are now quarantined instead of being partially accepted.
+
 ## [0.3.2] - 2026-07-15
 
 ### Added

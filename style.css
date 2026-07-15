@@ -1946,6 +1946,44 @@ body.sm-read-only .mes_edit_delete {
   line-height: 1.25;
 }
 
+#smart_memory_enhanced_settings .sme_memory_review_badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #f0c44d;
+  background: rgba(240, 196, 77, 0.12);
+  border: 1px solid rgba(240, 196, 77, 0.35);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+#smart_memory_enhanced_settings .sme_review_queue_notice {
+  font-size: 0.8em;
+  line-height: 1.35;
+  color: #f0c44d;
+  background: rgba(240, 196, 77, 0.08);
+  border-left: 3px solid #f0c44d;
+  border-radius: 3px;
+  padding: 6px 8px;
+  margin: 2px 0 7px;
+}
+
+#smart_memory_enhanced_settings .sme_approve_grounding,
+#smart_memory_enhanced_settings .sme_reject_grounding {
+  min-width: 24px;
+  padding: 2px 5px;
+  margin-left: 2px;
+}
+
+#smart_memory_enhanced_settings .sme_approve_grounding { color: #74c980; }
+#smart_memory_enhanced_settings .sme_reject_grounding { color: #e87878; }
+
 #smart_memory_enhanced_settings #sme_status {
   color: var(--SmartReplyColor, #aaa);
 }

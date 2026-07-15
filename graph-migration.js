@@ -47,6 +47,7 @@ import { saveSettingsDebounced } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
+import { isGrounded } from './grounding.js';
 
 // ---- Graph defaults ---------------------------------------------------------
 
@@ -302,7 +303,7 @@ function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType 
  * @param {Array<Object>} registry - Entity registry to upsert into (mutated in place).
  */
 export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
-  if (mem?.grounding_status === 'ungrounded') {
+  if (!isGrounded(mem)) {
     mem.entities = [];
     delete mem._raw_entity_names;
     return;
@@ -373,7 +374,7 @@ export function reconcileEntityRegistry(entityRegistry, currentMemories) {
     if (names.length === 0) continue;
 
     for (const mem of currentMemories) {
-      if (mem?.grounding_status === 'ungrounded') continue;
+      if (!isGrounded(mem)) continue;
       if (entity.memory_ids.includes(mem.id)) continue; // already linked
 
       const contentLower = (mem.content ?? '').toLowerCase();
