@@ -1914,7 +1914,7 @@ jQuery(async function () {
   loadSettings();
   registerSmartMemoryMacros();
 
-  const html = await renderExtensionTemplateAsync('third-party/Smart-Memory', 'settings', {
+  const html = await renderExtensionTemplateAsync('third-party/Smart-Memory-Enhanced', 'settings', {
     defaultSettings,
   });
   $('#extensions_settings').append(html);
