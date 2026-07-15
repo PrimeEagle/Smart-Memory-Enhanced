@@ -285,11 +285,11 @@ export function updateTokenDisplay() {
   // SillyTavern's resolver so the display matches the generation settings.
   const maxContext = getMaxContextSize(0) || 0;
 
-  // Each segment's width is its share of total SM tokens. The title tooltip
-  // carries the detail breakdown that the old legend used to show inline.
+  // Each segment's width is its actual share of the full available context.
+  // The remaining empty space is context still available to the chat.
   bar.innerHTML = '';
   for (const tier of tiers) {
-    const widthPct = total > 0 ? ((tier.tokens / total) * 100).toFixed(1) : 0;
+    const widthPct = maxContext ? Math.min(100, (tier.tokens / maxContext) * 100).toFixed(3) : 0;
     const sharePct = total > 0 ? ((tier.tokens / total) * 100).toFixed(0) : 0;
     const seg = document.createElement('div');
     seg.style.width = `${widthPct}%`;

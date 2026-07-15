@@ -186,10 +186,9 @@
 /* ── Token usage bar ─────────────────────────────────────────────────────── */
 
 /*
- * Stacked horizontal bar showing the relative token share of each active
- * tier. The bar always fills its container - segment widths are proportional
- * to their share of the total Smart Memory token budget. The totals line
- * below shows the absolute count against max context.
+ * Stacked horizontal bar showing each active tier's share of the full context
+ * window. Empty bar space remains available to the chat; the totals line
+ * below gives the exact estimate.
  */
 #smart_memory_enhanced_settings .sm-token-bar-wrap {
   height: 10px;
