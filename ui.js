@@ -1,5 +1,5 @@
 /**
- * Smart Memory - SillyTavern Extension
+ * Smart Memory Enhanced - SillyTavern Extension
  * Copyright (C) 2026 Senjin the Dragon
  * https://github.com/senjinthedragon/Smart-Memory
  *
@@ -322,8 +322,8 @@ export function updateTokenDisplay() {
   if (isChatLoadComplete() && hasAnyTrimmedTier() && !hasTrimToastFired()) {
     markTrimToastFired();
     toastr.warning(
-      'One or more memory tiers are trimming content to stay within budget. Check the token bar in Smart Memory settings.',
-      'Smart Memory',
+      'One or more memory tiers are trimming content to stay within budget. Check the token bar in Smart Memory Enhanced settings.',
+      'Smart Memory Enhanced',
       { timeOut: 8000, extendedTimeOut: 4000, closeButton: true },
     );
   }

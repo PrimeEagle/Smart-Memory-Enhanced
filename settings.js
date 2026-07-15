@@ -1,5 +1,5 @@
 /**
- * Smart Memory - SillyTavern Extension
+ * Smart Memory Enhanced - SillyTavern Extension
  * Copyright (C) 2026 Senjin the Dragon
  * https://github.com/senjinthedragon/Smart-Memory
  *
@@ -317,7 +317,7 @@ export const defaultSettings = {
   auto_tune_budgets: false,
 
   // Show a non-blocking activity indicator while background extraction is running.
-  // Gives users a visible signal that Smart Memory is working so they know not
+  // Gives users a visible signal that Smart Memory Enhanced is working so they know not
   // to send a new message until it finishes.
   show_activity_indicator: true,
 
@@ -670,14 +670,14 @@ export function loadSettings() {
 // ---- Settings UI binding ------------------------------------------------
 
 /**
- * Shows a toastr error notification for a failed Smart Memory operation.
+ * Shows a toastr error notification for a failed Smart Memory Enhanced operation.
  * Used by all manual button handlers so failures are visible to the user.
  * @param {string} operation - Short label for what failed (e.g. "Summary generation").
  * @param {Error} err - The caught error.
  */
 function showError(operation, err) {
   console.error(`[SmartMemory] ${operation} failed:`, err);
-  toastr.error(`${operation} failed. Check the browser console for details.`, 'Smart Memory', {
+  toastr.error(`${operation} failed. Check the browser console for details.`, 'Smart Memory Enhanced', {
     timeOut: 6000,
     positionClass: 'toast-bottom-right',
   });
@@ -707,7 +707,7 @@ export function bindSettingsUI(ctrl) {
     if (ctrl.extractionRunning || ctrl.compactionRunning) {
       toastr.warning(
         'Cannot do this while Memorize Chat is running. Cancel it first.',
-        'Smart Memory',
+        'Smart Memory Enhanced',
         {
           timeOut: 4000,
           positionClass: 'toast-bottom-right',
@@ -969,7 +969,7 @@ export function bindSettingsUI(ctrl) {
     } catch (err) {
       toastr.error(
         `Could not reach Ollama at ${extension_settings[MODULE_NAME].ollama_url || 'http://localhost:11434'}. Is it running?`,
-        'Smart Memory',
+        'Smart Memory Enhanced',
       );
       console.error('[SmartMemory] Ollama model fetch failed:', err);
       // Fetch failed - reveal the manual text input and hide the refresh
@@ -1014,7 +1014,7 @@ export function bindSettingsUI(ctrl) {
       $manual.hide();
       $btn.show();
     } catch (err) {
-      toastr.error(`Could not reach Ollama at ${embeddingUrl}. Is it running?`, 'Smart Memory');
+      toastr.error(`Could not reach Ollama at ${embeddingUrl}. Is it running?`, 'Smart Memory Enhanced');
       console.error('[SmartMemory] Embedding model fetch failed:', err);
       $select.hide();
       $manual.val(prevModel ?? '').show();
@@ -1175,7 +1175,7 @@ export function bindSettingsUI(ctrl) {
       $btn
         .prop('disabled', false)
         .html(
-          '<i class="fa-solid fa-flask"></i> <span>Test Extraction Model <span class="sm-info" data-tooltip="Runs a fixed test scenario through all extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session.">ⓘ</span></span>',
+          '<i class="fa-solid fa-flask"></i> <span>Test Extraction Model <span class="sm-info" data-tooltip="Runs a fixed test scenario through all extraction tiers. Use this to check whether your configured model is suitable for Smart Memory Enhanced before committing to a session.">ⓘ</span></span>',
         );
 
     // If a test is already running, cancel it and give immediate feedback.
@@ -1226,7 +1226,7 @@ export function bindSettingsUI(ctrl) {
 
     if (outcome.failedTier) {
       $result.html(
-        `<div class="sme_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> <strong>${outcome.failedTier}</strong> returned no output. Your model may not be suitable for Smart Memory, or may need a stronger prompt style. Consider trying a different model.</div>`,
+        `<div class="sme_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> <strong>${outcome.failedTier}</strong> returned no output. Your model may not be suitable for Smart Memory Enhanced, or may need a stronger prompt style. Consider trying a different model.</div>`,
       );
       return;
     }
@@ -1467,13 +1467,13 @@ export function bindSettingsUI(ctrl) {
     if (isCatchUpRunning()) return;
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
-      toastr.warning('No character loaded.', 'Smart Memory');
+      toastr.warning('No character loaded.', 'Smart Memory Enhanced');
       return;
     }
     if (loadArcSummaries().length === 0) {
       toastr.warning(
         'Canon requires at least one resolved arc summary. Resolve a story arc first.',
-        'Smart Memory',
+        'Smart Memory Enhanced',
       );
       return;
     }
@@ -1489,7 +1489,7 @@ export function bindSettingsUI(ctrl) {
         setStatusMessage('Canon summary updated.');
       } else {
         setStatusMessage('');
-        toastr.warning('Canon generation returned no output.', 'Smart Memory');
+        toastr.warning('Canon generation returned no output.', 'Smart Memory Enhanced');
       }
     } catch (err) {
       showError('Canon generation', err);
@@ -2391,12 +2391,12 @@ export function bindSettingsUI(ctrl) {
 
   $('#sme_catch_up').on('click', async function () {
     if (ctrl.extractionRunning || ctrl.compactionRunning) {
-      toastr.warning('An extraction is already running.', 'Smart Memory', { timeOut: 3000 });
+      toastr.warning('An extraction is already running.', 'Smart Memory Enhanced', { timeOut: 3000 });
       return;
     }
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
-      toastr.warning('No character is active.', 'Smart Memory', { timeOut: 3000 });
+      toastr.warning('No character is active.', 'Smart Memory Enhanced', { timeOut: 3000 });
       return;
     }
 
@@ -2781,13 +2781,13 @@ export function bindSettingsUI(ctrl) {
 
       if (ctrl.catchUpCancelled) {
         setStatusMessage('Catch-up cancelled.');
-        toastr.warning('Catch-up cancelled. Partial results have been saved.', 'Smart Memory', {
+        toastr.warning('Catch-up cancelled. Partial results have been saved.', 'Smart Memory Enhanced', {
           timeOut: 5000,
           positionClass: 'toast-bottom-right',
         });
       } else {
         setStatusMessage('Catch-up complete.');
-        toastr.success('Full catch-up extraction finished.', 'Smart Memory', {
+        toastr.success('Full catch-up extraction finished.', 'Smart Memory Enhanced', {
           timeOut: 4000,
           positionClass: 'toast-bottom-right',
         });
@@ -2816,7 +2816,7 @@ export function bindSettingsUI(ctrl) {
     if (isCatchUpRunning()) return;
     if (
       !(await callGenericPopup(
-        'Clear all Smart Memory context for this chat?\n\nPerspectives & Secrets entries are also cleared.\nLong-term memories, relationship history, state cards, canon, and pinned arcs are not affected.',
+        'Clear all Smart Memory Enhanced context for this chat?\n\nPerspectives & Secrets entries are also cleared.\nLong-term memories, relationship history, state cards, canon, and pinned arcs are not affected.',
         POPUP_TYPE.CONFIRM,
       ))
     )
@@ -2871,7 +2871,7 @@ export function bindSettingsUI(ctrl) {
     const nameLabel = characterName ? `"${characterName}"` : 'this character';
     if (
       !(await callGenericPopup(
-        `Fresh Start for ${nameLabel} - this will permanently delete all Smart Memory data for this character and chat.\n\nThis cannot be undone. Continue?`,
+        `Fresh Start for ${nameLabel} - this will permanently delete all Smart Memory Enhanced data for this character and chat.\n\nThis cannot be undone. Continue?`,
         POPUP_TYPE.CONFIRM,
       ))
     )
@@ -2930,7 +2930,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;
     setStatusMessage('Fresh start complete.');
-    toastr.success(`All memories cleared for ${nameLabel}.`, 'Smart Memory', {
+    toastr.success(`All memories cleared for ${nameLabel}.`, 'Smart Memory Enhanced', {
       timeOut: 4000,
       positionClass: 'toast-bottom-right',
     });
@@ -3132,7 +3132,7 @@ export function bindSettingsUI(ctrl) {
   $('#sme_profiles_regenerate').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
-      toastr.warning('No active character - profiles need a character.', 'Smart Memory', {
+      toastr.warning('No active character - profiles need a character.', 'Smart Memory Enhanced', {
         timeOut: 3000,
         positionClass: 'toast-bottom-right',
       });
@@ -3380,7 +3380,7 @@ export function bindSettingsUI(ctrl) {
             $repairBlock.append($cancel);
             $result.append($repairBlock);
             setStatusMessage('Correction queued.');
-            toastr.info('Correction queued for next response.', 'Smart Memory');
+            toastr.info('Correction queued for next response.', 'Smart Memory Enhanced');
           } catch (repairErr) {
             console.error('[SmartMemory] Repair generation failed:', repairErr);
             setStatusMessage('Repair failed - see console.');

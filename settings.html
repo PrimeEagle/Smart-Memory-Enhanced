@@ -16,7 +16,7 @@
       <div class="sm-block">
         <label class="checkbox_label">
           <input id="sme_enabled" type="checkbox" />
-          <span>Enable Smart Memory</span>
+          <span>Enable Smart Memory Enhanced</span>
         </label>
       </div>
 
@@ -40,7 +40,7 @@
               Memorize Chat
               <span
                 class="sm-info"
-                data-tooltip="Reads the full chat history and builds memories from it - long-term facts, session details, scene history, story arcs, and summary. Use this to bring Smart Memory up to speed on an existing chat. May take a while on long chats."
+                data-tooltip="Reads the full chat history and builds memories from it - long-term facts, session details, scene history, story arcs, and summary. Use this to bring Smart Memory Enhanced up to speed on an existing chat. May take a while on long chats."
                 >ⓘ</span
               >
             </span>
@@ -61,7 +61,7 @@
               Forget This Chat
               <span
                 class="sm-info"
-                data-tooltip="Clears all Smart Memory context specific to this chat. Long-term memories, relationship history, Perspectives &amp; Secrets, state cards, canon, and pinned arcs are not affected."
+                data-tooltip="Clears all Smart Memory Enhanced context specific to this chat. Long-term memories, relationship history, Perspectives &amp; Secrets, state cards, canon, and pinned arcs are not affected."
                 >ⓘ</span
               >
             </span>
@@ -72,7 +72,7 @@
               Fresh Start
               <span
                 class="sm-info"
-                data-tooltip="Permanently deletes all Smart Memory data for this character and chat - long-term memories, canon, all chat context, everything. Cannot be undone."
+                data-tooltip="Permanently deletes all Smart Memory Enhanced data for this character and chat - long-term memories, canon, all chat context, everything. Cannot be undone."
                 >ⓘ</span
               >
             </span>
@@ -104,7 +104,7 @@
           Token Usage
           <span
             class="sm-info"
-            data-tooltip="Estimated tokens currently injected by each Smart Memory tier. Updates after each generation. Hover a colour segment for the tier breakdown. Uses ~4 chars/token - accurate enough for tuning budgets, not for exact counts."
+            data-tooltip="Estimated tokens currently injected by each Smart Memory Enhanced tier. Updates after each generation. Hover a colour segment for the tier breakdown. Uses ~4 chars/token - accurate enough for tuning budgets, not for exact counts."
             >ⓘ</span
           >
         </p>
@@ -433,7 +433,7 @@
               <b><span id="sme_compaction_threshold_value"></span></b>
               <span
                 class="sm-info"
-                data-tooltip="Smart Memory waits until context usage crosses this percentage before generating a summary. Lower values produce more frequent summaries; higher values let the context fill up more before compacting."
+                data-tooltip="Smart Memory Enhanced waits until context usage crosses this percentage before generating a summary. Lower values produce more frequent summaries; higher values let the context fill up more before compacting."
                 >ⓘ</span
               >
             </label>
@@ -1415,7 +1415,7 @@
           Away Recap
           <span
             class="sm-info"
-            data-tooltip='When you return to a chat after being away for longer than the threshold, Smart Memory generates a short "Previously on..." summary and displays it as a popup so you can catch up before diving back in.'
+            data-tooltip='When you return to a chat after being away for longer than the threshold, Smart Memory Enhanced generates a short "Previously on..." summary and displays it as a popup so you can catch up before diving back in.'
             >ⓘ</span
           >
         </summary>
@@ -1535,7 +1535,7 @@
           Configuration
           <span
             class="sm-info"
-            data-tooltip="LLM source, hardware profile, and general settings. Set these once when you first install Smart Memory - defaults work well for most setups."
+            data-tooltip="LLM source, hardware profile, and general settings. Set these once when you first install Smart Memory Enhanced - defaults work well for most setups."
             >ⓘ</span
           >
         </summary>
@@ -1546,7 +1546,7 @@
               Memory LLM
               <span
                 class="sm-info"
-                data-tooltip="Which LLM handles all Smart Memory work - extraction, summarization, and recap. Set this to a lighter model to save your main roleplay LLM for the actual story."
+                data-tooltip="Which LLM handles all Smart Memory Enhanced work - extraction, summarization, and recap. Set this to a lighter model to save your main roleplay LLM for the actual story."
                 >ⓘ</span
               >
             </label>
@@ -1687,7 +1687,7 @@
                 Test Extraction Model
                 <span
                   class="sm-info"
-                  data-tooltip="Runs a fixed test scenario through all enabled extraction tiers. Use this to check whether your configured model is suitable for Smart Memory before committing to a session."
+                  data-tooltip="Runs a fixed test scenario through all enabled extraction tiers. Use this to check whether your configured model is suitable for Smart Memory Enhanced before committing to a session."
                   >ⓘ</span
                 >
               </span>
@@ -1720,7 +1720,7 @@
                 Show activity indicator while processing
                 <span
                   class="sm-info"
-                  data-tooltip="Shows a small notification while Smart Memory is extracting memories in the background. Useful for knowing when it is safe to send your next message."
+                  data-tooltip="Shows a small notification while Smart Memory Enhanced is extracting memories in the background. Useful for knowing when it is safe to send your next message."
                   >ⓘ</span
                 >
               </span>
@@ -1734,7 +1734,7 @@
                 Force macro injection mode
                 <span
                   class="sm-info"
-                  data-tooltip="Forces macro injection mode regardless of character card content. Use this when you place \{{smartmemory-*}} macros in instruct templates, which Smart Memory cannot auto-detect. When unified injection is on, this activates \{{smartmemory-unified}} for instruct templates - individual tier macros remain inactive as unified owns all tier content. When auto-detection is sufficient (macros placed in character card fields), leave this off."
+                  data-tooltip="Forces macro injection mode regardless of character card content. Use this when you place \{{smartmemory-*}} macros in instruct templates, which Smart Memory Enhanced cannot auto-detect. When unified injection is on, this activates \{{smartmemory-unified}} for instruct templates - individual tier macros remain inactive as unified owns all tier content. When auto-detection is sufficient (macros placed in character card fields), leave this off."
                   >ⓘ</span
                 >
               </span>
@@ -1879,7 +1879,7 @@
               Extraction frequency
               <span
                 class="sm-info"
-                data-tooltip="How often Smart Memory reads new messages and extracts memories. Low = every 5 messages, Medium = every 3, High = every message. Higher frequency means more up-to-date memory but more model calls."
+                data-tooltip="How often Smart Memory Enhanced reads new messages and extracts memories. Low = every 5 messages, Medium = every 3, High = every message. Higher frequency means more up-to-date memory but more model calls."
                 >ⓘ</span
               >
             </label>
@@ -1984,7 +1984,7 @@
                 API Key
                 <span
                   class="sm-info"
-                  data-tooltip="API key for the OpenAI-compatible embedding server. Leave blank if your server does not require authentication. Stored in extension settings alongside other Smart Memory configuration."
+                  data-tooltip="API key for the OpenAI-compatible embedding server. Leave blank if your server does not require authentication. Stored in extension settings alongside other Smart Memory Enhanced configuration."
                   >ⓘ</span
                 >
                 <input

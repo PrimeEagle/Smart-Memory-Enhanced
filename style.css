@@ -1951,18 +1951,18 @@ body.sm-read-only .mes_edit_delete {
 }
 
 #smart_memory_enhanced_settings #sme_status.sme_status_warning {
-  color: var(--warning, #ca6);
+  color: #d6a300;
 }
 
 #smart_memory_enhanced_settings #sme_status.sme_status_error {
-  color: var(--error, #e66);
+  color: #d9534f;
 }
 
 #smart_memory_enhanced_settings #sme_catch_up_error_count {
   display: none;
-  color: var(--warning, #ca6);
+  color: #d6a300;
 }
 
 #smart_memory_enhanced_settings #sme_catch_up_error_count.sme_catch_up_errors_many {
-  color: var(--error, #e66);
+  color: #d9534f;
 }

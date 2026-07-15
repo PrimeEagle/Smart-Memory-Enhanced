@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-15
+
+### Changed
+
+- Updated all user-facing Smart Memory Enhanced panel and settings labels.
+
+### Fixed
+
+- Use explicit yellow for 1–10 Memorize Chat errors and red only at 11 or more, independent of the active SillyTavern theme.
+
 ## [0.2.1] - 2026-07-15
 
 ### Fixed
