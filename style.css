@@ -313,12 +313,29 @@
 
 #smart_memory_enhanced_settings .sme_memory_item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   padding: 4px 6px;
   background: var(--greyCAl, rgba(255, 255, 255, 0.05));
   border-radius: 4px;
   font-size: 0.875em;
+}
+
+#smart_memory_enhanced_settings .sme_memory_text {
+  flex: 1 1 60px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+}
+
+#smart_memory_enhanced_settings .sme_memory_text:hover {
+  text-decoration: underline;
 }
 
 #smart_memory_enhanced_settings #sme_relationships_list .sme_memory_item {
@@ -1957,10 +1974,50 @@ body.sm-read-only .mes_edit_delete {
   background: rgba(240, 196, 77, 0.12);
   border: 1px solid rgba(240, 196, 77, 0.35);
   border-radius: 3px;
-  padding: 1px 5px;
+  padding: 2px 5px;
   margin-right: 4px;
   vertical-align: middle;
 }
+
+#smart_memory_enhanced_settings .sme_review_queue_notice .sme_open_review_queue {
+  margin-left: 4px;
+  font-size: inherit;
+  padding: 1px 5px;
+}
+
+#sme_memory_review_dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  padding: 0;
+  border: 1px solid var(--SmartReplyColor, #777);
+  border-radius: 8px;
+  color: var(--SmartReplyColor, #ddd);
+  background: var(--black30a, #222831);
+}
+
+#sme_memory_review_dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+
+#sme_memory_review_dialog .sme_memory_review_card { padding: 16px; }
+#sme_memory_review_dialog .sme_memory_review_header,
+#sme_memory_review_dialog .sme_memory_review_footer,
+#sme_memory_review_dialog .sme_memory_review_sources {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#sme_memory_review_dialog .sme_memory_review_header { justify-content: space-between; }
+#sme_memory_review_dialog .sme_memory_review_title { margin-left: 8px; }
+#sme_memory_review_dialog .sme_memory_review_status {
+  margin: 12px 0;
+  padding: 8px;
+  border-left: 3px solid #f0c44d;
+  background: rgba(240, 196, 77, 0.08);
+}
+#sme_memory_review_dialog .sme_memory_review_label { display: block; margin-bottom: 5px; font-weight: 600; }
+#sme_memory_review_dialog .sme_memory_review_text { width: 100%; min-height: 180px; resize: vertical; box-sizing: border-box; }
+#sme_memory_review_dialog .sme_memory_review_sources { flex-wrap: wrap; margin: 12px 0; }
+#sme_memory_review_dialog .sme_memory_review_footer { justify-content: flex-end; flex-wrap: wrap; }
+#sme_memory_review_dialog .sme_memory_review_delete { margin-left: auto; color: #e87878; }
 
 #smart_memory_enhanced_settings .sme_review_queue_notice {
   font-size: 0.8em;
