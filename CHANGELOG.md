@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-15
+
+### Fixed
+
+- Long-term and session extraction examples now include required source indices, so models are not taught an output format that fails grounding validation.
+
 ## [0.3.7] - 2026-07-15
 
 ### Fixed

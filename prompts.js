@@ -221,13 +221,13 @@ If the memory involves specific NAMED entities, append :entity=Name/type pairs i
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
-Number the supplied conversation messages from 0 upward in order. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
+The supplied conversation messages are numbered from 0 upward. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
 
 One item per line, exact format:
-[scene:2:scene] <ENTITY_A> is at <LOCATION> during the current scene.
-[detail:3:permanent:entity=<ENTITY_A>/character] <ENTITY_A> has the explicitly described <EXPLICIT_OBJECT>.
-[revelation:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character] <ENTITY_A> revealed the stated relationship to <ENTITY_B>.
-[revelation:1:session] A minor event explicitly mentioned in the conversation occurred.
+[scene:2:scene:sources=0] <ENTITY_A> is at <LOCATION> during the current scene.
+[detail:3:permanent:entity=<ENTITY_A>/character:sources=0] <ENTITY_A> has the explicitly described <EXPLICIT_OBJECT>.
+[revelation:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] <ENTITY_A> revealed the stated relationship to <ENTITY_B>.
+[revelation:1:session:sources=0] A minor event explicitly mentioned in the conversation occurred.
 
 FINAL RULE: Output ONLY [type:score:expiration:sources=0] or [type:score:expiration:entity=Name/type:sources=0,2] lines. No headers. No intros. No explanations.
 If nothing new, output exactly: NONE`
@@ -636,15 +636,15 @@ If the memory involves specific NAMED entities, append :entity=Name/type pairs i
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
-Number the supplied conversation messages from 0 upward in order. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
+The supplied conversation messages are numbered from 0 upward. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
 
 Output ONLY one memory per line using this exact format (nothing else):
-[fact:2:permanent] <ENTITY_A> has the explicitly stated role or attribute.
-[fact:2:permanent:entity=<ENTITY_A>/character] <ENTITY_A> has the explicitly described characteristic.
-[relationship:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character] The conversation states the relationship between <ENTITY_A> and <ENTITY_B>.
-[event:2:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character] <ENTITY_A> and <ENTITY_B> took the explicitly described action.
-[preference:2:session] The user explicitly expressed a preference.
-[event:1:scene] The conversation explicitly mentions a minor scene event.
+[fact:2:permanent:sources=0] <ENTITY_A> has the explicitly stated role or attribute.
+[fact:2:permanent:entity=<ENTITY_A>/character:sources=0] <ENTITY_A> has the explicitly described characteristic.
+[relationship:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] The conversation states the relationship between <ENTITY_A> and <ENTITY_B>.
+[event:2:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] <ENTITY_A> and <ENTITY_B> took the explicitly described action.
+[preference:2:session:sources=0] The user explicitly expressed a preference.
+[event:1:scene:sources=0] The conversation explicitly mentions a minor scene event.
 
 FINAL RULE: Output ONLY [type:score:expiration:sources=0] or [type:score:expiration:entity=Name/type:sources=0,2] lines. No headers. No intros. No explanations.
 If there is nothing new worth preserving, output exactly: NONE`
