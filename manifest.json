@@ -1,11 +1,11 @@
 {
-  "display_name": "Smart Memory",
+  "display_name": "Smart Memory Enhanced",
   "loading_order": 5,
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
   "author": "Senjin the Dragon <senjin@hatchling.org>",
-  "version": "1.8.1",
-  "homePage": "https://github.com/senjinthedragon/Smart-Memory"
+  "version": "0.1.0",
+  "homePage": "https://github.com/PrimeEagle/Smart-Memory-Enhanced"
 }

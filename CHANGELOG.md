@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-15
+
+### Changed
+
+- Initial release of Smart Memory Enhanced, an independent fork of Smart Memory.
+- Renamed the extension UI and metadata for the fork.
+- Memorize Chat now surfaces a running, colour-coded count of non-blocking errors.
+
 ## [1.8.1] - 2026-07-02
 
 ### Added

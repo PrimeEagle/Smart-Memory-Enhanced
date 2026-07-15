@@ -1,9 +1,13 @@
-# Smart Memory
+# Smart Memory Enhanced
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://github.com/senjinthedragon/Smart-Memory/blob/main/LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Author: Senjin the Dragon](https://img.shields.io/badge/Author-Senjin_the_Dragon-gold.svg)](https://github.com/senjinthedragon)
 
-Give your AI a memory that lasts. Smart Memory is a SillyTavern extension that quietly works in the background, keeping your AI oriented in long stories, aware of what happened this session, and grounded in facts it has learned across every previous chat with a character - even after weeks away.
+Smart Memory Enhanced is an experimental reliability, grounding, and configurability fork of [Smart Memory by Senjin the Dragon](https://github.com/senjinthedragon/Smart-Memory). It is independently maintained, is not affiliated with or endorsed by the original maintainer, and remains licensed under AGPL-3.0-or-later.
+
+**Current fork version: v0.1.0**
+
+Give your AI a memory that lasts. Smart Memory Enhanced is a SillyTavern extension that quietly works in the background, keeping your AI oriented in long stories, aware of what happened this session, and grounded in facts it has learned across every previous chat with a character - even after weeks away.
 
 It runs automatically. You don't have to do anything special. Just chat, and it takes care of the rest.
 
@@ -14,17 +18,17 @@ _This is an independent extension for SillyTavern and is not affiliated with the
 <table style="border: none;">
   <tr>
     <td align="center" style="border: none;">
-      <img src="https://raw.githubusercontent.com/senjinthedragon/Smart-Memory/dev/assets/smart-memory1.webp" alt="Smart Memory extension panel" /><br/>
+      <img src="assets/smart-memory1.webp" alt="Smart Memory Enhanced extension panel" /><br/>
       <em>The extension panel</em>
     </td>
     <td align="center" valign="top" style="border: none;">
-      <img src="https://raw.githubusercontent.com/senjinthedragon/Smart-Memory/dev/assets/smart-memory2.webp" alt="Session memory list" /><br/>
+      <img src="assets/smart-memory2.webp" alt="Session memory list" /><br/>
       <em>Session memories</em>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" style="border: none;">
-      <img src="https://raw.githubusercontent.com/senjinthedragon/Smart-Memory/dev/assets/smart-memory3.webp" alt="Entity and memory force graph" /><br/>
+      <img src="assets/smart-memory3.webp" alt="Entity and memory force graph" /><br/>
       <em>Entity and memory graph - hover any node to inspect it</em>
     </td>
   </tr>
@@ -45,10 +49,10 @@ If this extension adds something to your stories, please consider:
 
 - In SillyTavern, open the **Extensions** menu (the stack of cubes icon)
 - Click **Install extension**
-- Paste: `https://github.com/senjinthedragon/Smart-Memory`
+- Paste: `https://github.com/PrimeEagle/Smart-Memory-Enhanced`
 - Click **Install just for me** (or for all users if you're on a shared server)
 
-Restart SillyTavern. **Smart Memory** will appear in your Extensions panel.
+Restart SillyTavern. **Smart Memory Enhanced** will appear in your Extensions panel.
 
 ## Quick Start
 

@@ -138,6 +138,7 @@ import {
   updateEntityPanel,
   updateTokenDisplay,
   updateEmbeddingNotice,
+  setCatchUpErrorCount,
 } from './ui.js';
 
 // ---- Default settings ---------------------------------------------------
@@ -2431,6 +2432,13 @@ export function bindSettingsUI(ctrl) {
     ctrl.extractionRunning = true;
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
+    let catchUpErrorCount = 0;
+    const recordCatchUpError = (label, err) => {
+      catchUpErrorCount++;
+      setCatchUpErrorCount(catchUpErrorCount);
+      console.error(`[SmartMemory] Catch-up ${label}:`, err);
+    };
+    setCatchUpErrorCount(0);
     $('#sm_catch_up').hide();
     $('#sm_cancel_catch_up').show().prop('disabled', false);
 
@@ -2495,14 +2503,14 @@ export function bindSettingsUI(ctrl) {
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
             );
             await extractAndStoreMemories(name, nameChunk, setStatusMessage).catch((err) => {
-              console.error('[SmartMemory] Catch-up long-term extraction error (chunk):', err);
+              recordCatchUpError('long-term extraction error (chunk)', err);
             });
             // Consolidate after each chunk so near-duplicates are collapsed before
             // the next chunk can add more similar entries.
             if (settings.consolidation_enabled) {
               setStatusMessage(`Catching up... (${i}/${total} messages - consolidating ${name})`);
               await consolidateMemories(name).catch((err) => {
-                console.error('[SmartMemory] Catch-up long-term consolidation error (chunk):', err);
+                recordCatchUpError('long-term consolidation error (chunk)', err);
               });
             }
           }
@@ -2510,23 +2518,23 @@ export function bindSettingsUI(ctrl) {
         if (settings.session_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
           await extractSessionMemories(chunk).catch((err) => {
-            console.error('[SmartMemory] Catch-up session extraction error (chunk):', err);
+            recordCatchUpError('session extraction error (chunk)', err);
           });
           setStatusMessage(`Catching up... (${i}/${total} messages - consolidating session)`);
           await consolidateSessionMemories().catch((err) => {
-            console.error('[SmartMemory] Catch-up session consolidation error (chunk):', err);
+            recordCatchUpError('session consolidation error (chunk)', err);
           });
         }
         if (settings.arcs_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting arcs)`);
           await extractArcs(chunk, characterName).catch((err) => {
-            console.error('[SmartMemory] Catch-up arc extraction error (chunk):', err);
+            recordCatchUpError('arc extraction error (chunk)', err);
           });
         }
         if (isStateLedgerEnabled() && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - updating state ledger)`);
           await runStateCardExtraction(characterName, chunk).catch((err) => {
-            console.error('[SmartMemory] Catch-up state ledger extraction error (chunk):', err);
+            recordCatchUpError('State Ledger extraction error (chunk)', err);
           });
         }
 
@@ -2536,12 +2544,12 @@ export function bindSettingsUI(ctrl) {
         // entire catch-up run via the outer catch block.
         if (settings.longterm_enabled && characterName) {
           await injectMemories(characterName).catch((err) => {
-            console.error('[SmartMemory] Catch-up inject long-term error:', err);
+            recordCatchUpError('long-term injection error', err);
           });
         }
         if (settings.session_enabled) {
           await injectSessionMemories().catch((err) => {
-            console.error('[SmartMemory] Catch-up inject session error:', err);
+            recordCatchUpError('session injection error', err);
           });
         }
         if (settings.arcs_enabled) {
@@ -2565,7 +2573,7 @@ export function bindSettingsUI(ctrl) {
               : chatIdx + 1;
           if (cuCutoff > (cuMeta.lastExtractCutoff ?? 0)) {
             cuMeta.lastExtractCutoff = cuCutoff;
-            catchUpContext.saveMetadata().catch(console.error);
+            catchUpContext.saveMetadata().catch((err) => recordCatchUpError('metadata save error', err));
           }
         }
 
@@ -2631,7 +2639,7 @@ export function bindSettingsUI(ctrl) {
               sceneCount++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
               const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
-                console.error('[SmartMemory] Catch-up scene summary failed:', err);
+                recordCatchUpError('scene summary error', err);
                 return null;
               });
               if (sceneSummary && !(await isDuplicateScene(sceneSummary))) {
@@ -2647,7 +2655,7 @@ export function bindSettingsUI(ctrl) {
                   `Summarizing scene ${sceneCount}... (extracting epistemic knowledge)`,
                 );
                 await extractEpistemicKnowledge(sceneBuffer, characterName).catch((err) => {
-                  console.error('[SmartMemory] Catch-up epistemic extraction error:', err);
+                  recordCatchUpError('epistemic extraction error', err);
                 });
               }
               sceneBuffer = [];
@@ -2657,7 +2665,7 @@ export function bindSettingsUI(ctrl) {
           // Summarize any remaining messages after the last break as the current scene.
           if (!ctrl.catchUpCancelled && sceneBuffer.length >= minMessages) {
             const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
-              console.error('[SmartMemory] Catch-up final scene summary failed:', err);
+              recordCatchUpError('final scene summary error', err);
               return null;
             });
             if (sceneSummary && !(await isDuplicateScene(sceneSummary))) {
@@ -2667,13 +2675,13 @@ export function bindSettingsUI(ctrl) {
             if (isEpistemicEnabled() && !isFreshStart()) {
               setStatusMessage('Extracting epistemic knowledge from final scene...');
               await extractEpistemicKnowledge(sceneBuffer, characterName).catch((err) => {
-                console.error('[SmartMemory] Catch-up epistemic extraction error (final):', err);
+                recordCatchUpError('final epistemic extraction error', err);
               });
             }
           }
 
           await saveSceneHistory(sceneHistory).catch((err) => {
-            console.error('[SmartMemory] Catch-up scene history save failed:', err);
+            recordCatchUpError('scene history save error', err);
           });
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;
@@ -2687,7 +2695,7 @@ export function bindSettingsUI(ctrl) {
           for (const name of catchUpCharacterNames) {
             setStatusMessage(`Consolidating long-term memories for ${name}...`);
             await consolidateMemories(name, true).catch((err) => {
-              console.error('[SmartMemory] Catch-up final consolidation failed:', err);
+              recordCatchUpError('final long-term consolidation error', err);
             });
           }
           updateTokenDisplay();
@@ -2695,7 +2703,7 @@ export function bindSettingsUI(ctrl) {
         if (settings.session_enabled) {
           setStatusMessage('Consolidating session memories...');
           await consolidateSessionMemories(true).catch((err) => {
-            console.error('[SmartMemory] Catch-up final session consolidation failed:', err);
+            recordCatchUpError('final session consolidation error', err);
           });
           updateTokenDisplay();
         }
@@ -2712,7 +2720,7 @@ export function bindSettingsUI(ctrl) {
               }
             })
             .catch((err) => {
-              console.error('[SmartMemory] Catch-up compaction failed:', err);
+              recordCatchUpError('compaction error', err);
             });
           updateTokenDisplay();
         }
@@ -2724,7 +2732,7 @@ export function bindSettingsUI(ctrl) {
         for (const name of catchUpCharacterNames) {
           setStatusMessage(`Generating character & world profiles for ${name}...`);
           const profiles = await generateProfiles(name).catch((err) => {
-            console.error('[SmartMemory] Catch-up profile generation failed:', err);
+            recordCatchUpError('profile generation error', err);
             return null;
           });
           // Update UI with the selected character's profiles - other characters'
@@ -2781,6 +2789,7 @@ export function bindSettingsUI(ctrl) {
         });
       }
     } catch (err) {
+      recordCatchUpError('run failure', err);
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {

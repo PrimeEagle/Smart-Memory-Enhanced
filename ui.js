@@ -402,6 +402,32 @@ export function setStatusMessage(msg) {
 }
 
 /**
+ * Shows the non-blocking error total for an in-progress Memorize Chat run and
+ * adjusts the status colour without changing the current progress message.
+ *
+ * @param {number} count
+ */
+export function setCatchUpErrorCount(count) {
+  const $status = $('#sm_status');
+  const $count = $('#sm_catch_up_error_count');
+  const safeCount = Math.max(0, Number(count) || 0);
+
+  $status.removeClass('sm_status_warning sm_status_error');
+  $count.removeClass('sm_catch_up_errors_many').hide().text('');
+
+  if (safeCount === 0) return;
+
+  if (safeCount <= 10) {
+    $status.addClass('sm_status_warning');
+  } else {
+    $status.addClass('sm_status_error');
+    $count.addClass('sm_catch_up_errors_many');
+  }
+
+  $count.text(`${safeCount} ${safeCount === 1 ? 'error' : 'errors'} during this run`).show();
+}
+
+/**
  * Updates the continuity badge shown in the settings panel header.
  * Called after the Profile B auto-check completes each AI turn.
  * @param {number|null} count - Contradiction count from checkContinuity, or null to clear.

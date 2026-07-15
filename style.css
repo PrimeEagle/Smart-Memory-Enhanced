@@ -1938,3 +1938,31 @@ body.sm-read-only .mes_edit_delete {
 #smart_memory_settings .sm_epistemic_spoiler[open] .sm_epistemic_spoiler_summary .sm_spoiler_open {
   display: inline;
 }
+#smart_memory_settings .sm-status-wrap {
+  display: flex;
+  flex-direction: column;
+  margin-left: 8px;
+  font-weight: normal;
+  line-height: 1.25;
+}
+
+#smart_memory_settings #sm_status {
+  color: var(--SmartReplyColor, #aaa);
+}
+
+#smart_memory_settings #sm_status.sm_status_warning {
+  color: var(--warning, #ca6);
+}
+
+#smart_memory_settings #sm_status.sm_status_error {
+  color: var(--error, #e66);
+}
+
+#smart_memory_settings #sm_catch_up_error_count {
+  display: none;
+  color: var(--warning, #ca6);
+}
+
+#smart_memory_settings #sm_catch_up_error_count.sm_catch_up_errors_many {
+  color: var(--error, #e66);
+}
