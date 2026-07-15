@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-15
+
+### Changed
+
+- Added PrimeEagle's fork attribution before the preserved original README and author credit.
+
+### Fixed
+
+- Reset the Memorize Chat error indicator after Forget This Chat or Fresh Start completes.
+
 ## [0.2.2] - 2026-07-15
 
 ### Changed

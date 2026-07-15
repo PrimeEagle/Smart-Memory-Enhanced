@@ -2861,6 +2861,7 @@ export function bindSettingsUI(ctrl) {
     updateTokenDisplay();
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;
+    setCatchUpErrorCount(0);
     setStatusMessage('Chat context cleared.');
   });
 
@@ -2929,6 +2930,7 @@ export function bindSettingsUI(ctrl) {
     updateTokenDisplay();
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;
+    setCatchUpErrorCount(0);
     setStatusMessage('Fresh start complete.');
     toastr.success(`All memories cleared for ${nameLabel}.`, 'Smart Memory Enhanced', {
       timeOut: 4000,
