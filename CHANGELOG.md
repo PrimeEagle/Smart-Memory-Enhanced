@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-15
+
+### Fixed
+
+- Token Usage now reads SillyTavern's active Context Size setting rather than a stale API context default.
+
 ## [0.3.3] - 2026-07-15
 
 ### Added

@@ -48,7 +48,7 @@
  * updateEpistemicUI       - re-renders the Perspectives & Secrets entry list with add/edit/delete controls
  */
 
-import { extension_prompts, saveSettingsDebounced } from '../../../../script.js';
+import { extension_prompts, getMaxContextSize, saveSettingsDebounced } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import {
   estimateTokens,
@@ -280,7 +280,10 @@ export function updateTokenDisplay() {
   ).filter((t) => t.tokens > 0);
 
   const total = tiers.reduce((sum, t) => sum + t.tokens, 0);
-  const maxContext = getContext().maxContext || 0;
+  // getContext().maxContext can be the API's stale/default value (often
+  // 8,192) instead of the active preset's Context Size slider. Ask
+  // SillyTavern's resolver so the display matches the generation settings.
+  const maxContext = getMaxContextSize(0) || 0;
 
   // Each segment's width is its share of total SM tokens. The title tooltip
   // carries the detail breakdown that the old legend used to show inline.
