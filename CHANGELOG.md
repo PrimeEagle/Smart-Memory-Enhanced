@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-15
+
+### Changed
+
+- Memory rows now use a one-line, clickable preview in the narrow Extensions drawer.
+- Added a wide memory review modal with full-text editing, validation details, source-message links, review navigation, and save/approve/reject/delete actions.
+
 ## [0.3.5] - 2026-07-15
 
 ### Fixed

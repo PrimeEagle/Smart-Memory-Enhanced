@@ -416,9 +416,148 @@ function groundingReviewMarkup(memory) {
   if (!needsGroundingReview(memory)) return '';
   const reason = (memory.validation_issues ?? ['No validated source messages.']).join(' ');
   const escapedReason = $('<div>').text(reason).html();
-  return `<span class="sme_memory_review_badge" title="${escapedReason}"><i class="fa-solid fa-shield-halved"></i> needs review</span>
+  return `<span class="sme_memory_review_badge" title="${escapedReason}"><i class="fa-solid fa-shield-halved"></i></span>
     <button class="sme_approve_grounding menu_button" data-memory-id="${memory.id || ''}" title="Approve this memory and allow it to be used"><i class="fa-solid fa-check"></i></button>
     <button class="sme_reject_grounding menu_button" data-memory-id="${memory.id || ''}" title="Reject this memory and keep it quarantined"><i class="fa-solid fa-xmark"></i></button>`;
+}
+
+function scrollToMemorySource(startIdx, endIdx) {
+  const $startMsg = $(`#chat .mes[mesid="${startIdx}"]`);
+  if (!$startMsg.length) return;
+  if ($('#rm_extensions_block').hasClass('openDrawer')) {
+    $('#extensions-settings-button .drawer-toggle').trigger('click');
+  }
+  setTimeout(() => {
+    const $chat = $('#chat');
+    const scrollTarget = $startMsg.offset().top - $chat.offset().top + $chat.scrollTop();
+    $chat.animate({ scrollTop: scrollTarget }, 400);
+    for (let i = startIdx; i <= endIdx; i++) {
+      const $message = $(`#chat .mes[mesid="${i}"]`);
+      if ($message.length) {
+        $message.addClass('sme_source_flash');
+        setTimeout(() => $message.removeClass('sme_source_flash'), 2400);
+      }
+    }
+  }, 300);
+}
+
+function showMemoryReviewDialog(memoryId, scope, characterName = null) {
+  $('#sme_memory_review_dialog').remove();
+  const load = () =>
+    scope === 'session' ? loadSessionMemories() : loadCharacterMemories(characterName);
+  const save = async (memories) => {
+    if (scope === 'session') {
+      await saveSessionMemories(memories);
+      await injectSessionMemories();
+      updateSessionUI();
+    } else {
+      saveCharacterMemories(characterName, memories);
+      saveSettingsDebounced();
+      await injectMemories(characterName);
+      renderMemoriesList(memories, characterName);
+    }
+  };
+  const memories = load();
+  const memory = memories.find((item) => item.id === memoryId);
+  if (!memory) return;
+
+  const dialog = document.createElement('dialog');
+  dialog.id = 'sme_memory_review_dialog';
+  const $card = $('<div class="sme_memory_review_card">');
+  const $header = $('<div class="sme_memory_review_header">');
+  $header.append(
+    $('<div>').append(
+      $('<span>').addClass(`sme_memory_type sme_type_${memory.type}`).text(memory.type),
+      $('<strong class="sme_memory_review_title">').text('Memory review'),
+    ),
+  );
+  const close = () => {
+    dialog.close();
+    dialog.remove();
+  };
+  $header.append($('<button class="menu_button" title="Close"><i class="fa-solid fa-xmark"></i></button>').on('click', close));
+  $card.append($header);
+
+  const reviewReason = needsGroundingReview(memory)
+    ? (memory.validation_issues ?? ['No validated source messages.']).join(' ')
+    : memory.validation_status === 'approved'
+      ? 'Approved during user review.'
+      : 'Source claims validated.';
+  $card.append($('<div class="sme_memory_review_status">').text(reviewReason));
+  const $textarea = $('<textarea class="text_pole sme_memory_review_text">').val(memory.content ?? '');
+  $card.append($('<label class="sme_memory_review_label">Memory text</label>'), $textarea);
+
+  const $sources = $('<div class="sme_memory_review_sources">');
+  $sources.append($('<strong>').text('Source messages'));
+  if (Array.isArray(memory.source_messages) && memory.source_messages.length > 0) {
+    for (const [start, end] of memory.source_messages) {
+      $sources.append(
+        $('<button class="menu_button">')
+          .text(start === end ? `Message ${start}` : `Messages ${start}–${end}`)
+          .on('click', () => {
+            close();
+            scrollToMemorySource(start, end);
+          }),
+      );
+    }
+  } else {
+    $sources.append($('<span>').text('No verified source links are available.'));
+  }
+  $card.append($sources);
+
+  const $footer = $('<div class="sme_memory_review_footer">');
+  const reviewIds = memories.filter(needsGroundingReview).map((item) => item.id);
+  const reviewPosition = reviewIds.indexOf(memoryId);
+  if (reviewIds.length > 1) {
+    $footer.append($('<button class="menu_button">Previous</button>').prop('disabled', reviewPosition <= 0).on('click', () => {
+      close();
+      showMemoryReviewDialog(reviewIds[reviewPosition - 1], scope, characterName);
+    }));
+    $footer.append($('<button class="menu_button">Next</button>').prop('disabled', reviewPosition >= reviewIds.length - 1).on('click', () => {
+      close();
+      showMemoryReviewDialog(reviewIds[reviewPosition + 1], scope, characterName);
+    }));
+  }
+  $footer.append($('<button class="menu_button">Save</button>').on('click', async () => {
+    const current = load();
+    const target = current.find((item) => item.id === memoryId);
+    if (!target || !$textarea.val().trim()) return;
+    target.content = $textarea.val().trim();
+    await save(current);
+    close();
+  }));
+  if (needsGroundingReview(memory)) {
+    $footer.append($('<button class="menu_button sme_approve_grounding">Approve</button>').on('click', async () => {
+      const current = load();
+      const target = current.find((item) => item.id === memoryId);
+      if (!target) return;
+      target.validation_status = 'approved';
+      target.validation_issues = [];
+      await save(current);
+      close();
+    }));
+    $footer.append($('<button class="menu_button sme_reject_grounding">Reject</button>').on('click', async () => {
+      const current = load();
+      const target = current.find((item) => item.id === memoryId);
+      if (!target) return;
+      target.validation_status = 'rejected';
+      target.validation_issues = [...(target.validation_issues ?? []), 'Rejected during user review.'];
+      await save(current);
+      close();
+    }));
+  }
+  $footer.append($('<button class="menu_button sme_memory_review_delete">Delete</button>').on('click', async () => {
+    const current = load().filter((item) => item.id !== memoryId);
+    await save(current);
+    close();
+  }));
+  $card.append($footer);
+  $(dialog).append($card).on('click', (event) => {
+    if (event.target === dialog) close();
+  });
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  $textarea.trigger('focus');
 }
 
 /**
@@ -746,9 +885,14 @@ export function updateSessionUI() {
   const reviewCount = memories.filter(needsGroundingReview).length;
   if (reviewCount > 0) {
     $list.append(
-      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. Approve only facts you can verify; rejected records remain quarantined.</div>`,
+      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. <button class="sme_open_review_queue menu_button">Open review queue</button></div>`,
     );
   }
+
+  $list.find('.sme_open_review_queue').on('click', () => {
+    const first = memories.find(needsGroundingReview);
+    if (first) showMemoryReviewDialog(first.id, 'session');
+  });
 
   if (memories.length === 0) {
     $list.append('<div class="sme_no_char">No session memories yet.</div>');
@@ -795,7 +939,7 @@ export function updateSessionUI() {
                 <span class="sme_memory_importance sme_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
                 <span class="sme_memory_expiration sme_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
                 ${retiredBadge}${supersededByLink}${conflictBadge}${groundingReview}
-                <span class="sme_memory_text">${$('<div>').text(mem.content).html()}</span>
+                <button class="sme_memory_text sme_memory_open menu_button" data-memory-id="${mem.id || ''}" title="Open memory review">${$('<div>').text(mem.content).html()}</button>
                 ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 ? `<button class="sme_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
                 <button class="sme_edit_session_memory menu_button" data-index="${idx}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
                     <i class="fa-solid fa-pencil"></i>
@@ -852,7 +996,13 @@ export function updateSessionUI() {
     }, 300);
   });
 
+  $list.find('.sme_memory_open').on('click', function () {
+    showMemoryReviewDialog($(this).data('memory-id'), 'session');
+  });
+
   $list.find('.sme_edit_session_memory').on('click', async function () {
+    showMemoryReviewDialog($(this).closest('.sme_memory_item').data('memory-id'), 'session');
+    return;
     const idx = parseInt($(this).data('index'), 10);
     const $item = $(this).closest('.sme_memory_item');
     const $textSpan = $item.find('.sme_memory_text');
@@ -1683,9 +1833,14 @@ export function renderMemoriesList(memories, characterName) {
   const reviewCount = memories.filter(needsGroundingReview).length;
   if (reviewCount > 0) {
     $list.append(
-      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. Approve only facts you can verify; rejected records remain quarantined.</div>`,
+      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. <button class="sme_open_review_queue menu_button">Open review queue</button></div>`,
     );
   }
+
+  $list.find('.sme_open_review_queue').on('click', () => {
+    const first = memories.find(needsGroundingReview);
+    if (first) showMemoryReviewDialog(first.id, 'longterm', characterName);
+  });
 
   const sorted = [...memories].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
   const hasRetired = sorted.some((m) => m.superseded_by);
@@ -1729,7 +1884,7 @@ export function renderMemoriesList(memories, characterName) {
                 <span class="sme_memory_importance sme_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
                 <span class="sme_memory_expiration sme_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
                 ${retiredBadge}${supersededByLink}${conflictBadge}${groundingReview}
-                <span class="sme_memory_text">${$('<div>').text(mem.content).html()}</span>
+                <button class="sme_memory_text sme_memory_open menu_button" data-memory-id="${mem.id || ''}" title="Open memory review">${$('<div>').text(mem.content).html()}</button>
                 ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sme_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
                 <button class="sme_edit_memory menu_button" data-memory-id="${mem.id || ''}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
                     <i class="fa-solid fa-pencil"></i>
@@ -1787,7 +1942,13 @@ export function renderMemoriesList(memories, characterName) {
     }, 300);
   });
 
+  $list.find('.sme_memory_open').on('click', function () {
+    showMemoryReviewDialog($(this).data('memory-id'), 'longterm', characterName);
+  });
+
   $list.find('.sme_edit_memory').on('click', function () {
+    showMemoryReviewDialog($(this).data('memory-id'), 'longterm', characterName);
+    return;
     const memId = $(this).data('memory-id');
     const $item = $(this).closest('.sme_memory_item');
     const $textSpan = $item.find('.sme_memory_text');
