@@ -24,7 +24,7 @@
  * summaries and high-importance long-term memories. It covers who the character
  * is, what has happened, and the current state of key relationships. Stored in
  * extension_settings so it persists across sessions. Injected via its own
- * dedicated slot (smart_memory_canon) independently of the compaction summary,
+ * dedicated slot (smart_memory_enhanced_canon) independently of the compaction summary,
  * so both coexist and neither overwrites the other.
  *
  * loadCanon     - returns the stored canon for a character (or null)
@@ -151,7 +151,7 @@ export async function generateCanon(characterName) {
 
 /**
  * Injects the canon summary into the prompt via its own dedicated slot
- * (smart_memory_canon), independent of the compaction summary slot.
+ * (smart_memory_enhanced_canon), independent of the compaction summary slot.
  * Clears the slot if no canon exists or canon is not stored for this character.
  *
  * @param {string} characterName

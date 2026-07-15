@@ -440,72 +440,72 @@ const TUNABLE_TIERS = [
     promptKey: PROMPT_KEY_LONG,
     setting: 'longterm_inject_budget',
     defaultBudget: 500,
-    slider: 'sm_longterm_inject_budget',
-    display: 'sm_longterm_inject_budget_value',
+    slider: 'sme_longterm_inject_budget',
+    display: 'sme_longterm_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_SESSION,
     setting: 'session_inject_budget',
     defaultBudget: 400,
-    slider: 'sm_session_inject_budget',
-    display: 'sm_session_inject_budget_value',
+    slider: 'sme_session_inject_budget',
+    display: 'sme_session_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_CANON,
     setting: 'canon_inject_budget',
     defaultBudget: 800,
-    slider: 'sm_canon_inject_budget',
-    display: 'sm_canon_inject_budget_value',
+    slider: 'sme_canon_inject_budget',
+    display: 'sme_canon_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_SCENES,
     setting: 'scene_inject_budget',
     defaultBudget: 300,
-    slider: 'sm_scene_inject_budget',
-    display: 'sm_scene_inject_budget_value',
+    slider: 'sme_scene_inject_budget',
+    display: 'sme_scene_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_ARCS,
     setting: 'arcs_inject_budget',
     defaultBudget: 700,
-    slider: 'sm_arcs_inject_budget',
-    display: 'sm_arcs_inject_budget_value',
+    slider: 'sme_arcs_inject_budget',
+    display: 'sme_arcs_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_PROFILES,
     setting: 'profiles_inject_budget',
     defaultBudget: 400,
-    slider: 'sm_profiles_inject_budget',
-    display: 'sm_profiles_inject_budget_value',
+    slider: 'sme_profiles_inject_budget',
+    display: 'sme_profiles_inject_budget_value',
     fmt: (v) => `${v} tokens`,
   },
   {
     promptKey: PROMPT_KEY_RELATIONSHIPS,
     setting: 'relationships_inject_budget',
     defaultBudget: 250,
-    slider: 'sm_relationships_inject_budget',
-    display: 'sm_relationships_inject_budget_value',
+    slider: 'sme_relationships_inject_budget',
+    display: 'sme_relationships_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_EPISTEMIC,
     setting: 'epistemic_inject_budget',
     defaultBudget: 200,
-    slider: 'sm_epistemic_inject_budget',
-    display: 'sm_epistemic_inject_budget_value',
+    slider: 'sme_epistemic_inject_budget',
+    display: 'sme_epistemic_inject_budget_value',
     fmt: (v) => String(v),
   },
   {
     promptKey: PROMPT_KEY_STATE_LEDGER,
     setting: 'state_ledger_inject_budget',
     defaultBudget: 200,
-    slider: 'sm_state_ledger_inject_budget',
-    display: 'sm_state_ledger_inject_budget_value',
+    slider: 'sme_state_ledger_inject_budget',
+    display: 'sme_state_ledger_inject_budget_value',
     fmt: (v) => String(v),
   },
 ];
@@ -592,8 +592,8 @@ function applySettingsMode(mode) {
   $('.sm-simple-only').toggle(isSimple);
   if (isSimple) {
     const total = totalBudgetFromSettings(extension_settings[MODULE_NAME]);
-    $('#sm_total_budget').val(total);
-    $('#sm_total_budget_value').text(total);
+    $('#sme_total_budget').val(total);
+    $('#sme_total_budget_value').text(total);
   }
 }
 
@@ -605,7 +605,11 @@ function applySettingsMode(mode) {
  */
 export function loadSettings() {
   if (!extension_settings[MODULE_NAME]) {
-    extension_settings[MODULE_NAME] = {};
+    // Import global preferences once from the original extension. The clone is
+    // deliberately independent afterward, so both extensions can be enabled
+    // without sharing future writes.
+    const legacy = extension_settings.smart_memory;
+    extension_settings[MODULE_NAME] = legacy ? structuredClone(legacy) : {};
   }
   for (const [key, value] of Object.entries(defaultSettings)) {
     if (extension_settings[MODULE_NAME][key] === undefined) {
@@ -791,7 +795,7 @@ export function bindSettingsUI(ctrl) {
   $(document).on('click', '.sm-section-toggle', (e) => e.stopPropagation());
 
   // ---- Master toggle --------------------------------------------------
-  $('#sm_enabled')
+  $('#sme_enabled')
     .prop('checked', s.enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].enabled = $(this).prop('checked');
@@ -806,7 +810,7 @@ export function bindSettingsUI(ctrl) {
     });
 
   // ---- Settings mode toggle -------------------------------------------
-  $('#sm_settings_mode_advanced')
+  $('#sme_settings_mode_advanced')
     .prop('checked', s.settings_mode === 'advanced')
     .on('change', function () {
       const mode = $(this).prop('checked') ? 'advanced' : 'simple';
@@ -817,17 +821,17 @@ export function bindSettingsUI(ctrl) {
     });
 
   // ---- Simplified total budget slider ---------------------------------
-  $('#sm_total_budget')
+  $('#sme_total_budget')
     .val(totalBudgetFromSettings(s))
     .on('input', function () {
       const total = parseInt($(this).val(), 10);
-      $('#sm_total_budget_value').text(total);
+      $('#sme_total_budget_value').text(total);
       applyTotalBudget(total, extension_settings[MODULE_NAME]);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $('#sm_reset_budgets').on('click', function () {
+  $('#sme_reset_budgets').on('click', function () {
     const cur = extension_settings[MODULE_NAME];
     const budgetKeys = [
       'longterm_inject_budget',
@@ -850,8 +854,8 @@ export function bindSettingsUI(ctrl) {
     }
     // Sync the simple-mode total slider.
     const total = totalBudgetFromSettings(cur);
-    $('#sm_total_budget').val(total);
-    $('#sm_total_budget_value').text(total);
+    $('#sme_total_budget').val(total);
+    $('#sme_total_budget_value').text(total);
     saveSettingsDebounced();
     reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
   });
@@ -860,7 +864,7 @@ export function bindSettingsUI(ctrl) {
   applySettingsMode(s.settings_mode ?? 'simple');
 
   // ---- Group chat character selector ----------------------------------
-  $('#sm_group_char_select').on('change', async function () {
+  $('#sme_group_char_select').on('change', async function () {
     const selection = $(this).val() || null;
     ctrl.selectedGroupCharacter = selection;
     updateLongTermUI(ctrl.selectedGroupCharacter);
@@ -890,9 +894,9 @@ export function bindSettingsUI(ctrl) {
    * @param {string} source
    */
   function updateSourceSections(source) {
-    $('#sm_ollama_settings').toggle(source === memory_sources.ollama);
-    $('#sm_openai_compat_settings').toggle(source === memory_sources.openai_compatible);
-    $('#sm_connection_profile_settings').toggle(source === memory_sources.connection_profile);
+    $('#sme_ollama_settings').toggle(source === memory_sources.ollama);
+    $('#sme_openai_compat_settings').toggle(source === memory_sources.openai_compatible);
+    $('#sme_connection_profile_settings').toggle(source === memory_sources.connection_profile);
   }
 
   /**
@@ -900,7 +904,7 @@ export function bindSettingsUI(ctrl) {
    * Shows a placeholder if the connection manager has no profiles or is unavailable.
    */
   function populateConnectionProfilePicker() {
-    const $select = $('#sm_connection_profile_id');
+    const $select = $('#sme_connection_profile_id');
     $select.empty();
     const profiles = extension_settings?.connectionManager?.profiles ?? [];
     // Filter by mode (cc = Chat Completion, tc = Text Completion). This covers all
@@ -939,9 +943,9 @@ export function bindSettingsUI(ctrl) {
    * via a different address) can still type a model name directly.
    */
   async function refreshOllamaModels() {
-    const $select = $('#sm_ollama_model');
-    const $manual = $('#sm_ollama_model_manual');
-    const $btn = $('#sm_ollama_refresh');
+    const $select = $('#sme_ollama_model');
+    const $manual = $('#sme_ollama_model_manual');
+    const $btn = $('#sme_ollama_refresh');
     const prevModel = extension_settings[MODULE_NAME].ollama_model;
     $btn.prop('disabled', true);
     try {
@@ -984,9 +988,9 @@ export function bindSettingsUI(ctrl) {
    * Ollama instance. Falls back to the manual text input on failure.
    */
   async function refreshEmbeddingModels() {
-    const $select = $('#sm_embedding_model');
-    const $manual = $('#sm_embedding_model_manual');
-    const $btn = $('#sm_embedding_refresh');
+    const $select = $('#sme_embedding_model');
+    const $manual = $('#sme_embedding_model_manual');
+    const $btn = $('#sme_embedding_refresh');
     const prevModel = extension_settings[MODULE_NAME].embedding_model;
     const embeddingUrl = extension_settings[MODULE_NAME].embedding_url || 'http://localhost:11434';
     $btn.prop('disabled', true);
@@ -1021,7 +1025,7 @@ export function bindSettingsUI(ctrl) {
   }
 
   const currentSource = s.source ?? memory_sources.main;
-  $('#sm_source')
+  $('#sme_source')
     .val(currentSource)
     .on('change', function () {
       const source = $(this).val();
@@ -1039,13 +1043,13 @@ export function bindSettingsUI(ctrl) {
 
   // Connection profile picker
   populateConnectionProfilePicker();
-  $('#sm_connection_profile_id').on('change', function () {
+  $('#sme_connection_profile_id').on('change', function () {
     extension_settings[MODULE_NAME].connection_profile_id = $(this).val() || null;
     saveSettingsDebounced();
   });
 
   // Ollama URL field
-  $('#sm_ollama_url')
+  $('#sme_ollama_url')
     .val(s.ollama_url ?? 'http://localhost:11434')
     .on('change', function () {
       extension_settings[MODULE_NAME].ollama_url = $(this).val().trim();
@@ -1055,14 +1059,14 @@ export function bindSettingsUI(ctrl) {
     });
 
   // Ollama model dropdown - saves on selection change.
-  $('#sm_ollama_model').on('change', function () {
+  $('#sme_ollama_model').on('change', function () {
     extension_settings[MODULE_NAME].ollama_model = $(this).val();
     saveSettingsDebounced();
   });
 
   // Manual text fallback - saves on blur/change so a typed name persists
   // across reloads even when Ollama is not reachable from this browser.
-  $('#sm_ollama_model_manual').on('change', function () {
+  $('#sme_ollama_model_manual').on('change', function () {
     extension_settings[MODULE_NAME].ollama_model = $(this).val().trim();
     saveSettingsDebounced();
   });
@@ -1073,24 +1077,24 @@ export function bindSettingsUI(ctrl) {
   }
 
   // Ollama refresh button
-  $('#sm_ollama_refresh').on('click', () => refreshOllamaModels());
+  $('#sme_ollama_refresh').on('click', () => refreshOllamaModels());
 
   // OpenAI Compatible fields
-  $('#sm_openai_compat_url')
+  $('#sme_openai_compat_url')
     .val(s.openai_compat_url ?? '')
     .on('change', function () {
       extension_settings[MODULE_NAME].openai_compat_url = $(this).val().trim();
       saveSettingsDebounced();
     });
 
-  $('#sm_openai_compat_key')
+  $('#sme_openai_compat_key')
     .val(s.openai_compat_key ?? '')
     .on('change', function () {
       extension_settings[MODULE_NAME].openai_compat_key = $(this).val();
       saveSettingsDebounced();
     });
 
-  $('#sm_openai_compat_model')
+  $('#sme_openai_compat_model')
     .val(s.openai_compat_model ?? '')
     .on('input', function () {
       extension_settings[MODULE_NAME].openai_compat_model = $(this).val().trim();
@@ -1100,28 +1104,28 @@ export function bindSettingsUI(ctrl) {
   // Generation budget slider + unlimited checkbox
   const genBudget = s.generation_budget ?? 8192;
   const isUnlimited = genBudget === -1;
-  $('#sm_generation_budget')
+  $('#sme_generation_budget')
     .val(isUnlimited ? 8192 : genBudget)
     .prop('disabled', isUnlimited)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
-      $('#sm_generation_budget_value').text(val.toLocaleString() + ' tokens');
+      $('#sme_generation_budget_value').text(val.toLocaleString() + ' tokens');
       extension_settings[MODULE_NAME].generation_budget = val;
       saveSettingsDebounced();
     });
-  $('#sm_generation_budget_unlimited')
+  $('#sme_generation_budget_unlimited')
     .prop('checked', isUnlimited)
     .on('change', function () {
       const unlimited = $(this).is(':checked');
-      $('#sm_generation_budget').prop('disabled', unlimited);
-      const val = unlimited ? -1 : parseInt($('#sm_generation_budget').val(), 10);
-      $('#sm_generation_budget_value').text(
+      $('#sme_generation_budget').prop('disabled', unlimited);
+      const val = unlimited ? -1 : parseInt($('#sme_generation_budget').val(), 10);
+      $('#sme_generation_budget_value').text(
         unlimited ? 'Unlimited' : val.toLocaleString() + ' tokens',
       );
       extension_settings[MODULE_NAME].generation_budget = val;
       saveSettingsDebounced();
     });
-  $('#sm_generation_budget_value').text(
+  $('#sme_generation_budget_value').text(
     isUnlimited ? 'Unlimited' : genBudget.toLocaleString() + ' tokens',
   );
 
@@ -1134,7 +1138,7 @@ export function bindSettingsUI(ctrl) {
   /** Updates the descriptive label below the hardware profile select. */
   function updateProfileLabel() {
     const active = getHardwareProfile();
-    $('#sm_hardware_profile_label').text(PROFILE_LABELS[active] ?? '');
+    $('#sme_hardware_profile_label').text(PROFILE_LABELS[active] ?? '');
   }
 
   /**
@@ -1143,13 +1147,13 @@ export function bindSettingsUI(ctrl) {
    */
   function syncProfileGating() {
     const isB = getHardwareProfile() === 'b';
-    $('#smart_memory_settings .sm-profile-b-only').each(function () {
+    $('#smart_memory_enhanced_settings .sm-profile-b-only').each(function () {
       $(this).toggleClass('sm-gated', !isB);
       $(this).find('input, select, button').prop('disabled', !isB);
     });
   }
 
-  $('#sm_hardware_profile')
+  $('#sme_hardware_profile')
     .val(s.hardware_profile ?? 'auto')
     .on('change', function () {
       extension_settings[MODULE_NAME].hardware_profile = $(this).val();
@@ -1163,9 +1167,9 @@ export function bindSettingsUI(ctrl) {
 
   // ---- Model test button --------------------------------------------------
 
-  $('#sm_model_test_btn').on('click', async function () {
+  $('#sme_model_test_btn').on('click', async function () {
     const $btn = $(this);
-    const $result = $('#sm_model_test_result');
+    const $result = $('#sme_model_test_result');
 
     const resetBtn = () =>
       $btn
@@ -1184,7 +1188,7 @@ export function bindSettingsUI(ctrl) {
       $result
         .show()
         .html(
-          '<div class="sm_model_test_running"><i class="fa-solid fa-spinner fa-spin"></i> Cancelling extraction test...</div>',
+          '<div class="sme_model_test_running"><i class="fa-solid fa-spinner fa-spin"></i> Cancelling extraction test...</div>',
         );
       return;
     }
@@ -1194,7 +1198,7 @@ export function bindSettingsUI(ctrl) {
     $result
       .show()
       .html(
-        '<div class="sm_model_test_running"><i class="fa-solid fa-spinner fa-spin"></i> Running extraction test...</div>',
+        '<div class="sme_model_test_running"><i class="fa-solid fa-spinner fa-spin"></i> Running extraction test...</div>',
       );
 
     let outcome;
@@ -1203,7 +1207,7 @@ export function bindSettingsUI(ctrl) {
     } catch (err) {
       console.error('[SmartMemory] Model test failed:', err);
       $result.html(
-        '<div class="sm_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> Test failed with an error. Check the browser console for details.</div>',
+        '<div class="sme_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> Test failed with an error. Check the browser console for details.</div>',
       );
       modelTestRunning = false;
       resetBtn();
@@ -1215,14 +1219,14 @@ export function bindSettingsUI(ctrl) {
 
     if (outcome.cancelled) {
       $result.html(
-        '<div class="sm_model_test_running"><i class="fa-solid fa-circle-xmark"></i> Test cancelled.</div>',
+        '<div class="sme_model_test_running"><i class="fa-solid fa-circle-xmark"></i> Test cancelled.</div>',
       );
       return;
     }
 
     if (outcome.failedTier) {
       $result.html(
-        `<div class="sm_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> <strong>${outcome.failedTier}</strong> returned no output. Your model may not be suitable for Smart Memory, or may need a stronger prompt style. Consider trying a different model.</div>`,
+        `<div class="sme_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> <strong>${outcome.failedTier}</strong> returned no output. Your model may not be suitable for Smart Memory, or may need a stronger prompt style. Consider trying a different model.</div>`,
       );
       return;
     }
@@ -1232,10 +1236,10 @@ export function bindSettingsUI(ctrl) {
     let current = 0;
 
     $result.html(`
-      <div class="sm_model_test_pass_header">
+      <div class="sme_model_test_pass_header">
         <i class="fa-solid fa-circle-check"></i> All tiers returned output.
       </div>
-      <div id="sm_model_test_tier_area"></div>
+      <div id="sme_model_test_tier_area"></div>
     `);
 
     function renderTier() {
@@ -1248,43 +1252,43 @@ export function bindSettingsUI(ctrl) {
         : 'Reference scenario for this tier.';
       const $area = $('<div>');
       $area.append(
-        $('<div class="sm_model_test_tier_name">').html(
-          `${tier.name} <span class="sm_model_test_tier_pos">${current + 1} / ${tiers.length}</span>`,
+        $('<div class="sme_model_test_tier_name">').html(
+          `${tier.name} <span class="sme_model_test_tier_pos">${current + 1} / ${tiers.length}</span>`,
         ),
       );
-      const $details = $('<details class="sm_model_test_scenario">');
+      const $details = $('<details class="sme_model_test_scenario">');
       $details.append($('<summary>').text('View test scenario'));
       $details.append(
-        $('<p class="sm_model_test_scenario_note">').text(`${charactersNote}. ${readWarning}`),
+        $('<p class="sme_model_test_scenario_note">').text(`${charactersNote}. ${readWarning}`),
       );
       $details.append(
-        $('<textarea class="sm_model_test_output text_pole" readonly>').val(scenarioLines),
+        $('<textarea class="sme_model_test_output text_pole" readonly>').val(scenarioLines),
       );
       $area.append($details);
-      $area.append($('<div class="sm_model_test_tier_hint">').text(tier.hint));
+      $area.append($('<div class="sme_model_test_tier_hint">').text(tier.hint));
       $area.append(
-        $('<textarea class="sm_model_test_output text_pole" readonly>').val(tier.items.join('\n')),
+        $('<textarea class="sme_model_test_output text_pole" readonly>').val(tier.items.join('\n')),
       );
-      const $nav = $('<div class="sm_model_test_nav">');
+      const $nav = $('<div class="sme_model_test_nav">');
       $nav.append(
-        $('<button class="menu_button sm_model_test_prev">')
+        $('<button class="menu_button sme_model_test_prev">')
           .prop('disabled', current === 0)
           .html('&#8592; Previous'),
       );
       $nav.append(
-        $('<button class="menu_button sm_model_test_next">')
+        $('<button class="menu_button sme_model_test_next">')
           .prop('disabled', current === tiers.length - 1)
           .html('Next &#8594;'),
       );
       $area.append($nav);
-      $('#sm_model_test_tier_area').empty().append($area);
-      $area.find('.sm_model_test_prev').on('click', () => {
+      $('#sme_model_test_tier_area').empty().append($area);
+      $area.find('.sme_model_test_prev').on('click', () => {
         if (current > 0) {
           current--;
           renderTier();
         }
       });
-      $area.find('.sm_model_test_next').on('click', () => {
+      $area.find('.sme_model_test_next').on('click', () => {
         if (current < tiers.length - 1) {
           current++;
           renderTier();
@@ -1295,7 +1299,7 @@ export function bindSettingsUI(ctrl) {
     renderTier();
   });
 
-  $('#sm_extraction_frequency')
+  $('#sme_extraction_frequency')
     .val(s.extraction_frequency ?? 'medium')
     .on('change', function () {
       const freq = $(this).val();
@@ -1306,61 +1310,61 @@ export function bindSettingsUI(ctrl) {
       settings.session_extract_every = every;
       saveSettingsDebounced();
       // Keep the advanced sliders in sync so switching to advanced mode shows the right values.
-      $('#sm_longterm_extract_every').val(every);
-      $('#sm_longterm_extract_every_value').text(every);
-      $('#sm_session_extract_every').val(every);
-      $('#sm_session_extract_every_value').text(every);
+      $('#sme_longterm_extract_every').val(every);
+      $('#sme_longterm_extract_every_value').text(every);
+      $('#sme_session_extract_every').val(every);
+      $('#sme_session_extract_every_value').text(every);
     });
 
   // ---- Short-term (compaction) ----------------------------------------
-  $('#sm_compaction_enabled')
+  $('#sme_compaction_enabled')
     .prop('checked', s.compaction_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].compaction_enabled = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_compaction_threshold')
+  $('#sme_compaction_threshold')
     .val(s.compaction_threshold)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].compaction_threshold = val;
-      $('#sm_compaction_threshold_value').text(val + '%');
+      $('#sme_compaction_threshold_value').text(val + '%');
       saveSettingsDebounced();
     });
-  $('#sm_compaction_threshold_value').text(s.compaction_threshold + '%');
+  $('#sme_compaction_threshold_value').text(s.compaction_threshold + '%');
 
-  $('#sm_compaction_response_length')
+  $('#sme_compaction_response_length')
     .val(s.compaction_response_length)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].compaction_response_length = val;
-      $('#sm_compaction_response_length_value').text(val);
+      $('#sme_compaction_response_length_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_compaction_response_length_value').text(s.compaction_response_length);
+  $('#sme_compaction_response_length_value').text(s.compaction_response_length);
 
-  $('#sm_compaction_template')
+  $('#sme_compaction_template')
     .val(s.compaction_template)
     .on('input', function () {
       extension_settings[MODULE_NAME].compaction_template = $(this).val();
       saveSettingsDebounced();
     });
 
-  $(`input[name="sm_compaction_position"][value="${s.compaction_position}"]`).prop('checked', true);
-  $('input[name="sm_compaction_position"]').on('change', function () {
+  $(`input[name="sme_compaction_position"][value="${s.compaction_position}"]`).prop('checked', true);
+  $('input[name="sme_compaction_position"]').on('change', function () {
     extension_settings[MODULE_NAME].compaction_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_compaction_depth')
+  $('#sme_compaction_depth')
     .val(s.compaction_depth)
     .on('input', function () {
       extension_settings[MODULE_NAME].compaction_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_compaction_role')
+  $('#sme_compaction_role')
     .val(s.compaction_role)
     .on('change', function () {
       extension_settings[MODULE_NAME].compaction_role = parseInt($(this).val(), 10);
@@ -1369,7 +1373,7 @@ export function bindSettingsUI(ctrl) {
 
   // ---- Canon ----------------------------------------------------------
 
-  $('#sm_canon_enabled')
+  $('#sme_canon_enabled')
     .prop('checked', s.canon_enabled ?? true)
     .on('change', function () {
       extension_settings[MODULE_NAME].canon_enabled = $(this).prop('checked');
@@ -1383,38 +1387,38 @@ export function bindSettingsUI(ctrl) {
       }
     });
 
-  $('#sm_canon_inject_budget')
+  $('#sme_canon_inject_budget')
     .val(s.canon_inject_budget)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].canon_inject_budget = val;
-      $('#sm_canon_inject_budget_value').text(val);
+      $('#sme_canon_inject_budget_value').text(val);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
-  $('#sm_canon_inject_budget_value').text(s.canon_inject_budget);
+  $('#sme_canon_inject_budget_value').text(s.canon_inject_budget);
 
-  $('#sm_canon_template')
+  $('#sme_canon_template')
     .val(s.canon_template)
     .on('input', function () {
       extension_settings[MODULE_NAME].canon_template = $(this).val();
       saveSettingsDebounced();
     });
 
-  $(`input[name="sm_canon_position"][value="${s.canon_position}"]`).prop('checked', true);
-  $('input[name="sm_canon_position"]').on('change', function () {
+  $(`input[name="sme_canon_position"][value="${s.canon_position}"]`).prop('checked', true);
+  $('input[name="sme_canon_position"]').on('change', function () {
     extension_settings[MODULE_NAME].canon_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_canon_depth')
+  $('#sme_canon_depth')
     .val(s.canon_depth)
     .on('input', function () {
       extension_settings[MODULE_NAME].canon_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_canon_role')
+  $('#sme_canon_role')
     .val(s.canon_role)
     .on('change', function () {
       extension_settings[MODULE_NAME].canon_role = parseInt($(this).val(), 10);
@@ -1422,7 +1426,7 @@ export function bindSettingsUI(ctrl) {
     });
 
   // Allow manual edits to the canon textarea to take effect immediately.
-  $('#sm_canon_display').on('input', function () {
+  $('#sme_canon_display').on('input', function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) return;
     const val = $(this).val().trim();
@@ -1435,7 +1439,7 @@ export function bindSettingsUI(ctrl) {
     updateTokenDisplay();
   });
 
-  $('#sm_summarize_now').on('click', async function () {
+  $('#sme_summarize_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (ctrl.compactionRunning) return;
     ctrl.compactionRunning = true;
@@ -1459,7 +1463,7 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  $('#sm_generate_canon').on('click', async function () {
+  $('#sme_generate_canon').on('click', async function () {
     if (isCatchUpRunning()) return;
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
@@ -1496,7 +1500,7 @@ export function bindSettingsUI(ctrl) {
   });
 
   // Allow manual edits to the summary textarea to take effect immediately.
-  $('#sm_current_summary').on('input', function () {
+  $('#sme_current_summary').on('input', function () {
     const context = getContext();
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
@@ -1507,7 +1511,7 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Consolidation --------------------------------------------------
-  $('#sm_consolidate_enabled')
+  $('#sme_consolidate_enabled')
     .prop('checked', s.consolidation_enabled ?? true)
     .on('change', function () {
       extension_settings[MODULE_NAME].consolidation_enabled = $(this).prop('checked');
@@ -1521,8 +1525,8 @@ export function bindSettingsUI(ctrl) {
     ['event', 4],
   ]) {
     const key = `longterm_consolidation_threshold_${type}`;
-    const spanId = `#sm_longterm_threshold_${type}_value`;
-    $(`#sm_longterm_threshold_${type}`)
+    const spanId = `#sme_longterm_threshold_${type}_value`;
+    $(`#sme_longterm_threshold_${type}`)
       .val(s[key] ?? defVal)
       .on('input', function () {
         const val = parseInt($(this).val(), 10);
@@ -1540,8 +1544,8 @@ export function bindSettingsUI(ctrl) {
     ['detail', 3],
   ]) {
     const key = `session_consolidation_threshold_${type}`;
-    const spanId = `#sm_session_threshold_${type}_value`;
-    $(`#sm_session_threshold_${type}`)
+    const spanId = `#sme_session_threshold_${type}_value`;
+    $(`#sme_session_threshold_${type}`)
       .val(s[key] ?? defVal)
       .on('input', function () {
         const val = parseInt($(this).val(), 10);
@@ -1553,7 +1557,7 @@ export function bindSettingsUI(ctrl) {
   }
 
   // ---- Long-term memory -----------------------------------------------
-  $('#sm_longterm_enabled')
+  $('#sme_longterm_enabled')
     .prop('checked', s.longterm_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].longterm_enabled = $(this).prop('checked');
@@ -1561,80 +1565,80 @@ export function bindSettingsUI(ctrl) {
       injectMemories(ctrl.getSelectedCharacterName()).catch(console.error);
     });
 
-  $('#sm_longterm_extract_every')
+  $('#sme_longterm_extract_every')
     .val(s.longterm_extract_every)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].longterm_extract_every = val;
-      $('#sm_longterm_extract_every_value').text(val);
+      $('#sme_longterm_extract_every_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_longterm_extract_every_value').text(s.longterm_extract_every);
+  $('#sme_longterm_extract_every_value').text(s.longterm_extract_every);
 
-  $('#sm_longterm_max_memories')
+  $('#sme_longterm_max_memories')
     .val(s.longterm_max_memories)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].longterm_max_memories = val;
-      $('#sm_longterm_max_memories_value').text(val);
+      $('#sme_longterm_max_memories_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_longterm_max_memories_value').text(s.longterm_max_memories);
+  $('#sme_longterm_max_memories_value').text(s.longterm_max_memories);
 
-  $('#sm_longterm_template')
+  $('#sme_longterm_template')
     .val(s.longterm_template)
     .on('input', function () {
       extension_settings[MODULE_NAME].longterm_template = $(this).val();
       saveSettingsDebounced();
     });
 
-  $(`input[name="sm_longterm_position"][value="${s.longterm_position}"]`).prop('checked', true);
-  $('input[name="sm_longterm_position"]').on('change', function () {
+  $(`input[name="sme_longterm_position"][value="${s.longterm_position}"]`).prop('checked', true);
+  $('input[name="sme_longterm_position"]').on('change', function () {
     extension_settings[MODULE_NAME].longterm_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_longterm_depth')
+  $('#sme_longterm_depth')
     .val(s.longterm_depth)
     .on('input', function () {
       extension_settings[MODULE_NAME].longterm_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_longterm_role')
+  $('#sme_longterm_role')
     .val(s.longterm_role)
     .on('change', function () {
       extension_settings[MODULE_NAME].longterm_role = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_longterm_triggered_depth')
+  $('#sme_longterm_triggered_depth')
     .val(s.longterm_triggered_depth ?? 4)
     .on('change', function () {
       extension_settings[MODULE_NAME].longterm_triggered_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_longterm_triggers_enabled')
+  $('#sme_longterm_triggers_enabled')
     .prop('checked', s.longterm_triggers_enabled ?? false)
     .on('change', function () {
       extension_settings[MODULE_NAME].longterm_triggers_enabled = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_longterm_inject_budget_value').text(s.longterm_inject_budget ?? 500);
-  $('#sm_longterm_inject_budget')
+  $('#sme_longterm_inject_budget_value').text(s.longterm_inject_budget ?? 500);
+  $('#sme_longterm_inject_budget')
     .val(s.longterm_inject_budget ?? 500)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].longterm_inject_budget = v;
-      $('#sm_longterm_inject_budget_value').text(v);
+      $('#sme_longterm_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
   // ---- Relationship history controls ------------------------------------
-  $('#sm_relationships_enabled')
+  $('#sme_relationships_enabled')
     .prop('checked', s.relationships_enabled ?? true)
     .on('change', function () {
       extension_settings[MODULE_NAME].relationships_enabled = $(this).prop('checked');
@@ -1643,34 +1647,34 @@ export function bindSettingsUI(ctrl) {
       injectRelationshipHistory(characterName);
     });
 
-  $('#sm_relationships_inject_budget_value').text(s.relationships_inject_budget ?? 250);
-  $('#sm_relationships_inject_budget')
+  $('#sme_relationships_inject_budget_value').text(s.relationships_inject_budget ?? 250);
+  $('#sme_relationships_inject_budget')
     .val(s.relationships_inject_budget ?? 250)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].relationships_inject_budget = v;
-      $('#sm_relationships_inject_budget_value').text(v);
+      $('#sme_relationships_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $(`input[name="sm_relationships_position"][value="${s.relationships_position ?? 1}"]`).prop(
+  $(`input[name="sme_relationships_position"][value="${s.relationships_position ?? 1}"]`).prop(
     'checked',
     true,
   );
-  $('input[name="sm_relationships_position"]').on('change', function () {
+  $('input[name="sme_relationships_position"]').on('change', function () {
     extension_settings[MODULE_NAME].relationships_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_relationships_depth')
+  $('#sme_relationships_depth')
     .val(s.relationships_depth ?? 5)
     .on('input', function () {
       extension_settings[MODULE_NAME].relationships_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_relationships_role')
+  $('#sme_relationships_role')
     .val(s.relationships_role ?? 0)
     .on('change', function () {
       extension_settings[MODULE_NAME].relationships_role = parseInt($(this).val(), 10);
@@ -1678,24 +1682,24 @@ export function bindSettingsUI(ctrl) {
     });
 
   // ---- Relationship history panel buttons -----------------------------
-  $('#sm_add_relationship').on('click', function () {
-    $('#sm_relationship_add_form').removeData('editing').show();
-    $('#sm_rel_subject').val('').focus();
-    $('#sm_rel_target').val('');
-    $('#sm_rel_descriptors').val('');
+  $('#sme_add_relationship').on('click', function () {
+    $('#sme_relationship_add_form').removeData('editing').show();
+    $('#sme_rel_subject').val('').focus();
+    $('#sme_rel_target').val('');
+    $('#sme_rel_descriptors').val('');
   });
 
-  $('#sm_rel_cancel').on('click', function () {
-    $('#sm_relationship_add_form').removeData('editing').hide();
+  $('#sme_rel_cancel').on('click', function () {
+    $('#sme_relationship_add_form').removeData('editing').hide();
   });
 
-  $('#sm_rel_save').on('click', function () {
+  $('#sme_rel_save').on('click', function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) return;
 
-    const subject = $('#sm_rel_subject').val().trim();
-    const target = $('#sm_rel_target').val().trim();
-    const descriptorsRaw = $('#sm_rel_descriptors').val().trim();
+    const subject = $('#sme_rel_subject').val().trim();
+    const target = $('#sme_rel_target').val().trim();
+    const descriptorsRaw = $('#sme_rel_descriptors').val().trim();
 
     if (!subject || !target || !descriptorsRaw) return;
 
@@ -1724,7 +1728,7 @@ export function bindSettingsUI(ctrl) {
     const h = loadRelationshipHistory(characterName);
 
     // If editing an existing pair under a different key, remove the old entry.
-    const editingKey = $('#sm_relationship_add_form').data('editing');
+    const editingKey = $('#sme_relationship_add_form').data('editing');
     if (editingKey && editingKey !== key) delete h[editingKey];
 
     h[key] = { descriptors, updatedAt: Date.now() };
@@ -1732,10 +1736,10 @@ export function bindSettingsUI(ctrl) {
     saveSettingsDebounced();
     injectRelationshipHistory(characterName);
     updateRelationshipHistoryUI(characterName);
-    $('#sm_relationship_add_form').removeData('editing').hide();
+    $('#sme_relationship_add_form').removeData('editing').hide();
   });
 
-  $('#sm_clear_relationships').on('click', async function () {
+  $('#sme_clear_relationships').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) return;
     if (
@@ -1753,7 +1757,7 @@ export function bindSettingsUI(ctrl) {
 
   // ---- Perspectives & Secrets bindings -----------------------------------
 
-  $('#sm_epistemic_enabled')
+  $('#sme_epistemic_enabled')
     .prop('checked', s.epistemic_enabled ?? true)
     .on('change', async function () {
       const enabling = $(this).prop('checked');
@@ -1775,48 +1779,48 @@ export function bindSettingsUI(ctrl) {
       injectEpistemicKnowledge(characterName, characterName);
     });
 
-  $('#sm_epistemic_inject_unaware')
+  $('#sme_epistemic_inject_unaware')
     .prop('checked', s.epistemic_inject_unaware ?? true)
     .on('change', function () {
       extension_settings[MODULE_NAME].epistemic_inject_unaware = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_epistemic_secondhand_framing')
+  $('#sme_epistemic_secondhand_framing')
     .prop('checked', s.epistemic_secondhand_framing ?? true)
     .on('change', function () {
       extension_settings[MODULE_NAME].epistemic_secondhand_framing = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_epistemic_inject_budget_value').text(s.epistemic_inject_budget ?? 200);
-  $('#sm_epistemic_inject_budget')
+  $('#sme_epistemic_inject_budget_value').text(s.epistemic_inject_budget ?? 200);
+  $('#sme_epistemic_inject_budget')
     .val(s.epistemic_inject_budget ?? 200)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].epistemic_inject_budget = v;
-      $('#sm_epistemic_inject_budget_value').text(v);
+      $('#sme_epistemic_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $(`input[name="sm_epistemic_position"][value="${s.epistemic_position ?? 1}"]`).prop(
+  $(`input[name="sme_epistemic_position"][value="${s.epistemic_position ?? 1}"]`).prop(
     'checked',
     true,
   );
-  $('input[name="sm_epistemic_position"]').on('change', function () {
+  $('input[name="sme_epistemic_position"]').on('change', function () {
     extension_settings[MODULE_NAME].epistemic_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_epistemic_depth')
+  $('#sme_epistemic_depth')
     .val(s.epistemic_depth ?? 1)
     .on('input', function () {
       extension_settings[MODULE_NAME].epistemic_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_epistemic_role')
+  $('#sme_epistemic_role')
     .val(s.epistemic_role ?? 0)
     .on('change', function () {
       extension_settings[MODULE_NAME].epistemic_role = parseInt($(this).val(), 10);
@@ -1825,7 +1829,7 @@ export function bindSettingsUI(ctrl) {
 
   // ---- State Ledger bindings ---------------------------------------------
 
-  $('#sm_state_ledger_enabled')
+  $('#sme_state_ledger_enabled')
     .prop('checked', s.state_ledger_enabled ?? false)
     .on('change', async function () {
       const enabling = $(this).prop('checked');
@@ -1846,34 +1850,34 @@ export function bindSettingsUI(ctrl) {
       injectStateLedger();
     });
 
-  $('#sm_state_ledger_inject_budget_value').text(s.state_ledger_inject_budget ?? 200);
-  $('#sm_state_ledger_inject_budget')
+  $('#sme_state_ledger_inject_budget_value').text(s.state_ledger_inject_budget ?? 200);
+  $('#sme_state_ledger_inject_budget')
     .val(s.state_ledger_inject_budget ?? 200)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].state_ledger_inject_budget = v;
-      $('#sm_state_ledger_inject_budget_value').text(v);
+      $('#sme_state_ledger_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $(`input[name="sm_state_ledger_position"][value="${s.state_ledger_position ?? 1}"]`).prop(
+  $(`input[name="sme_state_ledger_position"][value="${s.state_ledger_position ?? 1}"]`).prop(
     'checked',
     true,
   );
-  $('input[name="sm_state_ledger_position"]').on('change', function () {
+  $('input[name="sme_state_ledger_position"]').on('change', function () {
     extension_settings[MODULE_NAME].state_ledger_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_state_ledger_depth')
+  $('#sme_state_ledger_depth')
     .val(s.state_ledger_depth ?? 1)
     .on('input', function () {
       extension_settings[MODULE_NAME].state_ledger_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_state_ledger_role')
+  $('#sme_state_ledger_role')
     .val(s.state_ledger_role ?? 0)
     .on('change', function () {
       extension_settings[MODULE_NAME].state_ledger_role = parseInt($(this).val(), 10);
@@ -1881,38 +1885,38 @@ export function bindSettingsUI(ctrl) {
     });
 
   // Show/hide the target field when type changes to/from "hiding".
-  $('#sm_ep_type').on('change', function () {
-    $('.sm_ep_target_field').toggle($(this).val() === 'hiding');
+  $('#sme_ep_type').on('change', function () {
+    $('.sme_ep_target_field').toggle($(this).val() === 'hiding');
   });
 
-  $('#sm_epistemic_add').on('click', function () {
-    $('#sm_ep_type').val('knows');
-    $('#sm_ep_subject').val('');
-    $('#sm_ep_target').val('');
-    $('#sm_ep_content').val('');
-    $('.sm_ep_target_field').hide();
-    $('#sm_epistemic_add_form').removeData('editing').show();
-    $('#sm_ep_subject').focus();
+  $('#sme_epistemic_add').on('click', function () {
+    $('#sme_ep_type').val('knows');
+    $('#sme_ep_subject').val('');
+    $('#sme_ep_target').val('');
+    $('#sme_ep_content').val('');
+    $('.sme_ep_target_field').hide();
+    $('#sme_epistemic_add_form').removeData('editing').show();
+    $('#sme_ep_subject').focus();
   });
 
-  $('#sm_ep_cancel').on('click', function () {
-    $('#sm_epistemic_add_form').removeData('editing').hide();
+  $('#sme_ep_cancel').on('click', function () {
+    $('#sme_epistemic_add_form').removeData('editing').hide();
   });
 
-  $('#sm_ep_save').on('click', function () {
+  $('#sme_ep_save').on('click', function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) return;
 
-    const type = $('#sm_ep_type').val();
-    const subject = $('#sm_ep_subject').val().trim();
-    const target = type === 'hiding' ? $('#sm_ep_target').val().trim() : '';
-    const content = $('#sm_ep_content').val().trim();
+    const type = $('#sme_ep_type').val();
+    const subject = $('#sme_ep_subject').val().trim();
+    const target = type === 'hiding' ? $('#sme_ep_target').val().trim() : '';
+    const content = $('#sme_ep_content').val().trim();
 
     if (!subject || !content) return;
     if (type === 'hiding' && !target) return;
 
     const entries = loadEpistemicKnowledge(characterName);
-    const editingId = $('#sm_epistemic_add_form').data('editing');
+    const editingId = $('#sme_epistemic_add_form').data('editing');
 
     if (editingId) {
       // Update the existing entry in place.
@@ -1928,10 +1932,10 @@ export function bindSettingsUI(ctrl) {
     injectEpistemicKnowledge(characterName, characterName);
     updateEpistemicUI(characterName);
     updateTokenDisplay();
-    $('#sm_epistemic_add_form').removeData('editing').hide();
+    $('#sme_epistemic_add_form').removeData('editing').hide();
   });
 
-  $('#sm_epistemic_clear').on('click', async function () {
+  $('#sme_epistemic_clear').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) return;
     if (
@@ -1947,7 +1951,7 @@ export function bindSettingsUI(ctrl) {
     updateTokenDisplay();
   });
 
-  $('#sm_read_only').on('change', async function () {
+  $('#sme_read_only').on('change', async function () {
     const val = $(this).prop('checked');
     await setFreshStart(val);
 
@@ -1999,7 +2003,7 @@ export function bindSettingsUI(ctrl) {
     updateSessionUI();
   });
 
-  $('#sm_extract_now').on('click', async function () {
+  $('#sme_extract_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (ctrl.extractionRunning || ctrl.consolidationRunning) return;
     const characterName = ctrl.getSelectedCharacterName();
@@ -2029,7 +2033,7 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  $('#sm_clear_memories').on('click', async function () {
+  $('#sme_clear_memories').on('click', async function () {
     if (isCatchUpRunning()) return;
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) return;
@@ -2052,7 +2056,7 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Session memory -------------------------------------------------
-  $('#sm_session_enabled')
+  $('#sme_session_enabled')
     .prop('checked', s.session_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].session_enabled = $(this).prop('checked');
@@ -2060,65 +2064,65 @@ export function bindSettingsUI(ctrl) {
       injectSessionMemories();
     });
 
-  $('#sm_session_extract_every')
+  $('#sme_session_extract_every')
     .val(s.session_extract_every)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].session_extract_every = val;
-      $('#sm_session_extract_every_value').text(val);
+      $('#sme_session_extract_every_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_session_extract_every_value').text(s.session_extract_every);
+  $('#sme_session_extract_every_value').text(s.session_extract_every);
 
-  $('#sm_session_max_memories')
+  $('#sme_session_max_memories')
     .val(s.session_max_memories)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].session_max_memories = val;
-      $('#sm_session_max_memories_value').text(val);
+      $('#sme_session_max_memories_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_session_max_memories_value').text(s.session_max_memories);
+  $('#sme_session_max_memories_value').text(s.session_max_memories);
 
-  $('#sm_session_template')
+  $('#sme_session_template')
     .val(s.session_template)
     .on('input', function () {
       extension_settings[MODULE_NAME].session_template = $(this).val();
       saveSettingsDebounced();
     });
 
-  $(`input[name="sm_session_position"][value="${s.session_position}"]`).prop('checked', true);
-  $('input[name="sm_session_position"]').on('change', function () {
+  $(`input[name="sme_session_position"][value="${s.session_position}"]`).prop('checked', true);
+  $('input[name="sme_session_position"]').on('change', function () {
     extension_settings[MODULE_NAME].session_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_session_depth')
+  $('#sme_session_depth')
     .val(s.session_depth)
     .on('input', function () {
       extension_settings[MODULE_NAME].session_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_session_role')
+  $('#sme_session_role')
     .val(s.session_role)
     .on('change', function () {
       extension_settings[MODULE_NAME].session_role = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_session_inject_budget_value').text(s.session_inject_budget ?? 400);
-  $('#sm_session_inject_budget')
+  $('#sme_session_inject_budget_value').text(s.session_inject_budget ?? 400);
+  $('#sme_session_inject_budget')
     .val(s.session_inject_budget ?? 400)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].session_inject_budget = v;
-      $('#sm_session_inject_budget_value').text(v);
+      $('#sme_session_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $('#sm_extract_session_now').on('click', async function () {
+  $('#sme_extract_session_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (isFreshStart()) return;
     $(this).prop('disabled', true);
@@ -2143,7 +2147,7 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  $('#sm_clear_session').on('click', async function () {
+  $('#sme_clear_session').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (!(await callGenericPopup('Clear all session memories for this chat?', POPUP_TYPE.CONFIRM)))
       return;
@@ -2157,7 +2161,7 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Scene detection ------------------------------------------------
-  $('#sm_scene_enabled')
+  $('#sme_scene_enabled')
     .prop('checked', s.scene_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].scene_enabled = $(this).prop('checked');
@@ -2165,55 +2169,55 @@ export function bindSettingsUI(ctrl) {
       injectSceneHistory();
     });
 
-  $('#sm_scene_ai_detect')
+  $('#sme_scene_ai_detect')
     .prop('checked', s.scene_ai_detect)
     .on('change', function () {
       extension_settings[MODULE_NAME].scene_ai_detect = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_scene_max_history')
+  $('#sme_scene_max_history')
     .val(s.scene_max_history)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].scene_max_history = val;
-      $('#sm_scene_max_history_value').text(val);
+      $('#sme_scene_max_history_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_scene_max_history_value').text(s.scene_max_history);
+  $('#sme_scene_max_history_value').text(s.scene_max_history);
 
-  $(`input[name="sm_scene_position"][value="${s.scene_position}"]`).prop('checked', true);
-  $('input[name="sm_scene_position"]').on('change', function () {
+  $(`input[name="sme_scene_position"][value="${s.scene_position}"]`).prop('checked', true);
+  $('input[name="sme_scene_position"]').on('change', function () {
     extension_settings[MODULE_NAME].scene_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_scene_depth')
+  $('#sme_scene_depth')
     .val(s.scene_depth)
     .on('input', function () {
       extension_settings[MODULE_NAME].scene_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_scene_role')
+  $('#sme_scene_role')
     .val(s.scene_role)
     .on('change', function () {
       extension_settings[MODULE_NAME].scene_role = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_scene_inject_budget_value').text(s.scene_inject_budget ?? 300);
-  $('#sm_scene_inject_budget')
+  $('#sme_scene_inject_budget_value').text(s.scene_inject_budget ?? 300);
+  $('#sme_scene_inject_budget')
     .val(s.scene_inject_budget ?? 300)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].scene_inject_budget = v;
-      $('#sm_scene_inject_budget_value').text(v);
+      $('#sme_scene_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $('#sm_extract_scenes_now').on('click', async function () {
+  $('#sme_extract_scenes_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     $(this).prop('disabled', true);
     setStatusMessage('Summarizing current scene...');
@@ -2248,7 +2252,7 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  $('#sm_clear_scenes').on('click', async function () {
+  $('#sme_clear_scenes').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (!(await callGenericPopup('Clear all scene history for this chat?', POPUP_TYPE.CONFIRM)))
       return;
@@ -2259,7 +2263,7 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Story arcs -----------------------------------------------------
-  $('#sm_arcs_enabled')
+  $('#sme_arcs_enabled')
     .prop('checked', s.arcs_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].arcs_enabled = $(this).prop('checked');
@@ -2267,48 +2271,48 @@ export function bindSettingsUI(ctrl) {
       injectArcs();
     });
 
-  $('#sm_arcs_max')
+  $('#sme_arcs_max')
     .val(s.arcs_max)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].arcs_max = val;
-      $('#sm_arcs_max_value').text(val);
+      $('#sme_arcs_max_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sm_arcs_max_value').text(s.arcs_max);
+  $('#sme_arcs_max_value').text(s.arcs_max);
 
-  $(`input[name="sm_arcs_position"][value="${s.arcs_position}"]`).prop('checked', true);
-  $('input[name="sm_arcs_position"]').on('change', function () {
+  $(`input[name="sme_arcs_position"][value="${s.arcs_position}"]`).prop('checked', true);
+  $('input[name="sme_arcs_position"]').on('change', function () {
     extension_settings[MODULE_NAME].arcs_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
   });
 
-  $('#sm_arcs_depth')
+  $('#sme_arcs_depth')
     .val(s.arcs_depth)
     .on('input', function () {
       extension_settings[MODULE_NAME].arcs_depth = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_arcs_role')
+  $('#sme_arcs_role')
     .val(s.arcs_role)
     .on('change', function () {
       extension_settings[MODULE_NAME].arcs_role = parseInt($(this).val(), 10);
       saveSettingsDebounced();
     });
 
-  $('#sm_arcs_inject_budget_value').text(s.arcs_inject_budget ?? 200);
-  $('#sm_arcs_inject_budget')
+  $('#sme_arcs_inject_budget_value').text(s.arcs_inject_budget ?? 200);
+  $('#sme_arcs_inject_budget')
     .val(s.arcs_inject_budget ?? 200)
     .on('input', function () {
       const v = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].arcs_inject_budget = v;
-      $('#sm_arcs_inject_budget_value').text(v);
+      $('#sme_arcs_inject_budget_value').text(v);
       saveSettingsDebounced();
       reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
     });
 
-  $('#sm_extract_arcs_now').on('click', async function () {
+  $('#sme_extract_arcs_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     $(this).prop('disabled', true);
     setStatusMessage('Extracting story arcs...');
@@ -2329,7 +2333,7 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  $('#sm_clear_arcs').on('click', async function () {
+  $('#sme_clear_arcs').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (!(await callGenericPopup('Clear all story arcs for this chat?', POPUP_TYPE.CONFIRM)))
       return;
@@ -2340,24 +2344,24 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Away recap -----------------------------------------------------
-  $('#sm_recap_enabled')
+  $('#sme_recap_enabled')
     .prop('checked', s.recap_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].recap_enabled = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_recap_threshold')
+  $('#sme_recap_threshold')
     .val(s.recap_threshold_hours)
     .on('input', function () {
       const val = parseFloat($(this).val());
       extension_settings[MODULE_NAME].recap_threshold_hours = val;
-      $('#sm_recap_threshold_value').text(val + 'h');
+      $('#sme_recap_threshold_value').text(val + 'h');
       saveSettingsDebounced();
     });
-  $('#sm_recap_threshold_value').text(s.recap_threshold_hours + 'h');
+  $('#sme_recap_threshold_value').text(s.recap_threshold_hours + 'h');
 
-  $('#sm_recap_now').on('click', async function () {
+  $('#sme_recap_now').on('click', async function () {
     $(this).prop('disabled', true);
     setStatusMessage('Generating recap...');
     try {
@@ -2385,7 +2389,7 @@ export function bindSettingsUI(ctrl) {
   // Token budget for chat content per catch-up chunk is computed dynamically
   // from the configured context size at the time catch-up runs - see below.
 
-  $('#sm_catch_up').on('click', async function () {
+  $('#sme_catch_up').on('click', async function () {
     if (ctrl.extractionRunning || ctrl.compactionRunning) {
       toastr.warning('An extraction is already running.', 'Smart Memory', { timeOut: 3000 });
       return;
@@ -2439,8 +2443,8 @@ export function bindSettingsUI(ctrl) {
       console.error(`[SmartMemory] Catch-up ${label}:`, err);
     };
     setCatchUpErrorCount(0);
-    $('#sm_catch_up').hide();
-    $('#sm_cancel_catch_up').show().prop('disabled', false);
+    $('#sme_catch_up').hide();
+    $('#sme_cancel_catch_up').show().prop('disabled', false);
 
     try {
       const context = getContext();
@@ -2793,22 +2797,22 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
-      $('#sm_cancel_catch_up').hide();
-      $('#sm_catch_up').show();
+      $('#sme_cancel_catch_up').hide();
+      $('#sme_catch_up').show();
       ctrl.extractionRunning = false;
       ctrl.compactionRunning = false;
       ctrl.catchUpCancelled = false;
     }
   });
 
-  $('#sm_cancel_catch_up').on('click', function () {
+  $('#sme_cancel_catch_up').on('click', function () {
     ctrl.catchUpCancelled = true;
     $(this).prop('disabled', true);
     setStatusMessage('Cancelling...');
   });
 
   // ---- Clear Chat Context ---------------------------------------------
-  $('#sm_clear_chat_context').on('click', async function () {
+  $('#sme_clear_chat_context').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (
       !(await callGenericPopup(
@@ -2861,7 +2865,7 @@ export function bindSettingsUI(ctrl) {
   });
 
   // ---- Fresh Start ----------------------------------------------------
-  $('#sm_fresh_start_button').on('click', async function () {
+  $('#sme_fresh_start_button').on('click', async function () {
     if (isCatchUpRunning()) return;
     const characterName = ctrl.getSelectedCharacterName();
     const nameLabel = characterName ? `"${characterName}"` : 'this character';
@@ -2899,7 +2903,7 @@ export function bindSettingsUI(ctrl) {
     await clearProfiles(characterName);
     await clearStateLedger();
     // Dismiss any open recap modal.
-    $('#sm_recap_overlay').remove();
+    $('#sme_recap_overlay').remove();
 
     await context.saveMetadata();
 
@@ -2942,41 +2946,41 @@ export function bindSettingsUI(ctrl) {
   function applyEmbeddingSourceUI() {
     const src = extension_settings[MODULE_NAME].embedding_source ?? 'ollama';
     const isOllama = src === 'ollama';
-    $('#sm_embedding_model_ollama_row').toggle(isOllama);
-    $('#sm_embedding_model_openai_row').toggle(!isOllama);
-    $('#sm_embedding_api_key_row').toggle(!isOllama);
-    $('#sm_embedding_keep_row').toggle(isOllama);
-    $('#sm_embedding_install_hint_ollama').toggle(isOllama);
-    $('#sm_embedding_install_hint_openai').toggle(!isOllama);
+    $('#sme_embedding_model_ollama_row').toggle(isOllama);
+    $('#sme_embedding_model_openai_row').toggle(!isOllama);
+    $('#sme_embedding_api_key_row').toggle(!isOllama);
+    $('#sme_embedding_keep_row').toggle(isOllama);
+    $('#sme_embedding_install_hint_ollama').toggle(isOllama);
+    $('#sme_embedding_install_hint_openai').toggle(!isOllama);
     if (!isOllama) {
       // Sync the OpenAI model text field with the stored setting.
-      $('#sm_embedding_model_openai').val(extension_settings[MODULE_NAME].embedding_model ?? '');
+      $('#sme_embedding_model_openai').val(extension_settings[MODULE_NAME].embedding_model ?? '');
       // Show whether a key is stored - never populate the field with the actual value.
-      $('#sm_embedding_api_key')
+      $('#sme_embedding_api_key')
         .val('')
         .attr('placeholder', hasEmbeddingApiKey() ? '(key stored)' : 'sk-...');
     }
   }
 
-  $('#sm_embedding_enabled')
+  $('#sme_embedding_enabled')
     .prop('checked', s.embedding_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].embedding_enabled = $(this).prop('checked');
-      $('#sm_embedding_config').toggle(extension_settings[MODULE_NAME].embedding_enabled);
+      $('#sme_embedding_config').toggle(extension_settings[MODULE_NAME].embedding_enabled);
       // Reset failure flag so the next attempt gets a clean slate.
       clearEmbeddingFailed();
-      $('#sm_embedding_test_result').text('');
+      $('#sme_embedding_test_result').text('');
       updateEmbeddingNotice();
       saveSettingsDebounced();
     });
-  $('#sm_embedding_config').toggle(s.embedding_enabled);
+  $('#sme_embedding_config').toggle(s.embedding_enabled);
 
-  $('#sm_embedding_source')
+  $('#sme_embedding_source')
     .val(s.embedding_source ?? 'ollama')
     .on('change', function () {
       extension_settings[MODULE_NAME].embedding_source = $(this).val();
       clearEmbeddingFailed();
-      $('#sm_embedding_test_result').text('');
+      $('#sme_embedding_test_result').text('');
       applyEmbeddingSourceUI();
       saveSettingsDebounced();
       if (extension_settings[MODULE_NAME].embedding_source === 'ollama') {
@@ -2984,12 +2988,12 @@ export function bindSettingsUI(ctrl) {
       }
     });
 
-  $('#sm_embedding_url')
+  $('#sme_embedding_url')
     .val(s.embedding_url ?? '')
     .on('change', function () {
       extension_settings[MODULE_NAME].embedding_url = $(this).val().trim();
       clearEmbeddingFailed();
-      $('#sm_embedding_test_result').text('');
+      $('#sme_embedding_test_result').text('');
       updateEmbeddingNotice();
       saveSettingsDebounced();
       if ((extension_settings[MODULE_NAME].embedding_source ?? 'ollama') === 'ollama') {
@@ -2998,61 +3002,61 @@ export function bindSettingsUI(ctrl) {
     });
 
   // Embedding model dropdown - saves on selection change.
-  $('#sm_embedding_model').on('change', function () {
+  $('#sme_embedding_model').on('change', function () {
     extension_settings[MODULE_NAME].embedding_model = $(this).val();
     clearEmbeddingFailed();
-    $('#sm_embedding_test_result').text('');
+    $('#sme_embedding_test_result').text('');
     updateEmbeddingNotice();
     saveSettingsDebounced();
   });
 
   // Manual text fallback - shown when Ollama is not reachable from the browser.
-  $('#sm_embedding_model_manual').on('input', function () {
+  $('#sme_embedding_model_manual').on('input', function () {
     extension_settings[MODULE_NAME].embedding_model = $(this).val().trim();
     clearEmbeddingFailed();
-    $('#sm_embedding_test_result').text('');
+    $('#sme_embedding_test_result').text('');
     updateEmbeddingNotice();
     saveSettingsDebounced();
   });
 
   // OpenAI Compatible model text field.
-  $('#sm_embedding_model_openai').on('input', function () {
+  $('#sme_embedding_model_openai').on('input', function () {
     extension_settings[MODULE_NAME].embedding_model = $(this).val().trim();
     clearEmbeddingFailed();
-    $('#sm_embedding_test_result').text('');
+    $('#sme_embedding_test_result').text('');
     updateEmbeddingNotice();
     saveSettingsDebounced();
   });
 
   // OpenAI Compatible embedding API key field - stored in extension_settings.
-  $('#sm_embedding_api_key').on('change', function () {
+  $('#sme_embedding_api_key').on('change', function () {
     const value = $(this).val().trim();
     saveEmbeddingApiKey(value);
     $(this)
       .val('')
       .attr('placeholder', hasEmbeddingApiKey() ? '(key stored)' : 'sk-...');
     clearEmbeddingFailed();
-    $('#sm_embedding_test_result').text('');
+    $('#sme_embedding_test_result').text('');
   });
 
   applyEmbeddingSourceUI();
 
   // Refresh button and auto-load on settings open (Ollama only).
-  $('#sm_embedding_refresh').on('click', () => refreshEmbeddingModels());
+  $('#sme_embedding_refresh').on('click', () => refreshEmbeddingModels());
   if (s.embedding_enabled && (s.embedding_source ?? 'ollama') === 'ollama') {
     refreshEmbeddingModels();
   }
 
-  $('#sm_embedding_keep')
+  $('#sme_embedding_keep')
     .prop('checked', s.embedding_keep)
     .on('change', function () {
       extension_settings[MODULE_NAME].embedding_keep = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_embedding_test').on('click', async function () {
+  $('#sme_embedding_test').on('click', async function () {
     const $btn = $(this);
-    const $result = $('#sm_embedding_test_result');
+    const $result = $('#sme_embedding_test_result');
     $btn.prop('disabled', true);
     $result.text('Testing...');
     try {
@@ -3076,9 +3080,9 @@ export function bindSettingsUI(ctrl) {
   });
 
   // "Set up embeddings" link in the notice scrolls to the dedup section.
-  $('#sm_embedding_notice_link').on('click', function (e) {
+  $('#sme_embedding_notice_link').on('click', function (e) {
     e.preventDefault();
-    const $dedup = $('#sm_embedding_enabled').closest('details');
+    const $dedup = $('#sme_embedding_enabled').closest('details');
     if ($dedup.length) {
       $dedup.prop('open', true);
       $dedup[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -3088,7 +3092,7 @@ export function bindSettingsUI(ctrl) {
   updateEmbeddingNotice();
 
   // ---- Profiles -------------------------------------------------------
-  $('#sm_profiles_enabled')
+  $('#sme_profiles_enabled')
     .prop('checked', s.profiles_enabled)
     .on('change', function () {
       extension_settings[MODULE_NAME].profiles_enabled = $(this).prop('checked');
@@ -3101,10 +3105,10 @@ export function bindSettingsUI(ctrl) {
       }
     });
 
-  const $profilesThresholdVal = $('#sm_profiles_stale_threshold_value');
+  const $profilesThresholdVal = $('#sme_profiles_stale_threshold_value');
   const formatProfilesThreshold = (v) => (v >= 60 ? `${Math.round(v / 60)}h` : `${v}m`);
   $profilesThresholdVal.text(formatProfilesThreshold(s.profiles_stale_threshold_minutes ?? 30));
-  $('#sm_profiles_stale_threshold')
+  $('#sme_profiles_stale_threshold')
     .val(s.profiles_stale_threshold_minutes ?? 30)
     .on('input', function () {
       const v = Number($(this).val());
@@ -3113,10 +3117,10 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
     });
 
-  const $regenEveryVal = $('#sm_profiles_regen_every_value');
+  const $regenEveryVal = $('#sme_profiles_regen_every_value');
   const formatRegenEvery = (v) => (v === 0 ? 'extraction only' : `${v} msg${v === 1 ? '' : 's'}`);
   $regenEveryVal.text(formatRegenEvery(s.profiles_regen_every ?? 0));
-  $('#sm_profiles_regen_every')
+  $('#sme_profiles_regen_every')
     .val(s.profiles_regen_every ?? 0)
     .on('input', function () {
       const v = Number($(this).val());
@@ -3125,7 +3129,7 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
     });
 
-  $('#sm_profiles_regenerate').on('click', async function () {
+  $('#sme_profiles_regenerate').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
       toastr.warning('No active character - profiles need a character.', 'Smart Memory', {
@@ -3153,8 +3157,8 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  const $profilesBudgetVal = $('#sm_profiles_inject_budget_value');
-  $('#sm_profiles_inject_budget')
+  const $profilesBudgetVal = $('#sme_profiles_inject_budget_value');
+  $('#sme_profiles_inject_budget')
     .val(s.profiles_inject_budget ?? 400)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
@@ -3166,14 +3170,14 @@ export function bindSettingsUI(ctrl) {
   $profilesBudgetVal.text((s.profiles_inject_budget ?? 400) + ' tokens');
 
   const currentProfilesPosition = s.profiles_position ?? extension_prompt_types.IN_PROMPT;
-  $(`input[name="sm_profiles_position"][value="${currentProfilesPosition}"]`).prop('checked', true);
-  $('input[name="sm_profiles_position"]').on('change', function () {
+  $(`input[name="sme_profiles_position"][value="${currentProfilesPosition}"]`).prop('checked', true);
+  $('input[name="sme_profiles_position"]').on('change', function () {
     extension_settings[MODULE_NAME].profiles_position = parseInt($(this).val(), 10);
     saveSettingsDebounced();
     injectProfiles(ctrl.getSelectedCharacterName());
   });
 
-  $('#sm_profiles_depth')
+  $('#sme_profiles_depth')
     .val(s.profiles_depth ?? 1)
     .on('input', function () {
       extension_settings[MODULE_NAME].profiles_depth = parseInt($(this).val(), 10);
@@ -3181,7 +3185,7 @@ export function bindSettingsUI(ctrl) {
       injectProfiles(ctrl.getSelectedCharacterName());
     });
 
-  $('#sm_profiles_role')
+  $('#sme_profiles_role')
     .val(s.profiles_role ?? extension_prompt_roles.SYSTEM)
     .on('change', function () {
       extension_settings[MODULE_NAME].profiles_role = parseInt($(this).val(), 10);
@@ -3192,19 +3196,19 @@ export function bindSettingsUI(ctrl) {
   updateProfilesUI(loadProfiles(ctrl.getSelectedCharacterName()));
 
   // ---- Entity graph -------------------------------------------------------
-  $('#sm_open_graph_btn').on('click', () => {
+  $('#sme_open_graph_btn').on('click', () => {
     showMemoryGraph(ctrl.getSelectedCharacterName());
   });
 
   // ---- Continuity checker ---------------------------------------------
-  $('#sm_auto_check')
+  $('#sme_auto_check')
     .prop('checked', s.continuity_auto_check)
     .on('change', function () {
       extension_settings[MODULE_NAME].continuity_auto_check = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_auto_repair')
+  $('#sme_auto_repair')
     .prop('checked', s.continuity_auto_repair)
     .on('change', function () {
       extension_settings[MODULE_NAME].continuity_auto_repair = $(this).prop('checked');
@@ -3212,7 +3216,7 @@ export function bindSettingsUI(ctrl) {
     });
 
   // ---- Notifications --------------------------------------------------
-  $('#sm_show_activity_indicator')
+  $('#sme_show_activity_indicator')
     .prop('checked', s.show_activity_indicator ?? true)
     .on('change', function () {
       extension_settings[MODULE_NAME].show_activity_indicator = $(this).prop('checked');
@@ -3220,14 +3224,14 @@ export function bindSettingsUI(ctrl) {
     });
 
   // ---- Developer / debug ----------------------------------------------
-  $('#sm_verbose_logging')
+  $('#sme_verbose_logging')
     .prop('checked', s.verbose_logging)
     .on('change', function () {
       extension_settings[MODULE_NAME].verbose_logging = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
-  $('#sm_auto_tune_budgets')
+  $('#sme_auto_tune_budgets')
     .prop('checked', s.auto_tune_budgets ?? false)
     .on('change', function () {
       extension_settings[MODULE_NAME].auto_tune_budgets = $(this).prop('checked');
@@ -3247,16 +3251,16 @@ export function bindSettingsUI(ctrl) {
     const advanced = (cur.settings_mode ?? 'simple') === 'advanced';
     // Per-tier position/depth/role blocks are advanced-only and hidden by override modes.
     // Both conditions must be met to show them: advanced mode on and no override active.
-    // Exclude sm_unified_position - it belongs to the unified block's own settings.
-    $('[name$="_position"]:not([name="sm_unified_position"]), #sm_longterm_triggered_depth')
+    // Exclude sme_unified_position - it belongs to the unified block's own settings.
+    $('[name$="_position"]:not([name="sme_unified_position"]), #sme_longterm_triggered_depth')
       .closest('.sm-block')
       .toggle(!hide && advanced);
     // Unified sub-settings are only relevant when unified injection is on,
     // macro mode is off, and advanced mode is active.
-    $('#sm_unified_settings').toggle(unified && !macros && advanced);
+    $('#sme_unified_settings').toggle(unified && !macros && advanced);
   }
 
-  $('#sm_unified_injection')
+  $('#sme_unified_injection')
     .prop('checked', s.unified_injection ?? false)
     .on('change', function () {
       const enabled = $(this).prop('checked');
@@ -3281,16 +3285,16 @@ export function bindSettingsUI(ctrl) {
       }
       updateTokenDisplay();
     });
-  $('[name="sm_unified_position"]')
+  $('[name="sme_unified_position"]')
     .filter(`[value="${s.unified_position ?? 2}"]`)
     .prop('checked', true);
-  $('[name="sm_unified_position"]').on('change', function () {
+  $('[name="sme_unified_position"]').on('change', function () {
     extension_settings[MODULE_NAME].unified_position = Number($(this).val());
     saveSettingsDebounced();
     maybeInjectUnified();
   });
 
-  $('#sm_unified_depth')
+  $('#sme_unified_depth')
     .val(s.unified_depth ?? 0)
     .on('change', function () {
       extension_settings[MODULE_NAME].unified_depth = Number($(this).val());
@@ -3298,7 +3302,7 @@ export function bindSettingsUI(ctrl) {
       maybeInjectUnified();
     });
 
-  $('#sm_unified_role')
+  $('#sme_unified_role')
     .val(s.unified_role ?? 0)
     .on('change', function () {
       extension_settings[MODULE_NAME].unified_role = Number($(this).val());
@@ -3307,17 +3311,17 @@ export function bindSettingsUI(ctrl) {
     });
 
   const refreshPeriod = s.injection_refresh_period ?? 1;
-  $('#sm_injection_refresh_period')
+  $('#sme_injection_refresh_period')
     .val(refreshPeriod)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
-      $('#sm_injection_refresh_period_value').text(val);
+      $('#sme_injection_refresh_period_value').text(val);
       extension_settings[MODULE_NAME].injection_refresh_period = val;
       saveSettingsDebounced();
     });
-  $('#sm_injection_refresh_period_value').text(refreshPeriod);
+  $('#sme_injection_refresh_period_value').text(refreshPeriod);
 
-  $('#sm_macros_enabled')
+  $('#sme_macros_enabled')
     .prop('checked', s.macros_enabled ?? false)
     .on('change', function () {
       const enabled = $(this).prop('checked');
@@ -3327,24 +3331,24 @@ export function bindSettingsUI(ctrl) {
     });
   applyInjectionOverrideUI();
 
-  $('#sm_check_continuity').on('click', async function () {
+  $('#sme_check_continuity').on('click', async function () {
     const characterName = ctrl.getSelectedCharacterName();
     $(this).prop('disabled', true);
     setStatusMessage('Checking continuity...');
-    $('#sm_continuity_result').hide().empty();
+    $('#sme_continuity_result').hide().empty();
     try {
       const contradictions = await checkContinuity(characterName);
       if (contradictions.length === 0) {
-        $('#sm_continuity_result')
-          .addClass('sm_continuity_clean')
-          .removeClass('sm_continuity_warn')
+        $('#sme_continuity_result')
+          .addClass('sme_continuity_clean')
+          .removeClass('sme_continuity_warn')
           .text('No contradictions found.')
           .show();
         setStatusMessage('Continuity OK.');
       } else {
-        const $result = $('#sm_continuity_result')
-          .addClass('sm_continuity_warn')
-          .removeClass('sm_continuity_clean');
+        const $result = $('#sme_continuity_result')
+          .addClass('sme_continuity_warn')
+          .removeClass('sme_continuity_clean');
         $result.empty();
         $result.append('<b>Contradictions found:</b>');
         const $ul = $('<ul>');
@@ -3362,11 +3366,11 @@ export function bindSettingsUI(ctrl) {
           try {
             const note = await generateRepair(contradictions, characterName);
             injectRepair(note);
-            const $repairBlock = $('<div class="sm_repair_queued">');
+            const $repairBlock = $('<div class="sme_repair_queued">');
             $repairBlock.append($('<p>').text('Correction queued for next response:'));
-            $repairBlock.append($('<p class="sm_repair_note">').text(note));
+            $repairBlock.append($('<p class="sme_repair_note">').text(note));
             const $cancel = $(
-              '<button class="menu_button sm_repair_cancel">Cancel correction</button>',
+              '<button class="menu_button sme_repair_cancel">Cancel correction</button>',
             );
             $cancel.on('click', () => {
               clearRepair();
@@ -3391,17 +3395,17 @@ export function bindSettingsUI(ctrl) {
     }
   });
 
-  $('#sm_about').on('click', async function () {
+  $('#sme_about').on('click', async function () {
     // Populate version from manifest.json so it stays in sync automatically.
     try {
       const manifest = await fetch(
         '/scripts/extensions/third-party/Smart-Memory/manifest.json',
       ).then((r) => r.json());
-      $('#sm_about_version').text(manifest.version ?? '');
+      $('#sme_about_version').text(manifest.version ?? '');
     } catch {
-      $('#sm_about_version').text('');
+      $('#sme_about_version').text('');
     }
-    const $modal = $('#sm_about_modal').clone().show();
+    const $modal = $('#sme_about_modal').clone().show();
     // Remove IDs from the clone so they do not duplicate the hidden template's IDs in the DOM.
     $modal.find('[id]').addBack('[id]').removeAttr('id');
     await callGenericPopup($modal[0], POPUP_TYPE.DISPLAY, '', {

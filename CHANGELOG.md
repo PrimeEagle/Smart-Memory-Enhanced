@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-15
+
+### Changed
+
+- Namespaced Smart Memory Enhanced's settings UI, prompt slots, and storage keys so it can run alongside the original extension without UI or state collisions.
+- Import the original extension's global preferences once when the enhanced fork is first loaded; future changes remain independent.
+
 ## [0.1.0] - 2026-07-15
 
 ### Changed

@@ -5,7 +5,9 @@
 
 Smart Memory Enhanced is an experimental reliability, grounding, and configurability fork of [Smart Memory by Senjin the Dragon](https://github.com/senjinthedragon/Smart-Memory). It is independently maintained, is not affiliated with or endorsed by the original maintainer, and remains licensed under AGPL-3.0-or-later.
 
-**Current fork version: v0.1.0**
+**Current fork version: v0.2.0**
+
+Smart Memory Enhanced can run alongside the original Smart Memory extension. It uses its own settings, chat metadata, prompt slots, and UI identifiers; on first load, it copies the original extension's global preferences once without changing the original data.
 
 Give your AI a memory that lasts. Smart Memory Enhanced is a SillyTavern extension that quietly works in the background, keeping your AI oriented in long stories, aware of what happened this session, and grounded in facts it has learned across every previous chat with a character - even after weeks away.
 

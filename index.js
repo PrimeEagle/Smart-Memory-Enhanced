@@ -371,7 +371,7 @@ function getSelectedCharacterName() {
     // selectedGroupCharacter is briefly null during chat transitions (reset at
     // the start of onChatChangedImpl, set again after updateGroupCharSelector).
     // Fall back to the DOM selector value so buttons still work during that window.
-    return selectedGroupCharacter || $('#sm_group_char_select').val() || null;
+    return selectedGroupCharacter || $('#sme_group_char_select').val() || null;
   }
   return getCurrentCharacterName();
 }
@@ -972,12 +972,12 @@ async function onCharacterMessageRendered(messageId, type) {
             setContinuityBadge(contradictions.length);
             // Populate the result panel so the user can read the contradictions
             // when they open the settings panel - same display as the manual check.
-            const $result = $('#sm_continuity_result');
-            $result.empty().removeClass('sm_continuity_clean sm_continuity_warn');
+            const $result = $('#sme_continuity_result');
+            $result.empty().removeClass('sme_continuity_clean sme_continuity_warn');
             if (contradictions.length === 0) {
-              $result.addClass('sm_continuity_clean').text('No contradictions found.').show();
+              $result.addClass('sme_continuity_clean').text('No contradictions found.').show();
             } else {
-              $result.addClass('sm_continuity_warn');
+              $result.addClass('sme_continuity_warn');
               $result.append('<b>Contradictions found:</b>');
               const $ul = $('<ul>');
               contradictions.forEach((c) => $ul.append($('<li>').text(c)));
@@ -986,11 +986,11 @@ async function onCharacterMessageRendered(messageId, type) {
                 try {
                   const note = await generateRepair(contradictions, characterName);
                   injectRepair(note);
-                  const $repairBlock = $('<div class="sm_repair_queued">');
+                  const $repairBlock = $('<div class="sme_repair_queued">');
                   $repairBlock.append($('<p>').text('Correction queued for next response:'));
-                  $repairBlock.append($('<p class="sm_repair_note">').text(note));
+                  $repairBlock.append($('<p class="sme_repair_note">').text(note));
                   const $cancel = $(
-                    '<button class="menu_button sm_repair_cancel">Cancel correction</button>',
+                    '<button class="menu_button sme_repair_cancel">Cancel correction</button>',
                   );
                   $cancel.on('click', () => {
                     clearRepair();
@@ -1005,7 +1005,7 @@ async function onCharacterMessageRendered(messageId, type) {
                 } catch (repairErr) {
                   console.error('[SmartMemory] Auto-repair failed:', repairErr);
                   $result.append(
-                    $('<p class="sm_repair_queued">').text(
+                    $('<p class="sme_repair_queued">').text(
                       'Correction could not be generated - check console.',
                     ),
                   );
@@ -1062,7 +1062,7 @@ async function onChatChangedImpl() {
 
   // Dismiss any recap overlay from the previous chat immediately - it is modal
   // and blocks input, so leaving it up over the new chat is confusing.
-  $('#sm_recap_overlay').remove();
+  $('#sme_recap_overlay').remove();
 
   messagesSinceLastExtraction = 0;
   messagesSinceLastProfileRegen = 0;
@@ -1304,7 +1304,7 @@ function updateGroupCharSelector() {
     return;
   }
 
-  const $select = $('#sm_group_char_select');
+  const $select = $('#sme_group_char_select');
   $select.empty();
   for (const name of members) {
     $select.append($('<option>', { value: name, text: name }));
@@ -1985,7 +1985,7 @@ jQuery(async function () {
   // and other types (e.g. expression classification) are extension background
   // calls that should not dismiss the overlay.
   eventSource.on(event_types.MESSAGE_SENT, () => {
-    $('#sm_recap_overlay').remove();
+    $('#sme_recap_overlay').remove();
     // If a recap is still generating when the message is sent, suppress the
     // popup - showing it after the response arrives would be confusing.
     if (recapRunningForChat !== null) recapSuppressed = true;
@@ -1999,7 +1999,7 @@ jQuery(async function () {
     // MESSAGE_RECEIVED and CHARACTER_MESSAGE_RENDERED.
     if (type === 'normal') {
       generationInProgress = true;
-      $('#sm_recap_overlay').remove();
+      $('#sme_recap_overlay').remove();
     }
   });
   eventSource.on(event_types.MESSAGE_RECEIVED, () => {
@@ -2008,12 +2008,12 @@ jQuery(async function () {
   // Allow external extensions to dismiss the recap overlay programmatically
   // (e.g. Discord Connector can dispatch this when the user sends a command
   // remotely and the blocking modal is preventing it from responding).
-  $(document).on('smart_memory:dismiss_recap', () => {
-    $('#sm_recap_overlay').remove();
+  $(document).on('smart_memory_enhanced:dismiss_recap', () => {
+    $('#sme_recap_overlay').remove();
   });
   // Profile B: auto-regenerate canon when the user manually resolves an arc
   // and a summary was successfully generated for it.
-  $(document).on('smart_memory:arc_resolved_with_summary', async (e, characterName, groupId) => {
+  $(document).on('smart_memory_enhanced:arc_resolved_with_summary', async (e, characterName, groupId) => {
     const settings = getSettings();
     const charName = groupId ? selectedGroupCharacter : characterName;
     if (

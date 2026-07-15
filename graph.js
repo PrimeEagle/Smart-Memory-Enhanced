@@ -148,7 +148,7 @@ export function showMemoryGraph(characterName) {
 
   if (nodes.length === 0) {
     // Show a brief inline message rather than opening an empty graph.
-    const $panel = $('#sm_entity_panel');
+    const $panel = $('#sme_entity_panel');
     const $msg = $(
       '<div class="sm-muted" style="padding:6px 0">No entities or memories to display yet.</div>',
     );
@@ -166,7 +166,7 @@ export function showMemoryGraph(characterName) {
   $overlay[0].addEventListener('cancel', (e) => e.preventDefault());
   $overlay[0].showModal();
 
-  const canvas = document.getElementById('sm_graph_canvas');
+  const canvas = document.getElementById('sme_graph_canvas');
   const ctx = canvas.getContext('2d');
   fitCanvas(canvas);
 
@@ -637,7 +637,7 @@ function drawArrow(ctx, x1, y1, x2, y2, color, alpha, targetRadius = 10) {
  * Updates the tooltip element position and content based on the hovered or selected node.
  */
 function renderTooltip() {
-  const $tip = $('#sm_graph_tooltip');
+  const $tip = $('#sme_graph_tooltip');
   const node = gs.hovered ?? gs.selected;
   if (!node) {
     $tip.hide();
@@ -652,11 +652,11 @@ function renderTooltip() {
   const esc = (s) => $('<div>').text(s).html();
   const typeLabel = node.nodeType === 'entity' ? `Entity - ${node.subtype}` : node.subtype;
   const triggersLine = node.triggers
-    ? `<span class="sm_graph_tip_triggers">Triggers: ${esc(node.triggers.join(', '))}</span>`
+    ? `<span class="sme_graph_tip_triggers">Triggers: ${esc(node.triggers.join(', '))}</span>`
     : '';
   const content = `<strong>${esc(node.nodeType === 'entity' ? node.label : node.subtype)}</strong>
-    <span class="sm_graph_tip_type">${esc(typeLabel)}</span>
-    <span class="sm_graph_tip_detail">${esc(node.detail)}</span>${triggersLine}`;
+    <span class="sme_graph_tip_type">${esc(typeLabel)}</span>
+    <span class="sme_graph_tip_detail">${esc(node.detail)}</span>${triggersLine}`;
 
   // Render off-screen first so outerWidth/Height return accurate dimensions.
   // When the tooltip is hidden, jQuery returns 0 and the fallback value is
@@ -672,9 +672,9 @@ function renderTooltip() {
 
   const canvasRect = canvas.getBoundingClientRect();
   const overlayLeft =
-    canvasRect.left - document.getElementById('sm_graph_card').getBoundingClientRect().left;
+    canvasRect.left - document.getElementById('sme_graph_card').getBoundingClientRect().left;
   const overlayTop =
-    canvasRect.top - document.getElementById('sm_graph_card').getBoundingClientRect().top;
+    canvasRect.top - document.getElementById('sme_graph_card').getBoundingClientRect().top;
 
   left += overlayLeft;
   top += overlayTop;
@@ -890,9 +890,9 @@ function bindEvents(canvas, $overlay, characterName) {
   };
 
   // ---- Overlay UI buttons ----
-  $overlay.find('#sm_graph_close').on('click', closeGraph);
+  $overlay.find('#sme_graph_close').on('click', closeGraph);
 
-  $overlay.find('#sm_graph_reset').on('click', () => {
+  $overlay.find('#sme_graph_reset').on('click', () => {
     if (!gs) return;
     initPositions(gs.nodes, gs.edges);
     gs.camera = { x: 0, y: 0, scale: 1 };
@@ -907,13 +907,13 @@ function bindEvents(canvas, $overlay, characterName) {
     }, 50);
   });
 
-  $overlay.find('#sm_graph_show_session').on('change', function () {
+  $overlay.find('#sme_graph_show_session').on('change', function () {
     if (!gs) return;
     gs.opts.showSession = this.checked;
     rebuildGraph(characterName);
   });
 
-  $overlay.find('#sm_graph_show_retired').on('change', function () {
+  $overlay.find('#sme_graph_show_retired').on('change', function () {
     if (!gs) return;
     gs.opts.showRetired = this.checked;
     rebuildGraph(characterName);
@@ -990,7 +990,7 @@ function closeGraph() {
   if (!gs) return;
   cancelAnimationFrame(gs.rafId);
   gs._cleanup?.();
-  const overlay = document.getElementById('sm_graph_overlay');
+  const overlay = document.getElementById('sme_graph_overlay');
   if (overlay?.open) overlay.close();
   overlay?.remove();
   gs = null;
@@ -1020,38 +1020,38 @@ function buildOverlayHTML(characterName) {
     .filter(([k]) => k !== 'unknown')
     .map(
       ([k, c]) =>
-        `<span class="sm_graph_legend_item"><span class="sm_graph_legend_swatch" style="background:${c}"></span>${k}</span>`,
+        `<span class="sme_graph_legend_item"><span class="sme_graph_legend_swatch" style="background:${c}"></span>${k}</span>`,
     )
     .join('');
 
   const memLegend = Object.entries(MEMORY_COLORS)
     .map(
       ([k, c]) =>
-        `<span class="sm_graph_legend_item"><span class="sm_graph_legend_swatch sm_graph_legend_swatch_small" style="background:${c}"></span>${k}</span>`,
+        `<span class="sme_graph_legend_item"><span class="sme_graph_legend_swatch sme_graph_legend_swatch_small" style="background:${c}"></span>${k}</span>`,
     )
     .join('');
 
-  return `<dialog id="sm_graph_overlay">
-  <div id="sm_graph_card">
-    <div id="sm_graph_toolbar">
-      <span id="sm_graph_title">${$('<div>').text(title).html()}</span>
-      <div id="sm_graph_controls">
-        <label class="sm_graph_toggle"><input type="checkbox" id="sm_graph_show_session" checked> Session</label>
-        <label class="sm_graph_toggle"><input type="checkbox" id="sm_graph_show_retired"> Retired</label>
-        <button id="sm_graph_reset" class="menu_button" title="Reset layout">Reset</button>
-        <button id="sm_graph_close" class="menu_button" title="Close (Esc)">&#x2715; Close</button>
+  return `<dialog id="sme_graph_overlay">
+  <div id="sme_graph_card">
+    <div id="sme_graph_toolbar">
+      <span id="sme_graph_title">${$('<div>').text(title).html()}</span>
+      <div id="sme_graph_controls">
+        <label class="sme_graph_toggle"><input type="checkbox" id="sme_graph_show_session" checked> Session</label>
+        <label class="sme_graph_toggle"><input type="checkbox" id="sme_graph_show_retired"> Retired</label>
+        <button id="sme_graph_reset" class="menu_button" title="Reset layout">Reset</button>
+        <button id="sme_graph_close" class="menu_button" title="Close (Esc)">&#x2715; Close</button>
       </div>
     </div>
-    <div id="sm_graph_canvas_wrap">
-      <canvas id="sm_graph_canvas"></canvas>
-      <div id="sm_graph_tooltip"></div>
+    <div id="sme_graph_canvas_wrap">
+      <canvas id="sme_graph_canvas"></canvas>
+      <div id="sme_graph_tooltip"></div>
     </div>
-    <div id="sm_graph_legend">
-      <span class="sm_graph_legend_group"><strong>Entities:</strong> ${entityLegend}
-        <span class="sm_graph_legend_item sm_graph_legend_edge_link">&#x2015; link</span>
+    <div id="sme_graph_legend">
+      <span class="sme_graph_legend_group"><strong>Entities:</strong> ${entityLegend}
+        <span class="sme_graph_legend_item sme_graph_legend_edge_link">&#x2015; link</span>
       </span>
-      <span class="sm_graph_legend_group"><strong>Memories:</strong> ${memLegend}
-        <span class="sm_graph_legend_item sm_graph_legend_edge_supersedes">&#x2192; supersedes</span>
+      <span class="sme_graph_legend_group"><strong>Memories:</strong> ${memLegend}
+        <span class="sme_graph_legend_item sme_graph_legend_edge_supersedes">&#x2192; supersedes</span>
       </span>
     </div>
   </div>

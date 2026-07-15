@@ -131,7 +131,7 @@ export function clearTierStats(key) {
 // Tiers excluded from the trim warning toast. Short-term is excluded because
 // the compaction summary self-corrects on the next compaction pass anyway -
 // transient overshoot is normal and not actionable by the user.
-const TOAST_EXEMPT_KEYS = new Set(['smart_memory_short']);
+const TOAST_EXEMPT_KEYS = new Set(['smart_memory_enhanced_short']);
 
 /**
  * Returns true if at least one non-exempt tier has reported trimmed content

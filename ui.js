@@ -149,7 +149,7 @@ function getCurrentCharacterName() {
  */
 function getSelectedCharacterName() {
   if (getContext().groupId) {
-    return $('#sm_group_char_select').val() || null;
+    return $('#sme_group_char_select').val() || null;
   }
   return getCurrentCharacterName();
 }
@@ -262,7 +262,7 @@ export function estimateCharPersonalTokens(charName) {
  * accurate enough for budget tuning.
  */
 export function updateTokenDisplay() {
-  const bar = document.getElementById('sm_token_bar');
+  const bar = document.getElementById('sme_token_bar');
   if (!bar) return;
 
   // ---- Top bar: actual injected content for the active character ----------
@@ -309,9 +309,9 @@ export function updateTokenDisplay() {
   }
 
   const contextPct = maxContext && total ? ((total / maxContext) * 100).toFixed(1) : '0';
-  const usedEl = document.getElementById('sm_token_used');
-  const maxEl = document.getElementById('sm_token_max');
-  const pctEl = document.getElementById('sm_token_pct');
+  const usedEl = document.getElementById('sme_token_used');
+  const maxEl = document.getElementById('sme_token_max');
+  const pctEl = document.getElementById('sme_token_pct');
   if (usedEl) usedEl.textContent = `~${total.toLocaleString()}`;
   if (maxEl) maxEl.textContent = maxContext ? maxContext.toLocaleString() : '?';
   if (pctEl) pctEl.textContent = contextPct;
@@ -330,7 +330,7 @@ export function updateTokenDisplay() {
 
   // ---- Per-character rows (group chats only) ------------------------------
 
-  const groupRowsEl = document.getElementById('sm_token_group_rows');
+  const groupRowsEl = document.getElementById('sme_token_group_rows');
   if (!groupRowsEl) return;
 
   const members = getGroupMembers();
@@ -352,7 +352,7 @@ export function updateTokenDisplay() {
     row.className = 'sm-token-group-row' + (isActive ? ' sm-token-active' : '');
     row.title = `Click to view ${member}'s memories`;
     row.addEventListener('click', () => {
-      $('#sm_group_char_select').val(member).trigger('change');
+      $('#sme_group_char_select').val(member).trigger('change');
     });
 
     const nameEl = document.createElement('span');
@@ -398,7 +398,7 @@ export function updateTokenDisplay() {
 
 /** Updates the status bar text shown at the top of the settings panel. */
 export function setStatusMessage(msg) {
-  $('#sm_status').text(msg);
+  $('#sme_status').text(msg);
 }
 
 /**
@@ -408,20 +408,20 @@ export function setStatusMessage(msg) {
  * @param {number} count
  */
 export function setCatchUpErrorCount(count) {
-  const $status = $('#sm_status');
-  const $count = $('#sm_catch_up_error_count');
+  const $status = $('#sme_status');
+  const $count = $('#sme_catch_up_error_count');
   const safeCount = Math.max(0, Number(count) || 0);
 
-  $status.removeClass('sm_status_warning sm_status_error');
-  $count.removeClass('sm_catch_up_errors_many').hide().text('');
+  $status.removeClass('sme_status_warning sme_status_error');
+  $count.removeClass('sme_catch_up_errors_many').hide().text('');
 
   if (safeCount === 0) return;
 
   if (safeCount <= 10) {
-    $status.addClass('sm_status_warning');
+    $status.addClass('sme_status_warning');
   } else {
-    $status.addClass('sm_status_error');
-    $count.addClass('sm_catch_up_errors_many');
+    $status.addClass('sme_status_error');
+    $count.addClass('sme_catch_up_errors_many');
   }
 
   $count.text(`${safeCount} ${safeCount === 1 ? 'error' : 'errors'} during this run`).show();
@@ -433,19 +433,19 @@ export function setCatchUpErrorCount(count) {
  * @param {number|null} count - Contradiction count from checkContinuity, or null to clear.
  */
 export function setContinuityBadge(count) {
-  const $badge = $('#sm_continuity_badge');
-  $badge.removeClass('sm_continuity_badge_clean sm_continuity_badge_warn');
+  const $badge = $('#sme_continuity_badge');
+  $badge.removeClass('sme_continuity_badge_clean sme_continuity_badge_warn');
   if (count === null) {
     $badge.hide();
     return;
   }
   if (count === 0) {
-    $badge.addClass('sm_continuity_badge_clean').text('clean').show();
+    $badge.addClass('sme_continuity_badge_clean').text('clean').show();
     // Positive state is transient - hide after 4 s so it doesn't linger.
     setTimeout(() => $badge.hide(), 4000);
   } else {
     $badge
-      .addClass('sm_continuity_badge_warn')
+      .addClass('sme_continuity_badge_warn')
       .text(`${count} conflict${count === 1 ? '' : 's'}`)
       .show();
   }
@@ -458,17 +458,17 @@ export function setContinuityBadge(count) {
  * @param {Array<{mem: Object, score: number}>} results - Top-K scored memories, sorted descending.
  */
 export function showSearchResults(query, results) {
-  $('#sm_search_overlay').remove();
+  $('#sme_search_overlay').remove();
 
   // Use a <dialog> element so it renders in the browser's top layer, immune
   // to ST's transformed ancestors that trap position:fixed divs on mobile.
   const dialog = document.createElement('dialog');
-  dialog.id = 'sm_search_overlay';
+  dialog.id = 'sme_search_overlay';
 
-  const card = $('<div class="sm_search_card">');
+  const card = $('<div class="sme_search_card">');
   card.append($('<h3>Memory Search Results</h3>'));
   card.append(
-    $('<p class="sm_search_query_label">').text(
+    $('<p class="sme_search_query_label">').text(
       `Query: "${query}" - ${results.length} result${results.length === 1 ? '' : 's'}`,
     ),
   );
@@ -476,21 +476,21 @@ export function showSearchResults(query, results) {
   if (results.length === 0) {
     card.append($('<p>').text('No matching memories found.'));
   } else {
-    const $list = $('<ul class="sm_search_list">');
+    const $list = $('<ul class="sme_search_list">');
     for (const { mem, score } of results) {
-      const $item = $('<li class="sm_search_item">');
+      const $item = $('<li class="sme_search_item">');
       $item.append(
-        $('<span class="sm_search_badge sm_search_badge_tier">').text(mem._tier),
-        $('<span>').addClass(`sm_search_badge sm_type_${mem.type}`).text(mem.type),
-        $('<span class="sm_search_content">').text(String(mem.content || '')),
-        $('<span class="sm_search_score">').text(`${Math.round(score * 100)}%`),
+        $('<span class="sme_search_badge sme_search_badge_tier">').text(mem._tier),
+        $('<span>').addClass(`sme_search_badge sme_type_${mem.type}`).text(mem.type),
+        $('<span class="sme_search_content">').text(String(mem.content || '')),
+        $('<span class="sme_search_score">').text(`${Math.round(score * 100)}%`),
       );
       $list.append($item);
     }
     card.append($list);
   }
 
-  const $footer = $('<div class="sm_search_footer">');
+  const $footer = $('<div class="sme_search_footer">');
   const $dismiss = $('<button>Dismiss</button>').addClass('menu_button');
   const dismiss = () => {
     dialog.close();
@@ -523,7 +523,7 @@ export function initTooltips() {
   tooltip.id = 'sm-tooltip';
   document.body.appendChild(tooltip);
 
-  const panel = document.getElementById('smart_memory_settings');
+  const panel = document.getElementById('smart_memory_enhanced_settings');
   if (!panel) return;
 
   panel.addEventListener('mouseover', (e) => {
@@ -550,7 +550,7 @@ export function initTooltips() {
 
 /** Syncs the short-term summary textarea with the current summary text. */
 export function updateShortTermUI(summary) {
-  $('#sm_current_summary').val(summary || '');
+  $('#sme_current_summary').val(summary || '');
 }
 
 /**
@@ -560,14 +560,14 @@ export function updateShortTermUI(summary) {
  */
 export function updateCanonUI(characterName) {
   const canon = characterName ? loadCanon(characterName) : null;
-  $('#sm_canon_display').val(canon?.text || '');
+  $('#sme_canon_display').val(canon?.text || '');
   if (canon) {
     const arcCount = loadArcSummaries().length;
-    $('#sm_canon_status').text(
+    $('#sme_canon_status').text(
       `Canon: ${estimateTokens(canon.text)} tokens, sourced from ${arcCount} arc summar${arcCount === 1 ? 'y' : 'ies'}.`,
     );
   } else {
-    $('#sm_canon_status').text('');
+    $('#sme_canon_status').text('');
   }
 }
 
@@ -585,14 +585,14 @@ export function updateLongTermUI(characterName) {
  * @param {string|null} characterName
  */
 export function updateRelationshipHistoryUI(characterName) {
-  const $list = $('#sm_relationships_list');
+  const $list = $('#sme_relationships_list');
   $list.empty();
 
   const history = characterName ? loadRelationshipHistory(characterName) : {};
   const pairs = Object.entries(history);
 
   if (pairs.length === 0) {
-    $list.append('<div class="sm_no_char">No relationship history yet.</div>');
+    $list.append('<div class="sme_no_char">No relationship history yet.</div>');
     return;
   }
 
@@ -604,27 +604,27 @@ export function updateRelationshipHistoryUI(characterName) {
     // For the edit form, serialize as "word(magnitude), ..." so it round-trips cleanly.
     const descriptorFieldVal = descriptorStr;
 
-    const $row = $('<div class="sm_memory_item">');
+    const $row = $('<div class="sme_memory_item">');
 
-    const $content = $('<div class="sm_memory_content">').text(
+    const $content = $('<div class="sme_memory_content">').text(
       `${subject} → ${target}: ${descriptorStr}`,
     );
 
-    const $editBtn = $('<button class="sm_memory_action menu_button" title="Edit">')
+    const $editBtn = $('<button class="sme_memory_action menu_button" title="Edit">')
       .append('<i class="fa-solid fa-pencil"></i>')
       .on('click', () => {
         // Populate the add form for editing this pair.
-        $('#sm_rel_subject').val(subject);
-        $('#sm_rel_target').val(target);
-        $('#sm_rel_descriptors').val(descriptorFieldVal);
-        $('#sm_relationship_add_form').show();
+        $('#sme_rel_subject').val(subject);
+        $('#sme_rel_target').val(target);
+        $('#sme_rel_descriptors').val(descriptorFieldVal);
+        $('#sme_relationship_add_form').show();
         // Store the key being edited so save can delete the old one.
-        $('#sm_relationship_add_form').data('editing', key);
-        $('#sm_rel_subject').focus();
+        $('#sme_relationship_add_form').data('editing', key);
+        $('#sme_rel_subject').focus();
       });
 
     const $deleteBtn = $(
-      '<button class="sm_memory_action sm_memory_delete menu_button" title="Delete">',
+      '<button class="sme_memory_action sme_memory_delete menu_button" title="Delete">',
     )
       .append('<i class="fa-solid fa-trash-can"></i>')
       .on('click', async () => {
@@ -705,12 +705,12 @@ export function initTypePickers() {
 export function updateEmbeddingNotice() {
   const settings = getSettings();
   const inactive = !settings.embedding_enabled || hasEmbeddingFailed();
-  $('#sm_embedding_notice').toggle(inactive);
+  $('#sme_embedding_notice').toggle(inactive);
 }
 
 /** Syncs the Fresh Start checkbox state. */
 export function updateFreshStartUI(freshStart) {
-  $('#sm_read_only').prop('checked', !!freshStart);
+  $('#sme_read_only').prop('checked', !!freshStart);
   $('body').toggleClass('sm-read-only', !!freshStart);
 }
 
@@ -720,11 +720,11 @@ export function updateFreshStartUI(freshStart) {
  */
 export function updateSessionUI() {
   const memories = loadSessionMemories();
-  const $list = $('#sm_session_list');
+  const $list = $('#sme_session_list');
   $list.empty();
 
   if (memories.length === 0) {
-    $list.append('<div class="sm_no_char">No session memories yet.</div>');
+    $list.append('<div class="sme_no_char">No session memories yet.</div>');
   }
 
   const sortedSession = [...memories].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
@@ -732,13 +732,13 @@ export function updateSessionUI() {
 
   if (hasRetiredSession) {
     const $toggle = $(
-      '<button class="sm_toggle_retired menu_button" style="margin-bottom:6px;font-size:0.8em;">' +
+      '<button class="sme_toggle_retired menu_button" style="margin-bottom:6px;font-size:0.8em;">' +
         '<i class="fa-solid fa-eye-slash"></i> Show retired memories</button>',
     );
     $list.append($toggle);
     $toggle.on('click', function () {
-      const showing = $list.find('.sm_memory_item.sm_memory_retired').first().is(':visible');
-      $list.find('.sm_memory_item.sm_memory_retired').toggle(!showing);
+      const showing = $list.find('.sme_memory_item.sme_memory_retired').first().is(':visible');
+      $list.find('.sme_memory_item.sme_memory_retired').toggle(!showing);
       $(this).html(
         `<i class="fa-solid ${showing ? 'fa-eye-slash' : 'fa-eye'}"></i> ${showing ? 'Show' : 'Hide'} retired memories`,
       );
@@ -748,31 +748,31 @@ export function updateSessionUI() {
   sortedSession.forEach((mem, idx) => {
     const isRetired = Boolean(mem.superseded_by);
     const hasConflict = Array.isArray(mem.contradicts) && mem.contradicts.length > 0;
-    const retiredClass = isRetired ? ' sm_memory_retired' : '';
+    const retiredClass = isRetired ? ' sme_memory_retired' : '';
     const retiredBadge = isRetired
-      ? '<span class="sm_memory_retired_badge" title="This memory was superseded by a newer fact">retired</span>'
+      ? '<span class="sme_memory_retired_badge" title="This memory was superseded by a newer fact">retired</span>'
       : '';
     const supersededByLink = isRetired
-      ? `<button class="sm_superseded_by_link menu_button" data-superseded-by="${mem.superseded_by}" title="Jump to the memory that replaced this one">→ superseded by</button>`
+      ? `<button class="sme_superseded_by_link menu_button" data-superseded-by="${mem.superseded_by}" title="Jump to the memory that replaced this one">→ superseded by</button>`
       : '';
     const conflictBadge = hasConflict
-      ? `<span class="sm_memory_conflict_badge" title="This memory conflicts with ${mem.contradicts.length} other ${mem.contradicts.length === 1 ? 'memory' : 'memories'} - run the continuity checker to review"><i class="fa-solid fa-triangle-exclamation"></i></span>`
+      ? `<span class="sme_memory_conflict_badge" title="This memory conflicts with ${mem.contradicts.length} other ${mem.contradicts.length === 1 ? 'memory' : 'memories'} - run the continuity checker to review"><i class="fa-solid fa-triangle-exclamation"></i></span>`
       : '';
 
     const importanceDots = '●'.repeat(mem.importance ?? 1);
     const expiration = mem.expiration ?? 'session';
     const $item = $(`
-            <div class="sm_memory_item${retiredClass}" data-index="${idx}" data-memory-id="${mem.id || ''}" ${isRetired ? 'style="display:none"' : ''}>
-                <span class="sm_memory_type sm_type_${mem.type}">${mem.type}</span>
-                <span class="sm_memory_importance sm_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
-                <span class="sm_memory_expiration sm_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
+            <div class="sme_memory_item${retiredClass}" data-index="${idx}" data-memory-id="${mem.id || ''}" ${isRetired ? 'style="display:none"' : ''}>
+                <span class="sme_memory_type sme_type_${mem.type}">${mem.type}</span>
+                <span class="sme_memory_importance sme_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
+                <span class="sme_memory_expiration sme_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
                 ${retiredBadge}${supersededByLink}${conflictBadge}
-                <span class="sm_memory_text">${$('<div>').text(mem.content).html()}</span>
-                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
-                <button class="sm_edit_session_memory menu_button" data-index="${idx}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
+                <span class="sme_memory_text">${$('<div>').text(mem.content).html()}</span>
+                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 ? `<button class="sme_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
+                <button class="sme_edit_session_memory menu_button" data-index="${idx}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
                     <i class="fa-solid fa-pencil"></i>
                 </button>
-                <button class="sm_delete_session_memory menu_button" data-index="${idx}" title="Delete this memory">
+                <button class="sme_delete_session_memory menu_button" data-index="${idx}" title="Delete this memory">
                     <i class="fa-solid fa-trash-can"></i>
                 </button>
             </div>
@@ -781,24 +781,24 @@ export function updateSessionUI() {
   });
 
   // Jump-to-replacement handler for "→ superseded by" links.
-  $list.find('.sm_superseded_by_link').on('click', function () {
+  $list.find('.sme_superseded_by_link').on('click', function () {
     const targetId = $(this).data('superseded-by');
     if (!targetId) return;
-    const $target = $list.find(`.sm_memory_item[data-memory-id="${targetId}"]`);
+    const $target = $list.find(`.sme_memory_item[data-memory-id="${targetId}"]`);
     if (!$target.length) return;
     // Ensure the target is visible - if it is also retired, make sure retired items are shown.
     if (!$target.is(':visible')) {
-      $list.find('.sm_memory_item.sm_memory_retired').show();
+      $list.find('.sme_memory_item.sme_memory_retired').show();
       $list
-        .find('.sm_toggle_retired')
+        .find('.sme_toggle_retired')
         .html('<i class="fa-solid fa-eye"></i> Hide retired memories');
     }
     $target[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-    $target.addClass('sm_memory_highlight');
-    setTimeout(() => $target.removeClass('sm_memory_highlight'), 1500);
+    $target.addClass('sme_memory_highlight');
+    setTimeout(() => $target.removeClass('sme_memory_highlight'), 1500);
   });
 
-  $list.find('.sm_jump_source').on('click', function () {
+  $list.find('.sme_jump_source').on('click', function () {
     const startIdx = parseInt($(this).data('source-start'), 10);
     const endIdx = parseInt($(this).data('source-end'), 10);
     const $startMsg = $(`#chat .mes[mesid="${startIdx}"]`);
@@ -817,33 +817,33 @@ export function updateSessionUI() {
       for (let i = startIdx; i <= endIdx; i++) {
         const $m = $(`#chat .mes[mesid="${i}"]`);
         if ($m.length) {
-          $m.addClass('sm_source_flash');
-          setTimeout(() => $m.removeClass('sm_source_flash'), FLASH_DURATION_MS);
+          $m.addClass('sme_source_flash');
+          setTimeout(() => $m.removeClass('sme_source_flash'), FLASH_DURATION_MS);
         }
       }
     }, 300);
   });
 
-  $list.find('.sm_edit_session_memory').on('click', async function () {
+  $list.find('.sme_edit_session_memory').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
-    const $item = $(this).closest('.sm_memory_item');
-    const $textSpan = $item.find('.sm_memory_text');
+    const $item = $(this).closest('.sme_memory_item');
+    const $textSpan = $item.find('.sme_memory_text');
     const current = loadSessionMemories();
     if (!current[idx]) return;
 
     // Replace text span with an inline textarea for editing.
-    const $textarea = $('<textarea class="sm_memory_edit_input">').val(current[idx].content);
+    const $textarea = $('<textarea class="sme_memory_edit_input">').val(current[idx].content);
     $textSpan.replaceWith($textarea);
     $textarea.trigger('focus');
 
     // Swap edit/delete buttons with save/cancel.
     $(this).hide();
-    $item.find('.sm_delete_session_memory').hide();
+    $item.find('.sme_delete_session_memory').hide();
     const $save = $(
-      '<button class="sm_save_session_memory menu_button" title="Save">Save</button>',
+      '<button class="sme_save_session_memory menu_button" title="Save">Save</button>',
     );
     const $cancel = $(
-      '<button class="sm_cancel_session_memory menu_button" title="Cancel">Cancel</button>',
+      '<button class="sme_cancel_session_memory menu_button" title="Cancel">Cancel</button>',
     );
     $item.append($save, $cancel);
 
@@ -861,7 +861,7 @@ export function updateSessionUI() {
     $cancel.on('click', () => updateSessionUI());
   });
 
-  $list.find('.sm_delete_session_memory').on('click', async function () {
+  $list.find('.sme_delete_session_memory').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
     const context = getContext();
     const meta = context.chatMetadata?.[META_KEY];
@@ -873,19 +873,19 @@ export function updateSessionUI() {
   });
 
   // Add memory form at the bottom of the list.
-  $list.next('.sm_add_memory_form').remove();
+  $list.next('.sme_add_memory_form').remove();
   const $addForm = $(`
-    <div class="sm_add_memory_form">
-      <input type="text" class="sm_add_memory_input" placeholder="New session memory...">
-      <button class="sm_add_memory_btn menu_button" title="Add memory">Add</button>
+    <div class="sme_add_memory_form">
+      <input type="text" class="sme_add_memory_input" placeholder="New session memory...">
+      <button class="sme_add_memory_btn menu_button" title="Add memory">Add</button>
     </div>
   `);
   $addForm.prepend(buildTypePicker(SESSION_TYPES));
   $list.after($addForm);
 
-  $addForm.find('.sm_add_memory_btn').on('click', async () => {
+  $addForm.find('.sme_add_memory_btn').on('click', async () => {
     const type = $addForm.find('.sm-type-picker').data('value');
-    const content = $addForm.find('.sm_add_memory_input').val().trim();
+    const content = $addForm.find('.sme_add_memory_input').val().trim();
     if (!content) return;
     const memories = loadSessionMemories();
     memories.push({
@@ -910,17 +910,17 @@ export function updateSessionUI() {
 /** Re-renders the scene history list. */
 export function updateScenesUI() {
   const history = loadSceneHistory();
-  const $list = $('#sm_scenes_list');
+  const $list = $('#sme_scenes_list');
   $list.empty();
 
   if (history.length === 0) {
-    $list.append('<div class="sm_no_char">No scenes recorded yet.</div>');
+    $list.append('<div class="sme_no_char">No scenes recorded yet.</div>');
     return;
   }
 
   history.forEach((s, i) => {
     $list.append(
-      `<div class="sm_scene_item"><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div>`,
+      `<div class="sme_scene_item"><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div>`,
     );
   });
 }
@@ -928,9 +928,9 @@ export function updateScenesUI() {
 /** Re-renders the story arcs list with per-arc edit, resolve, and add buttons. */
 export function updateArcsUI() {
   const arcs = loadArcs();
-  const $list = $('#sm_arcs_list');
-  const $resolvedList = $('#sm_resolved_arcs_list');
-  const $resolvedSection = $('#sm_resolved_arcs_section');
+  const $list = $('#sme_arcs_list');
+  const $resolvedList = $('#sme_resolved_arcs_list');
+  const $resolvedSection = $('#sme_resolved_arcs_section');
   $list.empty();
   $resolvedList.empty();
 
@@ -943,7 +943,7 @@ export function updateArcsUI() {
   const resolvedArcs = arcs.filter((a) => a.resolved);
 
   if (activeArcs.length === 0) {
-    $list.append('<div class="sm_no_char">No open story threads.</div>');
+    $list.append('<div class="sme_no_char">No open story threads.</div>');
   }
 
   arcs.forEach((arc, idx) => {
@@ -952,10 +952,10 @@ export function updateArcsUI() {
 
     if (isResolved) {
       const $item = $(`
-              <div class="sm_arc_item sm_arc_persistent sm_arc_resolved" data-index="${idx}">
-                  <span class="sm_arc_text">${$('<div>').text(arc.content).html()}</span>
-                  <button class="sm_reopen_arc menu_button" data-index="${idx}" title="Re-open this thread"><i class="fa-solid fa-rotate-left"></i></button>
-                  <button class="sm_remove_resolved_arc menu_button" data-index="${idx}" title="Remove"><i class="fa-solid fa-xmark"></i></button>
+              <div class="sme_arc_item sme_arc_persistent sme_arc_resolved" data-index="${idx}">
+                  <span class="sme_arc_text">${$('<div>').text(arc.content).html()}</span>
+                  <button class="sme_reopen_arc menu_button" data-index="${idx}" title="Re-open this thread"><i class="fa-solid fa-rotate-left"></i></button>
+                  <button class="sme_remove_resolved_arc menu_button" data-index="${idx}" title="Remove"><i class="fa-solid fa-xmark"></i></button>
               </div>
           `);
       $resolvedList.append($item);
@@ -964,16 +964,16 @@ export function updateArcsUI() {
         ? 'Unpin - keep only in this chat'
         : 'Pin - carry this thread into future chats';
       const $item = $(`
-              <div class="sm_arc_item${isPersistent ? ' sm_arc_persistent' : ''}" data-index="${idx}">
-                  <span class="sm_arc_text">${$('<div>').text(arc.content).html()}</span>
-                  ${canPin ? `<button class="sm_pin_arc menu_button${isPersistent ? ' sm_pin_active' : ''}" data-index="${idx}" title="${pinTitle}"><i class="fa-solid fa-thumbtack"></i></button>` : ''}
-                  <button class="sm_edit_arc menu_button" data-index="${idx}" title="Edit this arc">
+              <div class="sme_arc_item${isPersistent ? ' sme_arc_persistent' : ''}" data-index="${idx}">
+                  <span class="sme_arc_text">${$('<div>').text(arc.content).html()}</span>
+                  ${canPin ? `<button class="sme_pin_arc menu_button${isPersistent ? ' sme_pin_active' : ''}" data-index="${idx}" title="${pinTitle}"><i class="fa-solid fa-thumbtack"></i></button>` : ''}
+                  <button class="sme_edit_arc menu_button" data-index="${idx}" title="Edit this arc">
                       <i class="fa-solid fa-pencil"></i>
                   </button>
-                  <button class="sm_resolve_arc menu_button" data-index="${idx}" title="Resolve this thread and generate an arc summary. Best used right after the thread concludes in the story - the summary is built from recent scene context, so resolving old threads may produce vague results.">
+                  <button class="sme_resolve_arc menu_button" data-index="${idx}" title="Resolve this thread and generate an arc summary. Best used right after the thread concludes in the story - the summary is built from recent scene context, so resolving old threads may produce vague results.">
                       <i class="fa-solid fa-check"></i>
                   </button>
-                  <button class="sm_delete_arc menu_button" data-index="${idx}" title="Delete this thread without summarising">
+                  <button class="sme_delete_arc menu_button" data-index="${idx}" title="Delete this thread without summarising">
                       <i class="fa-solid fa-trash-can"></i>
                   </button>
               </div>
@@ -985,14 +985,14 @@ export function updateArcsUI() {
   // Show the resolved section only when there are resolved arcs.
   $resolvedSection.toggle(resolvedArcs.length > 0);
 
-  $resolvedList.find('.sm_reopen_arc').on('click', async function () {
+  $resolvedList.find('.sme_reopen_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
     await reopenArc(idx, charName, groupId);
     injectArcs();
     updateArcsUI();
   });
 
-  $resolvedList.find('.sm_remove_resolved_arc').on('click', async function () {
+  $resolvedList.find('.sme_remove_resolved_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
     const arc = loadArcs()[idx];
     if (!arc) return;
@@ -1014,7 +1014,7 @@ export function updateArcsUI() {
     updateArcsUI();
   });
 
-  $list.find('.sm_pin_arc').on('click', async function () {
+  $list.find('.sme_pin_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
     const arc = loadArcs()[idx];
     if (!arc) return;
@@ -1027,22 +1027,22 @@ export function updateArcsUI() {
     updateArcsUI();
   });
 
-  $list.find('.sm_edit_arc').on('click', async function () {
+  $list.find('.sme_edit_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
-    const $item = $(this).closest('.sm_arc_item');
-    const $textSpan = $item.find('.sm_arc_text');
+    const $item = $(this).closest('.sme_arc_item');
+    const $textSpan = $item.find('.sme_arc_text');
     const current = loadArcs();
     if (!current[idx]) return;
 
-    const $textarea = $('<textarea class="sm_memory_edit_input">').val(current[idx].content);
+    const $textarea = $('<textarea class="sme_memory_edit_input">').val(current[idx].content);
     $textSpan.replaceWith($textarea);
     $textarea.trigger('focus');
 
     $(this).hide();
-    $item.find('.sm_pin_arc').hide();
-    $item.find('.sm_delete_arc').hide();
-    const $save = $('<button class="sm_save_arc menu_button" title="Save">Save</button>');
-    const $cancel = $('<button class="sm_cancel_arc menu_button" title="Cancel">Cancel</button>');
+    $item.find('.sme_pin_arc').hide();
+    $item.find('.sme_delete_arc').hide();
+    const $save = $('<button class="sme_save_arc menu_button" title="Save">Save</button>');
+    const $cancel = $('<button class="sme_cancel_arc menu_button" title="Cancel">Cancel</button>');
     $item.append($save, $cancel);
 
     $save.on('click', async () => {
@@ -1080,17 +1080,17 @@ export function updateArcsUI() {
     $cancel.on('click', () => updateArcsUI());
   });
 
-  $list.find('.sm_resolve_arc').on('click', async function () {
+  $list.find('.sme_resolve_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
     const summaryGenerated = await resolveArcWithSummary(idx, charName, groupId);
     if (summaryGenerated) {
-      $(document).trigger('smart_memory:arc_resolved_with_summary', [charName, groupId]);
+      $(document).trigger('smart_memory_enhanced:arc_resolved_with_summary', [charName, groupId]);
     }
     injectArcs();
     updateArcsUI();
   });
 
-  $list.find('.sm_delete_arc').on('click', async function () {
+  $list.find('.sme_delete_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
     await deleteArc(idx, charName);
     injectArcs();
@@ -1098,17 +1098,17 @@ export function updateArcsUI() {
   });
 
   // Add arc form at the bottom of the list.
-  $list.next('.sm_add_memory_form').remove();
+  $list.next('.sme_add_memory_form').remove();
   const $addForm = $(`
-    <div class="sm_add_memory_form">
-      <input type="text" class="sm_add_memory_input" placeholder="New story thread...">
-      <button class="sm_add_memory_btn menu_button" title="Add arc">Add</button>
+    <div class="sme_add_memory_form">
+      <input type="text" class="sme_add_memory_input" placeholder="New story thread...">
+      <button class="sme_add_memory_btn menu_button" title="Add arc">Add</button>
     </div>
   `);
   $list.after($addForm);
 
-  $addForm.find('.sm_add_memory_btn').on('click', async () => {
-    const content = $addForm.find('.sm_add_memory_input').val().trim();
+  $addForm.find('.sme_add_memory_btn').on('click', async () => {
+    const content = $addForm.find('.sme_add_memory_input').val().trim();
     if (!content) return;
     const arcs = loadArcs();
     arcs.push({ content, ts: Date.now() });
@@ -1124,7 +1124,7 @@ export function updateArcsUI() {
  * @param {{character_state: string, world_state: string, relationship_matrix: string}|null} profiles
  */
 export function updateProfilesUI(profiles) {
-  const $display = $('#sm_profiles_display');
+  const $display = $('#sme_profiles_display');
   $display.empty();
 
   if (!profiles) {
@@ -1142,7 +1142,7 @@ export function updateProfilesUI(profiles) {
   for (const { key, label } of sections) {
     const text = profiles[key];
     if (!text) continue;
-    $display.append($('<span class="sm_profiles_section-label">').text(label + ':'));
+    $display.append($('<span class="sme_profiles_section-label">').text(label + ':'));
     $display.append($('<div>').text(text));
     hasContent = true;
   }
@@ -1161,7 +1161,7 @@ export function updateProfilesUI(profiles) {
  * @param {string|null} characterName - Current character name for long-term registry lookup.
  */
 export function updateEntityPanel(characterName) {
-  const $panel = $('#sm_entity_panel');
+  const $panel = $('#sme_entity_panel');
   $panel.empty();
 
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
@@ -1228,34 +1228,34 @@ export function updateEntityPanel(characterName) {
     const safeName = $('<div>').text(entity.name).html();
 
     const $row = $(`
-      <div class="sm_entity_row" data-entity-id="${entity.id}" style="position:relative;">
-        <span class="sm_entity_type_badge sm_entity_type_${entity.type}" data-clickable title="Click to change type">
+      <div class="sme_entity_row" data-entity-id="${entity.id}" style="position:relative;">
+        <span class="sme_entity_type_badge sme_entity_type_${entity.type}" data-clickable title="Click to change type">
           <i class="fa-solid ${icon}"></i> ${entity.type}
         </span>
-        <span class="sm_entity_name">${safeName}</span>
-        <span class="sm_entity_meta">${memCount} ${memCount === 1 ? 'memory' : 'memories'} &middot; last seen ${lastSeen}</span>
-        <button class="sm_entity_merge_btn menu_button" title="Merge into another entity">
+        <span class="sme_entity_name">${safeName}</span>
+        <span class="sme_entity_meta">${memCount} ${memCount === 1 ? 'memory' : 'memories'} &middot; last seen ${lastSeen}</span>
+        <button class="sme_entity_merge_btn menu_button" title="Merge into another entity">
           <i class="fa-solid fa-code-merge"></i>
         </button>
-        <button class="sm_entity_timeline_btn menu_button" title="View timeline for this entity">
+        <button class="sme_entity_timeline_btn menu_button" title="View timeline for this entity">
           <i class="fa-solid fa-timeline"></i>
         </button>
-        <button class="sm_entity_delete_btn menu_button" title="Delete this entity">
+        <button class="sme_entity_delete_btn menu_button" title="Delete this entity">
           <i class="fa-solid fa-trash"></i>
         </button>
       </div>
     `);
 
     // Type-picker: clicking the badge opens an inline dropdown to change the type.
-    $row.find('.sm_entity_type_badge').on('click', (e) => {
+    $row.find('.sme_entity_type_badge').on('click', (e) => {
       e.stopPropagation();
-      $panel.find('.sm_entity_type_picker').remove();
+      $panel.find('.sme_entity_type_picker').remove();
 
-      const $picker = $('<div class="sm_entity_type_picker">');
+      const $picker = $('<div class="sme_entity_type_picker">');
       for (const t of ENTITY_TYPES) {
         const tIcon = TYPE_ICONS[t] ?? 'fa-tag';
         const $opt = $(
-          `<div class="sm_entity_type_option sm_entity_type_${t}"><i class="fa-solid ${tIcon}"></i> ${t}</div>`,
+          `<div class="sme_entity_type_option sme_entity_type_${t}"><i class="fa-solid ${tIcon}"></i> ${t}</div>`,
         );
         $opt.on('click', async (ev) => {
           ev.stopPropagation();
@@ -1283,21 +1283,21 @@ export function updateEntityPanel(characterName) {
     });
 
     // Merge button: shows a select of all other entity names.
-    $row.find('.sm_entity_merge_btn').on('click', (e) => {
+    $row.find('.sme_entity_merge_btn').on('click', (e) => {
       e.stopPropagation();
-      $panel.find('.sm_entity_type_picker').remove();
+      $panel.find('.sme_entity_type_picker').remove();
 
       const otherEntities = entities.filter((en) => en.id !== entity.id);
       if (otherEntities.length === 0) return;
 
-      const $picker = $('<div class="sm_entity_type_picker">');
+      const $picker = $('<div class="sme_entity_type_picker">');
       $picker.append(
         $('<div style="font-size:0.75em;opacity:0.6;padding:2px 8px 4px;">Merge into:</div>'),
       );
       for (const target of otherEntities) {
         const label = target.name + (target.type !== 'unknown' ? ` (${target.type})` : '');
         const safeLabel = $('<div>').text(label).html();
-        const $opt = $(`<div class="sm_entity_type_option">${safeLabel}</div>`);
+        const $opt = $(`<div class="sme_entity_type_option">${safeLabel}</div>`);
         $opt.on('click', async (ev) => {
           ev.stopPropagation();
           $picker.remove();
@@ -1309,18 +1309,18 @@ export function updateEntityPanel(characterName) {
           // When the ledger is disabled, silently keep the destination card.
           if (isStateLedgerEnabled() && srcCard && dstCard) {
             const $modal = $(`
-              <dialog class="sm_state_merge_modal">
-                <div class="sm_state_merge_modal_inner">
-                  <div class="sm_state_merge_title">Both entities have state cards</div>
-                  <div class="sm_state_merge_body">
+              <dialog class="sme_state_merge_modal">
+                <div class="sme_state_merge_modal_inner">
+                  <div class="sme_state_merge_title">Both entities have state cards</div>
+                  <div class="sme_state_merge_body">
                     Merging <strong>${$('<span>').text(entity.name).html()}</strong> into
                     <strong>${$('<span>').text(target.name).html()}</strong> will discard one state card.
                     Which card should survive?
                   </div>
-                  <div class="sm_state_merge_actions">
-                    <button class="menu_button sm_state_keep_src">Keep "${$('<span>').text(entity.name).html()}" card</button>
-                    <button class="menu_button sm_state_keep_dst">Keep "${$('<span>').text(target.name).html()}" card</button>
-                    <button class="menu_button sm_state_cancel">Cancel</button>
+                  <div class="sme_state_merge_actions">
+                    <button class="menu_button sme_state_keep_src">Keep "${$('<span>').text(entity.name).html()}" card</button>
+                    <button class="menu_button sme_state_keep_dst">Keep "${$('<span>').text(target.name).html()}" card</button>
+                    <button class="menu_button sme_state_cancel">Cancel</button>
                   </div>
                 </div>
               </dialog>
@@ -1354,9 +1354,9 @@ export function updateEntityPanel(characterName) {
               await persistAndRefresh();
             };
 
-            $modal.find('.sm_state_keep_src').on('click', () => doMerge(true));
-            $modal.find('.sm_state_keep_dst').on('click', () => doMerge(false));
-            $modal.find('.sm_state_cancel').on('click', closeModal);
+            $modal.find('.sme_state_keep_src').on('click', () => doMerge(true));
+            $modal.find('.sme_state_keep_dst').on('click', () => doMerge(false));
+            $modal.find('.sme_state_cancel').on('click', closeModal);
             document.body.appendChild($modal[0]);
             $modal[0].showModal();
             return;
@@ -1393,14 +1393,14 @@ export function updateEntityPanel(characterName) {
       setTimeout(() => $(document).on('click', closeOnOutside), 0);
     });
 
-    $row.find('.sm_entity_timeline_btn').on('click', (e) => {
+    $row.find('.sme_entity_timeline_btn').on('click', (e) => {
       e.stopPropagation();
       showEntityTimeline(entity, characterName);
     });
 
-    $row.find('.sm_entity_delete_btn').on('click', async (e) => {
+    $row.find('.sme_entity_delete_btn').on('click', async (e) => {
       e.stopPropagation();
-      $panel.find('.sm_entity_type_picker').remove();
+      $panel.find('.sme_entity_type_picker').remove();
 
       const doDelete = async () => {
         const ltReg = characterName ? loadCharacterEntityRegistry(characterName) : [];
@@ -1427,19 +1427,19 @@ export function updateEntityPanel(characterName) {
         STATE_CARD_TYPES.has(entity.type) &&
         getStateCard(entity.name, entity.type)
       ) {
-        $row.find('.sm_delete_state_warning').remove();
+        $row.find('.sme_delete_state_warning').remove();
         const $warn = $(`
-          <div class="sm_delete_state_warning">
+          <div class="sme_delete_state_warning">
             <span>This entity has a state card. Delete anyway?</span>
-            <button class="menu_button sm_delete_anyway">Delete</button>
-            <button class="menu_button sm_delete_cancel">Cancel</button>
+            <button class="menu_button sme_delete_anyway">Delete</button>
+            <button class="menu_button sme_delete_cancel">Cancel</button>
           </div>
         `);
-        $warn.find('.sm_delete_anyway').on('click', async () => {
+        $warn.find('.sme_delete_anyway').on('click', async () => {
           $warn.remove();
           await doDelete();
         });
-        $warn.find('.sm_delete_cancel').on('click', () => $warn.remove());
+        $warn.find('.sme_delete_cancel').on('click', () => $warn.remove());
         $row.append($warn);
         return;
       }
@@ -1454,7 +1454,7 @@ export function updateEntityPanel(characterName) {
       const fields = STATE_CARD_FIELDS[entity.type] ?? [];
       const existingCard = getStateCard(entity.name, entity.type);
 
-      const $section = $('<div class="sm_state_card_section">');
+      const $section = $('<div class="sme_state_card_section">');
 
       // Summary header line: shows populated fields or a placeholder.
       const summaryParts = existingCard
@@ -1462,27 +1462,27 @@ export function updateEntityPanel(characterName) {
         : [];
       const summaryText = summaryParts.length > 0 ? summaryParts.join(' | ') : 'No state card';
       const $header = $(
-        `<div class="sm_state_card_header sm-muted">${$('<div>').text(summaryText).html()}</div>`,
+        `<div class="sme_state_card_header sm-muted">${$('<div>').text(summaryText).html()}</div>`,
       );
 
       const $editBtn = $(
-        `<button class="sm_state_card_edit_btn menu_button" title="${existingCard ? 'Edit state card' : 'Add state card'}">
+        `<button class="sme_state_card_edit_btn menu_button" title="${existingCard ? 'Edit state card' : 'Add state card'}">
           <i class="fa-solid ${existingCard ? 'fa-pen' : 'fa-plus'}"></i>
         </button>`,
       );
 
-      const $headerRow = $('<div class="sm_state_card_header_row">');
+      const $headerRow = $('<div class="sme_state_card_header_row">');
       $headerRow.append($header, $editBtn);
       $section.append($headerRow);
 
       // Editor: hidden until the edit button is clicked.
-      const $editor = $('<div class="sm_state_card_editor" style="display:none;">');
+      const $editor = $('<div class="sme_state_card_editor" style="display:none;">');
       const $inputs = {};
       for (const f of fields) {
-        const $field = $('<div class="sm_state_card_field">');
+        const $field = $('<div class="sme_state_card_field">');
         const label = f.replace(/_/g, ' ');
         const currentVal = existingCard?.[f] ?? '';
-        const safeId = `sm_sc_${entity.id}_${f}`;
+        const safeId = `sme_sc_${entity.id}_${f}`;
         $field.append(`<label for="${safeId}">${label}</label>`);
         const $inp = $(`<input type="text" id="${safeId}" class="text_pole" value="">`);
         $inp.val(currentVal);
@@ -1491,11 +1491,11 @@ export function updateEntityPanel(characterName) {
         $editor.append($field);
       }
 
-      const $actions = $('<div class="sm_state_card_actions">');
+      const $actions = $('<div class="sme_state_card_actions">');
       const $saveBtn = $('<button class="menu_button">Save</button>');
       const $cancelBtn = $('<button class="menu_button">Cancel</button>');
       const $clearBtn = $(
-        '<button class="menu_button sm_state_card_clear_btn">Clear card</button>',
+        '<button class="menu_button sme_state_card_clear_btn">Clear card</button>',
       );
       $actions.append($saveBtn, $cancelBtn, existingCard ? $clearBtn : null);
       $editor.append($actions);
@@ -1543,7 +1543,7 @@ export function updateEntityPanel(characterName) {
     } else if (isStateLedgerEnabled() && entity.type === 'unknown') {
       // Model failed to classify this entity - hint that retyping it unlocks the state card.
       $panel.append(
-        '<div class="sm_state_card_section sm-muted" style="font-size:0.85em;padding:2px 0 4px 4px;">' +
+        '<div class="sme_state_card_section sm-muted" style="font-size:0.85em;padding:2px 0 4px 4px;">' +
           '<i class="fa-solid fa-circle-info"></i> Change type to enable state card' +
           '</div>',
       );
@@ -1560,11 +1560,11 @@ export function updateEntityPanel(characterName) {
  * @param {string|null} characterName - Current character name.
  */
 export function showEntityTimeline(entity, characterName) {
-  const $panel = $('#sm_entity_panel');
+  const $panel = $('#sme_entity_panel');
 
   // Remove any existing timeline (toggle if same entity).
-  const existingEntityId = $panel.find('.sm_entity_timeline').data('entity-id');
-  $panel.find('.sm_entity_timeline').remove();
+  const existingEntityId = $panel.find('.sme_entity_timeline').data('entity-id');
+  $panel.find('.sme_entity_timeline').remove();
   if (existingEntityId === entity.id) return;
 
   const ltMemories = characterName ? loadCharacterMemories(characterName) : [];
@@ -1576,17 +1576,17 @@ export function showEntityTimeline(entity, characterName) {
     .filter((m) => m.id && memIds.has(m.id))
     .sort((a, b) => (a.valid_from ?? a.ts ?? 0) - (b.valid_from ?? b.ts ?? 0));
 
-  const $timeline = $('<div class="sm_entity_timeline">').attr('data-entity-id', entity.id);
+  const $timeline = $('<div class="sme_entity_timeline">').attr('data-entity-id', entity.id);
   $timeline.append(
-    $(`<div class="sm_entity_timeline_header">`).text(
+    $(`<div class="sme_entity_timeline_header">`).text(
       `Timeline: ${entity.name} (${linked.length} ${linked.length === 1 ? 'memory' : 'memories'})`,
     ),
   );
 
   if (linked.length === 0) {
-    $timeline.append('<div class="sm_timeline_empty sm-muted">No linked memories found.</div>');
+    $timeline.append('<div class="sme_timeline_empty sm-muted">No linked memories found.</div>');
   } else {
-    const $list = $('<div class="sm_timeline_list">');
+    const $list = $('<div class="sme_timeline_list">');
     for (const mem of linked) {
       const isRetired = Boolean(mem.superseded_by);
       const when =
@@ -1596,13 +1596,13 @@ export function showEntityTimeline(entity, characterName) {
             ? new Date(mem.ts).toLocaleString()
             : 'unknown';
       const $entry = $(`
-        <div class="sm_timeline_entry${isRetired ? ' sm_timeline_entry_retired' : ''}">
-          <div class="sm_timeline_dot"></div>
-          <div class="sm_timeline_body">
-            <span class="sm_timeline_when">${when}</span>
-            <span class="sm_memory_type sm_type_${mem.type}">${mem.type}</span>
-            ${isRetired ? '<span class="sm_memory_retired_badge">retired</span>' : ''}
-            <span class="sm_timeline_text">${$('<div>').text(mem.content).html()}</span>
+        <div class="sme_timeline_entry${isRetired ? ' sme_timeline_entry_retired' : ''}">
+          <div class="sme_timeline_dot"></div>
+          <div class="sme_timeline_body">
+            <span class="sme_timeline_when">${when}</span>
+            <span class="sme_memory_type sme_type_${mem.type}">${mem.type}</span>
+            ${isRetired ? '<span class="sme_memory_retired_badge">retired</span>' : ''}
+            <span class="sme_timeline_text">${$('<div>').text(mem.content).html()}</span>
           </div>
         </div>
       `);
@@ -1612,7 +1612,7 @@ export function showEntityTimeline(entity, characterName) {
   }
 
   // Insert the timeline after the entity row for this entity.
-  const $entityRow = $panel.find(`.sm_entity_row[data-entity-id="${entity.id}"]`);
+  const $entityRow = $panel.find(`.sme_entity_row[data-entity-id="${entity.id}"]`);
   if ($entityRow.length) {
     $entityRow.after($timeline);
   } else {
@@ -1627,16 +1627,16 @@ export function showEntityTimeline(entity, characterName) {
  * @param {string|null} characterName - Character name, used for save/inject calls.
  */
 export function renderMemoriesList(memories, characterName) {
-  const $list = $('#sm_memories_list');
+  const $list = $('#sme_memories_list');
   $list.empty();
 
   if (!characterName) {
-    $list.append('<div class="sm_no_char">No character selected.</div>');
+    $list.append('<div class="sme_no_char">No character selected.</div>');
     return;
   }
 
   if (memories.length === 0) {
-    $list.append('<div class="sm_no_char">No memories stored yet for this character.</div>');
+    $list.append('<div class="sme_no_char">No memories stored yet for this character.</div>');
   }
 
   const sorted = [...memories].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
@@ -1645,13 +1645,13 @@ export function renderMemoriesList(memories, characterName) {
   // "Show retired" toggle - only rendered when retired memories exist.
   if (hasRetired) {
     const $toggle = $(
-      '<button class="sm_toggle_retired menu_button" style="margin-bottom:6px;font-size:0.8em;">' +
+      '<button class="sme_toggle_retired menu_button" style="margin-bottom:6px;font-size:0.8em;">' +
         '<i class="fa-solid fa-eye-slash"></i> Show retired memories</button>',
     );
     $list.append($toggle);
     $toggle.on('click', function () {
-      const showing = $list.find('.sm_memory_item.sm_memory_retired').first().is(':visible');
-      $list.find('.sm_memory_item.sm_memory_retired').toggle(!showing);
+      const showing = $list.find('.sme_memory_item.sme_memory_retired').first().is(':visible');
+      $list.find('.sme_memory_item.sme_memory_retired').toggle(!showing);
       $(this).html(
         `<i class="fa-solid ${showing ? 'fa-eye-slash' : 'fa-eye'}"></i> ${showing ? 'Show' : 'Hide'} retired memories`,
       );
@@ -1661,31 +1661,31 @@ export function renderMemoriesList(memories, characterName) {
   sorted.forEach((mem, idx) => {
     const isRetired = Boolean(mem.superseded_by);
     const hasConflict = Array.isArray(mem.contradicts) && mem.contradicts.length > 0;
-    const retiredClass = isRetired ? ' sm_memory_retired' : '';
+    const retiredClass = isRetired ? ' sme_memory_retired' : '';
     const retiredBadge = isRetired
-      ? '<span class="sm_memory_retired_badge" title="This memory was superseded by a newer fact">retired</span>'
+      ? '<span class="sme_memory_retired_badge" title="This memory was superseded by a newer fact">retired</span>'
       : '';
     const supersededByLink = isRetired
-      ? `<button class="sm_superseded_by_link menu_button" data-superseded-by="${mem.superseded_by}" title="Jump to the memory that replaced this one">→ superseded by</button>`
+      ? `<button class="sme_superseded_by_link menu_button" data-superseded-by="${mem.superseded_by}" title="Jump to the memory that replaced this one">→ superseded by</button>`
       : '';
     const conflictBadge = hasConflict
-      ? `<span class="sm_memory_conflict_badge" title="This memory conflicts with ${mem.contradicts.length} other ${mem.contradicts.length === 1 ? 'memory' : 'memories'} - run the continuity checker to review"><i class="fa-solid fa-triangle-exclamation"></i></span>`
+      ? `<span class="sme_memory_conflict_badge" title="This memory conflicts with ${mem.contradicts.length} other ${mem.contradicts.length === 1 ? 'memory' : 'memories'} - run the continuity checker to review"><i class="fa-solid fa-triangle-exclamation"></i></span>`
       : '';
 
     const importanceDots = '●'.repeat(mem.importance ?? 1);
     const expiration = mem.expiration ?? 'permanent';
     const $item = $(`
-            <div class="sm_memory_item${retiredClass}" data-index="${idx}" data-memory-id="${mem.id || ''}" ${isRetired ? 'style="display:none"' : ''}>
-                <span class="sm_memory_type sm_type_${mem.type}">${mem.type}</span>
-                <span class="sm_memory_importance sm_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
-                <span class="sm_memory_expiration sm_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
+            <div class="sme_memory_item${retiredClass}" data-index="${idx}" data-memory-id="${mem.id || ''}" ${isRetired ? 'style="display:none"' : ''}>
+                <span class="sme_memory_type sme_type_${mem.type}">${mem.type}</span>
+                <span class="sme_memory_importance sme_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
+                <span class="sme_memory_expiration sme_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
                 ${retiredBadge}${supersededByLink}${conflictBadge}
-                <span class="sm_memory_text">${$('<div>').text(mem.content).html()}</span>
-                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sm_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
-                <button class="sm_edit_memory menu_button" data-memory-id="${mem.id || ''}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
+                <span class="sme_memory_text">${$('<div>').text(mem.content).html()}</span>
+                ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sme_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
+                <button class="sme_edit_memory menu_button" data-memory-id="${mem.id || ''}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
                     <i class="fa-solid fa-pencil"></i>
                 </button>
-                <button class="sm_delete_memory menu_button" data-memory-id="${mem.id || ''}" title="Delete this memory">
+                <button class="sme_delete_memory menu_button" data-memory-id="${mem.id || ''}" title="Delete this memory">
                     <i class="fa-solid fa-trash-can"></i>
                 </button>
             </div>
@@ -1694,25 +1694,25 @@ export function renderMemoriesList(memories, characterName) {
   });
 
   // Jump-to-replacement handler for "→ superseded by" links.
-  $list.find('.sm_superseded_by_link').on('click', function () {
+  $list.find('.sme_superseded_by_link').on('click', function () {
     const targetId = $(this).data('superseded-by');
     if (!targetId) return;
-    const $target = $list.find(`.sm_memory_item[data-memory-id="${targetId}"]`);
+    const $target = $list.find(`.sme_memory_item[data-memory-id="${targetId}"]`);
     if (!$target.length) return;
     // Target is an active (non-retired) memory, so it should already be visible.
     // If it happens to be retired too, show retired entries first.
     if (!$target.is(':visible')) {
-      $list.find('.sm_memory_item.sm_memory_retired').show();
+      $list.find('.sme_memory_item.sme_memory_retired').show();
       $list
-        .find('.sm_toggle_retired')
+        .find('.sme_toggle_retired')
         .html('<i class="fa-solid fa-eye"></i> Hide retired memories');
     }
     $target[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-    $target.addClass('sm_memory_highlight');
-    setTimeout(() => $target.removeClass('sm_memory_highlight'), 1500);
+    $target.addClass('sme_memory_highlight');
+    setTimeout(() => $target.removeClass('sme_memory_highlight'), 1500);
   });
 
-  $list.find('.sm_jump_source').on('click', function () {
+  $list.find('.sme_jump_source').on('click', function () {
     const startIdx = parseInt($(this).data('source-start'), 10);
     const endIdx = parseInt($(this).data('source-end'), 10);
     const $startMsg = $(`#chat .mes[mesid="${startIdx}"]`);
@@ -1731,32 +1731,32 @@ export function renderMemoriesList(memories, characterName) {
       for (let i = startIdx; i <= endIdx; i++) {
         const $m = $(`#chat .mes[mesid="${i}"]`);
         if ($m.length) {
-          $m.addClass('sm_source_flash');
-          setTimeout(() => $m.removeClass('sm_source_flash'), FLASH_DURATION_MS);
+          $m.addClass('sme_source_flash');
+          setTimeout(() => $m.removeClass('sme_source_flash'), FLASH_DURATION_MS);
         }
       }
     }, 300);
   });
 
-  $list.find('.sm_edit_memory').on('click', function () {
+  $list.find('.sme_edit_memory').on('click', function () {
     const memId = $(this).data('memory-id');
-    const $item = $(this).closest('.sm_memory_item');
-    const $textSpan = $item.find('.sm_memory_text');
+    const $item = $(this).closest('.sme_memory_item');
+    const $textSpan = $item.find('.sme_memory_text');
     const current = loadCharacterMemories(characterName);
     const mem = current.find((m) => m.id === memId);
     if (!mem) return;
 
     // Replace text span with an inline textarea for editing.
-    const $textarea = $('<textarea class="sm_memory_edit_input">').val(mem.content);
+    const $textarea = $('<textarea class="sme_memory_edit_input">').val(mem.content);
     $textSpan.replaceWith($textarea);
     $textarea.trigger('focus');
 
     // Swap edit/delete buttons with save/cancel.
     $(this).hide();
-    $item.find('.sm_delete_memory').hide();
-    const $save = $('<button class="sm_save_memory menu_button" title="Save">Save</button>');
+    $item.find('.sme_delete_memory').hide();
+    const $save = $('<button class="sme_save_memory menu_button" title="Save">Save</button>');
     const $cancel = $(
-      '<button class="sm_cancel_memory menu_button" title="Cancel">Cancel</button>',
+      '<button class="sme_cancel_memory menu_button" title="Cancel">Cancel</button>',
     );
     $item.append($save, $cancel);
 
@@ -1778,7 +1778,7 @@ export function renderMemoriesList(memories, characterName) {
     );
   });
 
-  $list.find('.sm_delete_memory').on('click', function () {
+  $list.find('.sme_delete_memory').on('click', function () {
     const memId = $(this).data('memory-id');
     const current = loadCharacterMemories(characterName);
     const idx = current.findIndex((m) => m.id === memId);
@@ -1790,19 +1790,19 @@ export function renderMemoriesList(memories, characterName) {
   });
 
   // Add memory form at the bottom of the list.
-  $list.next('.sm_add_memory_form').remove();
+  $list.next('.sme_add_memory_form').remove();
   const $addForm = $(`
-    <div class="sm_add_memory_form">
-      <input type="text" class="sm_add_memory_input" placeholder="New memory...">
-      <button class="sm_add_memory_btn menu_button" title="Add memory">Add</button>
+    <div class="sme_add_memory_form">
+      <input type="text" class="sme_add_memory_input" placeholder="New memory...">
+      <button class="sme_add_memory_btn menu_button" title="Add memory">Add</button>
     </div>
   `);
   $addForm.prepend(buildTypePicker(MEMORY_TYPES));
   $list.after($addForm);
 
-  $addForm.find('.sm_add_memory_btn').on('click', () => {
+  $addForm.find('.sme_add_memory_btn').on('click', () => {
     const type = $addForm.find('.sm-type-picker').data('value');
-    const content = $addForm.find('.sm_add_memory_input').val().trim();
+    const content = $addForm.find('.sme_add_memory_input').val().trim();
     if (!content) return;
     const memories = loadCharacterMemories(characterName);
     memories.push({
@@ -1844,13 +1844,13 @@ const EPISTEMIC_TYPE_LABELS = {
  * @param {string|null} characterName - Card character name (storage key).
  */
 export function updateEpistemicUI(characterName) {
-  const $list = $('#sm_epistemic_list');
+  const $list = $('#sme_epistemic_list');
   $list.empty();
 
   const entries = characterName ? loadEpistemicKnowledge(characterName) : [];
 
   if (entries.length === 0) {
-    $list.append('<div class="sm_no_char">No perspective entries yet.</div>');
+    $list.append('<div class="sme_no_char">No perspective entries yet.</div>');
     return;
   }
 
@@ -1870,24 +1870,24 @@ export function updateEpistemicUI(characterName) {
         ? `${entry.subject} / ${typeLabel} from ${entry.target}: ${entry.content}`
         : `${entry.subject} / ${typeLabel}: ${entry.content}`;
 
-    const $row = $('<div class="sm_memory_item">');
-    const $content = $('<div class="sm_memory_content">').text(displayText);
+    const $row = $('<div class="sme_memory_item">');
+    const $content = $('<div class="sme_memory_content">').text(displayText);
 
-    const $editBtn = $('<button class="sm_memory_action menu_button" title="Edit">')
+    const $editBtn = $('<button class="sme_memory_action menu_button" title="Edit">')
       .append('<i class="fa-solid fa-pencil"></i>')
       .on('click', () => {
-        $('#sm_ep_type').val(entry.type);
-        $('#sm_ep_subject').val(entry.subject);
-        $('#sm_ep_target').val(entry.target ?? '');
-        $('#sm_ep_content').val(entry.content);
+        $('#sme_ep_type').val(entry.type);
+        $('#sme_ep_subject').val(entry.subject);
+        $('#sme_ep_target').val(entry.target ?? '');
+        $('#sme_ep_content').val(entry.content);
         // Show target field only for hiding type.
-        $('.sm_ep_target_field').toggle(entry.type === 'hiding');
-        $('#sm_epistemic_add_form').data('editing', entry.id).show();
-        $('#sm_ep_subject').focus();
+        $('.sme_ep_target_field').toggle(entry.type === 'hiding');
+        $('#sme_epistemic_add_form').data('editing', entry.id).show();
+        $('#sme_ep_subject').focus();
       });
 
     const $deleteBtn = $(
-      '<button class="sm_memory_action sm_memory_delete menu_button" title="Delete">',
+      '<button class="sme_memory_action sme_memory_delete menu_button" title="Delete">',
     )
       .append('<i class="fa-solid fa-trash-can"></i>')
       .on('click', () => {
@@ -1910,11 +1910,11 @@ export function updateEpistemicUI(characterName) {
 
   // Always render the spoiler block so the user knows it exists and can tell
   // whether any believes/hiding entries were extracted.
-  const $details = $('<details class="sm_epistemic_spoiler">');
+  const $details = $('<details class="sme_epistemic_spoiler">');
   const $summary = $(`
-    <summary class="sm_epistemic_spoiler_summary">
-      <span class="sm_spoiler_closed"><i class="fa-solid fa-lock"></i> Spoiler - false beliefs and hidden secrets <em>(click to reveal)</em></span>
-      <span class="sm_spoiler_open"><i class="fa-solid fa-lock-open"></i> False beliefs and hidden secrets <em>(click to hide)</em></span>
+    <summary class="sme_epistemic_spoiler_summary">
+      <span class="sme_spoiler_closed"><i class="fa-solid fa-lock"></i> Spoiler - false beliefs and hidden secrets <em>(click to reveal)</em></span>
+      <span class="sme_spoiler_open"><i class="fa-solid fa-lock-open"></i> False beliefs and hidden secrets <em>(click to hide)</em></span>
     </summary>
   `);
 
@@ -1937,7 +1937,7 @@ export function updateEpistemicUI(characterName) {
 
   if (secret.length === 0) {
     $details.append(
-      '<div class="sm_no_char" style="padding: 4px 0;">No false beliefs or hidden secrets found.</div>',
+      '<div class="sme_no_char" style="padding: 4px 0;">No false beliefs or hidden secrets found.</div>',
     );
   } else {
     for (const entry of secret) appendEntryRow(entry, $details);

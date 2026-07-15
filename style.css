@@ -25,7 +25,7 @@
 /* ── Block spacing ───────────────────────────────────────────────────────── */
 
 /* Consistent bottom margin between groups of controls within a section. */
-#smart_memory_settings .sm-block {
+#smart_memory_enhanced_settings .sm-block {
   margin-bottom: 8px;
 }
 
@@ -34,12 +34,12 @@
 /* Flex row where every direct .menu_button child stretches to an equal share
  * of the available width. Single buttons go full-width; two buttons are 50/50;
  * three buttons are 33/33/33, etc. */
-#smart_memory_settings .sm-btn-row {
+#smart_memory_enhanced_settings .sm-btn-row {
   display: flex;
   gap: 6px;
 }
 
-#smart_memory_settings .sm-btn-row > .menu_button {
+#smart_memory_enhanced_settings .sm-btn-row > .menu_button {
   flex: 1;
 }
 
@@ -50,7 +50,7 @@
  * accordion section. Matches the dc-section-title pattern from the
  * Discord Connector for a consistent look across extensions.
  */
-#smart_memory_settings .sm-section-title {
+#smart_memory_enhanced_settings .sm-section-title {
   margin: 12px 0 6px;
   font-size: 0.68em;
   font-weight: 700;
@@ -61,25 +61,25 @@
   padding-bottom: 4px;
 }
 
-#smart_memory_settings .sm-section-content > .sm-section-title:first-child {
+#smart_memory_enhanced_settings .sm-section-content > .sm-section-title:first-child {
   margin-top: 4px;
 }
 
 /* ── Settings mode (simple / advanced) ──────────────────────────────────── */
 
 /* Hidden by default; shown when advanced mode is active (toggled via JS) */
-#smart_memory_settings .sm-advanced-only {
+#smart_memory_enhanced_settings .sm-advanced-only {
   display: none;
 }
 
 /* Hidden by default; shown when simple mode is active (toggled via JS) */
-#smart_memory_settings .sm-simple-only {
+#smart_memory_enhanced_settings .sm-simple-only {
   display: none;
 }
 
 /* ── Section accordions ──────────────────────────────────────────────────── */
 
-#smart_memory_settings details.sm-section {
+#smart_memory_enhanced_settings details.sm-section {
   margin-top: 2px;
 }
 
@@ -89,7 +89,7 @@
  * it is collapsible. This makes it visually subordinate to the main
  * extension entry rather than looking like a nested extension.
  */
-#smart_memory_settings details.sm-section > summary {
+#smart_memory_enhanced_settings details.sm-section > summary {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -106,31 +106,31 @@
 }
 
 /* Suppress the native browser disclosure triangle. */
-#smart_memory_settings details.sm-section > summary::-webkit-details-marker {
+#smart_memory_enhanced_settings details.sm-section > summary::-webkit-details-marker {
   display: none;
 }
 
-#smart_memory_settings details.sm-section > summary:hover {
+#smart_memory_enhanced_settings details.sm-section > summary:hover {
   opacity: 0.8;
 }
 
-#smart_memory_settings details.sm-section > summary .sm-section-chevron {
+#smart_memory_enhanced_settings details.sm-section > summary .sm-section-chevron {
   font-size: 0.75em;
   transition: transform 0.18s ease;
   flex-shrink: 0;
 }
 
-#smart_memory_settings details.sm-section[open] > summary .sm-section-chevron {
+#smart_memory_enhanced_settings details.sm-section[open] > summary .sm-section-chevron {
   transform: rotate(90deg);
 }
 
-#smart_memory_settings details.sm-section > summary .sm-section-toggle {
+#smart_memory_enhanced_settings details.sm-section > summary .sm-section-toggle {
   margin: 0 4px;
   cursor: pointer;
   flex-shrink: 0;
 }
 
-#smart_memory_settings details.sm-section > .sm-section-content {
+#smart_memory_enhanced_settings details.sm-section > .sm-section-content {
   padding: 4px 0 6px 0;
 }
 
@@ -143,7 +143,7 @@
  * and positioned with position:fixed so it escapes ST's overflow:hidden
  * extensions panel. This ensures it is never clipped.
  */
-#smart_memory_settings .sm-info {
+#smart_memory_enhanced_settings .sm-info {
   display: inline-block;
   cursor: help;
   font-style: normal;
@@ -154,8 +154,8 @@
   transition: opacity 0.1s ease;
 }
 
-#smart_memory_settings .sm-info:hover,
-#smart_memory_settings .sm-info:focus {
+#smart_memory_enhanced_settings .sm-info:hover,
+#smart_memory_enhanced_settings .sm-info:focus {
   opacity: 0.85;
   outline: none;
 }
@@ -191,7 +191,7 @@
  * to their share of the total Smart Memory token budget. The totals line
  * below shows the absolute count against max context.
  */
-#smart_memory_settings .sm-token-bar-wrap {
+#smart_memory_enhanced_settings .sm-token-bar-wrap {
   height: 10px;
   border-radius: 4px;
   background: rgba(128, 128, 128, 0.15);
@@ -199,30 +199,30 @@
   margin: 8px 0 6px;
 }
 
-#smart_memory_settings .sm-token-bar {
+#smart_memory_enhanced_settings .sm-token-bar {
   display: flex;
   height: 100%;
 }
 
-#smart_memory_settings .sm-token-segment {
+#smart_memory_enhanced_settings .sm-token-segment {
   height: 100%;
   min-width: 0;
   transition: width 0.35s ease;
 }
 
-#smart_memory_settings .sm-token-segment.sm-token-trimmed {
+#smart_memory_enhanced_settings .sm-token-segment.sm-token-trimmed {
   box-shadow: inset 0 -3px 0 rgba(220, 60, 60, 0.85);
 }
 
 /* ── Token usage section (always visible, not an accordion) ─────────────── */
 
-#smart_memory_settings .sm-token-section {
+#smart_memory_enhanced_settings .sm-token-section {
   margin: 2px 0 6px;
 }
 
 /* ── Per-character group memory rows ─────────────────────────────────────── */
 
-#smart_memory_settings .sm-token-group-rows {
+#smart_memory_enhanced_settings .sm-token-group-rows {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -231,7 +231,7 @@
   border-top: 1px solid rgba(128, 128, 128, 0.2);
 }
 
-#smart_memory_settings .sm-token-group-row {
+#smart_memory_enhanced_settings .sm-token-group-row {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -241,19 +241,19 @@
   transition: opacity 0.15s;
 }
 
-#smart_memory_settings .sm-token-group-row:hover {
+#smart_memory_enhanced_settings .sm-token-group-row:hover {
   opacity: 0.85;
 }
 
-#smart_memory_settings .sm-token-group-row.sm-token-active {
+#smart_memory_enhanced_settings .sm-token-group-row.sm-token-active {
   opacity: 1;
 }
 
-#smart_memory_settings .sm-token-group-row.sm-token-active:hover {
+#smart_memory_enhanced_settings .sm-token-group-row.sm-token-active:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm-token-group-name {
+#smart_memory_enhanced_settings .sm-token-group-name {
   min-width: 5em;
   max-width: 9em;
   overflow: hidden;
@@ -262,11 +262,11 @@
   flex-shrink: 0;
 }
 
-#smart_memory_settings .sm-token-group-row.sm-token-active .sm-token-group-name {
+#smart_memory_enhanced_settings .sm-token-group-row.sm-token-active .sm-token-group-name {
   font-weight: 600;
 }
 
-#smart_memory_settings .sm-token-mini-bar-wrap {
+#smart_memory_enhanced_settings .sm-token-mini-bar-wrap {
   flex: 1;
   height: 7px;
   border-radius: 3px;
@@ -274,12 +274,12 @@
   overflow: hidden;
 }
 
-#smart_memory_settings .sm-token-mini-bar {
+#smart_memory_enhanced_settings .sm-token-mini-bar {
   display: flex;
   height: 100%;
 }
 
-#smart_memory_settings .sm-token-group-count {
+#smart_memory_enhanced_settings .sm-token-group-count {
   min-width: 4.5em;
   text-align: right;
   flex-shrink: 0;
@@ -287,7 +287,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-#smart_memory_settings .sm-token-total {
+#smart_memory_enhanced_settings .sm-token-total {
   margin-top: 4px;
   padding-top: 5px;
   border-top: 1px solid rgba(128, 128, 128, 0.2);
@@ -298,12 +298,12 @@
 
 /* ── Long-term memories list ─────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_toggle_retired {
+#smart_memory_enhanced_settings .sme_toggle_retired {
   white-space: nowrap;
   align-self: flex-start;
 }
 
-#smart_memory_settings .sm_memories_list {
+#smart_memory_enhanced_settings .sme_memories_list {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -312,7 +312,7 @@
   padding: 4px 0;
 }
 
-#smart_memory_settings .sm_memory_item {
+#smart_memory_enhanced_settings .sme_memory_item {
   display: flex;
   align-items: flex-start;
   gap: 6px;
@@ -322,52 +322,52 @@
   font-size: 0.875em;
 }
 
-#smart_memory_settings #sm_relationships_list .sm_memory_item {
+#smart_memory_enhanced_settings #sme_relationships_list .sme_memory_item {
   border-left: 3px solid oklch(62% 0.14 0);
   border-radius: 0 4px 4px 0;
 }
 
-#smart_memory_settings #sm_epistemic_list .sm_memory_item {
+#smart_memory_enhanced_settings #sme_epistemic_list .sme_memory_item {
   border-left: 3px solid oklch(62% 0.14 108);
   border-radius: 0 4px 4px 0;
 }
 
-#smart_memory_settings .sm_memory_content {
+#smart_memory_enhanced_settings .sme_memory_content {
   flex: 1;
   min-width: 0;
 }
 
-#smart_memory_settings .sm_memory_action {
+#smart_memory_enhanced_settings .sme_memory_action {
   flex-shrink: 0;
 }
 
 /* Per-type tinted backgrounds - match the badge hue at low opacity. */
-#smart_memory_settings .sm_memory_item:has(.sm_type_fact) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_fact) {
   background: oklch(57% 0.1 252 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_relationship) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_relationship) {
   background: oklch(57% 0.1 0 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_preference) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_preference) {
   background: oklch(57% 0.1 144 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_event) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_event) {
   background: oklch(57% 0.1 36 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_scene) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_scene) {
   background: oklch(57% 0.1 180 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_revelation) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_revelation) {
   background: oklch(57% 0.1 324 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_development) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_development) {
   background: oklch(57% 0.1 108 / 0.13);
 }
-#smart_memory_settings .sm_memory_item:has(.sm_type_detail) {
+#smart_memory_enhanced_settings .sme_memory_item:has(.sme_type_detail) {
   background: oklch(57% 0.1 216 / 0.13);
 }
 
-#smart_memory_settings .sm_memory_type {
+#smart_memory_enhanced_settings .sme_memory_type {
   flex-shrink: 0;
   padding: 1px 6px;
   border-radius: 3px;
@@ -377,25 +377,25 @@
   color: #fff;
 }
 
-#smart_memory_settings .sm_memory_importance {
+#smart_memory_enhanced_settings .sme_memory_importance {
   flex-shrink: 0;
   font-size: 0.65em;
   letter-spacing: 1px;
 }
 
-#smart_memory_settings .sm_importance_1 {
+#smart_memory_enhanced_settings .sme_importance_1 {
   color: rgba(255, 255, 255, 0.25);
 }
 
-#smart_memory_settings .sm_importance_2 {
+#smart_memory_enhanced_settings .sme_importance_2 {
   color: rgba(255, 255, 255, 0.55);
 }
 
-#smart_memory_settings .sm_importance_3 {
+#smart_memory_enhanced_settings .sme_importance_3 {
   color: #f0c060;
 }
 
-#smart_memory_settings .sm_memory_expiration {
+#smart_memory_enhanced_settings .sme_memory_expiration {
   flex-shrink: 0;
   font-size: 0.7em;
   font-weight: 600;
@@ -405,95 +405,95 @@
   border-radius: 3px;
 }
 
-#smart_memory_settings .sm_expiration_scene {
+#smart_memory_enhanced_settings .sme_expiration_scene {
   color: rgba(255, 255, 255, 0.3);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-#smart_memory_settings .sm_expiration_session {
+#smart_memory_enhanced_settings .sme_expiration_session {
   color: rgba(255, 255, 255, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
-#smart_memory_settings .sm_expiration_permanent {
+#smart_memory_enhanced_settings .sme_expiration_permanent {
   color: #a0d4a0;
   border: 1px solid rgba(160, 212, 160, 0.3);
 }
 
-#smart_memory_settings .sm_type_fact {
+#smart_memory_enhanced_settings .sme_type_fact {
   background: oklch(57% 0.1 252);
 }
-#smart_memory_settings .sm_type_relationship {
+#smart_memory_enhanced_settings .sme_type_relationship {
   background: oklch(57% 0.1 0);
 }
-#smart_memory_settings .sm_type_preference {
+#smart_memory_enhanced_settings .sme_type_preference {
   background: oklch(57% 0.1 144);
 }
-#smart_memory_settings .sm_type_event {
+#smart_memory_enhanced_settings .sme_type_event {
   background: oklch(57% 0.1 36);
 }
 
 /* Session memory type badges */
-#smart_memory_settings .sm_type_scene {
+#smart_memory_enhanced_settings .sme_type_scene {
   background: oklch(57% 0.1 180);
 }
-#smart_memory_settings .sm_type_revelation {
+#smart_memory_enhanced_settings .sme_type_revelation {
   background: oklch(57% 0.1 324);
 }
-#smart_memory_settings .sm_type_development {
+#smart_memory_enhanced_settings .sme_type_development {
   background: oklch(57% 0.1 108);
 }
-#smart_memory_settings .sm_type_detail {
+#smart_memory_enhanced_settings .sme_type_detail {
   background: oklch(57% 0.1 216);
 }
 
-#smart_memory_settings .sm_memory_text {
+#smart_memory_enhanced_settings .sme_memory_text {
   flex: 1;
   line-height: 1.4;
   word-break: break-word;
 }
 
-#smart_memory_settings .sm_edit_memory,
-#smart_memory_settings .sm_edit_session_memory,
-#smart_memory_settings .sm_edit_arc,
-#smart_memory_settings .sm_jump_source,
-#smart_memory_settings .sm_delete_memory,
-#smart_memory_settings .sm_delete_session_memory,
-#smart_memory_settings .sm_delete_arc {
+#smart_memory_enhanced_settings .sme_edit_memory,
+#smart_memory_enhanced_settings .sme_edit_session_memory,
+#smart_memory_enhanced_settings .sme_edit_arc,
+#smart_memory_enhanced_settings .sme_jump_source,
+#smart_memory_enhanced_settings .sme_delete_memory,
+#smart_memory_enhanced_settings .sme_delete_session_memory,
+#smart_memory_enhanced_settings .sme_delete_arc {
   flex-shrink: 0;
   padding: 2px 6px;
   opacity: 0.6;
   transition: opacity 0.15s;
 }
 
-#smart_memory_settings .sm_edit_memory,
-#smart_memory_settings .sm_edit_session_memory,
-#smart_memory_settings .sm_edit_arc,
-#smart_memory_settings .sm_jump_source {
+#smart_memory_enhanced_settings .sme_edit_memory,
+#smart_memory_enhanced_settings .sme_edit_session_memory,
+#smart_memory_enhanced_settings .sme_edit_arc,
+#smart_memory_enhanced_settings .sme_jump_source {
   color: inherit;
 }
 
-#smart_memory_settings .sm_delete_memory,
-#smart_memory_settings .sm_delete_session_memory,
-#smart_memory_settings .sm_delete_arc {
+#smart_memory_enhanced_settings .sme_delete_memory,
+#smart_memory_enhanced_settings .sme_delete_session_memory,
+#smart_memory_enhanced_settings .sme_delete_arc {
   color: #c06060;
 }
 
-#smart_memory_settings .sm_edit_memory:hover,
-#smart_memory_settings .sm_edit_session_memory:hover,
-#smart_memory_settings .sm_edit_arc:hover,
-#smart_memory_settings .sm_jump_source:hover {
+#smart_memory_enhanced_settings .sme_edit_memory:hover,
+#smart_memory_enhanced_settings .sme_edit_session_memory:hover,
+#smart_memory_enhanced_settings .sme_edit_arc:hover,
+#smart_memory_enhanced_settings .sme_jump_source:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm_delete_memory:hover,
-#smart_memory_settings .sm_delete_session_memory:hover,
-#smart_memory_settings .sm_delete_arc:hover {
+#smart_memory_enhanced_settings .sme_delete_memory:hover,
+#smart_memory_enhanced_settings .sme_delete_session_memory:hover,
+#smart_memory_enhanced_settings .sme_delete_arc:hover {
   color: #e07070;
   opacity: 1;
 }
 
-#smart_memory_settings .sm_memory_edit_input {
+#smart_memory_enhanced_settings .sme_memory_edit_input {
   flex: 1;
   min-height: 3em;
   background: var(--greyCAl, rgba(255, 255, 255, 0.07));
@@ -506,35 +506,35 @@
   resize: vertical;
 }
 
-#smart_memory_settings .sm_save_memory,
-#smart_memory_settings .sm_save_session_memory,
-#smart_memory_settings .sm_save_arc {
+#smart_memory_enhanced_settings .sme_save_memory,
+#smart_memory_enhanced_settings .sme_save_session_memory,
+#smart_memory_enhanced_settings .sme_save_arc {
   flex-shrink: 0;
   padding: 2px 8px;
   opacity: 0.85;
 }
 
-#smart_memory_settings .sm_cancel_memory,
-#smart_memory_settings .sm_cancel_session_memory,
-#smart_memory_settings .sm_cancel_arc {
+#smart_memory_enhanced_settings .sme_cancel_memory,
+#smart_memory_enhanced_settings .sme_cancel_session_memory,
+#smart_memory_enhanced_settings .sme_cancel_arc {
   flex-shrink: 0;
   padding: 2px 8px;
   opacity: 0.6;
 }
 
-#smart_memory_settings .sm_save_memory:hover,
-#smart_memory_settings .sm_save_session_memory:hover,
-#smart_memory_settings .sm_save_arc:hover {
+#smart_memory_enhanced_settings .sme_save_memory:hover,
+#smart_memory_enhanced_settings .sme_save_session_memory:hover,
+#smart_memory_enhanced_settings .sme_save_arc:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm_cancel_memory:hover,
-#smart_memory_settings .sm_cancel_session_memory:hover,
-#smart_memory_settings .sm_cancel_arc:hover {
+#smart_memory_enhanced_settings .sme_cancel_memory:hover,
+#smart_memory_enhanced_settings .sme_cancel_session_memory:hover,
+#smart_memory_enhanced_settings .sme_cancel_arc:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm_add_memory_form {
+#smart_memory_enhanced_settings .sme_add_memory_form {
   display: flex;
   gap: 6px;
   align-items: center;
@@ -548,9 +548,9 @@
 /*
  * A lightweight div-based dropdown. The closed state shows the selected type
  * in its badge color. The open list shows every option in its own badge color
- * with a lighter hover tint. Colors match the sm_type_* badge definitions.
+ * with a lighter hover tint. Colors match the sme_type_* badge definitions.
  */
-#smart_memory_settings .sm-type-picker {
+#smart_memory_enhanced_settings .sm-type-picker {
   position: relative;
   flex-shrink: 0;
   max-width: 8em;
@@ -559,7 +559,7 @@
   user-select: none;
 }
 
-#smart_memory_settings .sm-type-picker-current {
+#smart_memory_enhanced_settings .sm-type-picker-current {
   padding: 2px 18px 2px 6px;
   border: 1px solid var(--border-color, #555);
   border-radius: 3px;
@@ -571,7 +571,7 @@
 }
 
 /* Down-arrow indicator. */
-#smart_memory_settings .sm-type-picker-current::after {
+#smart_memory_enhanced_settings .sm-type-picker-current::after {
   content: '▾';
   position: absolute;
   right: 4px;
@@ -581,7 +581,7 @@
   opacity: 0.8;
 }
 
-#smart_memory_settings .sm-type-picker-list {
+#smart_memory_enhanced_settings .sm-type-picker-list {
   display: none;
   position: absolute;
   top: 100%;
@@ -594,11 +594,11 @@
   margin-top: 1px;
 }
 
-#smart_memory_settings .sm-type-picker.open .sm-type-picker-list {
+#smart_memory_enhanced_settings .sm-type-picker.open .sm-type-picker-list {
   display: block;
 }
 
-#smart_memory_settings .sm-type-option {
+#smart_memory_enhanced_settings .sm-type-option {
   padding: 3px 8px;
   color: #fff;
   cursor: pointer;
@@ -606,71 +606,71 @@
 }
 
 /* Closed-state and open-list colors per type. */
-#smart_memory_settings .sm-type-picker-current[data-value='fact'],
-#smart_memory_settings .sm-type-option[data-value='fact'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='fact'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='fact'] {
   background: oklch(57% 0.1 252);
 }
-#smart_memory_settings .sm-type-option[data-value='fact']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='fact']:hover {
   background: oklch(70% 0.1 252);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='relationship'],
-#smart_memory_settings .sm-type-option[data-value='relationship'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='relationship'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='relationship'] {
   background: oklch(57% 0.1 0);
 }
-#smart_memory_settings .sm-type-option[data-value='relationship']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='relationship']:hover {
   background: oklch(70% 0.1 0);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='preference'],
-#smart_memory_settings .sm-type-option[data-value='preference'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='preference'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='preference'] {
   background: oklch(57% 0.1 144);
 }
-#smart_memory_settings .sm-type-option[data-value='preference']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='preference']:hover {
   background: oklch(70% 0.1 144);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='event'],
-#smart_memory_settings .sm-type-option[data-value='event'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='event'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='event'] {
   background: oklch(57% 0.1 36);
 }
-#smart_memory_settings .sm-type-option[data-value='event']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='event']:hover {
   background: oklch(70% 0.1 36);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='scene'],
-#smart_memory_settings .sm-type-option[data-value='scene'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='scene'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='scene'] {
   background: oklch(57% 0.1 180);
 }
-#smart_memory_settings .sm-type-option[data-value='scene']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='scene']:hover {
   background: oklch(70% 0.1 180);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='revelation'],
-#smart_memory_settings .sm-type-option[data-value='revelation'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='revelation'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='revelation'] {
   background: oklch(57% 0.1 324);
 }
-#smart_memory_settings .sm-type-option[data-value='revelation']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='revelation']:hover {
   background: oklch(70% 0.1 324);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='development'],
-#smart_memory_settings .sm-type-option[data-value='development'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='development'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='development'] {
   background: oklch(57% 0.1 108);
 }
-#smart_memory_settings .sm-type-option[data-value='development']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='development']:hover {
   background: oklch(70% 0.1 108);
 }
 
-#smart_memory_settings .sm-type-picker-current[data-value='detail'],
-#smart_memory_settings .sm-type-option[data-value='detail'] {
+#smart_memory_enhanced_settings .sm-type-picker-current[data-value='detail'],
+#smart_memory_enhanced_settings .sm-type-option[data-value='detail'] {
   background: oklch(57% 0.1 216);
 }
-#smart_memory_settings .sm-type-option[data-value='detail']:hover {
+#smart_memory_enhanced_settings .sm-type-option[data-value='detail']:hover {
   background: oklch(70% 0.1 216);
 }
 
-#smart_memory_settings .sm_add_memory_input {
+#smart_memory_enhanced_settings .sme_add_memory_input {
   flex: 1;
   background: var(--greyCAl, rgba(255, 255, 255, 0.07));
   border: 1px solid var(--border-color, #555);
@@ -680,14 +680,14 @@
   padding: 2px 6px;
 }
 
-#smart_memory_settings .sm_add_memory_btn {
+#smart_memory_enhanced_settings .sme_add_memory_btn {
   flex-shrink: 0;
   padding: 2px 10px;
 }
 
 /* ── Story arcs list ─────────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_arcs_list {
+#smart_memory_enhanced_settings .sme_arcs_list {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -696,7 +696,7 @@
   padding: 4px 0;
 }
 
-#smart_memory_settings .sm_arc_item {
+#smart_memory_enhanced_settings .sme_arc_item {
   display: flex;
   align-items: flex-start;
   gap: 6px;
@@ -707,11 +707,11 @@
   font-size: 0.875em;
 }
 
-#smart_memory_settings .sm_arc_item.sm_arc_persistent {
+#smart_memory_enhanced_settings .sme_arc_item.sme_arc_persistent {
   border-left-color: #f0c060;
 }
 
-#smart_memory_settings .sm_resolved_arcs_summary {
+#smart_memory_enhanced_settings .sme_resolved_arcs_summary {
   cursor: pointer;
   font-size: 0.8em;
   font-weight: 600;
@@ -723,24 +723,24 @@
   padding: 4px 0;
 }
 
-#smart_memory_settings .sm_resolved_arcs_summary::-webkit-details-marker {
+#smart_memory_enhanced_settings .sme_resolved_arcs_summary::-webkit-details-marker {
   display: none;
 }
 
-#smart_memory_settings #sm_resolved_arcs_details[open] .sm_resolved_arcs_summary {
+#smart_memory_enhanced_settings #sme_resolved_arcs_details[open] .sme_resolved_arcs_summary {
   opacity: 0.85;
 }
 
-#smart_memory_settings .sm_arc_item.sm_arc_resolved {
+#smart_memory_enhanced_settings .sme_arc_item.sme_arc_resolved {
   border-left-color: rgba(240, 192, 96, 0.3);
   opacity: 0.55;
 }
 
-#smart_memory_settings .sm_arc_item.sm_arc_resolved .sm_arc_text {
+#smart_memory_enhanced_settings .sme_arc_item.sme_arc_resolved .sme_arc_text {
   text-decoration: line-through;
 }
 
-#smart_memory_settings .sm_reopen_arc {
+#smart_memory_enhanced_settings .sme_reopen_arc {
   flex-shrink: 0;
   padding: 2px 6px;
   color: inherit;
@@ -748,17 +748,17 @@
   transition: opacity 0.15s;
 }
 
-#smart_memory_settings .sm_reopen_arc:hover {
+#smart_memory_enhanced_settings .sme_reopen_arc:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm_arc_text {
+#smart_memory_enhanced_settings .sme_arc_text {
   flex: 1;
   line-height: 1.4;
   word-break: break-word;
 }
 
-#smart_memory_settings .sm_pin_arc {
+#smart_memory_enhanced_settings .sme_pin_arc {
   flex-shrink: 0;
   padding: 2px 6px;
   color: rgba(255, 255, 255, 0.35);
@@ -768,19 +768,19 @@
     color 0.15s;
 }
 
-#smart_memory_settings .sm_pin_arc:hover {
+#smart_memory_enhanced_settings .sme_pin_arc:hover {
   opacity: 1;
   color: rgba(255, 255, 255, 0.7);
 }
 
-#smart_memory_settings .sm_pin_arc.sm_pin_active {
+#smart_memory_enhanced_settings .sme_pin_arc.sme_pin_active {
   color: #f0c060;
   opacity: 1;
 }
 
 /* ── Scene history list ──────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_scenes_list {
+#smart_memory_enhanced_settings .sme_scenes_list {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -789,7 +789,7 @@
   padding: 4px 0;
 }
 
-#smart_memory_settings .sm_scene_item {
+#smart_memory_enhanced_settings .sme_scene_item {
   padding: 4px 8px;
   background: var(--greyCAl, rgba(255, 255, 255, 0.05));
   border-left: 3px solid oklch(62% 0.14 36);
@@ -800,52 +800,52 @@
 
 /* ── Continuity result ───────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_continuity_result {
+#smart_memory_enhanced_settings .sme_continuity_result {
   padding: 8px 10px;
   border-radius: 4px;
   font-size: 0.875em;
   line-height: 1.5;
 }
 
-#smart_memory_settings .sm_continuity_clean {
+#smart_memory_enhanced_settings .sme_continuity_clean {
   background: rgba(60, 120, 60, 0.2);
   border: 1px solid rgba(60, 180, 60, 0.4);
   color: #8fcc8f;
 }
 
-#smart_memory_settings .sm_continuity_warn {
+#smart_memory_enhanced_settings .sme_continuity_warn {
   background: rgba(140, 60, 60, 0.2);
   border: 1px solid rgba(200, 80, 80, 0.4);
   color: #cc8f8f;
 }
 
-#smart_memory_settings .sm_continuity_result ul {
+#smart_memory_enhanced_settings .sme_continuity_result ul {
   margin: 6px 0 0 0;
   padding-left: 18px;
 }
 
-#smart_memory_settings .sm_continuity_result li {
+#smart_memory_enhanced_settings .sme_continuity_result li {
   margin-bottom: 3px;
 }
 
-#smart_memory_settings .sm_repair_queued {
+#smart_memory_enhanced_settings .sme_repair_queued {
   margin: 8px 0 0 0;
 }
 
-#smart_memory_settings .sm_repair_note {
+#smart_memory_enhanced_settings .sme_repair_note {
   font-style: italic;
   color: #a0b8cc;
   margin: 4px 0 8px 0;
   font-size: 0.9em;
 }
 
-#smart_memory_settings .sm_repair_cancel {
+#smart_memory_enhanced_settings .sme_repair_cancel {
   font-size: 0.85em;
   padding: 2px 8px;
 }
 
 /* Auto-continuity badge shown in the header after Profile B checks. */
-#smart_memory_settings #sm_continuity_badge {
+#smart_memory_enhanced_settings #sme_continuity_badge {
   margin-left: 8px;
   font-size: 0.75em;
   font-weight: normal;
@@ -854,13 +854,13 @@
   vertical-align: middle;
 }
 
-#smart_memory_settings #sm_continuity_badge.sm_continuity_badge_clean {
+#smart_memory_enhanced_settings #sme_continuity_badge.sme_continuity_badge_clean {
   background: rgba(60, 120, 60, 0.25);
   border: 1px solid rgba(60, 180, 60, 0.4);
   color: #8fcc8f;
 }
 
-#smart_memory_settings #sm_continuity_badge.sm_continuity_badge_warn {
+#smart_memory_enhanced_settings #sme_continuity_badge.sme_continuity_badge_warn {
   background: rgba(160, 100, 20, 0.25);
   border: 1px solid rgba(220, 150, 40, 0.5);
   color: #d4aa5a;
@@ -868,7 +868,7 @@
 
 /* ── Profiles display ────────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_profiles_display {
+#smart_memory_enhanced_settings .sme_profiles_display {
   font-size: 0.875em;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -880,32 +880,32 @@
   min-height: 32px;
 }
 
-#smart_memory_settings .sm_profiles_display .sm-muted {
+#smart_memory_enhanced_settings .sme_profiles_display .sm-muted {
   color: var(--SmartReplyColor, #aaa);
   font-style: italic;
 }
 
-#smart_memory_settings .sm_profiles_section-label {
+#smart_memory_enhanced_settings .sme_profiles_section-label {
   font-weight: 600;
   color: var(--SmartReplyColor, #ddd);
   margin-top: 8px;
   display: block;
 }
 
-#smart_memory_settings .sm_profiles_section-label:first-child {
+#smart_memory_enhanced_settings .sme_profiles_section-label:first-child {
   margin-top: 0;
 }
 
 /* ── Supersession indicators ─────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_memory_retired {
+#smart_memory_enhanced_settings .sme_memory_retired {
   opacity: 0.45;
   background: rgba(255, 255, 255, 0.02);
 }
 
 /* ── Canon status label ──────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_canon_status {
+#smart_memory_enhanced_settings .sme_canon_status {
   font-size: 0.8em;
   color: var(--SmartReplyColor, #999);
   opacity: 0.75;
@@ -915,7 +915,7 @@
 
 /* ── Hardware profile label ──────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_hardware_profile_label {
+#smart_memory_enhanced_settings .sme_hardware_profile_label {
   font-size: 0.8em;
   color: var(--SmartReplyColor, #999);
   opacity: 0.75;
@@ -925,35 +925,35 @@
 
 /* ── Model test ──────────────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_model_test_result {
+#smart_memory_enhanced_settings .sme_model_test_result {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-#smart_memory_settings .sm_model_test_running {
+#smart_memory_enhanced_settings .sme_model_test_running {
   opacity: 0.7;
   font-style: italic;
 }
 
-#smart_memory_settings .sm_model_test_fail {
+#smart_memory_enhanced_settings .sme_model_test_fail {
   color: #c06060;
   line-height: 1.5;
 }
 
-#smart_memory_settings .sm_model_test_pass_header {
+#smart_memory_enhanced_settings .sme_model_test_pass_header {
   color: #60a060;
   font-size: 0.875em;
 }
 
-#smart_memory_settings .sm_model_test_scenario {
+#smart_memory_enhanced_settings .sme_model_test_scenario {
   margin: 6px 0;
   border: 1px solid var(--SmartReplyBorderColor, rgba(255, 255, 255, 0.1));
   border-radius: 4px;
   padding: 4px 8px;
 }
 
-#smart_memory_settings .sm_model_test_scenario > summary {
+#smart_memory_enhanced_settings .sme_model_test_scenario > summary {
   cursor: pointer;
   font-size: 0.8em;
   opacity: 0.7;
@@ -961,7 +961,7 @@
   padding: 2px 0;
 }
 
-#smart_memory_settings .sm_model_test_scenario_note {
+#smart_memory_enhanced_settings .sme_model_test_scenario_note {
   font-size: 0.78em;
   opacity: 0.6;
   font-style: italic;
@@ -969,27 +969,27 @@
   margin: 4px 0;
 }
 
-#smart_memory_settings .sm_model_test_tier_name {
+#smart_memory_enhanced_settings .sme_model_test_tier_name {
   font-weight: 600;
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
 
-#smart_memory_settings .sm_model_test_tier_pos {
+#smart_memory_enhanced_settings .sme_model_test_tier_pos {
   font-size: 0.8em;
   font-weight: normal;
   opacity: 0.6;
 }
 
-#smart_memory_settings .sm_model_test_tier_hint {
+#smart_memory_enhanced_settings .sme_model_test_tier_hint {
   font-size: 0.8em;
   opacity: 0.65;
   font-style: italic;
   line-height: 1.4;
 }
 
-#smart_memory_settings .sm_model_test_output {
+#smart_memory_enhanced_settings .sme_model_test_output {
   width: 100%;
   min-height: 100px;
   max-height: 220px;
@@ -998,20 +998,20 @@
   line-height: 1.5;
 }
 
-#smart_memory_settings .sm_model_test_nav {
+#smart_memory_enhanced_settings .sme_model_test_nav {
   display: flex;
   gap: 8px;
 }
 
 /* ── Entity panel ────────────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_entity_panel {
+#smart_memory_enhanced_settings .sme_entity_panel {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-#smart_memory_settings .sm_entity_row {
+#smart_memory_enhanced_settings .sme_entity_row {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1023,7 +1023,7 @@
   flex-wrap: wrap;
 }
 
-#smart_memory_settings .sm_entity_type_badge {
+#smart_memory_enhanced_settings .sme_entity_type_badge {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1036,52 +1036,52 @@
   white-space: nowrap;
 }
 
-#smart_memory_settings .sm_entity_type_character {
+#smart_memory_enhanced_settings .sme_entity_type_character {
   color: #7ecfff;
   background: rgba(126, 207, 255, 0.1);
   border: 1px solid rgba(126, 207, 255, 0.25);
 }
 
-#smart_memory_settings .sm_entity_type_place {
+#smart_memory_enhanced_settings .sme_entity_type_place {
   color: #a8d88f;
   background: rgba(168, 216, 143, 0.1);
   border: 1px solid rgba(168, 216, 143, 0.25);
 }
 
-#smart_memory_settings .sm_entity_type_object {
+#smart_memory_enhanced_settings .sme_entity_type_object {
   color: #d4b97a;
   background: rgba(212, 185, 122, 0.1);
   border: 1px solid rgba(212, 185, 122, 0.25);
 }
 
-#smart_memory_settings .sm_entity_type_faction {
+#smart_memory_enhanced_settings .sme_entity_type_faction {
   color: #c49de8;
   background: rgba(196, 157, 232, 0.1);
   border: 1px solid rgba(196, 157, 232, 0.25);
 }
 
-#smart_memory_settings .sm_entity_type_concept {
+#smart_memory_enhanced_settings .sme_entity_type_concept {
   color: #f0a0a0;
   background: rgba(240, 160, 160, 0.1);
   border: 1px solid rgba(240, 160, 160, 0.25);
 }
 
-#smart_memory_settings .sm_entity_type_unknown {
+#smart_memory_enhanced_settings .sme_entity_type_unknown {
   color: #999;
   background: rgba(153, 153, 153, 0.1);
   border: 1px solid rgba(153, 153, 153, 0.25);
 }
 
-#smart_memory_settings .sm_entity_type_badge[data-clickable] {
+#smart_memory_enhanced_settings .sme_entity_type_badge[data-clickable] {
   cursor: pointer;
   transition: opacity 0.15s;
 }
 
-#smart_memory_settings .sm_entity_type_badge[data-clickable]:hover {
+#smart_memory_enhanced_settings .sme_entity_type_badge[data-clickable]:hover {
   opacity: 0.75;
 }
 
-#smart_memory_settings .sm_entity_type_picker {
+#smart_memory_enhanced_settings .sme_entity_type_picker {
   position: absolute;
   z-index: 100;
   background: var(--black-3, #222);
@@ -1094,7 +1094,7 @@
   min-width: 120px;
 }
 
-#smart_memory_settings .sm_entity_type_option {
+#smart_memory_enhanced_settings .sme_entity_type_option {
   padding: 3px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -1105,37 +1105,37 @@
   white-space: nowrap;
 }
 
-#smart_memory_settings .sm_entity_type_option:hover {
+#smart_memory_enhanced_settings .sme_entity_type_option:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
-#smart_memory_settings .sm_entity_merge_btn {
+#smart_memory_enhanced_settings .sme_entity_merge_btn {
   padding: 2px 6px;
   font-size: 0.75em;
   flex-shrink: 0;
 }
 
-#smart_memory_settings .sm_entity_name {
+#smart_memory_enhanced_settings .sme_entity_name {
   font-weight: 600;
   color: var(--SmartReplyColor, #ddd);
   flex: 1;
   min-width: 80px;
 }
 
-#smart_memory_settings .sm_entity_meta {
+#smart_memory_enhanced_settings .sme_entity_meta {
   font-size: 0.8em;
   color: var(--SmartReplyColor, #999);
   opacity: 0.7;
   white-space: nowrap;
 }
 
-#smart_memory_settings .sm_entity_timeline_btn {
+#smart_memory_enhanced_settings .sme_entity_timeline_btn {
   padding: 2px 6px;
   font-size: 0.75em;
   flex-shrink: 0;
 }
 
-#smart_memory_settings .sm_entity_delete_btn {
+#smart_memory_enhanced_settings .sme_entity_delete_btn {
   padding: 2px 6px;
   font-size: 0.75em;
   flex-shrink: 0;
@@ -1144,14 +1144,14 @@
   transition: opacity 0.15s;
 }
 
-#smart_memory_settings .sm_entity_delete_btn:hover {
+#smart_memory_enhanced_settings .sme_entity_delete_btn:hover {
   color: #e07070;
   opacity: 1;
 }
 
 /* ── Entity timeline ─────────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_entity_timeline {
+#smart_memory_enhanced_settings .sme_entity_timeline {
   margin: 2px 0 6px 12px;
   padding: 8px 10px;
   border-left: 2px solid rgba(255, 255, 255, 0.15);
@@ -1159,35 +1159,35 @@
   border-radius: 0 4px 4px 0;
 }
 
-#smart_memory_settings .sm_entity_timeline_header {
+#smart_memory_enhanced_settings .sme_entity_timeline_header {
   font-size: 0.8em;
   font-weight: 600;
   color: var(--SmartReplyColor, #bbb);
   margin-bottom: 8px;
 }
 
-#smart_memory_settings .sm_timeline_empty {
+#smart_memory_enhanced_settings .sme_timeline_empty {
   font-size: 0.85em;
   padding: 4px 0;
 }
 
-#smart_memory_settings .sm_timeline_list {
+#smart_memory_enhanced_settings .sme_timeline_list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-#smart_memory_settings .sm_timeline_entry {
+#smart_memory_enhanced_settings .sme_timeline_entry {
   display: flex;
   gap: 8px;
   align-items: flex-start;
 }
 
-#smart_memory_settings .sm_timeline_entry_retired {
+#smart_memory_enhanced_settings .sme_timeline_entry_retired {
   opacity: 0.4;
 }
 
-#smart_memory_settings .sm_timeline_dot {
+#smart_memory_enhanced_settings .sme_timeline_dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -1196,11 +1196,11 @@
   margin-top: 4px;
 }
 
-#smart_memory_settings .sm_timeline_entry_retired .sm_timeline_dot {
+#smart_memory_enhanced_settings .sme_timeline_entry_retired .sme_timeline_dot {
   background: rgba(255, 255, 255, 0.15);
 }
 
-#smart_memory_settings .sm_timeline_body {
+#smart_memory_enhanced_settings .sme_timeline_body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -1208,20 +1208,20 @@
   font-size: 0.85em;
 }
 
-#smart_memory_settings .sm_timeline_when {
+#smart_memory_enhanced_settings .sme_timeline_when {
   font-size: 0.75em;
   color: var(--SmartReplyColor, #999);
   opacity: 0.7;
   white-space: nowrap;
 }
 
-#smart_memory_settings .sm_timeline_text {
+#smart_memory_enhanced_settings .sme_timeline_text {
   color: var(--SmartReplyColor, #ccc);
   line-height: 1.4;
   width: 100%;
 }
 
-#smart_memory_settings .sm_memory_conflict_badge {
+#smart_memory_enhanced_settings .sme_memory_conflict_badge {
   display: inline-flex;
   align-items: center;
   font-size: 0.85em;
@@ -1231,7 +1231,7 @@
   cursor: help;
 }
 
-#smart_memory_settings .sm_superseded_by_link {
+#smart_memory_enhanced_settings .sme_superseded_by_link {
   display: inline-block;
   font-size: 0.7em;
   font-weight: 500;
@@ -1247,11 +1247,11 @@
   opacity: 0.8;
 }
 
-#smart_memory_settings .sm_superseded_by_link:hover {
+#smart_memory_enhanced_settings .sme_superseded_by_link:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm_memory_highlight {
+#smart_memory_enhanced_settings .sme_memory_highlight {
   outline: 2px solid rgba(126, 207, 255, 0.6);
   border-radius: 4px;
   transition: outline 0.2s ease;
@@ -1270,11 +1270,11 @@
   }
 }
 
-#chat .mes.sm_source_flash {
+#chat .mes.sme_source_flash {
   animation: sm-source-flash 0.8s ease-in-out 3;
 }
 
-#smart_memory_settings .sm_memory_retired_badge {
+#smart_memory_enhanced_settings .sme_memory_retired_badge {
   display: inline-block;
   font-size: 0.7em;
   font-weight: 600;
@@ -1291,21 +1291,21 @@
 
 /* ── Shared helpers ──────────────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_no_char {
+#smart_memory_enhanced_settings .sme_no_char {
   color: var(--SmartReplyColor, #aaa);
   font-style: italic;
   font-size: 0.9em;
   padding: 4px 0;
 }
 
-#smart_memory_settings hr {
+#smart_memory_enhanced_settings hr {
   margin: 8px 0;
   border-color: var(--greyCAl, rgba(255, 255, 255, 0.1));
 }
 
 /* ── Memory search overlay (/sm-search) ─────────────────────────────────── */
 
-#sm_search_overlay {
+#sme_search_overlay {
   border: none;
   padding: 16px;
   background: transparent;
@@ -1320,11 +1320,11 @@
   overflow-y: auto;
 }
 
-#sm_search_overlay::backdrop {
+#sme_search_overlay::backdrop {
   background: rgba(0, 0, 0, 0.65);
 }
 
-.sm_search_card {
+.sme_search_card {
   background: var(--black-2, #1a1a2e);
   border: 1px solid var(--border-color, #444);
   border-radius: 8px;
@@ -1335,18 +1335,18 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
 }
 
-.sm_search_card h3 {
+.sme_search_card h3 {
   margin: 0 0 4px 0;
   font-size: 1.1em;
 }
 
-.sm_search_query_label {
+.sme_search_query_label {
   font-size: 0.8em;
   opacity: 0.6;
   margin: 0 0 14px 0;
 }
 
-.sm_search_list {
+.sme_search_list {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -1354,7 +1354,7 @@
   overflow-y: auto;
 }
 
-.sm_search_item {
+.sme_search_item {
   padding: 8px 0;
   border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.07));
   display: flex;
@@ -1363,11 +1363,11 @@
   font-size: 0.9em;
 }
 
-.sm_search_item:last-child {
+.sme_search_item:last-child {
   border-bottom: none;
 }
 
-.sm_search_badge {
+.sme_search_badge {
   font-size: 0.72em;
   padding: 2px 6px;
   border-radius: 3px;
@@ -1375,56 +1375,56 @@
   white-space: nowrap;
 }
 
-.sm_search_badge_tier {
+.sme_search_badge_tier {
   background: var(--black-4, #2c2c4a);
   color: var(--text-muted, #aaa);
 }
 
-.sm_search_content {
+.sme_search_content {
   flex: 1;
   line-height: 1.5;
 }
 
-.sm_search_score {
+.sme_search_score {
   font-size: 0.72em;
   opacity: 0.45;
   flex-shrink: 0;
 }
 
-.sm_search_footer {
+.sme_search_footer {
   margin-top: 14px;
   text-align: right;
 }
 
 /* Type badge colours reused in search overlay (same values as panel badges). */
-#sm_search_overlay .sm_type_fact {
+#sme_search_overlay .sme_type_fact {
   background: #4a6fa5;
 }
-#sm_search_overlay .sm_type_relationship {
+#sme_search_overlay .sme_type_relationship {
   background: #8e5a8e;
 }
-#sm_search_overlay .sm_type_preference {
+#sme_search_overlay .sme_type_preference {
   background: #5a8e5a;
 }
-#sm_search_overlay .sm_type_event {
+#sme_search_overlay .sme_type_event {
   background: #8e6e3a;
 }
-#sm_search_overlay .sm_type_scene {
+#sme_search_overlay .sme_type_scene {
   background: #5a8e7a;
 }
-#sm_search_overlay .sm_type_revelation {
+#sme_search_overlay .sme_type_revelation {
   background: #8e5a5a;
 }
-#sm_search_overlay .sm_type_development {
+#sme_search_overlay .sme_type_development {
   background: #7a7a3a;
 }
-#sm_search_overlay .sm_type_detail {
+#sme_search_overlay .sme_type_detail {
   background: #3a7a8e;
 }
 
 /* ── Memory graph overlay ──────────────────────────────────────────────────── */
 
-#sm_graph_overlay {
+#sme_graph_overlay {
   border: none;
   padding: 16px;
   background: transparent;
@@ -1438,11 +1438,11 @@
   box-sizing: border-box;
 }
 
-#sm_graph_overlay::backdrop {
+#sme_graph_overlay::backdrop {
   background: rgba(0, 0, 0, 0.82);
 }
 
-#sm_graph_card {
+#sme_graph_card {
   background: var(--SmartThemeBlurTintColor, #1a1a2e);
   border: 1px solid var(--SmartThemeBorderColor, #444);
   color: var(--SmartThemeBodyColor, #dcdcd2);
@@ -1457,7 +1457,7 @@
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
 }
 
-#sm_graph_toolbar {
+#sme_graph_toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1467,27 +1467,27 @@
   flex-shrink: 0;
 }
 
-#sm_graph_title {
+#sme_graph_title {
   font-size: 0.95em;
   font-weight: 600;
   opacity: 0.85;
 }
 
-#sm_graph_controls {
+#sme_graph_controls {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-#sm_graph_controls .menu_button {
+#sme_graph_controls .menu_button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   white-space: nowrap;
 }
 
-.sm_graph_toggle {
+.sme_graph_toggle {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1498,24 +1498,24 @@
   white-space: nowrap;
 }
 
-.sm_graph_toggle:hover {
+.sme_graph_toggle:hover {
   opacity: 1;
 }
 
-#sm_graph_canvas_wrap {
+#sme_graph_canvas_wrap {
   flex: 1;
   position: relative;
   overflow: hidden;
   cursor: grab;
 }
 
-#sm_graph_canvas {
+#sme_graph_canvas {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-#sm_graph_tooltip {
+#sme_graph_tooltip {
   position: absolute;
   display: none;
   pointer-events: none;
@@ -1531,12 +1531,12 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
-#sm_graph_tooltip strong {
+#sme_graph_tooltip strong {
   display: block;
   margin-bottom: 3px;
 }
 
-.sm_graph_tip_type {
+.sme_graph_tip_type {
   display: block;
   font-size: 0.85em;
   opacity: 0.55;
@@ -1545,13 +1545,13 @@
   letter-spacing: 0.04em;
 }
 
-.sm_graph_tip_detail {
+.sme_graph_tip_detail {
   display: block;
   opacity: 0.88;
   word-break: break-word;
 }
 
-.sm_graph_tip_triggers {
+.sme_graph_tip_triggers {
   display: block;
   margin-top: 5px;
   font-size: 0.8em;
@@ -1560,7 +1560,7 @@
   word-break: break-word;
 }
 
-#sm_graph_legend {
+#sme_graph_legend {
   display: flex;
   gap: 20px;
   flex-wrap: wrap;
@@ -1571,20 +1571,20 @@
   flex-shrink: 0;
 }
 
-.sm_graph_legend_group {
+.sme_graph_legend_group {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.sm_graph_legend_item {
+.sme_graph_legend_item {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.sm_graph_legend_swatch {
+.sme_graph_legend_swatch {
   display: inline-block;
   width: 11px;
   height: 11px;
@@ -1592,17 +1592,17 @@
   flex-shrink: 0;
 }
 
-.sm_graph_legend_swatch_small {
+.sme_graph_legend_swatch_small {
   width: 8px;
   height: 8px;
 }
 
-.sm_graph_legend_edge_link {
+.sme_graph_legend_edge_link {
   opacity: 0.5;
   font-size: 0.9em;
 }
 
-.sm_graph_legend_edge_supersedes {
+.sme_graph_legend_edge_supersedes {
   color: var(--SmartThemeQuoteColor, #d4905b);
 }
 
@@ -1610,7 +1610,7 @@
 
 /* dialog renders in the browser top layer so position:fixed is not needed -
    it is always above any stacking context regardless of ancestor transforms. */
-#sm_recap_overlay {
+#sme_recap_overlay {
   border: none;
   padding: 16px;
   background: transparent;
@@ -1625,11 +1625,11 @@
   overflow-y: auto;
 }
 
-#sm_recap_overlay::backdrop {
+#sme_recap_overlay::backdrop {
   background: rgba(0, 0, 0, 0.65);
 }
 
-.sm_recap_card {
+.sme_recap_card {
   background: var(--black-2, #1a1a2e);
   border: 1px solid var(--border-color, #444);
   border-radius: 8px;
@@ -1644,30 +1644,30 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
 }
 
-.sm_recap_title {
+.sme_recap_title {
   margin-top: 0;
   font-size: 1.1em;
 }
 
-.sm_recap_time_label {
+.sme_recap_time_label {
   font-size: 0.8em;
   opacity: 0.6;
   margin: 0 0 14px 0;
 }
 
-.sm_recap_content {
+.sme_recap_content {
   line-height: 1.65;
   margin: 0;
 }
 
-.sm_recap_footer {
+.sme_recap_footer {
   margin-top: 18px;
   text-align: right;
 }
 
 /* Profile-gated controls: dimmed and non-interactive when the active profile
    does not support the feature. The disabled state is toggled by syncProfileGating(). */
-#smart_memory_settings .sm-profile-b-only.sm-gated {
+#smart_memory_enhanced_settings .sm-profile-b-only.sm-gated {
   opacity: 0.35;
   pointer-events: none;
   user-select: none;
@@ -1675,7 +1675,7 @@
 
 /* Inline badge used to label Profile-B-only controls so users understand
    why the option is unavailable without needing to hover the tooltip. */
-#smart_memory_settings .sm-profile-tag {
+#smart_memory_enhanced_settings .sm-profile-tag {
   display: inline-block;
   font-size: 0.68em;
   font-weight: 600;
@@ -1693,7 +1693,7 @@
 /* Embedding inactive notice - shown at the top of the panel when semantic
    embeddings are disabled or have failed this session. Amber tint without
    hardcoding colors so it adapts to any ST theme. */
-#sm_embedding_notice {
+#sme_embedding_notice {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -1705,20 +1705,20 @@
   line-height: 1.4;
 }
 
-#sm_embedding_notice i {
+#sme_embedding_notice i {
   margin-top: 1px;
   flex-shrink: 0;
   color: rgb(200, 150, 40);
 }
 
-#sm_embedding_notice a {
+#sme_embedding_notice a {
   color: inherit;
   text-decoration: underline;
   white-space: nowrap;
 }
 
 /* Inline result shown next to the Test button after a connection check. */
-#sm_embedding_test_result {
+#sme_embedding_test_result {
   font-size: 0.85em;
   margin-left: 6px;
 }
@@ -1732,7 +1732,7 @@ body.sm-read-only .mes_edit_delete {
 
 /* ── State card subsection ───────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_state_card_section {
+#smart_memory_enhanced_settings .sme_state_card_section {
   margin: 0 0 4px 12px;
   padding: 4px 8px;
   border-left: 2px solid rgba(122, 106, 138, 0.35);
@@ -1740,13 +1740,13 @@ body.sm-read-only .mes_edit_delete {
   border-radius: 0 4px 4px 0;
 }
 
-#smart_memory_settings .sm_state_card_header_row {
+#smart_memory_enhanced_settings .sme_state_card_header_row {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-#smart_memory_settings .sm_state_card_header {
+#smart_memory_enhanced_settings .sme_state_card_header {
   flex: 1;
   font-size: 0.75em;
   overflow: hidden;
@@ -1754,7 +1754,7 @@ body.sm-read-only .mes_edit_delete {
   white-space: nowrap;
 }
 
-#smart_memory_settings .sm_state_card_edit_btn {
+#smart_memory_enhanced_settings .sme_state_card_edit_btn {
   padding: 2px 5px;
   font-size: 0.72em;
   flex-shrink: 0;
@@ -1762,24 +1762,24 @@ body.sm-read-only .mes_edit_delete {
   transition: opacity 0.15s;
 }
 
-#smart_memory_settings .sm_state_card_edit_btn:hover {
+#smart_memory_enhanced_settings .sme_state_card_edit_btn:hover {
   opacity: 1;
 }
 
-#smart_memory_settings .sm_state_card_editor {
+#smart_memory_enhanced_settings .sme_state_card_editor {
   margin-top: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-#smart_memory_settings .sm_state_card_field {
+#smart_memory_enhanced_settings .sme_state_card_field {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-#smart_memory_settings .sm_state_card_field label {
+#smart_memory_enhanced_settings .sme_state_card_field label {
   font-size: 0.75em;
   width: 110px;
   flex-shrink: 0;
@@ -1788,31 +1788,31 @@ body.sm-read-only .mes_edit_delete {
   text-transform: capitalize;
 }
 
-#smart_memory_settings .sm_state_card_field input {
+#smart_memory_enhanced_settings .sme_state_card_field input {
   flex: 1;
   font-size: 0.8em;
   padding: 2px 5px;
 }
 
-#smart_memory_settings .sm_state_card_actions {
+#smart_memory_enhanced_settings .sme_state_card_actions {
   display: flex;
   gap: 6px;
   margin-top: 4px;
 }
 
-#smart_memory_settings .sm_state_card_clear_btn {
+#smart_memory_enhanced_settings .sme_state_card_clear_btn {
   margin-left: auto;
   color: #c06060;
   opacity: 0.7;
 }
 
-#smart_memory_settings .sm_state_card_clear_btn:hover {
+#smart_memory_enhanced_settings .sme_state_card_clear_btn:hover {
   opacity: 1;
 }
 
 /* ── Entity delete state-card warning ────────────────────────────────────── */
 
-#smart_memory_settings .sm_delete_state_warning {
+#smart_memory_enhanced_settings .sme_delete_state_warning {
   margin-top: 4px;
   padding: 5px 8px;
   background: rgba(180, 80, 60, 0.12);
@@ -1824,13 +1824,13 @@ body.sm-read-only .mes_edit_delete {
   gap: 8px;
 }
 
-#smart_memory_settings .sm_delete_state_warning span {
+#smart_memory_enhanced_settings .sme_delete_state_warning span {
   flex: 1;
 }
 
 /* ── State card merge conflict modal ─────────────────────────────────────── */
 
-.sm_state_merge_modal {
+.sme_state_merge_modal {
   border: none;
   padding: 0;
   background: transparent;
@@ -1844,11 +1844,11 @@ body.sm-read-only .mes_edit_delete {
   box-sizing: border-box;
 }
 
-.sm_state_merge_modal::backdrop {
+.sme_state_merge_modal::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 
-.sm_state_merge_modal_inner {
+.sme_state_merge_modal_inner {
   background: var(--SmartThemeBodyColor, #1a1a1a);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
@@ -1860,18 +1860,18 @@ body.sm-read-only .mes_edit_delete {
   gap: 12px;
 }
 
-.sm_state_merge_title {
+.sme_state_merge_title {
   font-size: 0.95em;
   font-weight: 600;
 }
 
-.sm_state_merge_body {
+.sme_state_merge_body {
   font-size: 0.82em;
   opacity: 0.85;
   line-height: 1.5;
 }
 
-.sm_state_merge_actions {
+.sme_state_merge_actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1883,7 +1883,7 @@ body.sm-read-only .mes_edit_delete {
 /* Visual nesting indicator for the position/depth/role controls that belong to
    the unified injection toggle. A left border + padding makes the association
    clear regardless of how the theme renders checkbox size. */
-#smart_memory_settings #sm_unified_settings {
+#smart_memory_enhanced_settings #sme_unified_settings {
   border-left: 2px solid rgba(128, 128, 128, 0.3);
   margin-left: 6px;
   padding-left: 10px;
@@ -1891,11 +1891,11 @@ body.sm-read-only .mes_edit_delete {
 
 /* ── Epistemic spoiler block ─────────────────────────────────────────────── */
 
-#smart_memory_settings .sm_epistemic_spoiler {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler {
   margin-top: 6px;
 }
 
-#smart_memory_settings .sm_epistemic_spoiler_summary {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler_summary {
   cursor: pointer;
   font-size: 0.8em;
   font-weight: 600;
@@ -1908,11 +1908,11 @@ body.sm-read-only .mes_edit_delete {
   text-align: center;
 }
 
-#smart_memory_settings .sm_epistemic_spoiler_summary::-webkit-details-marker {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler_summary::-webkit-details-marker {
   display: none;
 }
 
-#smart_memory_settings .sm_epistemic_spoiler_summary em {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler_summary em {
   font-style: italic;
   text-transform: none;
   letter-spacing: normal;
@@ -1920,25 +1920,25 @@ body.sm-read-only .mes_edit_delete {
   opacity: 0.8;
 }
 
-#smart_memory_settings .sm_epistemic_spoiler[open] .sm_epistemic_spoiler_summary {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler[open] .sme_epistemic_spoiler_summary {
   color: rgba(210, 160, 60, 0.95);
 }
 
-#smart_memory_settings .sm_epistemic_spoiler_summary .sm_spoiler_open {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler_summary .sme_spoiler_open {
   display: none;
 }
 
-#smart_memory_settings
-  .sm_epistemic_spoiler[open]
-  .sm_epistemic_spoiler_summary
-  .sm_spoiler_closed {
+#smart_memory_enhanced_settings
+  .sme_epistemic_spoiler[open]
+  .sme_epistemic_spoiler_summary
+  .sme_spoiler_closed {
   display: none;
 }
 
-#smart_memory_settings .sm_epistemic_spoiler[open] .sm_epistemic_spoiler_summary .sm_spoiler_open {
+#smart_memory_enhanced_settings .sme_epistemic_spoiler[open] .sme_epistemic_spoiler_summary .sme_spoiler_open {
   display: inline;
 }
-#smart_memory_settings .sm-status-wrap {
+#smart_memory_enhanced_settings .sm-status-wrap {
   display: flex;
   flex-direction: column;
   margin-left: 8px;
@@ -1946,23 +1946,23 @@ body.sm-read-only .mes_edit_delete {
   line-height: 1.25;
 }
 
-#smart_memory_settings #sm_status {
+#smart_memory_enhanced_settings #sme_status {
   color: var(--SmartReplyColor, #aaa);
 }
 
-#smart_memory_settings #sm_status.sm_status_warning {
+#smart_memory_enhanced_settings #sme_status.sme_status_warning {
   color: var(--warning, #ca6);
 }
 
-#smart_memory_settings #sm_status.sm_status_error {
+#smart_memory_enhanced_settings #sme_status.sme_status_error {
   color: var(--error, #e66);
 }
 
-#smart_memory_settings #sm_catch_up_error_count {
+#smart_memory_enhanced_settings #sme_catch_up_error_count {
   display: none;
   color: var(--warning, #ca6);
 }
 
-#smart_memory_settings #sm_catch_up_error_count.sm_catch_up_errors_many {
+#smart_memory_enhanced_settings #sme_catch_up_error_count.sme_catch_up_errors_many {
   color: var(--error, #e66);
 }

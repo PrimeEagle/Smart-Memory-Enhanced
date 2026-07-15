@@ -101,7 +101,7 @@ export function displayRecap(recap, hoursAway) {
   if (!recap) return;
 
   // Remove any existing recap modal before showing a new one.
-  $('#sm_recap_overlay').remove();
+  $('#sme_recap_overlay').remove();
 
   const hours = hoursAway !== undefined ? hoursAway : getAwayHours();
   const hoursRounded = Math.round(hours * 10) / 10;
@@ -115,13 +115,13 @@ export function displayRecap(recap, hoursAway) {
   // trapped inside SillyTavern's transformed/animated ancestors on mobile,
   // causing it to render inside the navbar instead of over the full screen.
   const dialog = document.createElement('dialog');
-  dialog.id = 'sm_recap_overlay';
+  dialog.id = 'sme_recap_overlay';
 
-  const card = $('<div class="sm_recap_card">');
-  const title = $('<h3 class="sm_recap_title">Previously on...</h3>');
-  const timeLabel = $('<p class="sm_recap_time_label">').text(timeNote);
-  const content = $('<p class="sm_recap_content">').text(recap);
-  const footer = $('<div class="sm_recap_footer">');
+  const card = $('<div class="sme_recap_card">');
+  const title = $('<h3 class="sme_recap_title">Previously on...</h3>');
+  const timeLabel = $('<p class="sme_recap_time_label">').text(timeNote);
+  const content = $('<p class="sme_recap_content">').text(recap);
+  const footer = $('<div class="sme_recap_footer">');
   const dismissBtn = $('<button>Dismiss</button>').addClass('menu_button');
 
   const dismiss = () => {

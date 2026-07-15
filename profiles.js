@@ -26,7 +26,7 @@
  * messages. Profile generation is a single sequential model call that produces
  * all three sections at once to minimise round-trips on local hardware.
  *
- * Stored in chatMetadata.smartMemory.profiles as a per-character map:
+ * Stored in chatMetadata.smartMemoryEnhanced.profiles as a per-character map:
  *   { [characterName]: { character_state, world_state, relationship_matrix, generated_at } }
  *
  * In group chats each member has their own entry so switching the character

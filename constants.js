@@ -37,37 +37,37 @@
  */
 
 /** Extension name as registered in extension_settings. */
-export const MODULE_NAME = 'smart_memory';
+export const MODULE_NAME = 'smart_memory_enhanced';
 
 // Keys passed to setExtensionPrompt - each tier has its own named slot.
-export const PROMPT_KEY_SHORT = 'smart_memory_short';
-export const PROMPT_KEY_LONG = 'smart_memory_long';
-export const PROMPT_KEY_SESSION = 'smart_memory_session';
-export const PROMPT_KEY_SCENES = 'smart_memory_scenes';
-export const PROMPT_KEY_ARCS = 'smart_memory_arcs';
+export const PROMPT_KEY_SHORT = 'smart_memory_enhanced_short';
+export const PROMPT_KEY_LONG = 'smart_memory_enhanced_long';
+export const PROMPT_KEY_SESSION = 'smart_memory_enhanced_session';
+export const PROMPT_KEY_SCENES = 'smart_memory_enhanced_scenes';
+export const PROMPT_KEY_ARCS = 'smart_memory_enhanced_arcs';
 // One-shot corrective note injected after a continuity check finds contradictions.
 // Cleared automatically after the next AI response is rendered.
-export const PROMPT_KEY_REPAIR = 'smart_memory_repair';
+export const PROMPT_KEY_REPAIR = 'smart_memory_enhanced_repair';
 // Stateful character/world profiles regenerated from graph state.
-export const PROMPT_KEY_PROFILES = 'smart_memory_profiles';
+export const PROMPT_KEY_PROFILES = 'smart_memory_enhanced_profiles';
 // Stable per-character narrative document compiled from resolved arc summaries.
-export const PROMPT_KEY_CANON = 'smart_memory_canon';
+export const PROMPT_KEY_CANON = 'smart_memory_enhanced_canon';
 // Single unified block used when unified_injection mode is enabled.
 // All individual tier slots are cleared and their content merged here instead.
-export const PROMPT_KEY_UNIFIED = 'smart_memory_unified';
+export const PROMPT_KEY_UNIFIED = 'smart_memory_enhanced_unified';
 // Secondary IN_CHAT slot for long-term memories whose activation triggers match
 // the current turn. These are injected closer to the prompt in addition to
 // appearing at the end of the main PROMPT_KEY_LONG block.
-export const PROMPT_KEY_TRIGGERED = 'smart_memory_triggered';
+export const PROMPT_KEY_TRIGGERED = 'smart_memory_enhanced_triggered';
 // Persistent relationship state - per-pair emotional deltas accumulated across
 // sessions. Only pairs relevant to the current chat are injected.
-export const PROMPT_KEY_RELATIONSHIPS = 'smart_memory_relationships';
+export const PROMPT_KEY_RELATIONSHIPS = 'smart_memory_enhanced_relationships';
 // Perspective-scoped knowledge block for the responding character: what they
 // know, suspect, believe, and are concealing, extracted at scene breaks.
-export const PROMPT_KEY_EPISTEMIC = 'smart_memory_epistemic';
+export const PROMPT_KEY_EPISTEMIC = 'smart_memory_enhanced_epistemic';
 // Structured current-state snapshot for tracked entities (characters, objects,
 // places, factions). Extracted and updated each extraction cycle.
-export const PROMPT_KEY_STATE_LEDGER = 'smart_memory_state_ledger';
+export const PROMPT_KEY_STATE_LEDGER = 'smart_memory_enhanced_state_ledger';
 
 /** Valid type tags for long-term memory entries. */
 export const MEMORY_TYPES = ['fact', 'relationship', 'preference', 'event'];
@@ -76,7 +76,7 @@ export const MEMORY_TYPES = ['fact', 'relationship', 'preference', 'event'];
 export const SESSION_TYPES = ['scene', 'revelation', 'development', 'detail'];
 
 /** Top-level key under chatMetadata where all per-chat state is stored. */
-export const META_KEY = 'smartMemory';
+export const META_KEY = 'smartMemoryEnhanced';
 
 /**
  * Current schema version for stored memory data (long-term and session).

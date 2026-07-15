@@ -1,13 +1,13 @@
-<div id="smart_memory_settings">
+<div id="smart_memory_enhanced_settings">
   <div class="inline-drawer">
     <div class="inline-drawer-toggle inline-drawer-header">
       <div class="flex-container alignitemscenter margin0">
         <b>Smart Memory Enhanced</b>
         <div class="sm-status-wrap">
-          <small id="sm_status"></small>
-          <small id="sm_catch_up_error_count" aria-live="polite"></small>
+          <small id="sme_status"></small>
+          <small id="sme_catch_up_error_count" aria-live="polite"></small>
         </div>
-        <span id="sm_continuity_badge" style="display: none"></span>
+        <span id="sme_continuity_badge" style="display: none"></span>
       </div>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
@@ -15,26 +15,26 @@
       <!-- Master toggle -->
       <div class="sm-block">
         <label class="checkbox_label">
-          <input id="sm_enabled" type="checkbox" />
+          <input id="sme_enabled" type="checkbox" />
           <span>Enable Smart Memory</span>
         </label>
       </div>
 
       <!-- Embedding inactive notice - toggled by updateEmbeddingNotice() in index.js -->
-      <div id="sm_embedding_notice" class="sm-block" style="display: none">
+      <div id="sme_embedding_notice" class="sm-block" style="display: none">
         <i class="fa-solid fa-triangle-exclamation"></i>
         <span>
           Semantic embeddings are inactive. Memory deduplication falls back to keyword matching,
           which misses paraphrases - the same fact or arc can be stored multiple times in different
           words.
-          <a id="sm_embedding_notice_link" href="#">Set up embeddings</a>
+          <a id="sme_embedding_notice_link" href="#">Set up embeddings</a>
         </span>
       </div>
 
       <!-- Memorize / reset buttons -->
       <div class="sm-block" style="display: flex; flex-direction: column; gap: 6px">
         <div class="sm-btn-row" style="align-items: center">
-          <button id="sm_catch_up" class="menu_button menu_button_icon">
+          <button id="sme_catch_up" class="menu_button menu_button_icon">
             <i class="fa-solid fa-forward-fast"></i>
             <span>
               Memorize Chat
@@ -46,7 +46,7 @@
             </span>
           </button>
           <button
-            id="sm_cancel_catch_up"
+            id="sme_cancel_catch_up"
             class="menu_button menu_button_icon"
             style="display: none"
           >
@@ -55,7 +55,7 @@
           </button>
         </div>
         <div class="sm-btn-row">
-          <button id="sm_clear_chat_context" class="menu_button menu_button_icon">
+          <button id="sme_clear_chat_context" class="menu_button menu_button_icon">
             <i class="fa-solid fa-broom"></i>
             <span>
               Forget This Chat
@@ -66,7 +66,7 @@
               >
             </span>
           </button>
-          <button id="sm_fresh_start_button" class="menu_button menu_button_icon">
+          <button id="sme_fresh_start_button" class="menu_button menu_button_icon">
             <i class="fa-solid fa-rotate-left"></i>
             <span>
               Fresh Start
@@ -84,7 +84,7 @@
            chat-level mode switch, not a per-tier setting -->
       <div class="sm-block">
         <label class="checkbox_label">
-          <input id="sm_read_only" type="checkbox" />
+          <input id="sme_read_only" type="checkbox" />
           <span>
             Read-only mode - protect character memories
             <span
@@ -109,26 +109,26 @@
           >
         </p>
         <div class="sm-token-bar-wrap">
-          <div id="sm_token_bar" class="sm-token-bar"></div>
+          <div id="sme_token_bar" class="sm-token-bar"></div>
         </div>
         <div class="sm-token-total">
-          <span id="sm_token_used">~0</span> / <span id="sm_token_max">?</span> tokens &mdash;
-          <span id="sm_token_pct">0</span>% of context
+          <span id="sme_token_used">~0</span> / <span id="sme_token_max">?</span> tokens &mdash;
+          <span id="sme_token_pct">0</span>% of context
         </div>
-        <div id="sm_token_group_rows" class="sm-token-group-rows" style="display: none"></div>
-        <button id="sm_reset_budgets" class="menu_button" style="width: 100%; margin-top: 6px">
+        <div id="sme_token_group_rows" class="sm-token-group-rows" style="display: none"></div>
+        <button id="sme_reset_budgets" class="menu_button" style="width: 100%; margin-top: 6px">
           Reset budgets to defaults
         </button>
       </div>
 
       <!-- Hidden backing store for the group character selection - driven by clicking the per-character token bar rows -->
-      <select id="sm_group_char_select" style="display: none"></select>
+      <select id="sme_group_char_select" style="display: none"></select>
 
       <!-- ══ LONG-TERM ══ -->
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_longterm_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_longterm_enabled" class="sm-section-toggle" />
           Long-term Memory
           <span
             class="sm-info"
@@ -138,9 +138,9 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Memories for Current Character</p>
-          <div id="sm_memories_list" class="sm_memories_list"></div>
+          <div id="sme_memories_list" class="sme_memories_list"></div>
           <div class="sm-block sm-btn-row" style="margin-top: 6px">
-            <button id="sm_extract_now" class="menu_button menu_button_icon">
+            <button id="sme_extract_now" class="menu_button menu_button_icon">
               <i class="fa-solid fa-magnifying-glass"></i>
               <span>
                 Extract Now
@@ -151,7 +151,7 @@
                 >
               </span>
             </button>
-            <button id="sm_clear_memories" class="menu_button menu_button_icon">
+            <button id="sme_clear_memories" class="menu_button menu_button_icon">
               <i class="fa-solid fa-trash-can"></i>
               <span>Clear Memories</span>
             </button>
@@ -160,11 +160,11 @@
           <p class="sm-section-title">Extraction</p>
           <div class="sm-block sm-advanced-only">
             <label
-              >Extract after every <b><span id="sm_longterm_extract_every_value"></span></b> AI
+              >Extract after every <b><span id="sme_longterm_extract_every_value"></span></b> AI
               messages</label
             >
             <input
-              id="sm_longterm_extract_every"
+              id="sme_longterm_extract_every"
               type="range"
               min="1"
               max="10"
@@ -175,10 +175,10 @@
           <div class="sm-block">
             <label
               >Max stored memories per character:
-              <b><span id="sm_longterm_max_memories_value"></span></b
+              <b><span id="sme_longterm_max_memories_value"></span></b
             ></label>
             <input
-              id="sm_longterm_max_memories"
+              id="sme_longterm_max_memories"
               type="range"
               min="5"
               max="50"
@@ -189,14 +189,14 @@
           <p class="sm-section-title sm-advanced-only">Injection</p>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection token budget: <b><span id="sm_longterm_inject_budget_value"></span></b>
+              Injection token budget: <b><span id="sme_longterm_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Oldest memories are dropped first if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_longterm_inject_budget" type="range" min="100" max="4000" step="50" />
+            <input id="sme_longterm_inject_budget" type="range" min="100" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>
@@ -208,7 +208,7 @@
               >
             </label>
             <textarea
-              id="sm_longterm_template"
+              id="sme_longterm_template"
               class="text_pole textarea_compact"
               rows="2"
               placeholder="Memories from previous conversations:\n{{memories}}"
@@ -218,18 +218,18 @@
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_longterm_position" value="2" />
+                <input type="radio" name="sme_longterm_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_longterm_position" value="0" />
+                <input type="radio" name="sme_longterm_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_longterm_position" value="1" />
+                <input type="radio" name="sme_longterm_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_longterm_depth"
+                  id="sme_longterm_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -237,7 +237,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_longterm_role" class="text_pole widthNatural">
+                <select id="sme_longterm_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -256,7 +256,7 @@
                 ></span
               >
               <input
-                id="sm_longterm_triggered_depth"
+                id="sme_longterm_triggered_depth"
                 class="text_pole widthUnset"
                 type="number"
                 min="0"
@@ -272,7 +272,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_session_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_session_enabled" class="sm-section-toggle" />
           Session Memory
           <span
             class="sm-info"
@@ -282,9 +282,9 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Memories for Current Session</p>
-          <div id="sm_session_list" class="sm_memories_list"></div>
+          <div id="sme_session_list" class="sme_memories_list"></div>
           <div class="sm-block sm-btn-row" style="margin-top: 6px">
-            <button id="sm_extract_session_now" class="menu_button menu_button_icon">
+            <button id="sme_extract_session_now" class="menu_button menu_button_icon">
               <i class="fa-solid fa-magnifying-glass"></i>
               <span>
                 Extract Now
@@ -295,7 +295,7 @@
                 >
               </span>
             </button>
-            <button id="sm_clear_session" class="menu_button menu_button_icon">
+            <button id="sme_clear_session" class="menu_button menu_button_icon">
               <i class="fa-solid fa-trash-can"></i>
               <span>Clear Session Memories</span>
             </button>
@@ -304,11 +304,11 @@
           <p class="sm-section-title">Extraction</p>
           <div class="sm-block sm-advanced-only">
             <label
-              >Extract after every <b><span id="sm_session_extract_every_value"></span></b> AI
+              >Extract after every <b><span id="sme_session_extract_every_value"></span></b> AI
               messages</label
             >
             <input
-              id="sm_session_extract_every"
+              id="sme_session_extract_every"
               type="range"
               min="1"
               max="10"
@@ -318,10 +318,10 @@
           </div>
           <div class="sm-block">
             <label
-              >Max session memories: <b><span id="sm_session_max_memories_value"></span></b
+              >Max session memories: <b><span id="sme_session_max_memories_value"></span></b
             ></label>
             <input
-              id="sm_session_max_memories"
+              id="sme_session_max_memories"
               type="range"
               min="5"
               max="60"
@@ -332,14 +332,14 @@
           <p class="sm-section-title sm-advanced-only">Injection</p>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection token budget: <b><span id="sm_session_inject_budget_value"></span></b>
+              Injection token budget: <b><span id="sme_session_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Oldest memories are dropped first if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_session_inject_budget" type="range" min="100" max="4000" step="50" />
+            <input id="sme_session_inject_budget" type="range" min="100" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>
@@ -351,7 +351,7 @@
               >
             </label>
             <textarea
-              id="sm_session_template"
+              id="sme_session_template"
               class="text_pole textarea_compact"
               rows="2"
               placeholder="Details from this session:\n{{session}}"
@@ -361,18 +361,18 @@
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_session_position" value="2" />
+                <input type="radio" name="sme_session_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_session_position" value="0" />
+                <input type="radio" name="sme_session_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_session_position" value="1" />
+                <input type="radio" name="sme_session_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_session_depth"
+                  id="sme_session_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -380,7 +380,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_session_role" class="text_pole widthNatural">
+                <select id="sme_session_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -395,7 +395,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_compaction_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_compaction_enabled" class="sm-section-toggle" />
           Short-term Memory
           <span
             class="sm-info"
@@ -413,14 +413,14 @@
               >
             </label>
             <textarea
-              id="sm_current_summary"
+              id="sme_current_summary"
               class="text_pole textarea_compact"
               rows="5"
               placeholder="No summary yet. One will be generated automatically when the context threshold is reached."
             ></textarea>
           </div>
           <div class="sm-block sm-btn-row">
-            <button id="sm_summarize_now" class="menu_button menu_button_icon">
+            <button id="sme_summarize_now" class="menu_button menu_button_icon">
               <i class="fa-solid fa-brain"></i>
               <span>Summarize Now</span>
             </button>
@@ -430,7 +430,7 @@
           <div class="sm-block sm-advanced-only">
             <label>
               Context threshold:
-              <b><span id="sm_compaction_threshold_value"></span></b>
+              <b><span id="sme_compaction_threshold_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Smart Memory waits until context usage crosses this percentage before generating a summary. Lower values produce more frequent summaries; higher values let the context fill up more before compacting."
@@ -438,7 +438,7 @@
               >
             </label>
             <input
-              id="sm_compaction_threshold"
+              id="sme_compaction_threshold"
               type="range"
               min="50"
               max="95"
@@ -448,10 +448,10 @@
           </div>
           <div class="sm-block sm-advanced-only">
             <label>
-              Response length: <b><span id="sm_compaction_response_length_value"></span></b> tokens
+              Response length: <b><span id="sme_compaction_response_length_value"></span></b> tokens
             </label>
             <input
-              id="sm_compaction_response_length"
+              id="sme_compaction_response_length"
               type="range"
               min="500"
               max="3000"
@@ -471,7 +471,7 @@
               >
             </label>
             <textarea
-              id="sm_compaction_template"
+              id="sme_compaction_template"
               class="text_pole textarea_compact"
               rows="2"
               placeholder="Story so far:\n{{summary}}"
@@ -481,18 +481,18 @@
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_compaction_position" value="2" />
+                <input type="radio" name="sme_compaction_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_compaction_position" value="0" />
+                <input type="radio" name="sme_compaction_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_compaction_position" value="1" />
+                <input type="radio" name="sme_compaction_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_compaction_depth"
+                  id="sme_compaction_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -500,7 +500,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_compaction_role" class="text_pole widthNatural">
+                <select id="sme_compaction_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -515,7 +515,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_scene_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_scene_enabled" class="sm-section-toggle" />
           Scene Detection &amp; History
           <span
             class="sm-info"
@@ -525,11 +525,11 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Scene History</p>
-          <div id="sm_scenes_list" class="sm_scenes_list">
-            <div class="sm_no_char">No scenes recorded yet.</div>
+          <div id="sme_scenes_list" class="sme_scenes_list">
+            <div class="sme_no_char">No scenes recorded yet.</div>
           </div>
           <div class="sm-block sm-btn-row" style="margin-top: 6px">
-            <button id="sm_extract_scenes_now" class="menu_button menu_button_icon">
+            <button id="sme_extract_scenes_now" class="menu_button menu_button_icon">
               <i class="fa-solid fa-magnifying-glass"></i>
               <span>
                 Extract Scene
@@ -540,7 +540,7 @@
                 >
               </span>
             </button>
-            <button id="sm_clear_scenes" class="menu_button menu_button_icon">
+            <button id="sme_clear_scenes" class="menu_button menu_button_icon">
               <i class="fa-solid fa-trash-can"></i>
               <span>Clear Scene History</span>
             </button>
@@ -549,7 +549,7 @@
           <p class="sm-section-title">Detection</p>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_scene_ai_detect" type="checkbox" />
+              <input id="sme_scene_ai_detect" type="checkbox" />
               <span>
                 Use AI detection
                 <span
@@ -564,10 +564,10 @@
           <p class="sm-section-title">Settings</p>
           <div class="sm-block">
             <label
-              >Keep last <b><span id="sm_scene_max_history_value"></span></b> scenes</label
+              >Keep last <b><span id="sme_scene_max_history_value"></span></b> scenes</label
             >
             <input
-              id="sm_scene_max_history"
+              id="sme_scene_max_history"
               type="range"
               min="1"
               max="15"
@@ -579,31 +579,31 @@
           <p class="sm-section-title sm-advanced-only">Injection</p>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection token budget: <b><span id="sm_scene_inject_budget_value"></span></b>
+              Injection token budget: <b><span id="sme_scene_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Oldest scenes are dropped first if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_scene_inject_budget" type="range" min="100" max="4000" step="50" />
+            <input id="sme_scene_inject_budget" type="range" min="100" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_scene_position" value="2" />
+                <input type="radio" name="sme_scene_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_scene_position" value="0" />
+                <input type="radio" name="sme_scene_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_scene_position" value="1" />
+                <input type="radio" name="sme_scene_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_scene_depth"
+                  id="sme_scene_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -611,7 +611,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_scene_role" class="text_pole widthNatural">
+                <select id="sme_scene_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -626,7 +626,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_arcs_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_arcs_enabled" class="sm-section-toggle" />
           Story Arcs
           <span
             class="sm-info"
@@ -636,19 +636,19 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Active Threads</p>
-          <div id="sm_arcs_list" class="sm_arcs_list">
-            <div class="sm_no_char">No open story threads.</div>
+          <div id="sme_arcs_list" class="sme_arcs_list">
+            <div class="sme_no_char">No open story threads.</div>
           </div>
 
-          <div id="sm_resolved_arcs_section" style="display: none">
-            <details id="sm_resolved_arcs_details">
-              <summary class="sm_resolved_arcs_summary">Resolved Threads</summary>
-              <div id="sm_resolved_arcs_list" class="sm_arcs_list" style="margin-top: 6px"></div>
+          <div id="sme_resolved_arcs_section" style="display: none">
+            <details id="sme_resolved_arcs_details">
+              <summary class="sme_resolved_arcs_summary">Resolved Threads</summary>
+              <div id="sme_resolved_arcs_list" class="sme_arcs_list" style="margin-top: 6px"></div>
             </details>
           </div>
 
           <div class="sm-block sm-btn-row" style="margin-top: 6px">
-            <button id="sm_extract_arcs_now" class="menu_button menu_button_icon">
+            <button id="sme_extract_arcs_now" class="menu_button menu_button_icon">
               <i class="fa-solid fa-magnifying-glass"></i>
               <span>
                 Extract Arcs Now
@@ -659,7 +659,7 @@
                 >
               </span>
             </button>
-            <button id="sm_clear_arcs" class="menu_button menu_button_icon">
+            <button id="sme_clear_arcs" class="menu_button menu_button_icon">
               <i class="fa-solid fa-trash-can"></i>
               <span>Clear Arcs</span>
             </button>
@@ -668,10 +668,10 @@
           <p class="sm-section-title">Extraction</p>
           <div class="sm-block">
             <label
-              >Max tracked arcs: <b><span id="sm_arcs_max_value"></span></b
+              >Max tracked arcs: <b><span id="sme_arcs_max_value"></span></b
             ></label>
             <input
-              id="sm_arcs_max"
+              id="sme_arcs_max"
               type="range"
               min="3"
               max="20"
@@ -683,31 +683,31 @@
           <p class="sm-section-title sm-advanced-only">Injection</p>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection token budget: <b><span id="sm_arcs_inject_budget_value"></span></b>
+              Injection token budget: <b><span id="sme_arcs_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Oldest story threads are dropped first if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_arcs_inject_budget" type="range" min="100" max="4000" step="50" />
+            <input id="sme_arcs_inject_budget" type="range" min="100" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_arcs_position" value="2" />
+                <input type="radio" name="sme_arcs_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_arcs_position" value="0" />
+                <input type="radio" name="sme_arcs_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_arcs_position" value="1" />
+                <input type="radio" name="sme_arcs_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_arcs_depth"
+                  id="sme_arcs_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -715,7 +715,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_arcs_role" class="text_pole widthNatural">
+                <select id="sme_arcs_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -730,7 +730,7 @@
       <details class="sm-section sm-advanced-only">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_consolidate_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_consolidate_enabled" class="sm-section-toggle" />
           Consolidation
           <span
             class="sm-info"
@@ -743,7 +743,7 @@
           <div class="sm-block">
             <label>
               Consolidate [fact] after
-              <b><span id="sm_longterm_threshold_fact_value"></span></b> unprocessed items
+              <b><span id="sme_longterm_threshold_fact_value"></span></b> unprocessed items
               <span
                 class="sm-info"
                 data-tooltip="Per-type trigger for long-term consolidation. Lower values merge duplicates sooner but run consolidation more often."
@@ -751,7 +751,7 @@
               >
             </label>
             <input
-              id="sm_longterm_threshold_fact"
+              id="sme_longterm_threshold_fact"
               type="range"
               min="2"
               max="8"
@@ -762,11 +762,11 @@
           <div class="sm-block">
             <label
               >Consolidate [relationship] after
-              <b><span id="sm_longterm_threshold_relationship_value"></span></b> unprocessed
+              <b><span id="sme_longterm_threshold_relationship_value"></span></b> unprocessed
               items</label
             >
             <input
-              id="sm_longterm_threshold_relationship"
+              id="sme_longterm_threshold_relationship"
               type="range"
               min="2"
               max="8"
@@ -777,11 +777,11 @@
           <div class="sm-block">
             <label
               >Consolidate [preference] after
-              <b><span id="sm_longterm_threshold_preference_value"></span></b> unprocessed
+              <b><span id="sme_longterm_threshold_preference_value"></span></b> unprocessed
               items</label
             >
             <input
-              id="sm_longterm_threshold_preference"
+              id="sme_longterm_threshold_preference"
               type="range"
               min="2"
               max="8"
@@ -792,10 +792,10 @@
           <div class="sm-block">
             <label
               >Consolidate [event] after
-              <b><span id="sm_longterm_threshold_event_value"></span></b> unprocessed items</label
+              <b><span id="sme_longterm_threshold_event_value"></span></b> unprocessed items</label
             >
             <input
-              id="sm_longterm_threshold_event"
+              id="sme_longterm_threshold_event"
               type="range"
               min="2"
               max="8"
@@ -808,7 +808,7 @@
           <div class="sm-block">
             <label>
               Consolidate [scene] after
-              <b><span id="sm_session_threshold_scene_value"></span></b> unprocessed items
+              <b><span id="sme_session_threshold_scene_value"></span></b> unprocessed items
               <span
                 class="sm-info"
                 data-tooltip="Per-type trigger for session consolidation. Lower values merge duplicates sooner but run consolidation more often."
@@ -816,7 +816,7 @@
               >
             </label>
             <input
-              id="sm_session_threshold_scene"
+              id="sme_session_threshold_scene"
               type="range"
               min="2"
               max="8"
@@ -827,11 +827,11 @@
           <div class="sm-block">
             <label
               >Consolidate [revelation] after
-              <b><span id="sm_session_threshold_revelation_value"></span></b> unprocessed
+              <b><span id="sme_session_threshold_revelation_value"></span></b> unprocessed
               items</label
             >
             <input
-              id="sm_session_threshold_revelation"
+              id="sme_session_threshold_revelation"
               type="range"
               min="2"
               max="8"
@@ -842,11 +842,11 @@
           <div class="sm-block">
             <label
               >Consolidate [development] after
-              <b><span id="sm_session_threshold_development_value"></span></b> unprocessed
+              <b><span id="sme_session_threshold_development_value"></span></b> unprocessed
               items</label
             >
             <input
-              id="sm_session_threshold_development"
+              id="sme_session_threshold_development"
               type="range"
               min="2"
               max="8"
@@ -857,10 +857,10 @@
           <div class="sm-block">
             <label
               >Consolidate [detail] after
-              <b><span id="sm_session_threshold_detail_value"></span></b> unprocessed items</label
+              <b><span id="sme_session_threshold_detail_value"></span></b> unprocessed items</label
             >
             <input
-              id="sm_session_threshold_detail"
+              id="sme_session_threshold_detail"
               type="range"
               min="2"
               max="8"
@@ -875,7 +875,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_canon_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_canon_enabled" class="sm-section-toggle" />
           Canon
           <span
             class="sm-info"
@@ -893,7 +893,7 @@
               >
             </label>
             <textarea
-              id="sm_canon_display"
+              id="sme_canon_display"
               class="text_pole textarea_compact"
               rows="5"
               placeholder="No canon yet. Generate one below once you have at least one resolved arc summary."
@@ -901,7 +901,7 @@
           </div>
           <div class="sm-block sm-btn-row">
             <button
-              id="sm_generate_canon"
+              id="sme_generate_canon"
               class="menu_button menu_button_icon"
               title="Generate a stable canon narrative from resolved arc summaries and high-importance memories."
             >
@@ -909,19 +909,19 @@
               <span>Generate Canon</span>
             </button>
           </div>
-          <div id="sm_canon_status" class="sm_canon_status"></div>
+          <div id="sme_canon_status" class="sme_canon_status"></div>
 
           <p class="sm-section-title sm-advanced-only">Injection</p>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection token budget: <b><span id="sm_canon_inject_budget_value"></span></b>
+              Injection token budget: <b><span id="sme_canon_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. The canon text is trimmed from the end if it exceeds this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_canon_inject_budget" type="range" min="100" max="4000" step="50" />
+            <input id="sme_canon_inject_budget" type="range" min="100" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>
@@ -933,7 +933,7 @@
               >
             </label>
             <textarea
-              id="sm_canon_template"
+              id="sme_canon_template"
               class="text_pole textarea_compact"
               rows="2"
               placeholder="Character history:&#10;{{canon}}"
@@ -943,18 +943,18 @@
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_canon_position" value="2" />
+                <input type="radio" name="sme_canon_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_canon_position" value="0" />
+                <input type="radio" name="sme_canon_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_canon_position" value="1" />
+                <input type="radio" name="sme_canon_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_canon_depth"
+                  id="sme_canon_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -962,7 +962,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_canon_role" class="text_pole widthNatural">
+                <select id="sme_canon_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -977,7 +977,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_profiles_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_profiles_enabled" class="sm-section-toggle" />
           Character &amp; World Profiles
           <span
             class="sm-info"
@@ -987,11 +987,11 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Current Profiles</p>
-          <div id="sm_profiles_display" class="sm_profiles_display">
+          <div id="sme_profiles_display" class="sme_profiles_display">
             <span class="sm-muted">No profiles generated yet.</span>
           </div>
           <div class="sm-block sm-btn-row" style="margin-top: 4px">
-            <button id="sm_profiles_regenerate" class="menu_button menu_button_icon">
+            <button id="sme_profiles_regenerate" class="menu_button menu_button_icon">
               <i class="fa-solid fa-rotate"></i>
               <span>Regenerate Profiles Now</span>
             </button>
@@ -1001,10 +1001,10 @@
           <div class="sm-block">
             <label
               >Regenerate when older than:
-              <b><span id="sm_profiles_stale_threshold_value"></span></b
+              <b><span id="sme_profiles_stale_threshold_value"></span></b
             ></label>
             <input
-              id="sm_profiles_stale_threshold"
+              id="sme_profiles_stale_threshold"
               type="range"
               min="5"
               max="120"
@@ -1015,7 +1015,7 @@
           <div class="sm-block sm-profile-b-only">
             <label
               >Also regenerate every:
-              <b><span id="sm_profiles_regen_every_value"></span></b>
+              <b><span id="sme_profiles_regen_every_value"></span></b>
               <span class="sm-profile-tag">Profile B</span>
               <span
                 class="sm-info"
@@ -1024,7 +1024,7 @@
               >
             </label>
             <input
-              id="sm_profiles_regen_every"
+              id="sme_profiles_regen_every"
               type="range"
               min="0"
               max="20"
@@ -1036,31 +1036,31 @@
           <p class="sm-section-title sm-advanced-only">Injection</p>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection token budget: <b><span id="sm_profiles_inject_budget_value"></span></b>
+              Injection token budget: <b><span id="sme_profiles_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Sections are dropped (character state first, relationships last) if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_profiles_inject_budget" type="range" min="100" max="4000" step="50" />
+            <input id="sme_profiles_inject_budget" type="range" min="100" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_profiles_position" value="2" />
+                <input type="radio" name="sme_profiles_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_profiles_position" value="0" />
+                <input type="radio" name="sme_profiles_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_profiles_position" value="1" />
+                <input type="radio" name="sme_profiles_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_profiles_depth"
+                  id="sme_profiles_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -1068,7 +1068,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_profiles_role" class="text_pole widthNatural">
+                <select id="sme_profiles_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -1083,7 +1083,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_relationships_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_relationships_enabled" class="sm-section-toggle" />
           Relationship History
           <span
             class="sm-info"
@@ -1093,25 +1093,25 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Current Pairs</p>
-          <div id="sm_relationships_list" class="sm_memories_list"></div>
+          <div id="sme_relationships_list" class="sme_memories_list"></div>
           <div class="sm-block sm-btn-row" style="margin-top: 6px">
-            <button id="sm_add_relationship" class="menu_button menu_button_icon">
+            <button id="sme_add_relationship" class="menu_button menu_button_icon">
               <i class="fa-solid fa-plus"></i>
               <span>Add Pair</span>
             </button>
-            <button id="sm_clear_relationships" class="menu_button menu_button_icon">
+            <button id="sme_clear_relationships" class="menu_button menu_button_icon">
               <i class="fa-solid fa-trash-can"></i>
               <span>Clear All</span>
             </button>
           </div>
           <div
-            id="sm_relationship_add_form"
+            id="sme_relationship_add_form"
             class="sm-block"
             style="margin-top: 6px; display: none"
           >
             <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap">
               <input
-                id="sm_rel_subject"
+                id="sme_rel_subject"
                 type="text"
                 class="text_pole"
                 placeholder="Subject"
@@ -1119,7 +1119,7 @@
               />
               <span>→</span>
               <input
-                id="sm_rel_target"
+                id="sme_rel_target"
                 type="text"
                 class="text_pole"
                 placeholder="Target"
@@ -1128,7 +1128,7 @@
             </div>
             <div style="display: flex; gap: 6px; align-items: center; margin-top: 4px">
               <input
-                id="sm_rel_descriptors"
+                id="sme_rel_descriptors"
                 type="text"
                 class="text_pole"
                 placeholder="e.g. affectionate(high), cautious(medium), nervous(low)"
@@ -1136,11 +1136,11 @@
               />
             </div>
             <div class="sm-btn-row" style="margin-top: 4px">
-              <button id="sm_rel_save" class="menu_button menu_button_icon">
+              <button id="sme_rel_save" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-check"></i>
                 <span>Save</span>
               </button>
-              <button id="sm_rel_cancel" class="menu_button menu_button_icon">
+              <button id="sme_rel_cancel" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-xmark"></i>
                 <span>Cancel</span>
               </button>
@@ -1151,31 +1151,31 @@
           <div class="sm-block sm-advanced-only">
             <label>
               Injection token budget:
-              <b><span id="sm_relationships_inject_budget_value"></span></b>
+              <b><span id="sme_relationships_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Acts as a safety cap - the relevance filter already limits what is injected. Pairs are dropped if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_relationships_inject_budget" type="range" min="50" max="4000" step="50" />
+            <input id="sme_relationships_inject_budget" type="range" min="50" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_relationships_position" value="2" />
+                <input type="radio" name="sme_relationships_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_relationships_position" value="0" />
+                <input type="radio" name="sme_relationships_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_relationships_position" value="1" />
+                <input type="radio" name="sme_relationships_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_relationships_depth"
+                  id="sme_relationships_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -1183,7 +1183,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_relationships_role" class="text_pole widthNatural">
+                <select id="sme_relationships_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -1198,7 +1198,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_epistemic_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_epistemic_enabled" class="sm-section-toggle" />
           Perspectives &amp; Secrets
           <span
             class="sm-info"
@@ -1208,12 +1208,12 @@
         </summary>
         <div class="sm-section-content">
           <p class="sm-section-title">Entries for Current Character</p>
-          <div id="sm_epistemic_list" class="sm_memories_list"></div>
+          <div id="sme_epistemic_list" class="sme_memories_list"></div>
 
           <!-- Add/edit form (hidden by default) -->
-          <div id="sm_epistemic_add_form" class="sm-block" style="margin-top: 6px; display: none">
+          <div id="sme_epistemic_add_form" class="sm-block" style="margin-top: 6px; display: none">
             <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap">
-              <select id="sm_ep_type" class="text_pole widthNatural">
+              <select id="sme_ep_type" class="text_pole widthNatural">
                 <option value="knows">Knows</option>
                 <option value="suspects">Suspects</option>
                 <option value="unaware">Unaware</option>
@@ -1221,23 +1221,23 @@
                 <option value="hiding">Hiding</option>
               </select>
               <input
-                id="sm_ep_subject"
+                id="sme_ep_subject"
                 type="text"
                 class="text_pole"
                 placeholder="Subject (character name)"
                 style="flex: 1; min-width: 80px"
               />
               <input
-                id="sm_ep_target"
+                id="sme_ep_target"
                 type="text"
-                class="text_pole sm_ep_target_field"
+                class="text_pole sme_ep_target_field"
                 placeholder="From (target)"
                 style="flex: 1; min-width: 80px; display: none"
               />
             </div>
             <div style="margin-top: 4px">
               <input
-                id="sm_ep_content"
+                id="sme_ep_content"
                 type="text"
                 class="text_pole"
                 placeholder="What they know / suspect / believe..."
@@ -1245,11 +1245,11 @@
               />
             </div>
             <div class="sm-btn-row" style="margin-top: 4px">
-              <button id="sm_ep_save" class="menu_button menu_button_icon">
+              <button id="sme_ep_save" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-check"></i>
                 <span>Save</span>
               </button>
-              <button id="sm_ep_cancel" class="menu_button menu_button_icon">
+              <button id="sme_ep_cancel" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-xmark"></i>
                 <span>Cancel</span>
               </button>
@@ -1257,11 +1257,11 @@
           </div>
 
           <div class="sm-block sm-btn-row" style="margin-top: 6px">
-            <button id="sm_epistemic_add" class="menu_button menu_button_icon">
+            <button id="sme_epistemic_add" class="menu_button menu_button_icon">
               <i class="fa-solid fa-plus"></i>
               <span>Add Entry</span>
             </button>
-            <button id="sm_epistemic_clear" class="menu_button menu_button_icon">
+            <button id="sme_epistemic_clear" class="menu_button menu_button_icon">
               <i class="fa-solid fa-trash-can"></i>
               <span>Clear All</span>
             </button>
@@ -1270,7 +1270,7 @@
           <p class="sm-section-title">Settings</p>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_epistemic_inject_unaware" type="checkbox" />
+              <input id="sme_epistemic_inject_unaware" type="checkbox" />
               <span>
                 Inject "does not know" entries
                 <span
@@ -1283,7 +1283,7 @@
           </div>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_epistemic_secondhand_framing" type="checkbox" />
+              <input id="sme_epistemic_secondhand_framing" type="checkbox" />
               <span>
                 Frame secondhand long-term memories
                 <span
@@ -1299,31 +1299,31 @@
           <div class="sm-block sm-advanced-only">
             <label>
               Injection token budget:
-              <b><span id="sm_epistemic_inject_budget_value"></span></b>
+              <b><span id="sme_epistemic_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. Lines are dropped from the end of the knowledge block if the total would exceed this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_epistemic_inject_budget" type="range" min="50" max="4000" step="50" />
+            <input id="sme_epistemic_inject_budget" type="range" min="50" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_epistemic_position" value="2" />
+                <input type="radio" name="sme_epistemic_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_epistemic_position" value="0" />
+                <input type="radio" name="sme_epistemic_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_epistemic_position" value="1" />
+                <input type="radio" name="sme_epistemic_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_epistemic_depth"
+                  id="sme_epistemic_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -1331,7 +1331,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_epistemic_role" class="text_pole widthNatural">
+                <select id="sme_epistemic_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -1346,7 +1346,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_state_ledger_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_state_ledger_enabled" class="sm-section-toggle" />
           State Ledger
           <span
             class="sm-info"
@@ -1364,31 +1364,31 @@
           <div class="sm-block sm-advanced-only">
             <label>
               Injection token budget:
-              <b><span id="sm_state_ledger_inject_budget_value"></span></b>
+              <b><span id="sme_state_ledger_inject_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens injected per generation. State cards are dropped from the end if the total exceeds this limit."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_state_ledger_inject_budget" type="range" min="50" max="4000" step="50" />
+            <input id="sme_state_ledger_inject_budget" type="range" min="50" max="4000" step="50" />
           </div>
           <div class="sm-block sm-advanced-only">
             <label>Injection position</label>
             <div class="radio_group">
               <label>
-                <input type="radio" name="sm_state_ledger_position" value="2" />
+                <input type="radio" name="sme_state_ledger_position" value="2" />
                 <span>Before Main Prompt</span>
               </label>
               <label>
-                <input type="radio" name="sm_state_ledger_position" value="0" />
+                <input type="radio" name="sme_state_ledger_position" value="0" />
                 <span>After Main Prompt</span>
               </label>
               <label class="flex-container alignItemsCenter">
-                <input type="radio" name="sm_state_ledger_position" value="1" />
+                <input type="radio" name="sme_state_ledger_position" value="1" />
                 <span>In-chat @ Depth</span>
                 <input
-                  id="sm_state_ledger_depth"
+                  id="sme_state_ledger_depth"
                   class="text_pole widthUnset"
                   type="number"
                   min="0"
@@ -1396,7 +1396,7 @@
                   style="width: 4em; margin: 0 4px"
                 />
                 <span>as</span>
-                <select id="sm_state_ledger_role" class="text_pole widthNatural">
+                <select id="sme_state_ledger_role" class="text_pole widthNatural">
                   <option value="0">System</option>
                   <option value="1">User</option>
                   <option value="2">Assistant</option>
@@ -1411,7 +1411,7 @@
       <details class="sm-section">
         <summary>
           <i class="fa-solid fa-chevron-right sm-section-chevron"></i>
-          <input type="checkbox" id="sm_recap_enabled" class="sm-section-toggle" />
+          <input type="checkbox" id="sme_recap_enabled" class="sm-section-toggle" />
           Away Recap
           <span
             class="sm-info"
@@ -1421,7 +1421,7 @@
         </summary>
         <div class="sm-section-content">
           <div class="sm-block sm-btn-row" style="margin-top: 4px">
-            <button id="sm_recap_now" class="menu_button menu_button_icon">
+            <button id="sme_recap_now" class="menu_button menu_button_icon">
               <i class="fa-solid fa-clock-rotate-left"></i>
               <span>Generate Recap Now</span>
             </button>
@@ -1430,10 +1430,10 @@
           <p class="sm-section-title">Trigger</p>
           <div class="sm-block">
             <label
-              >Generate recap after: <b><span id="sm_recap_threshold_value"></span></b
+              >Generate recap after: <b><span id="sme_recap_threshold_value"></span></b
             ></label>
             <input
-              id="sm_recap_threshold"
+              id="sme_recap_threshold"
               type="range"
               min="1"
               max="48"
@@ -1458,14 +1458,14 @@
         <div class="sm-section-content">
           <div class="sm-block sm-btn-row" style="margin-bottom: 6px">
             <button
-              id="sm_open_graph_btn"
+              id="sme_open_graph_btn"
               class="menu_button"
               title="View force-directed memory graph"
             >
               <i class="fa-solid fa-diagram-project"></i> View Graph
             </button>
           </div>
-          <div id="sm_entity_panel" class="sm_entity_panel">
+          <div id="sme_entity_panel" class="sme_entity_panel">
             <span class="sm-muted">No entities extracted yet.</span>
           </div>
         </div>
@@ -1484,21 +1484,21 @@
         </summary>
         <div class="sm-section-content">
           <div class="sm-block sm-btn-row">
-            <button id="sm_check_continuity" class="menu_button menu_button_icon">
+            <button id="sme_check_continuity" class="menu_button menu_button_icon">
               <i class="fa-solid fa-scale-balanced"></i>
               <span>Check Last Response</span>
             </button>
           </div>
 
           <div
-            id="sm_continuity_result"
-            class="sm_continuity_result"
+            id="sme_continuity_result"
+            class="sme_continuity_result"
             style="display: none; margin-top: 8px"
           ></div>
 
           <div class="sm-block sm-profile-b-only" style="margin-top: 8px">
             <label class="checkbox_label">
-              <input id="sm_auto_check" type="checkbox" />
+              <input id="sme_auto_check" type="checkbox" />
               <span
                 >Auto-check after each response
                 <span class="sm-profile-tag">Profile B</span>
@@ -1513,7 +1513,7 @@
 
           <div class="sm-block sm-profile-b-only" style="margin-top: 8px">
             <label class="checkbox_label">
-              <input id="sm_auto_repair" type="checkbox" />
+              <input id="sme_auto_repair" type="checkbox" />
               <span
                 >Auto-repair contradictions
                 <span class="sm-profile-tag">Profile B</span>
@@ -1550,7 +1550,7 @@
                 >ⓘ</span
               >
             </label>
-            <select id="sm_source" class="text_pole">
+            <select id="sme_source" class="text_pole">
               <option value="main">Main API</option>
               <option value="ollama">Ollama</option>
               <option value="openai_compatible">OpenAI Compatible</option>
@@ -1560,11 +1560,11 @@
           </div>
 
           <!-- Ollama settings (shown when source = ollama) -->
-          <div id="sm_ollama_settings" class="sm-block" style="display: none">
+          <div id="sme_ollama_settings" class="sm-block" style="display: none">
             <label>
               Ollama URL
               <input
-                id="sm_ollama_url"
+                id="sme_ollama_url"
                 type="text"
                 class="text_pole"
                 placeholder="http://localhost:11434"
@@ -1579,18 +1579,18 @@
               >
             </label>
             <div style="display: flex; gap: 6px; align-items: center">
-              <select id="sm_ollama_model" class="text_pole" style="flex: 1">
+              <select id="sme_ollama_model" class="text_pole" style="flex: 1">
                 <option value="">- click refresh to load models -</option>
               </select>
               <input
-                id="sm_ollama_model_manual"
+                id="sme_ollama_model_manual"
                 type="text"
                 class="text_pole"
                 style="flex: 1; display: none"
                 placeholder="e.g. llama3.2:latest"
               />
               <button
-                id="sm_ollama_refresh"
+                id="sme_ollama_refresh"
                 class="menu_button menu_button_icon"
                 title="Refresh model list from Ollama"
                 style="flex-shrink: 0"
@@ -1601,7 +1601,7 @@
           </div>
 
           <!-- OpenAI Compatible settings (shown when source = openai_compatible) -->
-          <div id="sm_openai_compat_settings" class="sm-block" style="display: none">
+          <div id="sme_openai_compat_settings" class="sm-block" style="display: none">
             <label>
               API URL
               <span
@@ -1610,7 +1610,7 @@
                 >ⓘ</span
               >
               <input
-                id="sm_openai_compat_url"
+                id="sme_openai_compat_url"
                 type="text"
                 class="text_pole"
                 placeholder="http://localhost:8080"
@@ -1624,7 +1624,7 @@
                 >ⓘ</span
               >
               <input
-                id="sm_openai_compat_key"
+                id="sme_openai_compat_key"
                 type="password"
                 class="text_pole"
                 placeholder="sk-... (optional)"
@@ -1638,7 +1638,7 @@
                 >ⓘ</span
               >
               <input
-                id="sm_openai_compat_model"
+                id="sme_openai_compat_model"
                 type="text"
                 class="text_pole"
                 placeholder="model-name (optional)"
@@ -1647,7 +1647,7 @@
           </div>
 
           <!-- ST Connection Profile settings (shown when source = connection_profile) -->
-          <div id="sm_connection_profile_settings" class="sm-block" style="display: none">
+          <div id="sme_connection_profile_settings" class="sm-block" style="display: none">
             <label>
               Connection Profile
               <span
@@ -1655,7 +1655,7 @@
                 data-tooltip="Select a saved SillyTavern connection profile to use for memory extraction. The profile's URL, model, and API key are used automatically. Only Chat Completion (openai) and Text Completion (textgenerationwebui) profile types are supported."
                 >ⓘ</span
               >
-              <select id="sm_connection_profile_id" class="text_pole">
+              <select id="sme_connection_profile_id" class="text_pole">
                 <option value="">- no compatible profiles found -</option>
               </select>
             </label>
@@ -1665,23 +1665,23 @@
           <div class="sm-block sm-advanced-only">
             <label>
               Generation budget:
-              <b><span id="sm_generation_budget_value"></span></b>
+              <b><span id="sme_generation_budget_value"></span></b>
               <span
                 class="sm-info"
                 data-tooltip="Maximum tokens the Memory LLM may generate per extraction call. 8192 is generous enough for any thinking model. Raise it if extractions abort mid-output on very verbose thinking models. Set to -1 (Unlimited) only if you trust your model not to run indefinitely - runaway generation will lock up Ollama until manually stopped."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_generation_budget" type="range" min="1024" max="32768" step="1024" />
+            <input id="sme_generation_budget" type="range" min="1024" max="32768" step="1024" />
             <label class="checkbox_label" style="margin-top: 4px">
-              <input id="sm_generation_budget_unlimited" type="checkbox" />
+              <input id="sme_generation_budget_unlimited" type="checkbox" />
               <span>Unlimited (-1, use with caution)</span>
             </label>
           </div>
 
           <!-- Model test -->
           <div class="sm-block sm-btn-row">
-            <button id="sm_model_test_btn" class="menu_button menu_button_icon">
+            <button id="sme_model_test_btn" class="menu_button menu_button_icon">
               <i class="fa-solid fa-flask"></i>
               <span>
                 Test Extraction Model
@@ -1694,15 +1694,15 @@
             </button>
           </div>
           <div
-            id="sm_model_test_result"
+            id="sme_model_test_result"
             style="display: none"
-            class="sm-block sm_model_test_result"
+            class="sm-block sme_model_test_result"
           ></div>
 
           <p class="sm-section-title">Settings</p>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_settings_mode_advanced" type="checkbox" />
+              <input id="sme_settings_mode_advanced" type="checkbox" />
               <span>
                 Advanced mode
                 <span
@@ -1715,7 +1715,7 @@
           </div>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_show_activity_indicator" type="checkbox" />
+              <input id="sme_show_activity_indicator" type="checkbox" />
               <span>
                 Show activity indicator while processing
                 <span
@@ -1729,7 +1729,7 @@
 
           <div class="sm-block sm-advanced-only">
             <label class="checkbox_label">
-              <input id="sm_macros_enabled" type="checkbox" />
+              <input id="sme_macros_enabled" type="checkbox" />
               <span>
                 Force macro injection mode
                 <span
@@ -1742,7 +1742,7 @@
           </div>
           <div class="sm-block sm-advanced-only">
             <label class="checkbox_label">
-              <input id="sm_unified_injection" type="checkbox" />
+              <input id="sme_unified_injection" type="checkbox" />
               <span>
                 Unified injection
                 <span
@@ -1753,23 +1753,23 @@
               </span>
             </label>
           </div>
-          <div id="sm_unified_settings" style="display: none" class="sm-advanced-only">
+          <div id="sme_unified_settings" style="display: none" class="sm-advanced-only">
             <div class="sm-block">
               <label>Injection position</label>
               <div class="radio_group">
                 <label>
-                  <input type="radio" name="sm_unified_position" value="2" />
+                  <input type="radio" name="sme_unified_position" value="2" />
                   <span>Before Main Prompt</span>
                 </label>
                 <label>
-                  <input type="radio" name="sm_unified_position" value="0" />
+                  <input type="radio" name="sme_unified_position" value="0" />
                   <span>After Main Prompt</span>
                 </label>
                 <label class="flex-container alignItemsCenter">
-                  <input type="radio" name="sm_unified_position" value="1" />
+                  <input type="radio" name="sme_unified_position" value="1" />
                   <span>In-chat @ Depth</span>
                   <input
-                    id="sm_unified_depth"
+                    id="sme_unified_depth"
                     class="text_pole widthUnset"
                     type="number"
                     min="0"
@@ -1777,7 +1777,7 @@
                     style="width: 4em; margin: 0 4px"
                   />
                   <span>as</span>
-                  <select id="sm_unified_role" class="text_pole widthNatural">
+                  <select id="sme_unified_role" class="text_pole widthNatural">
                     <option value="0">System</option>
                     <option value="1">User</option>
                     <option value="2">Assistant</option>
@@ -1788,7 +1788,7 @@
           </div>
           <div class="sm-block sm-advanced-only">
             <label class="checkbox_label">
-              <input id="sm_longterm_triggers_enabled" type="checkbox" />
+              <input id="sme_longterm_triggers_enabled" type="checkbox" />
               <span>
                 Generate contextual triggers for new memories
                 <span
@@ -1801,7 +1801,7 @@
           </div>
           <div class="sm-block sm-advanced-only">
             <label>
-              Injection refresh every <b><span id="sm_injection_refresh_period_value"></span></b> AI
+              Injection refresh every <b><span id="sme_injection_refresh_period_value"></span></b> AI
               messages
               <span
                 class="sm-info"
@@ -1810,7 +1810,7 @@
               >
             </label>
             <input
-              id="sm_injection_refresh_period"
+              id="sme_injection_refresh_period"
               type="range"
               min="1"
               max="10"
@@ -1822,18 +1822,18 @@
           <!-- Simplified total budget slider (hidden in advanced mode) -->
           <div class="sm-block sm-simple-only">
             <label>
-              Memory context budget: <b><span id="sm_total_budget_value"></span></b> tokens
+              Memory context budget: <b><span id="sme_total_budget_value"></span></b> tokens
               <span
                 class="sm-info"
                 data-tooltip="Total tokens allocated across all memory tiers. Drag right for more context (better recall, more tokens used); drag left for less. Each tier receives a fixed proportion of this total."
                 >ⓘ</span
               >
             </label>
-            <input id="sm_total_budget" type="range" min="800" max="8000" step="100" />
+            <input id="sme_total_budget" type="range" min="800" max="8000" step="100" />
           </div>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_auto_tune_budgets" type="checkbox" />
+              <input id="sme_auto_tune_budgets" type="checkbox" />
               <span>
                 Auto-tune budgets
                 <span
@@ -1865,12 +1865,12 @@
                 >ⓘ</span
               >
             </label>
-            <select id="sm_hardware_profile" class="text_pole">
+            <select id="sme_hardware_profile" class="text_pole">
               <option value="auto">Auto-detect (recommended)</option>
               <option value="a">Profile A - Local / Low-VRAM</option>
               <option value="b">Profile B - Hosted / High-performance</option>
             </select>
-            <div id="sm_hardware_profile_label" class="sm_hardware_profile_label"></div>
+            <div id="sme_hardware_profile_label" class="sme_hardware_profile_label"></div>
           </div>
 
           <!-- Extraction frequency (simple mode only) -->
@@ -1883,7 +1883,7 @@
                 >ⓘ</span
               >
             </label>
-            <select id="sm_extraction_frequency" class="text_pole">
+            <select id="sme_extraction_frequency" class="text_pole">
               <option value="low">Low (every 5 messages)</option>
               <option value="medium">Medium (every 3 messages)</option>
               <option value="high">High (every message)</option>
@@ -1893,7 +1893,7 @@
           <p class="sm-section-title">Deduplication</p>
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_embedding_enabled" type="checkbox" />
+              <input id="sme_embedding_enabled" type="checkbox" />
               <span>
                 Use semantic embeddings
                 <span
@@ -1904,7 +1904,7 @@
               </span>
             </label>
           </div>
-          <div id="sm_embedding_config">
+          <div id="sme_embedding_config">
             <div class="sm-block">
               <label>
                 Embedding source
@@ -1913,7 +1913,7 @@
                   data-tooltip="Which server provides embedding vectors. Ollama is the default for local setups. OpenAI Compatible works with any server that implements the /v1/embeddings endpoint - including hosted services and other local inference servers."
                   >ⓘ</span
                 >
-                <select id="sm_embedding_source" class="text_pole">
+                <select id="sme_embedding_source" class="text_pole">
                   <option value="ollama">Ollama</option>
                   <option value="openai_compatible">OpenAI Compatible</option>
                 </select>
@@ -1928,7 +1928,7 @@
                   >ⓘ</span
                 >
                 <input
-                  id="sm_embedding_url"
+                  id="sme_embedding_url"
                   type="text"
                   class="text_pole"
                   placeholder="http://localhost:11434 (default)"
@@ -1940,28 +1940,28 @@
                 Embedding model
                 <span
                   class="sm-info"
-                  id="sm_embedding_model_tip"
+                  id="sme_embedding_model_tip"
                   data-tooltip="Select an embedding model from your Ollama instance. nomic-embed-text is recommended - it is small, fast, and already used by SillyTavern's Vector Storage extension. If Ollama is not reachable from this browser, a text field will appear so you can type the model name directly."
                   >ⓘ</span
                 >
               </label>
               <!-- Ollama: dropdown populated from /api/tags with manual fallback -->
               <div
-                id="sm_embedding_model_ollama_row"
+                id="sme_embedding_model_ollama_row"
                 style="display: flex; gap: 6px; align-items: center"
               >
-                <select id="sm_embedding_model" class="text_pole" style="flex: 1">
+                <select id="sme_embedding_model" class="text_pole" style="flex: 1">
                   <option value="">- click refresh to load models -</option>
                 </select>
                 <input
-                  id="sm_embedding_model_manual"
+                  id="sme_embedding_model_manual"
                   type="text"
                   class="text_pole"
                   style="flex: 1; display: none"
                   placeholder="nomic-embed-text"
                 />
                 <button
-                  id="sm_embedding_refresh"
+                  id="sme_embedding_refresh"
                   class="menu_button menu_button_icon"
                   title="Refresh model list from Ollama"
                   style="flex-shrink: 0"
@@ -1970,16 +1970,16 @@
                 </button>
               </div>
               <!-- OpenAI Compatible: plain text field -->
-              <div id="sm_embedding_model_openai_row" style="display: none">
+              <div id="sme_embedding_model_openai_row" style="display: none">
                 <input
-                  id="sm_embedding_model_openai"
+                  id="sme_embedding_model_openai"
                   type="text"
                   class="text_pole"
                   placeholder="nomic-embed-text"
                 />
               </div>
             </div>
-            <div class="sm-block" id="sm_embedding_api_key_row" style="display: none">
+            <div class="sm-block" id="sme_embedding_api_key_row" style="display: none">
               <label>
                 API Key
                 <span
@@ -1988,7 +1988,7 @@
                   >ⓘ</span
                 >
                 <input
-                  id="sm_embedding_api_key"
+                  id="sme_embedding_api_key"
                   type="text"
                   class="text_pole"
                   placeholder="sk-..."
@@ -1996,31 +1996,31 @@
                 />
               </label>
             </div>
-            <div class="sm-block" id="sm_embedding_keep_row">
+            <div class="sm-block" id="sme_embedding_keep_row">
               <label class="checkbox_label">
-                <input id="sm_embedding_keep" type="checkbox" />
+                <input id="sme_embedding_keep" type="checkbox" />
                 <span
                   title="When checked, the embedding model stays loaded in Ollama between calls rather than being unloaded after each use. Speeds up repeated deduplication checks."
                   >Keep model in memory</span
                 >
               </label>
             </div>
-            <div class="sm-block" id="sm_embedding_test_row">
+            <div class="sm-block" id="sme_embedding_test_row">
               <div class="sm-btn-row">
-                <button id="sm_embedding_test" class="menu_button menu_button_icon">
+                <button id="sme_embedding_test" class="menu_button menu_button_icon">
                   <i class="fa-solid fa-plug"></i>
                   <span>Test connection</span>
                 </button>
               </div>
-              <span id="sm_embedding_test_result"></span>
+              <span id="sme_embedding_test_result"></span>
             </div>
-            <div class="sm-block" id="sm_embedding_install_hint_ollama">
+            <div class="sm-block" id="sme_embedding_install_hint_ollama">
               <i
                 >The model must be installed first. Run:
                 <code>ollama pull nomic-embed-text</code></i
               >
             </div>
-            <div class="sm-block" id="sm_embedding_install_hint_openai" style="display: none">
+            <div class="sm-block" id="sme_embedding_install_hint_openai" style="display: none">
               <i
                 >Enter the base URL of your OpenAI-compatible server and the model name it serves
                 for embeddings.</i
@@ -2044,7 +2044,7 @@
         <div class="sm-section-content">
           <div class="sm-block">
             <label class="checkbox_label">
-              <input id="sm_verbose_logging" type="checkbox" />
+              <input id="sme_verbose_logging" type="checkbox" />
               <span
                 >Verbose logging
                 <span
@@ -2062,7 +2062,7 @@
 
       <!-- About -->
       <div class="sm-block sm-btn-row">
-        <button id="sm_about" class="menu_button menu_button_icon">
+        <button id="sme_about" class="menu_button menu_button_icon">
           <i class="fa-solid fa-circle-info"></i>
           <span>About</span>
         </button>
@@ -2072,14 +2072,14 @@
 </div>
 
 <!-- About modal -->
-<div id="sm_about_modal" style="display: none">
+<div id="sme_about_modal" style="display: none">
   <div style="text-align: center; padding: 10px 0 6px">
     <i class="fa-solid fa-brain" style="font-size: 2em; color: var(--SmartReplyColor, #aaa)"></i>
   </div>
   <div style="text-align: center; margin-bottom: 14px">
     <strong style="font-size: 1.2em">Smart Memory Enhanced</strong>
     <div style="color: var(--SmartReplyColor, #aaa); font-size: 0.85em; margin-top: 2px">
-      v<span id="sm_about_version"></span>
+      v<span id="sme_about_version"></span>
     </div>
   </div>
   <div style="text-align: center; margin-bottom: 16px; font-size: 0.9em">
