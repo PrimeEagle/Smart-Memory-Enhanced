@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-15
+
+### Added
+
+- Centralized provider request queue with configurable concurrency, inter-request delay, retries, exponential backoff, and Retry-After support.
+- Advanced provider reliability controls for hosted and local memory providers.
+
+### Fixed
+
+- Memorize Chat now reports completed, partial, failed, or cancelled status based on chunk and save outcomes instead of reporting clean completion after errors.
+- Retry transient provider and metadata-save failures, including rate limits, gateway failures, connection resets, timeouts, and HTML gateway responses.
+
 ## [0.2.3] - 2026-07-15
 
 ### Changed

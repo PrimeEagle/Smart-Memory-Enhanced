@@ -52,7 +52,12 @@ import {
   PROMPT_KEY_STATE_LEDGER,
   generateMemoryId,
 } from './constants.js';
-import { memory_sources, fetchOllamaModels } from './generate.js';
+import {
+  memory_sources,
+  fetchOllamaModels,
+  onMemoryRequestRetry,
+  retryTransientMemoryOperation,
+} from './generate.js';
 import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
 import {
   extractAndStoreMemories,
@@ -166,6 +171,11 @@ export const defaultSettings = {
   // Maximum tokens the Memory LLM may generate per extraction call.
   // 8192 covers any thinking model comfortably. -1 means unlimited (Ollama only).
   generation_budget: 8192,
+
+  // Provider requests are serialized by default and transient failures retry.
+  provider_max_concurrency: 1,
+  provider_request_delay_ms: 2000,
+  provider_max_retries: 5,
 
   // Minimum number of AI messages between long-term and session injection refreshes.
   // 1 = refresh on every extraction pass (default / current behaviour).
@@ -1128,6 +1138,25 @@ export function bindSettingsUI(ctrl) {
   $('#sme_generation_budget_value').text(
     isUnlimited ? 'Unlimited' : genBudget.toLocaleString() + ' tokens',
   );
+
+  $('#sme_provider_max_concurrency')
+    .val(s.provider_max_concurrency ?? 1)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].provider_max_concurrency = Math.max(1, parseInt($(this).val(), 10) || 1);
+      saveSettingsDebounced();
+    });
+  $('#sme_provider_request_delay_ms')
+    .val(s.provider_request_delay_ms ?? 2000)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].provider_request_delay_ms = Math.max(0, parseInt($(this).val(), 10) || 0);
+      saveSettingsDebounced();
+    });
+  $('#sme_provider_max_retries')
+    .val(s.provider_max_retries ?? 5)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].provider_max_retries = Math.max(0, parseInt($(this).val(), 10) || 0);
+      saveSettingsDebounced();
+    });
 
   // Hardware profile override
   const PROFILE_LABELS = {
@@ -2437,11 +2466,25 @@ export function bindSettingsUI(ctrl) {
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
     let catchUpErrorCount = 0;
-    const recordCatchUpError = (label, err) => {
+    const runResult = {
+      totalChunks: 0,
+      completedChunks: 0,
+      failedChunks: 0,
+      retriedRequests: 0,
+      extractionFailuresByTier: {},
+      saveFailures: 0,
+      status: 'completed',
+    };
+    let currentChunkFailed = false;
+    const recordCatchUpError = (label, err, tier = null, isSave = false) => {
       catchUpErrorCount++;
       setCatchUpErrorCount(catchUpErrorCount);
+      currentChunkFailed = true;
+      if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
+      if (isSave) runResult.saveFailures++;
       console.error(`[SmartMemory] Catch-up ${label}:`, err);
     };
+    const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
     setCatchUpErrorCount(0);
     $('#sme_catch_up').hide();
     $('#sme_cancel_catch_up').show().prop('disabled', false);
@@ -2471,6 +2514,7 @@ export function bindSettingsUI(ctrl) {
       let i = 0;
       while (i < total) {
         if (ctrl.catchUpCancelled) break;
+        currentChunkFailed = false;
 
         // Yield to the browser event loop at the start of each chunk so the
         // UI remains responsive and the cancel button stays clickable even
@@ -2507,14 +2551,14 @@ export function bindSettingsUI(ctrl) {
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
             );
             await extractAndStoreMemories(name, nameChunk, setStatusMessage).catch((err) => {
-              recordCatchUpError('long-term extraction error (chunk)', err);
+              recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
             });
             // Consolidate after each chunk so near-duplicates are collapsed before
             // the next chunk can add more similar entries.
             if (settings.consolidation_enabled) {
               setStatusMessage(`Catching up... (${i}/${total} messages - consolidating ${name})`);
               await consolidateMemories(name).catch((err) => {
-                recordCatchUpError('long-term consolidation error (chunk)', err);
+                recordCatchUpError('long-term consolidation error (chunk)', err, 'long-term');
               });
             }
           }
@@ -2522,23 +2566,23 @@ export function bindSettingsUI(ctrl) {
         if (settings.session_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
           await extractSessionMemories(chunk).catch((err) => {
-            recordCatchUpError('session extraction error (chunk)', err);
+            recordCatchUpError('session extraction error (chunk)', err, 'session');
           });
           setStatusMessage(`Catching up... (${i}/${total} messages - consolidating session)`);
           await consolidateSessionMemories().catch((err) => {
-            recordCatchUpError('session consolidation error (chunk)', err);
+            recordCatchUpError('session consolidation error (chunk)', err, 'session');
           });
         }
         if (settings.arcs_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting arcs)`);
           await extractArcs(chunk, characterName).catch((err) => {
-            recordCatchUpError('arc extraction error (chunk)', err);
+            recordCatchUpError('arc extraction error (chunk)', err, 'arcs');
           });
         }
         if (isStateLedgerEnabled() && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - updating state ledger)`);
           await runStateCardExtraction(characterName, chunk).catch((err) => {
-            recordCatchUpError('State Ledger extraction error (chunk)', err);
+            recordCatchUpError('State Ledger extraction error (chunk)', err, 'state-ledger');
           });
         }
 
@@ -2577,7 +2621,9 @@ export function bindSettingsUI(ctrl) {
               : chatIdx + 1;
           if (cuCutoff > (cuMeta.lastExtractCutoff ?? 0)) {
             cuMeta.lastExtractCutoff = cuCutoff;
-            catchUpContext.saveMetadata().catch((err) => recordCatchUpError('metadata save error', err));
+            await retryTransientMemoryOperation(() => catchUpContext.saveMetadata()).catch((err) =>
+              recordCatchUpError('metadata save error', err, null, true),
+            );
           }
         }
 
@@ -2585,6 +2631,10 @@ export function bindSettingsUI(ctrl) {
         // see memories accumulating in real time rather than only at the end.
         setStatusMessage(`Catching up... (${processed}/${total} messages, ${pct}%)`);
         updateTokenDisplay();
+
+        runResult.totalChunks++;
+        if (currentChunkFailed) runResult.failedChunks++;
+        else runResult.completedChunks++;
 
         i += chunk.length;
       }
@@ -2780,11 +2830,22 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
 
       if (ctrl.catchUpCancelled) {
+        runResult.status = 'cancelled';
         setStatusMessage('Catch-up cancelled.');
         toastr.warning('Catch-up cancelled. Partial results have been saved.', 'Smart Memory Enhanced', {
           timeOut: 5000,
           positionClass: 'toast-bottom-right',
         });
+      } else if (catchUpErrorCount > 0) {
+        runResult.status = runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial';
+        setStatusMessage(
+          `Catch-up ${runResult.status}: ${runResult.completedChunks}/${runResult.totalChunks} chunks completed, ${runResult.failedChunks} failed.`,
+        );
+        toastr.warning(
+          `Catch-up ${runResult.status}. ${runResult.failedChunks} chunk${runResult.failedChunks === 1 ? '' : 's'} failed after ${runResult.retriedRequests} retr${runResult.retriedRequests === 1 ? 'y' : 'ies'}.`,
+          'Smart Memory Enhanced',
+          { timeOut: 8000, positionClass: 'toast-bottom-right' },
+        );
       } else {
         setStatusMessage('Catch-up complete.');
         toastr.success('Full catch-up extraction finished.', 'Smart Memory Enhanced', {
@@ -2797,6 +2858,7 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
+      unsubscribeRetry();
       $('#sme_cancel_catch_up').hide();
       $('#sme_catch_up').show();
       ctrl.extractionRunning = false;

@@ -67,6 +67,83 @@ function getGenerationBudget() {
  */
 let memoryAbortController = null;
 
+// All Smart Memory provider calls share one queue. This prevents catch-up tiers
+// (or background work) from overwhelming hosted APIs with simultaneous requests.
+const requestQueue = [];
+let activeRequests = 0;
+const retryListeners = new Set();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function providerSettings() {
+  const settings = extension_settings[MODULE_NAME] ?? {};
+  return {
+    concurrency: Math.max(1, Number(settings.provider_max_concurrency) || 1),
+    delayMs: Math.max(0, Number(settings.provider_request_delay_ms) || 2000),
+    maxRetries: Math.max(0, Number(settings.provider_max_retries) || 5),
+  };
+}
+
+function drainRequestQueue() {
+  const { concurrency } = providerSettings();
+  while (activeRequests < concurrency && requestQueue.length) {
+    const item = requestQueue.shift();
+    activeRequests++;
+    item.run()
+      .then(item.resolve, item.reject)
+      .finally(() => {
+        activeRequests--;
+        drainRequestQueue();
+      });
+  }
+}
+
+function queueMemoryRequest(run) {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({ run, resolve, reject });
+    drainRequestQueue();
+  });
+}
+
+function isTransientProviderError(err) {
+  const status = err?.status;
+  if (status === 429 || status === 502 || status === 503 || status === 504) return true;
+  const text = `${err?.name ?? ''} ${err?.message ?? ''}`.toLowerCase();
+  return /econnreset|etimedout|socket hang up|networkerror|failed to fetch|unexpected token ['\"]?|responded with (429|502|503|504)/.test(
+    text,
+  );
+}
+
+function retryAfterMs(value) {
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : Math.max(0, timestamp - Date.now());
+}
+
+export async function retryTransientMemoryOperation(run) {
+  const { delayMs, maxRetries } = providerSettings();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await run();
+      if (delayMs) await sleep(delayMs);
+      return result;
+    } catch (err) {
+      if (!isTransientProviderError(err) || attempt >= maxRetries) throw err;
+      const backoff = Math.max(retryAfterMs(err.retryAfter), 10000 * 2 ** attempt);
+      retryListeners.forEach((listener) => listener({ attempt: attempt + 1, delayMs: backoff, error: err }));
+      await sleep(backoff);
+    }
+  }
+}
+
+/** Subscribe to retries so a catch-up run can report its exact retry total. */
+export function onMemoryRequestRetry(listener) {
+  retryListeners.add(listener);
+  return () => retryListeners.delete(listener);
+}
+
 /**
  * Strips reasoning blocks from a raw model response using SillyTavern's
  * reasoning template list. Tries every loaded template (non-strict mode so
@@ -291,10 +368,7 @@ async function generateOpenAICompat(
 
   const messages = [...priorMessages, { role: 'user', content: prompt }];
 
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 3000;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  {
     const thisController = new AbortController();
     memoryAbortController = thisController;
     try {
@@ -344,31 +418,17 @@ async function generateOpenAICompat(
         return data.choices?.[0]?.message?.content ?? '';
       }
 
-      // Retry on 5xx (transient server errors) and 429 (rate limiting from
-      // free-tier cloud providers). Do not retry other 4xx - those are
-      // permanent errors (auth failure, bad request) that retrying won't fix.
-      if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
-        if (thisController.signal.aborted) return '';
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-        continue;
-      }
-      throw new Error(`OpenAI Compatible API responded with ${response.status}`);
+      const error = new Error(`OpenAI Compatible API responded with ${response.status}`);
+      error.status = response.status;
+      error.retryAfter = response.headers.get('Retry-After');
+      throw error;
     } catch (err) {
       if (err.name === 'AbortError') return '';
-      // Retry on network-level errors (ETIMEDOUT, ECONNRESET, etc.) - same reasoning
-      // as 5xx: transient failures that a retry may resolve.
-      if (attempt < MAX_RETRIES && !err.message.includes('responded with 4')) {
-        if (thisController.signal.aborted) return '';
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-        continue;
-      }
       throw err;
     } finally {
       if (memoryAbortController === thisController) memoryAbortController = null;
     }
   }
-  // Unreachable but satisfies linters.
-  return '';
 }
 
 /**
@@ -384,8 +444,10 @@ async function generateOpenAICompat(
  * @returns {Promise<string>} The raw model response
  */
 export async function generateMemoryExtract(prompt, { responseLength = 600 } = {}) {
-  const source = getSource();
-  let raw;
+  return queueMemoryRequest(() =>
+    retryTransientMemoryOperation(async () => {
+      const source = getSource();
+      let raw;
 
   if (source === memory_sources.ollama) {
     raw = await generateOllama(prompt, []);
@@ -428,7 +490,9 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
     responseLength > 0 && getGenerationBudget() !== -1
       ? Math.max(responseLength, getGenerationBudget()) * 4
       : Infinity;
-  return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
+      return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
+    }),
+  );
 }
 
 /**
@@ -468,6 +532,8 @@ export async function generateMemorySummarize(
   quietPrompt,
   { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null } = {},
 ) {
+  return queueMemoryRequest(() =>
+    retryTransientMemoryOperation(async () => {
   const source = getSource();
 
   // For direct API sources (Ollama, OpenAI-compat, connection profile), build the chat
@@ -554,4 +620,6 @@ export async function generateMemorySummarize(
     responseLength,
     removeReasoning: true,
   });
+    }),
+  );
 }
