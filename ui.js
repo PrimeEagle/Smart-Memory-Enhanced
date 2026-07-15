@@ -263,7 +263,8 @@ export function estimateCharPersonalTokens(charName) {
  */
 export function updateTokenDisplay() {
   const bar = document.getElementById('sme_token_bar');
-  if (!bar) return;
+  const contextBar = document.getElementById('sme_context_bar');
+  if (!bar || !contextBar) return;
 
   // ---- Top bar: actual injected content for the active character ----------
 
@@ -285,11 +286,20 @@ export function updateTokenDisplay() {
   // SillyTavern's resolver so the display matches the generation settings.
   const maxContext = getMaxContextSize(0) || 0;
 
-  // Each segment's width is its actual share of the full available context.
-  // The remaining empty space is context still available to the chat.
+  // The first bar is the absolute share of the context window used by Smart
+  // Memory. The second is deliberately always full, showing the relative mix
+  // of tiers even when memory uses only a tiny fraction of a large context.
+  contextBar.innerHTML = '';
+  const contextPct = maxContext && total ? Math.min(100, (total / maxContext) * 100) : 0;
+  const contextFill = document.createElement('div');
+  contextFill.className = 'sm-token-segment sm-context-token-fill';
+  contextFill.style.width = `${contextPct.toFixed(3)}%`;
+  contextFill.title = `Smart Memory Enhanced: ~${total.toLocaleString()} of ${maxContext.toLocaleString()} context tokens (${contextPct.toFixed(1)}%)`;
+  contextBar.appendChild(contextFill);
+
   bar.innerHTML = '';
   for (const tier of tiers) {
-    const widthPct = maxContext ? Math.min(100, (tier.tokens / maxContext) * 100).toFixed(3) : 0;
+    const widthPct = total > 0 ? ((tier.tokens / total) * 100).toFixed(3) : 0;
     const sharePct = total > 0 ? ((tier.tokens / total) * 100).toFixed(0) : 0;
     const seg = document.createElement('div');
     seg.style.width = `${widthPct}%`;
@@ -311,13 +321,13 @@ export function updateTokenDisplay() {
     bar.appendChild(seg);
   }
 
-  const contextPct = maxContext && total ? ((total / maxContext) * 100).toFixed(1) : '0';
+  const contextPctDisplay = contextPct.toFixed(1);
   const usedEl = document.getElementById('sme_token_used');
   const maxEl = document.getElementById('sme_token_max');
   const pctEl = document.getElementById('sme_token_pct');
   if (usedEl) usedEl.textContent = `~${total.toLocaleString()}`;
   if (maxEl) maxEl.textContent = maxContext ? maxContext.toLocaleString() : '?';
-  if (pctEl) pctEl.textContent = contextPct;
+  if (pctEl) pctEl.textContent = contextPctDisplay;
 
   // Fire a one-time notification the first time any tier is found to be trimming
   // content. Users who never open the settings panel will still see this once,

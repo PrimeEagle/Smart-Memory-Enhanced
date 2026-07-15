@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-15
+
+### Changed
+
+- Split Token Usage into an absolute context-usage bar and a separate full-width tier-mix bar.
+
 ## [0.3.8] - 2026-07-15
 
 ### Fixed

@@ -104,10 +104,15 @@
           Token Usage
           <span
             class="sm-info"
-            data-tooltip="Estimated tokens currently injected by each Smart Memory Enhanced tier. Updates after each generation. Hover a colour segment for the tier breakdown. Uses ~4 chars/token - accurate enough for tuning budgets, not for exact counts."
+            data-tooltip="The first bar shows Smart Memory Enhanced's share of the full context window. The second bar shows how that memory usage is divided among tiers. Hover a tier segment for details. Uses ~4 chars/token - accurate enough for tuning budgets, not for exact counts."
             >ⓘ</span
           >
         </p>
+        <div class="sm-token-bar-label">Context used by Smart Memory Enhanced</div>
+        <div class="sm-token-bar-wrap">
+          <div id="sme_context_bar" class="sm-token-bar sm-context-token-bar"></div>
+        </div>
+        <div class="sm-token-bar-label">Memory tier mix</div>
         <div class="sm-token-bar-wrap">
           <div id="sme_token_bar" class="sm-token-bar"></div>
         </div>
