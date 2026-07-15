@@ -116,6 +116,21 @@ test('parseExtractionOutput: entity field is empty array when absent', () => {
   assert.deepEqual(result[0]._raw_entity_names, []);
 });
 
+test('parseExtractionOutput: records direct provenance from sources=', () => {
+  const result = parseExtractionOutput(
+    '[fact:2:permanent:sources=0,3] A supported fact is recorded here.',
+  );
+  assert.deepEqual(result[0].source_message_indices, [0, 3]);
+  assert.equal(result[0].grounding_status, 'direct');
+  assert.deepEqual(result[0].parent_memory_ids, []);
+});
+
+test('parseExtractionOutput: missing sources are explicitly ungrounded', () => {
+  const result = parseExtractionOutput('[fact:2:permanent] A claim without evidence.');
+  assert.equal(result[0].grounding_status, 'ungrounded');
+  assert.deepEqual(result[0].source_message_indices, []);
+});
+
 test('parseExtractionOutput: entity field works in any bracket position', () => {
   // entity= before score and expiration
   const result = parseExtractionOutput(

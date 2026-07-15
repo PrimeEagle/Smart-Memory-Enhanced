@@ -302,6 +302,11 @@ function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType 
  * @param {Array<Object>} registry - Entity registry to upsert into (mutated in place).
  */
 export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
+  if (mem?.grounding_status === 'ungrounded') {
+    mem.entities = [];
+    delete mem._raw_entity_names;
+    return;
+  }
   if (!Array.isArray(rawNames) || rawNames.length === 0) {
     delete mem._raw_entity_names;
     return;
@@ -368,6 +373,7 @@ export function reconcileEntityRegistry(entityRegistry, currentMemories) {
     if (names.length === 0) continue;
 
     for (const mem of currentMemories) {
+      if (mem?.grounding_status === 'ungrounded') continue;
       if (entity.memory_ids.includes(mem.id)) continue; // already linked
 
       const contentLower = (mem.content ?? '').toLowerCase();
