@@ -212,6 +212,42 @@ function getConnectionProfileId() {
 }
 
 /**
+ * Connection profiles send messages through each model's native chat template.
+ * Some templates (including Mistral Nemo) reject consecutive same-role turns.
+ * Imported and group chats commonly contain those turns, so merge them before
+ * dispatching while preserving every message's text.
+ *
+ * @param {Array<{role: string, content: string}>} priorMessages
+ * @param {string} prompt
+ * @returns {Array<{role: 'user'|'assistant', content: string}>}
+ */
+function normalizeConnectionProfileMessages(priorMessages, prompt) {
+  const messages = [...priorMessages, { role: 'user', content: prompt }]
+    .filter((message) => message?.content?.trim())
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: String(message.content),
+    }));
+
+  const normalized = [];
+  for (const message of messages) {
+    const previous = normalized[normalized.length - 1];
+    if (previous?.role === message.role) {
+      previous.content += `\n\n${message.content}`;
+    } else {
+      normalized.push(message);
+    }
+  }
+
+  // A few imported chats begin with an assistant turn. Supply the required
+  // opening user turn without dropping or relabelling the original content.
+  if (normalized[0]?.role === 'assistant') {
+    normalized.unshift({ role: 'user', content: 'Previous conversation context follows.' });
+  }
+  return normalized;
+}
+
+/**
  * Sends a prompt through a saved ST connection profile using ConnectionManagerRequestService.
  * Works with any profile type the connection manager supports (Ollama, OpenAI-compatible,
  * cloud providers, etc.). The profile must exist and have a supported API type.
@@ -234,7 +270,7 @@ async function generateWithConnectionProfile(
   // Build a messages array so chat completion profiles get conversational context.
   // For text completion profiles, ConnectionManagerRequestService constructs the
   // prompt string internally using the profile's instruct template.
-  const messages = [...priorMessages, { role: 'user', content: prompt }];
+  const messages = normalizeConnectionProfileMessages(priorMessages, prompt);
   const limit = maxTokens > 0 ? maxTokens : undefined;
   const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
   // result is ExtractedData with a `.content` field containing the response text.

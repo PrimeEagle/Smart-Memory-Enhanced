@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-15
+
+### Fixed
+
+- Normalize connection-profile chat messages before sending them to the model: merge adjacent same-role turns and ensure an opening user turn for strict chat templates such as Mistral Nemo.
+
 ## [0.3.0] - 2026-07-15
 
 ### Added
