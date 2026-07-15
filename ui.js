@@ -401,6 +401,23 @@ export function setStatusMessage(msg) {
   $('#sme_status').text(msg);
 }
 
+/** Whether a memory has been quarantined pending an explicit user decision. */
+function needsGroundingReview(memory) {
+  return (
+    memory?.validation_status === 'needs_review' ||
+    (memory?.grounding_status === 'ungrounded' && memory?.validation_status !== 'approved' && memory?.validation_status !== 'rejected')
+  );
+}
+
+function groundingReviewMarkup(memory) {
+  if (!needsGroundingReview(memory)) return '';
+  const reason = (memory.validation_issues ?? ['No validated source messages.']).join(' ');
+  const escapedReason = $('<div>').text(reason).html();
+  return `<span class="sme_memory_review_badge" title="${escapedReason}"><i class="fa-solid fa-shield-halved"></i> needs review</span>
+    <button class="sme_approve_grounding menu_button" data-memory-id="${memory.id || ''}" title="Approve this memory and allow it to be used"><i class="fa-solid fa-check"></i></button>
+    <button class="sme_reject_grounding menu_button" data-memory-id="${memory.id || ''}" title="Reject this memory and keep it quarantined"><i class="fa-solid fa-xmark"></i></button>`;
+}
+
 /**
  * Shows the non-blocking error total for an in-progress Memorize Chat run and
  * adjusts the status colour without changing the current progress message.
@@ -723,6 +740,13 @@ export function updateSessionUI() {
   const $list = $('#sme_session_list');
   $list.empty();
 
+  const reviewCount = memories.filter(needsGroundingReview).length;
+  if (reviewCount > 0) {
+    $list.append(
+      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. Approve only facts you can verify; rejected records remain quarantined.</div>`,
+    );
+  }
+
   if (memories.length === 0) {
     $list.append('<div class="sme_no_char">No session memories yet.</div>');
   }
@@ -758,6 +782,7 @@ export function updateSessionUI() {
     const conflictBadge = hasConflict
       ? `<span class="sme_memory_conflict_badge" title="This memory conflicts with ${mem.contradicts.length} other ${mem.contradicts.length === 1 ? 'memory' : 'memories'} - run the continuity checker to review"><i class="fa-solid fa-triangle-exclamation"></i></span>`
       : '';
+    const groundingReview = groundingReviewMarkup(mem);
 
     const importanceDots = '●'.repeat(mem.importance ?? 1);
     const expiration = mem.expiration ?? 'session';
@@ -766,7 +791,7 @@ export function updateSessionUI() {
                 <span class="sme_memory_type sme_type_${mem.type}">${mem.type}</span>
                 <span class="sme_memory_importance sme_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
                 <span class="sme_memory_expiration sme_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
-                ${retiredBadge}${supersededByLink}${conflictBadge}
+                ${retiredBadge}${supersededByLink}${conflictBadge}${groundingReview}
                 <span class="sme_memory_text">${$('<div>').text(mem.content).html()}</span>
                 ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 ? `<button class="sme_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
                 <button class="sme_edit_session_memory menu_button" data-index="${idx}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
@@ -869,6 +894,19 @@ export function updateSessionUI() {
     meta.sessionMemories.splice(idx, 1);
     await context.saveMetadata();
     injectSessionMemories();
+    updateSessionUI();
+  });
+
+  $list.find('.sme_approve_grounding, .sme_reject_grounding').on('click', async function () {
+    const id = $(this).data('memory-id');
+    const memories = loadSessionMemories();
+    const memory = memories.find((item) => item.id === id);
+    if (!memory) return;
+    const approved = $(this).hasClass('sme_approve_grounding');
+    memory.validation_status = approved ? 'approved' : 'rejected';
+    memory.validation_issues = approved ? [] : [...(memory.validation_issues ?? []), 'Rejected during user review.'];
+    await saveSessionMemories(memories);
+    await injectSessionMemories();
     updateSessionUI();
   });
 
@@ -1639,6 +1677,13 @@ export function renderMemoriesList(memories, characterName) {
     $list.append('<div class="sme_no_char">No memories stored yet for this character.</div>');
   }
 
+  const reviewCount = memories.filter(needsGroundingReview).length;
+  if (reviewCount > 0) {
+    $list.append(
+      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. Approve only facts you can verify; rejected records remain quarantined.</div>`,
+    );
+  }
+
   const sorted = [...memories].sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
   const hasRetired = sorted.some((m) => m.superseded_by);
 
@@ -1671,6 +1716,7 @@ export function renderMemoriesList(memories, characterName) {
     const conflictBadge = hasConflict
       ? `<span class="sme_memory_conflict_badge" title="This memory conflicts with ${mem.contradicts.length} other ${mem.contradicts.length === 1 ? 'memory' : 'memories'} - run the continuity checker to review"><i class="fa-solid fa-triangle-exclamation"></i></span>`
       : '';
+    const groundingReview = groundingReviewMarkup(mem);
 
     const importanceDots = '●'.repeat(mem.importance ?? 1);
     const expiration = mem.expiration ?? 'permanent';
@@ -1679,7 +1725,7 @@ export function renderMemoriesList(memories, characterName) {
                 <span class="sme_memory_type sme_type_${mem.type}">${mem.type}</span>
                 <span class="sme_memory_importance sme_importance_${mem.importance ?? 1}" title="Importance ${mem.importance ?? 1}/3">${importanceDots}</span>
                 <span class="sme_memory_expiration sme_expiration_${expiration}" title="Expires: ${expiration}">${expiration}</span>
-                ${retiredBadge}${supersededByLink}${conflictBadge}
+                ${retiredBadge}${supersededByLink}${conflictBadge}${groundingReview}
                 <span class="sme_memory_text">${$('<div>').text(mem.content).html()}</span>
                 ${Array.isArray(mem.source_messages) && mem.source_messages.length > 0 && mem.source_chat_id === getContext().chatId ? `<button class="sme_jump_source menu_button" data-source-start="${mem.source_messages[mem.source_messages.length - 1][0]}" data-source-end="${mem.source_messages[mem.source_messages.length - 1][1]}" title="Jump to source message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
                 <button class="sme_edit_memory menu_button" data-memory-id="${mem.id || ''}" title="Edit this memory" ${isRetired ? 'style="display:none"' : ''}>
@@ -1787,6 +1833,20 @@ export function renderMemoriesList(memories, characterName) {
     saveCharacterMemories(characterName, current);
     saveSettingsDebounced();
     renderMemoriesList(current, characterName);
+  });
+
+  $list.find('.sme_approve_grounding, .sme_reject_grounding').on('click', function () {
+    const id = $(this).data('memory-id');
+    const memories = loadCharacterMemories(characterName);
+    const memory = memories.find((item) => item.id === id);
+    if (!memory) return;
+    const approved = $(this).hasClass('sme_approve_grounding');
+    memory.validation_status = approved ? 'approved' : 'rejected';
+    memory.validation_issues = approved ? [] : [...(memory.validation_issues ?? []), 'Rejected during user review.'];
+    saveCharacterMemories(characterName, memories);
+    saveSettingsDebounced();
+    injectMemories(characterName).catch(console.error);
+    renderMemoriesList(memories, characterName);
   });
 
   // Add memory form at the bottom of the list.

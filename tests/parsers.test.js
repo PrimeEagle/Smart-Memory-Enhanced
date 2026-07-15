@@ -9,6 +9,7 @@ import {
   detectSceneBreakHeuristic,
   parseProfileOutput,
 } from '../parsers.js';
+import { applyDirectProvenance } from '../grounding.js';
 
 // =========================================================================
 // parseExtractionOutput
@@ -128,7 +129,16 @@ test('parseExtractionOutput: records direct provenance from sources=', () => {
 test('parseExtractionOutput: missing sources are explicitly ungrounded', () => {
   const result = parseExtractionOutput('[fact:2:permanent] A claim without evidence.');
   assert.equal(result[0].grounding_status, 'ungrounded');
+  assert.equal(result[0].validation_status, 'needs_review');
   assert.deepEqual(result[0].source_message_indices, []);
+});
+
+test('applyDirectProvenance: invalid claimed sources require review', () => {
+  const result = parseExtractionOutput('[fact:2:permanent:sources=0,9] A claim with a bad source.');
+  applyDirectProvenance(result, [{ mes: 'Supported message.' }], 20);
+  assert.equal(result[0].grounding_status, 'ungrounded');
+  assert.equal(result[0].validation_status, 'needs_review');
+  assert.equal(result[0].source_messages.length, 0);
 });
 
 test('parseExtractionOutput: entity field works in any bracket position', () => {
