@@ -1992,7 +1992,7 @@ body.sm-read-only .mes_edit_delete {
   border: 1px solid var(--SmartReplyColor, #777);
   border-radius: 8px;
   color: var(--SmartReplyColor, #ddd);
-  background: var(--black30a, #222831);
+  background: #1f242c;
 }
 
 #sme_memory_review_dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
@@ -2007,6 +2007,12 @@ body.sm-read-only .mes_edit_delete {
 }
 #sme_memory_review_dialog .sme_memory_review_header { justify-content: space-between; }
 #sme_memory_review_dialog .sme_memory_review_title { margin-left: 8px; }
+#sme_memory_review_dialog .sme_memory_review_kind {
+  margin-left: 8px;
+  color: var(--SmartReplyColor, #bbb);
+  opacity: 0.75;
+  font-size: 0.85em;
+}
 #sme_memory_review_dialog .sme_memory_review_status {
   margin: 12px 0;
   padding: 8px;

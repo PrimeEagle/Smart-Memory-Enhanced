@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-15
+
+### Fixed
+
+- Review modal interactions no longer bubble into and close the Extensions drawer.
+- Approve and Reject advance to the next review item, retaining the modal review workflow.
+- Review modal now has an opaque background and scope-specific titles.
+
 ## [0.3.6] - 2026-07-15
 
 ### Changed

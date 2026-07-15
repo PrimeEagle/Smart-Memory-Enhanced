@@ -465,17 +465,21 @@ function showMemoryReviewDialog(memoryId, scope, characterName = null) {
   dialog.id = 'sme_memory_review_dialog';
   const $card = $('<div class="sme_memory_review_card">');
   const $header = $('<div class="sme_memory_review_header">');
+  const reviewTitle = scope === 'session' ? 'Session Memory Review' : 'Long-Term Memory Review';
   $header.append(
     $('<div>').append(
-      $('<span>').addClass(`sme_memory_type sme_type_${memory.type}`).text(memory.type),
-      $('<strong class="sme_memory_review_title">').text('Memory review'),
+      $('<strong class="sme_memory_review_title">').text(reviewTitle),
     ),
   );
   const close = () => {
     dialog.close();
     dialog.remove();
   };
-  $header.append($('<button class="menu_button" title="Close"><i class="fa-solid fa-xmark"></i></button>').on('click', close));
+  $header.append($('<button class="menu_button" title="Close"><i class="fa-solid fa-xmark"></i></button>').on('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    close();
+  }));
   $card.append($header);
 
   const reviewReason = needsGroundingReview(memory)
@@ -527,23 +531,30 @@ function showMemoryReviewDialog(memoryId, scope, characterName = null) {
     close();
   }));
   if (needsGroundingReview(memory)) {
-    $footer.append($('<button class="menu_button sme_approve_grounding">Approve</button>').on('click', async () => {
+    const finishReview = async (status) => {
       const current = load();
       const target = current.find((item) => item.id === memoryId);
       if (!target) return;
-      target.validation_status = 'approved';
-      target.validation_issues = [];
+      target.validation_status = status;
+      target.validation_issues = status === 'approved'
+        ? []
+        : [...(target.validation_issues ?? []), 'Rejected during user review.'];
       await save(current);
+      const next = load().find(needsGroundingReview);
       close();
+      // Remain in the review surface: advance to the next queued record, or
+      // reopen this now-reviewed record when the queue has been exhausted.
+      showMemoryReviewDialog(next?.id ?? memoryId, scope, characterName);
+    };
+    $footer.append($('<button class="menu_button sme_approve_grounding">Approve</button>').on('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      finishReview('approved');
     }));
-    $footer.append($('<button class="menu_button sme_reject_grounding">Reject</button>').on('click', async () => {
-      const current = load();
-      const target = current.find((item) => item.id === memoryId);
-      if (!target) return;
-      target.validation_status = 'rejected';
-      target.validation_issues = [...(target.validation_issues ?? []), 'Rejected during user review.'];
-      await save(current);
-      close();
+    $footer.append($('<button class="menu_button sme_reject_grounding">Reject</button>').on('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      finishReview('rejected');
     }));
   }
   $footer.append($('<button class="menu_button sme_memory_review_delete">Delete</button>').on('click', async () => {
@@ -553,7 +564,12 @@ function showMemoryReviewDialog(memoryId, scope, characterName = null) {
   }));
   $card.append($footer);
   $(dialog).append($card).on('click', (event) => {
+    event.stopPropagation();
     if (event.target === dialog) close();
+  });
+  dialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    close();
   });
   document.body.appendChild(dialog);
   dialog.showModal();
