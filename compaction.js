@@ -35,7 +35,12 @@ import {
   extension_prompt_roles,
   getMaxContextSize,
 } from '../../../../script.js';
-import { generateMemorySummarize } from './generate.js';
+import {
+  generateMemorySummarize,
+  getMemoryInputBudget,
+  getMemorySource,
+  memory_sources,
+} from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_SHORT, META_KEY } from './constants.js';
@@ -201,10 +206,50 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
       });
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
-      raw = await generateMemorySummarize(buildSummaryPrompt(storedMemories), {
-        responseLength: settings.compaction_response_length || 2000,
-        includeLastMessage,
-      });
+      const responseLength = settings.compaction_response_length || 2000;
+      const messages = context.chat.filter((message) => message.mes && !message.is_system);
+      const inputBudget = getMemoryInputBudget(responseLength);
+      const totalTokens = estimateTokens(messages.map((message) => message.mes).join('\n'));
+
+      if (getMemorySource() === memory_sources.connection_profile && totalTokens > inputBudget) {
+        // A connection profile must respect the loaded model's context window.
+        // Build the initial summary incrementally so every chat message is
+        // covered rather than truncating older history to fit one request.
+        let rollingSummary = 'No earlier events have been summarized yet.';
+        let chunk = [];
+        let chunkTokens = 0;
+        for (const message of messages) {
+          const tokens = estimateTokens(`${message.name}: ${message.mes}`);
+          if (chunk.length && chunkTokens + tokens > inputBudget) {
+            const events = chunk.map((item) => `${item.name}: ${item.mes}`).join('\n\n');
+            const prompt = buildUpdateSummaryPrompt(storedMemories)
+              .replace('{{existing_summary}}', rollingSummary)
+              .replace('{{new_events}}', events);
+            const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [] });
+            if (!response?.trim()) return null;
+            rollingSummary = formatSummary(response);
+            chunk = [];
+            chunkTokens = 0;
+          }
+          chunk.push(message);
+          chunkTokens += tokens;
+        }
+        if (chunk.length) {
+          const events = chunk.map((item) => `${item.name}: ${item.mes}`).join('\n\n');
+          const prompt = buildUpdateSummaryPrompt(storedMemories)
+            .replace('{{existing_summary}}', rollingSummary)
+            .replace('{{new_events}}', events);
+          const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [] });
+          if (!response?.trim()) return null;
+          rollingSummary = formatSummary(response);
+        }
+        raw = rollingSummary;
+      } else {
+        raw = await generateMemorySummarize(buildSummaryPrompt(storedMemories), {
+          responseLength,
+          includeLastMessage,
+        });
+      }
     }
 
     if (!raw || raw.trim() === '') return null;

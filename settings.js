@@ -171,6 +171,7 @@ export const defaultSettings = {
 
   // ST connection profile source: ID of the saved profile to use for extraction
   connection_profile_id: null,
+  connection_profile_context_sizes: {},
 
   // Maximum tokens the Memory LLM may generate per extraction call.
   // 8192 covers any thinking model comfortably. -1 means unlimited (Ollama only).
@@ -1060,8 +1061,22 @@ export function bindSettingsUI(ctrl) {
   populateConnectionProfilePicker();
   $('#sme_connection_profile_id').on('change', function () {
     extension_settings[MODULE_NAME].connection_profile_id = $(this).val() || null;
+    const sizes = extension_settings[MODULE_NAME].connection_profile_context_sizes ?? {};
+    $('#sme_connection_profile_context_size').val(sizes[$(this).val()] ?? '');
     saveSettingsDebounced();
   });
+  const selectedProfileId = s.connection_profile_id;
+  $('#sme_connection_profile_context_size')
+    .val(s.connection_profile_context_sizes?.[selectedProfileId] ?? '')
+    .on('change', function () {
+      const profileId = extension_settings[MODULE_NAME].connection_profile_id;
+      if (!profileId) return;
+      const sizes = (extension_settings[MODULE_NAME].connection_profile_context_sizes ??= {});
+      const value = parseInt($(this).val(), 10);
+      if (value > 0) sizes[profileId] = value;
+      else delete sizes[profileId];
+      saveSettingsDebounced();
+    });
 
   // Ollama URL field
   $('#sme_ollama_url')

@@ -203,6 +203,23 @@ function getSource() {
   return extension_settings[MODULE_NAME]?.source ?? memory_sources.main;
 }
 
+export function getMemorySource() {
+  return getSource();
+}
+
+/** Returns a safe input budget for the active memory provider. */
+export function getMemoryInputBudget(responseLength) {
+  const settings = extension_settings[MODULE_NAME] ?? {};
+  const profileId = getConnectionProfileId();
+  const profileLimit = settings.connection_profile_context_sizes?.[profileId];
+  const contextLimit =
+    getSource() === memory_sources.connection_profile && Number(profileLimit) > 0
+      ? Number(profileLimit)
+      : getMaxContextSize(responseLength);
+  const output = responseLength > 0 ? responseLength : getGenerationBudget();
+  return Math.max(500, contextLimit - Math.max(0, output) - 1000);
+}
+
 /**
  * Returns the configured ST connection profile ID, or null if not set.
  * @returns {string|null}
@@ -601,7 +618,7 @@ export async function generateMemorySummarize(
       // Trim to the most recent messages that fit within 60% of the context window.
       // Short-term memory is about recent context, not the entire chat history - sending
       // all messages from a long RP would overflow a local model's context completely.
-      priorMessages = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+      priorMessages = trimToBudget(allMessages, getMemoryInputBudget(responseLength));
     }
 
     let rawDirect;
@@ -641,7 +658,7 @@ export async function generateMemorySummarize(
           role: msg.is_user ? 'user' : 'assistant',
           content: msg.mes ?? '',
         }));
-      const trimmed = trimToBudget(allMessages, getMaxContextSize(responseLength) * 0.6);
+      const trimmed = trimToBudget(allMessages, getMemoryInputBudget(responseLength));
       trimmed.push({ role: 'user', content: quietPrompt });
       const params = responseLength > 0 ? { max_tokens: responseLength } : {};
       return await generateWebLlmChatPrompt(trimmed, params);
