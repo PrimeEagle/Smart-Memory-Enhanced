@@ -54,6 +54,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { buildCanonicalCharacterRoster, resolveCanonicalCharacterName } from './canonical-entities.js';
 
 // ---- Field schema -----------------------------------------------------------
 
@@ -264,9 +265,17 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     // Merge updates into the existing ledger.
     if (abortCheck?.()) return 0;
     const ledger = loadStateLedger();
+    const roster = buildCanonicalCharacterRoster(getContext());
     let count = 0;
     for (const [key, fields] of updates) {
-      ledger[key] = { ...(ledger[key] ?? {}), ...fields };
+      const [rawName, type] = key.split('|');
+      const resolution = resolveCanonicalCharacterName(rawName, roster, [...ltEntities, ...sessionEntities]);
+      if (resolution.status === 'ambiguous') {
+        smLog(`[SmartMemory] State Ledger candidate "${rawName}" skipped: ${resolution.reason}`);
+        continue;
+      }
+      const canonicalKey = ledgerKey(resolution.canonicalName ?? rawName, type);
+      ledger[canonicalKey] = { ...(ledger[canonicalKey] ?? {}), ...fields };
       count++;
     }
     await saveStateLedger(ledger);

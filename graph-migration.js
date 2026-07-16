@@ -48,6 +48,7 @@ import { getContext, extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
+import { buildCanonicalCharacterRoster, resolveCanonicalCharacterName } from './canonical-entities.js';
 
 // ---- Graph defaults ---------------------------------------------------------
 
@@ -313,11 +314,27 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     return;
   }
 
+  const roster = buildCanonicalCharacterRoster(getContext());
   const ids = rawNames
     .filter((n) => n && n.trim().length > 0)
-    .map((n) => {
+    .flatMap((n) => {
       const { name, classifiedType } = parseEntityToken(n.trim());
-      return upsertEntity(name, mem.id, messageIndex, registry, classifiedType);
+      const resolution = resolveCanonicalCharacterName(name, roster, registry);
+      if (resolution.status === 'ambiguous') {
+        smLog(`[SmartMemory] Entity candidate "${name}" quarantined: ${resolution.reason}`);
+        return [];
+      }
+      const resolvedName = resolution.canonicalName ?? name;
+      const id = upsertEntity(resolvedName, mem.id, messageIndex, registry, classifiedType);
+      const entity = registry.find((entry) => entry.id === id);
+      if (entity && resolution.canonicalId) {
+        entity.canonical_card_id = resolution.canonicalId;
+        entity.source = 'character-card';
+        if (resolution.status === 'rejected') {
+          entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), name])];
+        }
+      }
+      return [id];
     });
 
   mem.entities = ids;
