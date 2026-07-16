@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-07-16
+
+### Fixed
+
+- Keep the canonical-reconciliation results dialog from closing the Extensions panel.
+- Replace the tier-mix trimmed-content bottom stripe with a clearer red outline.
+
 ## [0.5.4] - 2026-07-16
 
 ### Fixed
