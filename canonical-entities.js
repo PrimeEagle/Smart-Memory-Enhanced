@@ -55,6 +55,30 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
   return { status: 'unresolved', candidateName: candidate, reason: 'Not represented by a relevant character card.', shouldCreateEntity: true, shouldAddAlias: false };
 }
 
+export function canonicalizeRelationshipPair(subject, target, roster) {
+  const left = resolveCanonicalCharacterName(subject, roster);
+  const right = resolveCanonicalCharacterName(target, roster);
+  if (left.status === 'ambiguous' || right.status === 'ambiguous') return null;
+  return [left.canonicalName ?? subject, right.canonicalName ?? target];
+}
+
+export function reconcileCanonicalLedger(ledger, roster) {
+  const result = { ...ledger };
+  for (const [key, fields] of Object.entries(ledger)) {
+    const separator = key.lastIndexOf('|');
+    if (separator < 1) continue;
+    const name = key.slice(0, separator);
+    const type = key.slice(separator + 1);
+    const resolved = resolveCanonicalCharacterName(name, roster);
+    if (!resolved.canonicalName || resolved.status === 'ambiguous') continue;
+    const canonicalKey = `${normalize(resolved.canonicalName)}|${type}`;
+    if (canonicalKey === key) continue;
+    result[canonicalKey] = { ...fields, ...(result[canonicalKey] ?? {}) };
+    delete result[key];
+  }
+  return result;
+}
+
 function resolved(candidateName, entry, reason) {
   return { status: 'resolved', candidateName, canonicalName: entry.canonicalName, canonicalId: entry.id, reason, shouldCreateEntity: false, shouldAddAlias: normalize(candidateName) === normalize(entry.canonicalName) || entry.aliases.some((alias) => normalize(alias) === normalize(candidateName)) };
 }

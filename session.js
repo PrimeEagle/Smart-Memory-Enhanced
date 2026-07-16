@@ -72,6 +72,7 @@ import {
   getHardwareProfile,
 } from './embeddings.js';
 import { loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
+import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 import {
   buildCurrentSceneStateBlock,
   prioritizeMemories,
@@ -326,7 +327,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
       longtermMemories.length > 0 ? formatMemoriesForPrompt(longtermMemories.slice(0, 15)) : '';
 
     const response = await generateMemoryExtract(
-      buildSessionExtractionPrompt(chatHistory, existingText, longtermText),
+      buildSessionExtractionPrompt(chatHistory, existingText, longtermText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
       { responseLength: settings.session_response_length ?? 500 },
     );
 

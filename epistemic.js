@@ -66,6 +66,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 
 // ---- Per-chat budget override -----------------------------------------------
 
@@ -278,7 +279,12 @@ export async function extractEpistemicKnowledge(
     // any existing entry it determines the scene has resolved or contradicted.
     const existing = loadEpistemicKnowledge(characterName);
 
-    const prompt = buildEpistemicExtractionPrompt(chatExcerpt, participants, existing);
+    const prompt = buildEpistemicExtractionPrompt(
+      chatExcerpt,
+      participants,
+      existing,
+      formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+    );
 
     const response = await generateMemoryExtract(prompt, {
       responseLength: settings.epistemic_response_length ?? 400,
@@ -302,7 +308,20 @@ export async function extractEpistemicKnowledge(
       );
     }
 
-    const parsed = parseEpistemicResponse(response);
+    const roster = buildCanonicalCharacterRoster(getContext());
+    const parsed = parseEpistemicResponse(response).flatMap((entry) => {
+      const subject = resolveCanonicalCharacterName(entry.subject, roster);
+      const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
+      if (subject.status === 'ambiguous' || target?.status === 'ambiguous') {
+        smLog(`[SmartMemory] Epistemic entry skipped due to ambiguous identity: ${entry.subject}`);
+        return [];
+      }
+      return [{
+        ...entry,
+        subject: subject.canonicalName ?? entry.subject,
+        target: target?.canonicalName ?? entry.target,
+      }];
+    });
     if (parsed.length === 0 && retiredCount === 0) {
       smLog('[SmartMemory] Epistemic extraction produced no parseable lines.');
       return 0;

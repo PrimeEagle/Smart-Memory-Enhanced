@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-16
+
+### Added
+
+- Canonical character-card roster and deterministic cross-tier entity resolution.
+- Safe canonical reconciliation for legacy State Ledger name variants.
+
+### Fixed
+
+- Prevent unsupported surname variants from becoming entity aliases, relationship pairs, profile entries, epistemic subjects, or State Ledger keys.
+
 ## [0.3.10] - 2026-07-15
 
 ### Changed
