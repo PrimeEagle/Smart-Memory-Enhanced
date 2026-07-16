@@ -1428,6 +1428,18 @@ export function updateEntityPanel(characterName) {
     };
     const dialog = document.createElement('dialog');
     dialog.className = 'sme_reconcile_dialog';
+    for (const eventName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      dialog.addEventListener(eventName, (event) => event.stopPropagation());
+    }
+    const closeReport = () => {
+      dialog.close();
+      dialog.remove();
+    };
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeReport();
+    });
     const $report = $('<div class="sme_reconcile_report">').append('<h3>Canonical reconciliation results</h3>');
     const addSection = (label, rows, formatter) => {
       if (!rows.length) return;
@@ -1441,7 +1453,11 @@ export function updateEntityPanel(characterName) {
     addSection('Needs review', report.skipped, (row) => `${row.name}: ${row.reason}`);
     addSection('No card match', report.unmatched, (row) => `${row.name}: ${row.reason}`);
     if (!$report.find('li').length) $report.append('<p class="sm-muted">No eligible character entries needed reconciliation.</p>');
-    $report.append($('<button class="menu_button">Close</button>').on('click', () => dialog.close()));
+    $report.append($('<button class="menu_button">Close</button>').on('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeReport();
+    }));
     $(dialog).append($report); document.body.appendChild(dialog); dialog.showModal();
   });
   $panel.append($reconcile);

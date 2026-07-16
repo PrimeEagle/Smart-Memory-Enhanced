@@ -209,7 +209,9 @@
 }
 
 #smart_memory_enhanced_settings .sm-token-segment.sm-token-trimmed {
-  box-shadow: inset 0 -3px 0 rgba(220, 60, 60, 0.85);
+  /* Keep the tier's color intact; a bottom stripe looked like a second,
+     overlapping tier instead of an indication that this tier was trimmed. */
+  box-shadow: inset 0 0 0 1px rgba(220, 60, 60, 0.95);
 }
 
 /* ── Token usage section (always visible, not an accordion) ─────────────── */
