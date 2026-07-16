@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-16
+
+### Added
+
+- Entity Registry reconciliation results dialog, detailing matched, merged, ambiguous, and unmatched entries.
+- Safe Entity Registry rename action with duplicate protection and reference updates.
+
 ## [0.5.0] - 2026-07-16
 
 ### Added

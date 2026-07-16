@@ -202,6 +202,20 @@ export async function migrateStateLedgerKey(name, oldType, newType) {
   await saveStateLedger(ledger);
 }
 
+/** Updates a ledger card's display label after its entity is renamed. */
+export async function renameStateLedgerEntity(oldName, newName, type) {
+  const ledger = loadStateLedger();
+  const oldKey = stableLedgerKey(oldName, type);
+  const newKey = stableLedgerKey(newName, type);
+  const fields = ledger[oldKey] ?? ledger[ledgerKey(oldName, type)];
+  if (!fields) return false;
+  ledger[newKey] = { ...fields, _name: newName };
+  if (oldKey !== newKey) delete ledger[oldKey];
+  delete ledger[ledgerKey(oldName, type)];
+  await saveStateLedger(ledger);
+  return true;
+}
+
 /**
  * Empties the entire state ledger. Called on Fresh Start and Clear Memories.
  *

@@ -379,18 +379,27 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 /** Safely merges existing registry variants that unambiguously map to a card character. */
 export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = []) {
   const roster = buildCanonicalCharacterRoster(context);
-  let changed = false;
+  const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
   for (const entity of [...registry]) {
     if (entity.type !== 'character') continue;
-    const result = resolveCanonicalCharacterName(entity.name, roster, registry);
-    if (!result.canonicalName || result.status === 'ambiguous') continue;
+    const result = resolveCanonicalCharacterName(entity.name, roster, registry.filter((entry) => entry.id !== entity.id));
+    if (result.status === 'ambiguous') {
+      report.skipped.push({ name: entity.name, reason: result.reason });
+      continue;
+    }
+    if (!result.canonicalName || !result.canonicalId) {
+      report.unmatched.push({ name: entity.name, reason: result.reason });
+      continue;
+    }
     const target = registry.find((entry) => entry.id !== entity.id && entry.name.toLowerCase() === result.canonicalName.toLowerCase());
     if (!target) {
       if (entity.name !== result.canonicalName) {
+        const oldName = entity.name;
         entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
         entity.name = result.canonicalName;
         entity.canonical_card_id = result.canonicalId;
-        changed = true;
+        report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason });
+        report.changed = true;
       }
       continue;
     }
@@ -401,9 +410,10 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
     }
     registry.splice(registry.indexOf(entity), 1);
-    changed = true;
+    report.merged.push({ name: entity.name, canonicalName: target.name, match: result.reason });
+    report.changed = true;
   }
-  return changed;
+  return report;
 }
 
 // ---- Entity registry reconciliation ----------------------------------------
@@ -514,6 +524,24 @@ export function reconcileEntityRegistry(entityRegistry, currentMemories) {
 export function setEntityType(entityId, newType, registry) {
   const entity = registry.find((e) => e.id === entityId);
   if (entity) entity.type = newType;
+}
+
+/**
+ * Renames an entity while preserving its former spelling as an alias.
+ * A conflicting same-type entity is never overwritten; the caller should use
+ * Merge instead in that case.
+ */
+export function renameEntityById(entityId, newName, registry) {
+  const entity = registry.find((entry) => entry.id === entityId);
+  const trimmed = String(newName ?? '').trim();
+  if (!entity || !trimmed) return { renamed: false, reason: 'Enter a non-empty name.' };
+  if (entity.name === trimmed) return { renamed: false, reason: 'The name is unchanged.' };
+  const conflict = registry.find((entry) => entry.id !== entityId && entry.type === entity.type && entry.name.toLowerCase() === trimmed.toLowerCase());
+  if (conflict) return { renamed: false, reason: `A ${entity.type} named "${trimmed}" already exists. Use Merge instead.` };
+  const oldName = entity.name;
+  entity.aliases = [...new Set([...(entity.aliases ?? []), oldName])];
+  entity.name = trimmed;
+  return { renamed: true, oldName, newName: trimmed };
 }
 
 // ---- Entity delete ----------------------------------------------------------
