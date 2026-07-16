@@ -1153,6 +1153,22 @@
   padding-left: 20px;
 }
 
+dialog.sme_reconcile_dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  padding: 18px;
+  color: #e8e8e8;
+  background: #24282f;
+  border: 1px solid #6d7785;
+  border-radius: 7px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
+}
+
+dialog.sme_reconcile_dialog::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+}
+
 #smart_memory_enhanced_settings .sme_entity_name {
   font-weight: 600;
   color: var(--SmartReplyColor, #ddd);
