@@ -1447,7 +1447,17 @@ export function updateEntityPanel(characterName) {
     const $review = $(`<button class="menu_button sme_identity_review"><i class="fa-solid fa-shield-halved"></i> Review identity candidates (${reviewQueue.length})</button>`);
     $review.on('click', () => {
       const dialog = document.createElement('dialog');
+      // SillyTavern listens for document-level clicks to close drawers. Keep
+      // every interaction inside this modal from reaching those handlers.
+      dialog.addEventListener('click', (event) => event.stopPropagation());
+      dialog.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dialog.close();
+      });
+      dialog.addEventListener('close', () => dialog.remove(), { once: true });
       const $card = $('<div class="sme_memory_review_card">').append('<h3>Identity candidate review</h3><p class="sm-muted">Approve only an identity you can verify. Pending candidates remain quarantined until you decide.</p>');
+      $card.on('click', (event) => event.stopPropagation());
       const removeItem = (item) => {
         getSettings().identity_review_queue = (getSettings().identity_review_queue ?? []).filter((entry) => entry.id !== item.id);
         saveSettingsDebounced();
@@ -1501,7 +1511,11 @@ export function updateEntityPanel(characterName) {
         $row.append($dismiss);
         $card.append($row);
       }
-      $card.append($('<button class="menu_button">Close</button>').on('click', () => dialog.close()));
+      $card.append($('<button class="menu_button">Close</button>').on('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dialog.close();
+      }));
       $(dialog).append($card); document.body.appendChild(dialog); dialog.showModal();
     });
     $panel.append($review);
