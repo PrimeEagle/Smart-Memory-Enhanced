@@ -48,7 +48,41 @@ import { getContext, extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
-import { buildCanonicalCharacterRoster, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName } from './canonical-entities.js';
+
+function resolveApprovedIdentityAlias(name, roster) {
+  const aliases = extension_settings[MODULE_NAME]?.identity_aliases ?? {};
+  const approved = aliases[String(name).trim().toLowerCase()];
+  if (!approved) return null;
+  const card = (roster.characters ?? []).find((entry) => entry.id === approved.canonicalId || entry.canonicalName === approved.canonicalName);
+  if (!card) return null;
+  return {
+    status: 'resolved',
+    candidateName: name,
+    canonicalName: card.canonicalName,
+    canonicalId: card.id,
+    reason: 'User-approved identity alias.',
+    shouldCreateEntity: false,
+    shouldAddAlias: false,
+  };
+}
+
+function recordIdentityReviewCandidate(result, details = {}) {
+  if (!['ambiguous', 'rejected'].includes(result.status)) return;
+  const settings = extension_settings[MODULE_NAME];
+  if (!settings) return;
+  const queue = (settings.identity_review_queue ??= []);
+  const candidateKey = String(result.candidateName).trim().toLowerCase();
+  const existing = queue.find((item) => item.candidateKey === candidateKey && item.reason === result.reason);
+  if (existing) {
+    existing.occurrences = (existing.occurrences ?? 1) + 1;
+    if (details.memoryId && !existing.memoryIds.includes(details.memoryId)) existing.memoryIds.push(details.memoryId);
+    saveSettingsDebounced();
+    return;
+  }
+  queue.push(buildIdentityReviewCandidate(result, details, generateMemoryId()));
+  saveSettingsDebounced();
+}
 
 // ---- Graph defaults ---------------------------------------------------------
 
@@ -319,7 +353,8 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     .filter((n) => n && n.trim().length > 0)
     .flatMap((n) => {
       const { name, classifiedType } = parseEntityToken(n.trim());
-      const resolution = resolveCanonicalCharacterName(name, roster, registry);
+      const resolution = resolveApprovedIdentityAlias(name, roster) ?? resolveCanonicalCharacterName(name, roster, registry);
+      recordIdentityReviewCandidate(resolution, { memoryId: mem.id, entityType: classifiedType });
       if (resolution.status === 'ambiguous') {
         smLog(`[SmartMemory] Entity candidate "${name}" quarantined: ${resolution.reason}`);
         return [];
@@ -339,6 +374,36 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 
   mem.entities = ids;
   delete mem._raw_entity_names;
+}
+
+/** Safely merges existing registry variants that unambiguously map to a card character. */
+export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = []) {
+  const roster = buildCanonicalCharacterRoster(context);
+  let changed = false;
+  for (const entity of [...registry]) {
+    if (entity.type !== 'character') continue;
+    const result = resolveCanonicalCharacterName(entity.name, roster, registry);
+    if (!result.canonicalName || result.status === 'ambiguous') continue;
+    const target = registry.find((entry) => entry.id !== entity.id && entry.name.toLowerCase() === result.canonicalName.toLowerCase());
+    if (!target) {
+      if (entity.name !== result.canonicalName) {
+        entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
+        entity.name = result.canonicalName;
+        entity.canonical_card_id = result.canonicalId;
+        changed = true;
+      }
+      continue;
+    }
+    target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
+    target.rejected_aliases = [...new Set([...(target.rejected_aliases ?? []), ...(entity.rejected_aliases ?? []), entity.name])];
+    for (const memory of memories) {
+      if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
+      memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
+    }
+    registry.splice(registry.indexOf(entity), 1);
+    changed = true;
+  }
+  return changed;
 }
 
 // ---- Entity registry reconciliation ----------------------------------------
@@ -522,14 +587,7 @@ function mergeInRegistry(sourceId, targetId, registry, memories) {
   target.last_seen = Math.max(target.last_seen ?? 0, source.last_seen ?? 0);
 
   // Rewrite entity refs in the memory array.
-  for (const mem of memories) {
-    if (!Array.isArray(mem.entities)) continue;
-    const idx = mem.entities.indexOf(sourceId);
-    if (idx >= 0) {
-      mem.entities.splice(idx, 1);
-      if (!mem.entities.includes(targetId)) mem.entities.push(targetId);
-    }
-  }
+  remapEntityIdInMemories(memories, sourceId, targetId);
 
   // Remove source from registry.
   registry.splice(sourceIdx, 1);
@@ -585,14 +643,7 @@ export function mergeEntitiesById(
     // Source only in LT, target only in session: absorb into session target,
     // relink LT memory refs to the session target id, then remove source from LT.
     absorbAliases(ltSource, sessTarget);
-    for (const mem of ltMemories) {
-      if (!Array.isArray(mem.entities)) continue;
-      const idx = mem.entities.indexOf(sourceId);
-      if (idx >= 0) {
-        mem.entities.splice(idx, 1);
-        if (!mem.entities.includes(targetId)) mem.entities.push(targetId);
-      }
-    }
+    remapEntityIdInMemories(ltMemories, sourceId, targetId);
     ltRegistry.splice(
       ltRegistry.findIndex((e) => e.id === sourceId),
       1,
@@ -603,14 +654,7 @@ export function mergeEntitiesById(
     // Source only in session, target only in LT: absorb into LT target,
     // rewrite session memory refs, then remove source from session.
     absorbAliases(sessSource, ltTarget);
-    for (const mem of sessionMemories) {
-      if (!Array.isArray(mem.entities)) continue;
-      const idx = mem.entities.indexOf(sourceId);
-      if (idx >= 0) {
-        mem.entities.splice(idx, 1);
-        if (!mem.entities.includes(targetId)) mem.entities.push(targetId);
-      }
-    }
+    remapEntityIdInMemories(sessionMemories, sourceId, targetId);
     sessionRegistry.splice(
       sessionRegistry.findIndex((e) => e.id === sourceId),
       1,

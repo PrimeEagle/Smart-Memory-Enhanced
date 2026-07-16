@@ -75,7 +75,7 @@ import {
   reconcileEntityRegistry,
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded } from './grounding.js';
-import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildStableRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
   buildLongtermConsolidationPrompt,
@@ -321,6 +321,84 @@ export function saveRelationshipHistory(characterName, history) {
     ...existing,
     relationship_history: history,
   };
+}
+
+/**
+ * Returns stable storage identifiers and readable labels for a relationship
+ * pair. Character-card identities use immutable card IDs; discovered entities
+ * retain a normalized name key until they have a card identity.
+ */
+export function getRelationshipHistoryPair(subject, target, roster = buildCanonicalCharacterRoster(getContext())) {
+  const pair = buildStableRelationshipPair(subject, target, roster);
+  return {
+    key: pair.key,
+    subject: { displayName: pair.subject.displayName, cardId: pair.subject.canonicalId, storageId: pair.subject.storageId },
+    target: { displayName: pair.target.displayName, cardId: pair.target.canonicalId, storageId: pair.target.storageId },
+  };
+}
+
+/** Returns readable pair labels for both ID-backed and legacy storage keys. */
+export function getRelationshipHistoryPairDisplay(key, state = {}) {
+  if (state.subject_name && state.target_name) {
+    return { subject: state.subject_name, target: state.target_name };
+  }
+  const [subject, target] = key.split('→').map((part) => part.trim());
+  return { subject, target };
+}
+
+export function reconcileRelationshipHistoryCanonicalNames(characterName) {
+  const history = loadRelationshipHistory(characterName);
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const reconciled = {};
+  let changed = false;
+  for (const [key, state] of Object.entries(history)) {
+    const { subject, target } = getRelationshipHistoryPairDisplay(key, state);
+    if (!subject || !target) { reconciled[key] = state; continue; }
+    const pair = getRelationshipHistoryPair(subject, target, roster);
+    const canonicalState = {
+      ...state,
+      subject_name: pair.subject.displayName,
+      target_name: pair.target.displayName,
+      subject_canonical_card_id: pair.subject.cardId,
+      target_canonical_card_id: pair.target.cardId,
+    };
+    reconciled[pair.key] = reconciled[pair.key] ?? canonicalState;
+    changed ||= pair.key !== key || JSON.stringify(canonicalState) !== JSON.stringify(state);
+  }
+  if (changed) saveRelationshipHistory(characterName, reconciled);
+  return changed;
+}
+
+/**
+ * Redirects relationship-history references when an entity is manually merged.
+ * Pair storage is rebuilt so both the display labels and its stable key point
+ * to the surviving entity.
+ */
+export function remapRelationshipHistoryEntity(characterName, sourceName, targetName) {
+  const history = loadRelationshipHistory(characterName);
+  const source = String(sourceName).trim().toLowerCase();
+  const remapped = {};
+  let changed = false;
+  for (const [key, state] of Object.entries(history)) {
+    const labels = getRelationshipHistoryPairDisplay(key, state);
+    const subject = labels.subject.toLowerCase() === source ? targetName : labels.subject;
+    const target = labels.target.toLowerCase() === source ? targetName : labels.target;
+    const pair = getRelationshipHistoryPair(subject, target);
+    const nextState = {
+      ...state,
+      subject_name: pair.subject.displayName,
+      target_name: pair.target.displayName,
+      subject_canonical_card_id: pair.subject.cardId,
+      target_canonical_card_id: pair.target.cardId,
+    };
+    const existing = remapped[pair.key];
+    remapped[pair.key] = existing
+      ? { ...nextState, descriptors: [...(existing.descriptors ?? []), ...(nextState.descriptors ?? [])] }
+      : nextState;
+    changed ||= pair.key !== key || subject !== labels.subject || target !== labels.target;
+  }
+  if (changed) saveRelationshipHistory(characterName, remapped);
+  return changed;
 }
 
 /**
@@ -635,7 +713,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           const descStr = (state.descriptors ?? [])
             .map((d) => `${d.word}(${d.magnitude})`)
             .join(', ');
-          return `${pair}: ${descStr}`;
+          const labels = getRelationshipHistoryPairDisplay(pair, state);
+          return `${labels.subject} → ${labels.target}: ${descStr}`;
         })
         .join('\n');
 
@@ -665,8 +744,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               smLog(`[SmartMemory] Relationship pair skipped due to ambiguous identity: ${rawSubject} -> ${rawTarget}`);
               continue;
             }
-            const subject = subjectResult.canonicalName ?? rawSubject;
-            const target = targetResult.canonicalName ?? rawTarget;
+            const pair = getRelationshipHistoryPair(rawSubject, rawTarget, canonicalRoster);
+            const subject = pair.subject.storageId;
+            const target = pair.target.storageId;
             const key = `${subject}→${target}`;
             const existing = relHistory[key] ?? { descriptors: [], updatedAt: Date.now() };
 
@@ -694,6 +774,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
                 word,
                 magnitude,
               })),
+              subject_name: pair.subject.displayName,
+              target_name: pair.target.displayName,
+              subject_canonical_card_id: pair.subject.cardId,
+              target_canonical_card_id: pair.target.cardId,
               updatedAt: Date.now(),
             };
           }
@@ -1237,12 +1321,15 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
 
   // A pair is relevant if either name appears in recent text or current group.
   const relevant = pairs.filter(([key]) => {
+    const labels = getRelationshipHistoryPairDisplay(key, history[key]);
+    const displaySubject = labels.subject.toLowerCase();
+    const displayTarget = labels.target.toLowerCase();
     const [subject, target] = key.split('→').map((s) => s.trim().toLowerCase());
     return (
-      recentText.includes(subject) ||
-      recentText.includes(target) ||
-      groupNames.has(subject) ||
-      groupNames.has(target)
+      recentText.includes(displaySubject) ||
+      recentText.includes(displayTarget) ||
+      groupNames.has(displaySubject) ||
+      groupNames.has(displayTarget)
     );
   });
 
@@ -1251,13 +1338,14 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
   const budget = settings.relationships_inject_budget ?? 250;
   const fullRelLines = relevant.map(
     ([key, state]) =>
-      `${key}: ${(state.descriptors ?? []).map((d) => `${d.word}(${d.magnitude})`).join(', ')}`,
+      `${getRelationshipHistoryPairDisplay(key, state).subject} → ${getRelationshipHistoryPairDisplay(key, state).target}: ${(state.descriptors ?? []).map((d) => `${d.word}(${d.magnitude})`).join(', ')}`,
   );
   const fullTokens = estimateTokens(fullRelLines.join('\n'));
   const lines = [];
   let tokens = 0;
   for (const [key, state] of relevant) {
-    const line = `${key}: ${(state.descriptors ?? []).map((d) => `${d.word}(${d.magnitude})`).join(', ')}`;
+    const labels = getRelationshipHistoryPairDisplay(key, state);
+    const line = `${labels.subject} → ${labels.target}: ${(state.descriptors ?? []).map((d) => `${d.word}(${d.magnitude})`).join(', ')}`;
     const lineTokens = estimateTokens(line);
     if (tokens + lineTokens > budget) break;
     lines.push(line);

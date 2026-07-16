@@ -54,7 +54,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
-import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildStableLedgerKey, formatCanonicalRosterForPrompt, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
 
 // ---- Field schema -----------------------------------------------------------
 
@@ -80,6 +80,10 @@ export const STATE_CARD_TYPES = new Set(['character', 'object', 'place', 'factio
  */
 function ledgerKey(name, type) {
   return `${name.toLowerCase().trim()}|${type}`;
+}
+
+function stableLedgerKey(name, type) {
+  return buildStableLedgerKey(name, type, buildCanonicalCharacterRoster(getContext()));
 }
 
 // ---- Feature gate -----------------------------------------------------------
@@ -131,7 +135,7 @@ export async function saveStateLedger(ledger) {
  */
 export function getStateCard(name, type) {
   const ledger = loadStateLedger();
-  return ledger[ledgerKey(name, type)] ?? null;
+  return ledger[stableLedgerKey(name, type)] ?? ledger[ledgerKey(name, type)] ?? null;
 }
 
 /**
@@ -145,8 +149,14 @@ export function getStateCard(name, type) {
  */
 export async function setStateCard(name, type, fields) {
   const ledger = loadStateLedger();
-  const key = ledgerKey(name, type);
-  ledger[key] = { ...(ledger[key] ?? {}), ...fields };
+  const resolution = resolveCanonicalCharacterName(name, buildCanonicalCharacterRoster(getContext()));
+  const key = stableLedgerKey(name, type);
+  ledger[key] = {
+    ...(ledger[key] ?? {}),
+    ...fields,
+    _name: resolution.canonicalName ?? name,
+    _canonical_card_id: resolution.canonicalId ?? null,
+  };
   await saveStateLedger(ledger);
 }
 
@@ -160,7 +170,7 @@ export async function setStateCard(name, type, fields) {
  */
 export async function deleteStateCard(name, type) {
   const ledger = loadStateLedger();
-  const key = ledgerKey(name, type);
+  const key = stableLedgerKey(name, type);
   if (!(key in ledger)) return;
   delete ledger[key];
   await saveStateLedger(ledger);
@@ -178,14 +188,14 @@ export async function deleteStateCard(name, type) {
  */
 export async function migrateStateLedgerKey(name, oldType, newType) {
   const ledger = loadStateLedger();
-  const oldKey = ledgerKey(name, oldType);
+  const oldKey = stableLedgerKey(name, oldType);
   if (!(oldKey in ledger)) return;
   // If the new type is not a state-card type (e.g. 'concept', 'unknown'),
   // discard the card rather than storing it under an unreachable key.
   if (!STATE_CARD_TYPES.has(newType)) {
     delete ledger[oldKey];
   } else {
-    const newKey = ledgerKey(name, newType);
+    const newKey = stableLedgerKey(name, newType);
     ledger[newKey] = ledger[oldKey];
     delete ledger[oldKey];
   }
@@ -206,6 +216,16 @@ export async function reconcileStateLedgerCanonicalNames() {
   const ledger = loadStateLedger();
   const roster = buildCanonicalCharacterRoster(getContext());
   const reconciled = reconcileCanonicalLedger(ledger, roster);
+  for (const [key, fields] of Object.entries({ ...reconciled })) {
+    const separator = key.lastIndexOf('|');
+    if (separator < 1 || key.startsWith('card:')) continue;
+    const name = key.slice(0, separator);
+    const type = key.slice(separator + 1);
+    const stableKey = stableLedgerKey(name, type);
+    if (stableKey === key) continue;
+    reconciled[stableKey] = { ...fields, ...(reconciled[stableKey] ?? {}) };
+    delete reconciled[key];
+  }
   const changed = JSON.stringify(reconciled) !== JSON.stringify(ledger);
   if (changed) {
     await saveStateLedger(reconciled);
@@ -288,8 +308,13 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
         smLog(`[SmartMemory] State Ledger candidate "${rawName}" skipped: ${resolution.reason}`);
         continue;
       }
-      const canonicalKey = ledgerKey(resolution.canonicalName ?? rawName, type);
-      ledger[canonicalKey] = { ...(ledger[canonicalKey] ?? {}), ...fields };
+      const canonicalKey = stableLedgerKey(resolution.canonicalName ?? rawName, type);
+      ledger[canonicalKey] = {
+        ...(ledger[canonicalKey] ?? {}),
+        ...fields,
+        _name: resolution.canonicalName ?? rawName,
+        _canonical_card_id: resolution.canonicalId ?? null,
+      };
       count++;
     }
     await saveStateLedger(ledger);
@@ -318,13 +343,13 @@ function buildStateLedgerBlock(ledger) {
   // Group by type for a readable block.
   const byType = {};
   for (const [key, fields] of entries) {
-    const [name, type] = key.split('|');
-    if (!name || !type || !STATE_CARD_TYPES.has(type)) continue;
+    const [, type] = key.split('|');
+    if (!type || !STATE_CARD_TYPES.has(type)) continue;
     const schema = STATE_CARD_FIELDS[type];
     if (!schema) continue;
     const values = schema.map((f) => fields[f]).filter((v) => v && v.trim());
     if (values.length === 0) continue;
-    const displayName = fields._name || name;
+    const displayName = fields._name || key.split('|')[0].replace(/^name:/, '');
     const line = `${displayName} [${type}]: ${values.join(' | ')}`;
     if (!byType[type]) byType[type] = [];
     byType[type].push(line);
