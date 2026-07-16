@@ -2013,6 +2013,14 @@ body.sm-read-only .mes_edit_delete {
   font-size: 0.85em;
 }
 
+#smart_memory_enhanced_settings .sme_entity_rejected_badge {
+  color: #f0c44d;
+  font-size: 0.75em;
+  padding: 1px 4px;
+  border: 1px solid rgba(240, 196, 77, 0.45);
+  border-radius: 3px;
+}
+
 #smart_memory_enhanced_settings .sm-token-bar-label {
   font-size: 0.72em;
   color: var(--SmartReplyColor, #aaa);

@@ -73,6 +73,7 @@ import {
   loadRelationshipHistory,
   saveRelationshipHistory,
   injectRelationshipHistory,
+  getRelationshipHistoryPair,
   isFreshStart,
   setFreshStart,
   getReadOnlyStartIndex,
@@ -232,6 +233,11 @@ export const defaultSettings = {
   relationships_depth: 5,
   relationships_role: extension_prompt_roles.SYSTEM,
   relationships_template: 'Relationship history:\n{{relationships}}',
+
+  // Identity review decisions. Approved aliases are intentionally separate
+  // from model-discovered aliases; the review queue retains unresolved items.
+  identity_review_queue: [],
+  identity_aliases: {},
 
   // Session memory
   session_enabled: true,
@@ -621,11 +627,9 @@ function applySettingsMode(mode) {
  */
 export function loadSettings() {
   if (!extension_settings[MODULE_NAME]) {
-    // Import global preferences once from the original extension. The clone is
-    // deliberately independent afterward, so both extensions can be enabled
-    // without sharing future writes.
-    const legacy = extension_settings.smart_memory;
-    extension_settings[MODULE_NAME] = legacy ? structuredClone(legacy) : {};
+    // Enhanced always starts from its own settings namespace. It neither
+    // requires nor imports configuration from the original Smart Memory.
+    extension_settings[MODULE_NAME] = {};
   }
   for (const [key, value] of Object.entries(defaultSettings)) {
     if (extension_settings[MODULE_NAME][key] === undefined) {
@@ -1774,13 +1778,21 @@ export function bindSettingsUI(ctrl) {
     if (descriptors.length === 0) return;
     const key = `${subject}→${target}`;
 
+    const pair = getRelationshipHistoryPair(subject, target);
     const h = loadRelationshipHistory(characterName);
 
     // If editing an existing pair under a different key, remove the old entry.
     const editingKey = $('#sme_relationship_add_form').data('editing');
-    if (editingKey && editingKey !== key) delete h[editingKey];
+    if (editingKey && editingKey !== pair.key) delete h[editingKey];
 
-    h[key] = { descriptors, updatedAt: Date.now() };
+    h[pair.key] = {
+      descriptors,
+      subject_name: pair.subject.displayName,
+      target_name: pair.target.displayName,
+      subject_canonical_card_id: pair.subject.cardId,
+      target_canonical_card_id: pair.target.cardId,
+      updatedAt: Date.now(),
+    };
     saveRelationshipHistory(characterName, h);
     saveSettingsDebounced();
     injectRelationshipHistory(characterName);

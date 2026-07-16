@@ -186,6 +186,39 @@ export function saveEpistemicKnowledge(characterName, entries) {
   saveSettingsDebounced();
 }
 
+export function reconcileEpistemicCanonicalNames(characterName) {
+  const entries = loadEpistemicKnowledge(characterName);
+  const roster = buildCanonicalCharacterRoster(getContext());
+  let changed = false;
+  for (const entry of entries) {
+    const subject = resolveCanonicalCharacterName(entry.subject, roster);
+    const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
+    if (subject.status !== 'ambiguous' && subject.canonicalName && entry.subject !== subject.canonicalName) { entry.subject = subject.canonicalName; changed = true; }
+    if (target && target.status !== 'ambiguous' && target.canonicalName && entry.target !== target.canonicalName) { entry.target = target.canonicalName; changed = true; }
+  }
+  if (changed) saveEpistemicKnowledge(characterName, entries);
+  return changed;
+}
+
+/** Redirects structured subject/target references after an entity merge. */
+export function remapEpistemicEntity(characterName, sourceName, targetName) {
+  const entries = loadEpistemicKnowledge(characterName);
+  const source = String(sourceName).trim().toLowerCase();
+  let changed = false;
+  for (const entry of entries) {
+    if (String(entry.subject ?? '').trim().toLowerCase() === source) {
+      entry.subject = targetName;
+      changed = true;
+    }
+    if (String(entry.target ?? '').trim().toLowerCase() === source) {
+      entry.target = targetName;
+      changed = true;
+    }
+  }
+  if (changed) saveEpistemicKnowledge(characterName, entries);
+  return changed;
+}
+
 /**
  * Removes all epistemic knowledge entries for a character.
  * Should be called alongside clearCharacterMemories and clearRelationshipHistory.

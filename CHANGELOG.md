@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-16
+
+### Added
+
+- Phase 2 canonical-identity safeguards: active group-chat roster filtering, explicit identity-review decisions, and Phase 2 integration coverage.
+- Stable card-ID-backed keys for new Relationship History and State Ledger character records, with readable labels retained for the UI and prompt injection.
+
+### Changed
+
+- Duplicate entity merges now redirect references across long-term and session memories, Relationship History, Profiles, Perspectives & Secrets, and State Ledger cards.
+- Smart Memory Enhanced no longer copies settings from the original Smart Memory extension; both extensions are fully independent.
+
 ## [0.4.0] - 2026-07-16
 
 ### Added

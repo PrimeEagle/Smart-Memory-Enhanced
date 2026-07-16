@@ -4,9 +4,16 @@ const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toL
 const words = (value) => normalize(value).split(' ').filter(Boolean);
 
 export function buildCanonicalCharacterRoster(context, options = {}) {
+  const group = context?.groupId ? context.groups?.find((entry) => String(entry.id) === String(context.groupId)) : null;
+  const activeAvatars = new Set(group?.members ?? []);
   const activeNames = new Set(options.activeNames?.map(normalize) ?? []);
   const characters = (context?.characters ?? [])
-    .filter((card) => !activeNames.size || activeNames.has(normalize(card.name)))
+    .filter((card) => {
+      if (activeNames.size) return activeNames.has(normalize(card.name));
+      // In a group, only cards referenced by that group's member avatar IDs
+      // are relevant. In one-to-one chat, retain the loaded-card roster.
+      return !group || activeAvatars.has(card.avatar);
+    })
     .map((card) => {
       const canonicalName = String(card.name ?? '').trim();
       const aliases = [...new Set([...(card.aliases ?? []), words(canonicalName)[0]].filter(Boolean))];
@@ -60,6 +67,53 @@ export function canonicalizeRelationshipPair(subject, target, roster) {
   const right = resolveCanonicalCharacterName(target, roster);
   if (left.status === 'ambiguous' || right.status === 'ambiguous') return null;
   return [left.canonicalName ?? subject, right.canonicalName ?? target];
+}
+
+/** Builds a stable storage reference plus the readable canonical label. */
+export function buildStableEntityReference(name, roster) {
+  const result = resolveCanonicalCharacterName(name, roster);
+  const displayName = result.canonicalName ?? String(name).trim();
+  return {
+    displayName,
+    canonicalId: result.canonicalId ?? null,
+    storageId: result.canonicalId ? `card:${result.canonicalId}` : `name:${normalize(displayName)}`,
+  };
+}
+
+/** Builds the ID-backed Relationship History key and display labels. */
+export function buildStableRelationshipPair(subject, target, roster) {
+  const left = buildStableEntityReference(subject, roster);
+  const right = buildStableEntityReference(target, roster);
+  return { key: `${left.storageId}→${right.storageId}`, subject: left, target: right };
+}
+
+/** Builds a State Ledger key that uses a card ID when one exists. */
+export function buildStableLedgerKey(name, type, roster) {
+  return `${buildStableEntityReference(name, roster).storageId}|${type}`;
+}
+
+/** Rewrites every graph-memory reference from a duplicate ID to its survivor. */
+export function remapEntityIdInMemories(memories, sourceId, targetId) {
+  let changed = false;
+  for (const memory of memories) {
+    if (!Array.isArray(memory.entities) || !memory.entities.includes(sourceId)) continue;
+    memory.entities = [...new Set(memory.entities.map((id) => id === sourceId ? targetId : id))];
+    changed = true;
+  }
+  return changed;
+}
+
+/** Creates the durable review record for an ambiguous or rejected identity. */
+export function buildIdentityReviewCandidate(result, details = {}, id = null) {
+  return {
+    ...result,
+    id,
+    candidateKey: normalize(result.candidateName),
+    memoryIds: details.memoryId ? [details.memoryId] : [],
+    entityType: details.entityType ?? 'unknown',
+    occurrences: 1,
+    createdAt: details.createdAt ?? Date.now(),
+  };
 }
 
 export function reconcileCanonicalLedger(ledger, roster) {

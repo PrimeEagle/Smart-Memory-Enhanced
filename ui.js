@@ -74,6 +74,9 @@ import {
   loadRelationshipHistory,
   saveRelationshipHistory,
   injectRelationshipHistory,
+  reconcileRelationshipHistoryCanonicalNames,
+  getRelationshipHistoryPairDisplay,
+  remapRelationshipHistoryEntity,
 } from './longterm.js';
 import { loadSessionMemories, saveSessionMemories, injectSessionMemories } from './session.js';
 import { loadSceneHistory } from './scenes.js';
@@ -93,7 +96,7 @@ import {
   saveGroupPersistentArcs,
 } from './arcs.js';
 import { loadCanon } from './canon.js';
-import { loadProfiles } from './profiles.js';
+import { loadProfiles, reconcileProfileCanonicalNames, remapProfileEntity } from './profiles.js';
 import {
   loadCharacterEntityRegistry,
   loadSessionEntityRegistry,
@@ -102,6 +105,7 @@ import {
   setEntityType,
   deleteEntityById,
   mergeEntitiesById,
+  reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
@@ -117,6 +121,8 @@ import {
   saveEpistemicKnowledge,
   injectEpistemicKnowledge,
   shrinkEpistemicBudgetIfPossible,
+  reconcileEpistemicCanonicalNames,
+  remapEpistemicEntity,
 } from './epistemic.js';
 import {
   getStateCard,
@@ -784,6 +790,7 @@ export function updateRelationshipHistoryUI(characterName) {
   for (const [key, state] of pairs) {
     const [subject, target] = key.split('→').map((s) => s.trim());
     const descriptors = state.descriptors ?? [];
+    const displayPair = getRelationshipHistoryPairDisplay(key, state);
     // Display as "word(magnitude), word(magnitude)" for per-descriptor magnitudes.
     const descriptorStr = descriptors.map((d) => `${d.word}(${d.magnitude})`).join(', ');
     // For the edit form, serialize as "word(magnitude), ..." so it round-trips cleanly.
@@ -795,12 +802,14 @@ export function updateRelationshipHistoryUI(characterName) {
       `${subject} → ${target}: ${descriptorStr}`,
     );
 
+    $content.text(`${displayPair.subject} → ${displayPair.target}: ${descriptorStr}`);
+
     const $editBtn = $('<button class="sme_memory_action menu_button" title="Edit">')
       .append('<i class="fa-solid fa-pencil"></i>')
       .on('click', () => {
         // Populate the add form for editing this pair.
-        $('#sme_rel_subject').val(subject);
-        $('#sme_rel_target').val(target);
+        $('#sme_rel_subject').val(displayPair.subject);
+        $('#sme_rel_target').val(displayPair.target);
         $('#sme_rel_descriptors').val(descriptorFieldVal);
         $('#sme_relationship_add_form').show();
         // Store the key being edited so save can delete the old one.
@@ -1384,6 +1393,95 @@ export function updateEntityPanel(characterName) {
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
 
+  const $reconcile = $('<button class="menu_button sme_reconcile_entities"><i class="fa-solid fa-wand-magic-sparkles"></i> Reconcile canonical entities</button>');
+  $reconcile.attr('title', 'Safely merge existing unambiguous card-name variants. Ambiguous names are left unchanged.');
+  $reconcile.on('click', async () => {
+    const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
+    const sessionMemories = loadSessionMemories();
+    const ltChanged = characterName && reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories);
+    const sessionChanged = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
+    if (ltChanged) {
+      saveCharacterEntityRegistry(characterName, ltEntities);
+      saveCharacterMemories(characterName, longtermMemories);
+      saveSettingsDebounced();
+    }
+    if (sessionChanged) {
+      await saveSessionEntityRegistry(sessionEntities);
+      await saveSessionMemories(sessionMemories);
+    }
+    if (characterName) {
+      reconcileRelationshipHistoryCanonicalNames(characterName);
+      reconcileEpistemicCanonicalNames(characterName);
+      await reconcileProfileCanonicalNames(characterName);
+    }
+    if (ltChanged || sessionChanged) updateEntityPanel(characterName);
+  });
+  $panel.append($reconcile);
+  const reviewQueue = getSettings().identity_review_queue ?? [];
+  if (reviewQueue.length) {
+    const $review = $(`<button class="menu_button sme_identity_review"><i class="fa-solid fa-shield-halved"></i> Review identity candidates (${reviewQueue.length})</button>`);
+    $review.on('click', () => {
+      const dialog = document.createElement('dialog');
+      const $card = $('<div class="sme_memory_review_card">').append('<h3>Identity candidate review</h3><p class="sm-muted">Approve only an identity you can verify. Pending candidates remain quarantined until you decide.</p>');
+      const removeItem = (item) => {
+        getSettings().identity_review_queue = (getSettings().identity_review_queue ?? []).filter((entry) => entry.id !== item.id);
+        saveSettingsDebounced();
+      };
+      for (const item of reviewQueue) {
+        const $row = $('<div class="sme_identity_review_row">');
+        $row.append($('<strong>').text(item.candidateName));
+        $row.append($('<div class="sm-muted">').text(`${item.reason} Seen ${item.occurrences ?? 1} time(s).`));
+        const approve = async (canonicalName) => {
+          const target = ltEntities.find((entity) => entity.name === canonicalName || entity.canonical_card_id === item.canonicalId)
+            ?? sessionEntities.find((entity) => entity.name === canonicalName || entity.canonical_card_id === item.canonicalId);
+          if (!target) {
+            $row.find('.sme_identity_review_notice').remove();
+            $row.append($('<div class="sme_identity_review_notice">').text(`Cannot approve yet: no stored entity exists for ${canonicalName}. The candidate remains pending.`));
+            return;
+          }
+          getSettings().identity_aliases ??= {};
+          getSettings().identity_aliases[item.candidateKey ?? item.candidateName.toLowerCase()] = {
+            canonicalName: target.name,
+            canonicalId: target.canonical_card_id ?? item.canonicalId ?? null,
+            approvedAt: Date.now(),
+          };
+          target.aliases = [...new Set([...(target.aliases ?? []), item.candidateName])];
+          const linkMemories = (memories) => {
+            for (const memory of memories) {
+              if (!(item.memoryIds ?? []).includes(memory.id)) continue;
+              memory.entities = [...new Set([...(memory.entities ?? []), target.id])];
+              target.memory_ids = [...new Set([...(target.memory_ids ?? []), memory.id])];
+            }
+          };
+          const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
+          const sessionMemories = loadSessionMemories();
+          linkMemories(longtermMemories); linkMemories(sessionMemories);
+          if (characterName) {
+            saveCharacterEntityRegistry(characterName, ltEntities);
+            saveCharacterMemories(characterName, longtermMemories);
+          }
+          await saveSessionEntityRegistry(sessionEntities);
+          await saveSessionMemories(sessionMemories);
+          removeItem(item);
+          $row.remove();
+          updateEntityPanel(characterName);
+        };
+        const choices = item.canonicalName ? [item.canonicalName] : (item.candidates ?? []);
+        for (const canonicalName of choices) {
+          $row.append($('<button class="menu_button">').text(`Approve as ${canonicalName}`).on('click', () => approve(canonicalName)));
+        }
+        const $dismiss = $('<button class="menu_button">Dismiss permanently</button>').on('click', () => {
+          removeItem(item); $row.remove();
+        });
+        $row.append($dismiss);
+        $card.append($row);
+      }
+      $card.append($('<button class="menu_button">Close</button>').on('click', () => dialog.close()));
+      $(dialog).append($card); document.body.appendChild(dialog); dialog.showModal();
+    });
+    $panel.append($review);
+  }
+
   // Merge by canonical name + type (case-insensitive) rather than by UUID.
   // The lt and session registries are independent stores with separate UUIDs,
   // so the same named entity (e.g. "Senjin") will have different ids in each.
@@ -1438,11 +1536,25 @@ export function updateEntityPanel(characterName) {
     updateEntityPanel(characterName);
   };
 
+  // Entity IDs are repaired by mergeEntitiesById; these stores keep readable
+  // entity names, so redirect their references before the UI is refreshed.
+  const redirectMergedReferences = async (sourceName, targetName) => {
+    if (!characterName) return;
+    remapRelationshipHistoryEntity(characterName, sourceName, targetName);
+    remapEpistemicEntity(characterName, sourceName, targetName);
+    await remapProfileEntity(characterName, sourceName, targetName);
+    injectRelationshipHistory(characterName);
+  };
+
   for (const entity of entities) {
     const icon = TYPE_ICONS[entity.type] ?? 'fa-tag';
     const memCount = Array.isArray(entity.memory_ids) ? entity.memory_ids.length : 0;
     const lastSeen = entity.last_seen != null ? `msg #${entity.last_seen}` : 'unknown';
     const safeName = $('<div>').text(entity.name).html();
+    const rejectedAliases = entity.rejected_aliases ?? [];
+    const rejectedBadge = rejectedAliases.length
+      ? `<span class="sme_entity_rejected_badge" title="Rejected identity candidates: ${$('<div>').text(rejectedAliases.join(', ')).html()}"><i class="fa-solid fa-shield-halved"></i> ${rejectedAliases.length}</span>`
+      : '';
 
     const $row = $(`
       <div class="sme_entity_row" data-entity-id="${entity.id}" style="position:relative;">
@@ -1450,6 +1562,7 @@ export function updateEntityPanel(characterName) {
           <i class="fa-solid ${icon}"></i> ${entity.type}
         </span>
         <span class="sme_entity_name">${safeName}</span>
+        ${rejectedBadge}
         <span class="sme_entity_meta">${memCount} ${memCount === 1 ? 'memory' : 'memories'} &middot; last seen ${lastSeen}</span>
         <button class="sme_entity_merge_btn menu_button" title="Merge into another entity">
           <i class="fa-solid fa-code-merge"></i>
@@ -1568,6 +1681,7 @@ export function updateEntityPanel(characterName) {
               await deleteStateCard(target.name, target.type);
               const winnerFields = keepSrc ? srcCard : dstCard;
               await setStateCard(target.name, target.type, winnerFields);
+              await redirectMergedReferences(entity.name, target.name);
               await persistAndRefresh();
             };
 
@@ -1595,6 +1709,7 @@ export function updateEntityPanel(characterName) {
             await deleteStateCard(entity.name, entity.type);
             await setStateCard(target.name, target.type, srcCard);
           }
+          await redirectMergedReferences(entity.name, target.name);
           await persistAndRefresh();
         });
         $picker.append($opt);

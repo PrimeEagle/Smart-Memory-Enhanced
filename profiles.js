@@ -90,6 +90,38 @@ async function saveProfiles(profiles, characterName) {
   await context.saveMetadata();
 }
 
+export async function reconcileProfileCanonicalNames(characterName) {
+  const profiles = loadProfiles(characterName);
+  if (!profiles?.relationship_matrix) return false;
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const matrix = profiles.relationship_matrix.split('\n').map((line) => {
+    const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
+    if (!match) return line;
+    const result = resolveCanonicalCharacterName(match[1].trim(), roster);
+    return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName} (${match[2]}): ${match[3]}`;
+  }).join('\n');
+  if (matrix === profiles.relationship_matrix) return false;
+  await saveProfiles({ ...profiles, relationship_matrix: matrix }, characterName);
+  return true;
+}
+
+/** Rewrites references to a duplicate entity after it is merged into another. */
+export async function remapProfileEntity(characterName, sourceName, targetName) {
+  const profiles = loadProfiles(characterName);
+  if (!profiles || !sourceName || sourceName.toLowerCase() === targetName.toLowerCase()) return false;
+  const escaped = String(sourceName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`\\b${escaped}\\b`, 'gi');
+  let changed = false;
+  const next = { ...profiles };
+  for (const key of ['character_state', 'world_state', 'relationship_matrix']) {
+    if (typeof next[key] !== 'string') continue;
+    const value = next[key].replace(pattern, targetName);
+    if (value !== next[key]) { next[key] = value; changed = true; }
+  }
+  if (changed) await saveProfiles(next, characterName);
+  return changed;
+}
+
 /**
  * Returns true if stored profiles for the given character are older than the configured
  * threshold or do not exist yet. Used to decide whether to regenerate on chat load.
