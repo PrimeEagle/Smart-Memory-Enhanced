@@ -481,6 +481,9 @@ function showMemoryReviewDialog(memoryId, scope, characterName = null) {
 
   const dialog = document.createElement('dialog');
   dialog.id = 'sme_memory_review_dialog';
+  for (const eventName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+    dialog.addEventListener(eventName, (event) => event.stopPropagation());
+  }
   const $card = $('<div class="sme_memory_review_card">');
   const $header = $('<div class="sme_memory_review_header">');
   const reviewTitle = scope === 'session' ? 'Session Memory Review' : 'Long-Term Memory Review';
@@ -922,7 +925,7 @@ export function updateSessionUI() {
   const reviewCount = memories.filter(needsGroundingReview).length;
   if (reviewCount > 0) {
     $list.append(
-      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. <button class="sme_open_review_queue menu_button">Open review queue</button></div>`,
+      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. <button class="sme_open_review_queue menu_button"><i class="fa-solid fa-list-check"></i> Open Review Queue</button></div>`,
     );
   }
 
@@ -1395,7 +1398,7 @@ export function updateEntityPanel(characterName) {
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
 
-  const $reconcile = $('<button class="menu_button sme_reconcile_entities"><i class="fa-solid fa-wand-magic-sparkles"></i> Reconcile canonical entities</button>');
+  const $reconcile = $('<button class="menu_button sme_reconcile_entities"><i class="fa-solid fa-wand-magic-sparkles"></i> Reconcile Canonical Entities</button>');
   $reconcile.attr('title', 'Safely merge existing unambiguous card-name variants. Ambiguous names are left unchanged.');
   $reconcile.on('click', async () => {
     const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
@@ -1449,7 +1452,9 @@ export function updateEntityPanel(characterName) {
       const dialog = document.createElement('dialog');
       // SillyTavern listens for document-level clicks to close drawers. Keep
       // every interaction inside this modal from reaching those handlers.
-      dialog.addEventListener('click', (event) => event.stopPropagation());
+      for (const eventName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+        dialog.addEventListener(eventName, (event) => event.stopPropagation());
+      }
       dialog.addEventListener('cancel', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -2042,7 +2047,7 @@ export function renderMemoriesList(memories, characterName) {
   const reviewCount = memories.filter(needsGroundingReview).length;
   if (reviewCount > 0) {
     $list.append(
-      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. <button class="sme_open_review_queue menu_button">Open review queue</button></div>`,
+      `<div class="sme_review_queue_notice"><i class="fa-solid fa-shield-halved"></i> ${reviewCount} memor${reviewCount === 1 ? 'y needs' : 'ies need'} grounding review. <button class="sme_open_review_queue menu_button"><i class="fa-solid fa-list-check"></i> Open Review Queue</button></div>`,
     );
   }
 

@@ -2018,9 +2018,29 @@ body.sm-read-only .mes_edit_delete {
 }
 
 #smart_memory_enhanced_settings .sme_review_queue_notice .sme_open_review_queue {
-  margin-left: 4px;
-  font-size: inherit;
-  padding: 1px 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  margin: 5px 0 0 0;
+  font-size: 0.9em;
+  line-height: 1.2;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-color: rgba(240, 196, 77, 0.55);
+  color: #f5d66a;
+  background: rgba(240, 196, 77, 0.12);
+}
+
+#smart_memory_enhanced_settings .sme_reconcile_entities {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  width: auto;
+  white-space: nowrap;
+  padding: 5px 9px;
+  margin-bottom: 4px;
 }
 
 #sme_memory_review_dialog {
