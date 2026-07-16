@@ -2020,6 +2020,23 @@ body.sm-read-only .mes_edit_delete {
   opacity: 0.8;
 }
 
+#smart_memory_enhanced_settings .sm-token-context-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#smart_memory_enhanced_settings .sm-token-context-row .sm-token-bar-wrap {
+  flex: 1;
+  margin: 0;
+}
+
+#smart_memory_enhanced_settings .sm-token-context-row .sm-token-total {
+  white-space: nowrap;
+  font-size: 0.78em;
+}
+
 #smart_memory_enhanced_settings .sm-context-token-fill {
   background: oklch(62% 0.14 252);
 }
