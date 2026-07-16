@@ -103,6 +103,7 @@ import {
   saveCharacterEntityRegistry,
   saveSessionEntityRegistry,
   setEntityType,
+  renameEntityById,
   deleteEntityById,
   mergeEntitiesById,
   reconcileCanonicalEntityRegistry,
@@ -129,6 +130,7 @@ import {
   setStateCard,
   deleteStateCard,
   migrateStateLedgerKey,
+  renameStateLedgerEntity,
   isStateLedgerEnabled,
   injectStateLedger,
   STATE_CARD_FIELDS,
@@ -1398,14 +1400,14 @@ export function updateEntityPanel(characterName) {
   $reconcile.on('click', async () => {
     const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
     const sessionMemories = loadSessionMemories();
-    const ltChanged = characterName && reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories);
-    const sessionChanged = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
-    if (ltChanged) {
+    const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
+    const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
+    if (ltReport.changed) {
       saveCharacterEntityRegistry(characterName, ltEntities);
       saveCharacterMemories(characterName, longtermMemories);
       saveSettingsDebounced();
     }
-    if (sessionChanged) {
+    if (sessionReport.changed) {
       await saveSessionEntityRegistry(sessionEntities);
       await saveSessionMemories(sessionMemories);
     }
@@ -1414,7 +1416,29 @@ export function updateEntityPanel(characterName) {
       reconcileEpistemicCanonicalNames(characterName);
       await reconcileProfileCanonicalNames(characterName);
     }
-    if (ltChanged || sessionChanged) updateEntityPanel(characterName);
+    updateEntityPanel(characterName);
+    const report = {
+      matched: [...ltReport.matched, ...sessionReport.matched],
+      merged: [...ltReport.merged, ...sessionReport.merged],
+      skipped: [...ltReport.skipped, ...sessionReport.skipped],
+      unmatched: [...ltReport.unmatched, ...sessionReport.unmatched],
+    };
+    const dialog = document.createElement('dialog');
+    const $report = $('<div class="sme_reconcile_report">').append('<h3>Canonical reconciliation results</h3>');
+    const addSection = (label, rows, formatter) => {
+      if (!rows.length) return;
+      const $section = $('<div class="sme_reconcile_report_section">').append($('<strong>').text(label));
+      const $list = $('<ul>');
+      rows.forEach((row) => $list.append($('<li>').text(formatter(row))));
+      $section.append($list); $report.append($section);
+    };
+    addSection('Matched', report.matched, (row) => `${row.name} → ${row.canonicalName} (${row.match})`);
+    addSection('Merged', report.merged, (row) => `${row.name} → ${row.canonicalName} (${row.match})`);
+    addSection('Needs review', report.skipped, (row) => `${row.name}: ${row.reason}`);
+    addSection('No card match', report.unmatched, (row) => `${row.name}: ${row.reason}`);
+    if (!$report.find('li').length) $report.append('<p class="sm-muted">No eligible character entries needed reconciliation.</p>');
+    $report.append($('<button class="menu_button">Close</button>').on('click', () => dialog.close()));
+    $(dialog).append($report); document.body.appendChild(dialog); dialog.showModal();
   });
   $panel.append($reconcile);
   const reviewQueue = getSettings().identity_review_queue ?? [];
@@ -1564,6 +1588,9 @@ export function updateEntityPanel(characterName) {
         <span class="sme_entity_name">${safeName}</span>
         ${rejectedBadge}
         <span class="sme_entity_meta">${memCount} ${memCount === 1 ? 'memory' : 'memories'} &middot; last seen ${lastSeen}</span>
+        <button class="sme_entity_rename_btn menu_button" title="Rename this entity">
+          <i class="fa-solid fa-pencil"></i>
+        </button>
         <button class="sme_entity_merge_btn menu_button" title="Merge into another entity">
           <i class="fa-solid fa-code-merge"></i>
         </button>
@@ -1610,6 +1637,32 @@ export function updateEntityPanel(characterName) {
         }
       };
       setTimeout(() => $(document).on('click', closeOnOutside), 0);
+    });
+
+    $row.find('.sme_entity_rename_btn').on('click', async (e) => {
+      e.stopPropagation();
+      const newName = window.prompt(`Rename ${entity.name}:`, entity.name);
+      if (newName == null) return;
+      const ltReg = characterName ? loadCharacterEntityRegistry(characterName) : [];
+      const sessReg = loadSessionEntityRegistry();
+      const trimmedName = newName.trim();
+      const conflict = [...ltReg, ...sessReg].find((entry) =>
+        entry.id !== entity.id && entry.type === entity.type && entry.name.toLowerCase() === trimmedName.toLowerCase(),
+      );
+      if (conflict) {
+        window.alert(`A ${entity.type} named "${trimmedName}" already exists. Use Merge instead.`);
+        return;
+      }
+      const ltResult = renameEntityById(entity.id, newName, ltReg);
+      const sessionResult = renameEntityById(entity.id, newName, sessReg);
+      const result = ltResult.renamed ? ltResult : sessionResult;
+      if (!result.renamed) {
+        window.alert(result.reason);
+        return;
+      }
+      await renameStateLedgerEntity(result.oldName, result.newName, entity.type);
+      await redirectMergedReferences(result.oldName, result.newName);
+      await persistAndRefresh();
     });
 
     // Merge button: shows a select of all other entity names.

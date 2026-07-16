@@ -1130,6 +1130,29 @@
   flex-shrink: 0;
 }
 
+#smart_memory_enhanced_settings .sme_entity_rename_btn {
+  padding: 2px 6px;
+  font-size: 0.75em;
+  flex-shrink: 0;
+}
+
+#smart_memory_enhanced_settings .sme_reconcile_report {
+  max-width: 620px;
+  color: var(--SmartReplyColor, #ddd);
+}
+
+#smart_memory_enhanced_settings .sme_reconcile_report_section {
+  margin: 10px 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+}
+
+#smart_memory_enhanced_settings .sme_reconcile_report_section ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
 #smart_memory_enhanced_settings .sme_entity_name {
   font-weight: 600;
   color: var(--SmartReplyColor, #ddd);
