@@ -175,7 +175,7 @@ export const RECAP_PROMPT =
  *   Passed so the model can skip facts already captured at the long-term tier.
  * @returns {string} The complete prompt string.
  */
-export function buildSessionExtractionPrompt(chatHistory, existingSession, longtermMemories = '') {
+export function buildSessionExtractionPrompt(chatHistory, existingSession, longtermMemories = '', canonicalRoster = '') {
   const existingSection = existingSession
     ? `ALREADY RECORDED THIS SESSION (do not duplicate):\n${existingSession}\n\nIf something from this list has CHANGED, extract the updated version using explicit state-change language ("now", "no longer", "became", "stopped", etc.) so it can supersede the outdated entry rather than accumulating alongside it.\n\n`
     : '';
@@ -188,7 +188,7 @@ export function buildSessionExtractionPrompt(chatHistory, existingSession, longt
     NO_ACTION_PREAMBLE +
     `[SESSION MEMORY EXTRACTION - Do NOT roleplay. Output structured data only.]
 
-${longtermSection}${existingSection}RECENT EXCHANGES:\n${chatHistory}
+${canonicalRoster}${longtermSection}${existingSection}RECENT EXCHANGES:\n${chatHistory}
 
 ---
 Extract NEW details worth remembering within this session. Focus on session-specific context: scene details, emotional beats, specific objects/names/places, and how things developed THIS session. Do not re-extract facts already in long-term memory.
@@ -538,6 +538,7 @@ export function buildProfileGenerationPrompt(
   longtermMemories,
   sessionMemories,
   entities = [],
+  canonicalRoster = '',
 ) {
   const ltSection = longtermMemories
     ? `LONG-TERM MEMORIES:\n${longtermMemories}\n\n`
@@ -558,7 +559,7 @@ export function buildProfileGenerationPrompt(
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${ltSection}${sessSection}${entitySection}Generate a compact state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the memories above - do not invent facts not in the source material. If a field cannot be determined from the memories, write "unknown".
+${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the memories above - do not invent facts not in the source material. If a field cannot be determined from the memories, write "unknown".
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
@@ -592,7 +593,7 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
  * @param {string} [characterName] - Active roleplay character for this memory store.
  * @returns {string} The complete prompt string.
  */
-export function buildExtractionPrompt(chatHistory, existingMemories, characterName = '') {
+export function buildExtractionPrompt(chatHistory, existingMemories, characterName = '', canonicalRoster = '') {
   const activeCharacterSection = characterName
     ? `ACTIVE CHARACTER FOR THIS MEMORY STORE: ${characterName}\n\n`
     : '';
@@ -604,7 +605,7 @@ export function buildExtractionPrompt(chatHistory, existingMemories, characterNa
     NO_ACTION_PREAMBLE +
     `[MEMORY EXTRACTION TASK - Do NOT continue the roleplay. Do NOT speak as a character. Output structured data only.]
 
-${activeCharacterSection}${existingSection}RECENT CONVERSATION TO ANALYZE:\n${chatHistory}
+${activeCharacterSection}${canonicalRoster}${existingSection}RECENT CONVERSATION TO ANALYZE:\n${chatHistory}
 
 ---
 Your task: Extract NEW facts worth remembering in future sessions with this character. Ignore filler and small talk. Focus on information that would meaningfully change how future conversations begin or flow.
@@ -774,7 +775,7 @@ export function buildTriggerGenerationPrompt(content) {
  * @param {string} characterCardExcerpt - Relevant character card text for seeding new pairs. Empty string if not available.
  * @returns {string} The assembled prompt.
  */
-export function buildRelationshipDeltaPrompt(sceneText, currentState, characterCardExcerpt = '') {
+export function buildRelationshipDeltaPrompt(sceneText, currentState, characterCardExcerpt = '', canonicalRoster = '') {
   const cardSection = characterCardExcerpt.trim()
     ? `Character background (use only to seed new pairs with no prior state):\n${characterCardExcerpt.trim()}\n\n`
     : '';
@@ -811,7 +812,7 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `- Do not include unnamed extras or background crowd members\n` +
     `- Output NONE if no relevant pairs appear in the scene\n\n` +
     `Format: Subject -> Target: descriptor(magnitude), descriptor(magnitude)\n\n` +
-    cardSection +
+    canonicalRoster + cardSection +
     stateSection +
     `Scene:\n${sceneText}\n\n` +
     `Output:`
@@ -837,7 +838,7 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
  * @param {Array<{type: string, subject: string, target: string|null, content: string}>} [existingEntries] - Current stored entries for context.
  * @returns {string} The complete prompt string.
  */
-export function buildEpistemicExtractionPrompt(sceneText, participants, existingEntries = []) {
+export function buildEpistemicExtractionPrompt(sceneText, participants, existingEntries = [], canonicalRoster = '') {
   const participantHint =
     participants.length > 0
       ? `Characters present in this scene: ${participants.join(', ')}.\n\n`
@@ -863,7 +864,7 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
 
   return (
     NO_ACTION_PREAMBLE +
-    `[EPISTEMIC EXTRACTION TASK - Output structured data only. Do NOT continue the roleplay.]\n\n` +
+    `[EPISTEMIC EXTRACTION TASK - Output structured data only. Do NOT continue the roleplay.]\n\n` + canonicalRoster +
     `You are building a knowledge map: for each named character, what do they know,\n` +
     `what do they falsely believe, what do they suspect, and what are they concealing?\n\n` +
     `Output one entry per character per fact, using these tags:\n\n` +
@@ -940,13 +941,13 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
  * @param {Array<{name: string, type: string}>} entityList - Entities in scope.
  * @returns {string} The full prompt string.
  */
-export function buildStateCardPrompt(excerpt, entityList) {
+export function buildStateCardPrompt(excerpt, entityList, canonicalRoster = '') {
   const entityLines = entityList.map((e) => `- ${e.name} (${e.type})`).join('\n');
 
   return (
     NO_ACTION_PREAMBLE +
     `[STATE EXTRACTION TASK - Do NOT continue the roleplay. Output structured data only.]\n\n` +
-    `You are tracking the current physical and operational state of known entities in a story.\n\n` +
+    canonicalRoster + `You are tracking the current physical and operational state of known entities in a story.\n\n` +
     `Known entities:\n${entityLines}\n\n` +
     `Available fields by type:\n` +
     `- character: location, injuries, outfit_disguise, mood, active_goal, carried_items\n` +

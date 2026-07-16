@@ -54,6 +54,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
 
 // ---- Field schema -----------------------------------------------------------
 
@@ -200,6 +201,19 @@ export async function clearStateLedger() {
   await saveStateLedger({});
 }
 
+/** Safely merges legacy name variants into canonical character-card ledger keys. */
+export async function reconcileStateLedgerCanonicalNames() {
+  const ledger = loadStateLedger();
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const reconciled = reconcileCanonicalLedger(ledger, roster);
+  const changed = JSON.stringify(reconciled) !== JSON.stringify(ledger);
+  if (changed) {
+    await saveStateLedger(reconciled);
+    smLog('[SmartMemory] State Ledger reconciled canonical name variants.');
+  }
+  return changed;
+}
+
 // ---- Extraction -------------------------------------------------------------
 
 /**
@@ -226,6 +240,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
   }
 
   try {
+    await reconcileStateLedgerCanonicalNames();
     const chatExcerpt = messages
       .filter((m) => m.mes && !m.is_system)
       .map((m) => `${m.name}: ${m.mes}`)
@@ -248,7 +263,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
 
     if (entityList.length === 0) return 0;
 
-    const prompt = buildStateCardPrompt(chatExcerpt, entityList);
+    const prompt = buildStateCardPrompt(chatExcerpt, entityList, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())));
 
     const response = await generateMemoryExtract(prompt, { responseLength: 400 });
     smLog('[SmartMemory] State ledger raw response:', response);
@@ -264,9 +279,17 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     // Merge updates into the existing ledger.
     if (abortCheck?.()) return 0;
     const ledger = loadStateLedger();
+    const roster = buildCanonicalCharacterRoster(getContext());
     let count = 0;
     for (const [key, fields] of updates) {
-      ledger[key] = { ...(ledger[key] ?? {}), ...fields };
+      const [rawName, type] = key.split('|');
+      const resolution = resolveCanonicalCharacterName(rawName, roster, [...ltEntities, ...sessionEntities]);
+      if (resolution.status === 'ambiguous') {
+        smLog(`[SmartMemory] State Ledger candidate "${rawName}" skipped: ${resolution.reason}`);
+        continue;
+      }
+      const canonicalKey = ledgerKey(resolution.canonicalName ?? rawName, type);
+      ledger[canonicalKey] = { ...(ledger[canonicalKey] ?? {}), ...fields };
       count++;
     }
     await saveStateLedger(ledger);

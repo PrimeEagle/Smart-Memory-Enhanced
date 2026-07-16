@@ -54,6 +54,7 @@ import { buildProfileGenerationPrompt } from './prompts.js';
 import { parseProfileOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
+import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 
@@ -142,7 +143,13 @@ export async function generateProfiles(characterName, abortCheck = null) {
     .filter((e) => e.type === 'character' || e.type === 'place')
     .map((e) => ({ name: e.name, type: e.type }));
 
-  const prompt = buildProfileGenerationPrompt(characterName, ltText, sessText, entities);
+  const prompt = buildProfileGenerationPrompt(
+    characterName,
+    ltText,
+    sessText,
+    entities,
+    formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+  );
 
   try {
     const response = await generateMemoryExtract(prompt, {
@@ -160,6 +167,19 @@ export async function generateProfiles(characterName, abortCheck = null) {
       );
       return null;
     }
+
+    const roster = buildCanonicalCharacterRoster(getContext());
+    parsed.relationship_matrix = parsed.relationship_matrix
+      .split('\n')
+      .map((line) => {
+        const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
+        if (!match) return line;
+        const resolution = resolveCanonicalCharacterName(match[1].trim(), roster, entityRegistry);
+        if (resolution.status === 'ambiguous') return '';
+        return `${resolution.canonicalName ?? match[1].trim()} (${match[2]}): ${match[3]}`;
+      })
+      .filter(Boolean)
+      .join('\n');
 
     const profiles = { ...parsed, generated_at: Date.now() };
     if (abortCheck?.()) return null;

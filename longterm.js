@@ -75,6 +75,7 @@ import {
   reconcileEntityRegistry,
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded } from './grounding.js';
+import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
   buildLongtermConsolidationPrompt,
@@ -465,7 +466,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const existingText = formatMemoriesForPrompt(activeMemories);
 
     const response = await generateMemoryExtract(
-      buildExtractionPrompt(chatHistory, existingText, characterName),
+      buildExtractionPrompt(chatHistory, existingText, characterName, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
       {
         responseLength: settings.longterm_response_length || 600,
       },
@@ -645,13 +646,27 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
       try {
         if (statusFn) statusFn(`Extracting relationship history for ${characterName}...`);
-        const relPrompt = buildRelationshipDeltaPrompt(chatHistory, stateLines, cardExcerpt);
+        const relPrompt = buildRelationshipDeltaPrompt(
+          chatHistory,
+          stateLines,
+          cardExcerpt,
+          formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+        );
         const relResponse = await generateMemoryExtract(relPrompt, { responseLength: 300 });
         const deltas = parseRelationshipDeltaResponse(relResponse);
 
         // Only store pairs where the character is one of the parties.
         if (deltas.length > 0) {
-          for (const { subject, target, updates, removals } of deltas) {
+          const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+          for (const { subject: rawSubject, target: rawTarget, updates, removals } of deltas) {
+            const subjectResult = resolveCanonicalCharacterName(rawSubject, canonicalRoster);
+            const targetResult = resolveCanonicalCharacterName(rawTarget, canonicalRoster);
+            if (subjectResult.status === 'ambiguous' || targetResult.status === 'ambiguous') {
+              smLog(`[SmartMemory] Relationship pair skipped due to ambiguous identity: ${rawSubject} -> ${rawTarget}`);
+              continue;
+            }
+            const subject = subjectResult.canonicalName ?? rawSubject;
+            const target = targetResult.canonicalName ?? rawTarget;
             const key = `${subject}→${target}`;
             const existing = relHistory[key] ?? { descriptors: [], updatedAt: Date.now() };
 
