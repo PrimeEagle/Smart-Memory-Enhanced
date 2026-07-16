@@ -26,6 +26,19 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
       };
     })
     .filter((entry) => entry.canonicalName);
+  // The active user persona participates in the chat but is not represented
+  // by a character card. Include it as a canonical participant so persona
+  // entities are not incorrectly reported as unmatched during reconciliation.
+  const personaName = String(options.personaName ?? context?.name1 ?? context?.userName ?? '').trim();
+  if (personaName && !characters.some((entry) => normalize(entry.canonicalName) === normalize(personaName))) {
+    characters.push({
+      id: `persona:${normalize(personaName)}`,
+      canonicalName: personaName,
+      aliases: [words(personaName)[0]].filter(Boolean),
+      descriptionExcerpt: '',
+      source: 'user-persona',
+    });
+  }
   return { characters };
 }
 
@@ -34,7 +47,7 @@ export function formatCanonicalRosterForPrompt(roster) {
   const lines = roster.characters.map((entry) =>
     `- ${entry.canonicalName}${entry.aliases.length ? ` (known references: ${entry.aliases.join(', ')})` : ''}`,
   );
-  return `CANONICAL CHARACTERS (authoritative):\n${lines.join('\n')}\n\nUse canonical names. Do not infer surnames, married names, or aliases.\n\n`;
+  return `CANONICAL PARTICIPANTS (authoritative):\n${lines.join('\n')}\n\nUse canonical names. Do not infer surnames, married names, or aliases.\n\n`;
 }
 
 export function resolveCanonicalCharacterName(candidateName, roster, existingEntities = []) {

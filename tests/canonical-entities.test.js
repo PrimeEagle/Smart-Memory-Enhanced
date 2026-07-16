@@ -51,6 +51,17 @@ test('canonical roster: group chat includes only active member cards', () => {
   assert.deepEqual(result.characters.map((entry) => entry.canonicalName), ['Paul Schmidt']);
 });
 
+test('canonical roster: active user persona is included alongside group members', () => {
+  const result = buildCanonicalCharacterRoster({
+    name1: 'Aaron Holland',
+    groupId: 'g1',
+    groups: [{ id: 'g1', members: ['paul.png'] }],
+    characters: [{ name: 'Paul Schmidt', avatar: 'paul.png' }],
+  });
+  assert.deepEqual(result.characters.map((entry) => entry.canonicalName), ['Paul Schmidt', 'Aaron Holland']);
+  assert.equal(resolveCanonicalCharacterName('Aaron Holland', result).status, 'resolved');
+});
+
 test('integration: registry candidates collapse to the canonical card identity', () => {
   const candidates = ['Paul', 'Paul Kawaguchi', 'Sophie'].map((name) => resolveCanonicalCharacterName(name, roster));
   assert.deepEqual(candidates.map((entry) => entry.canonicalName ?? entry.candidateName), ['Paul Schmidt', 'Paul Schmidt', 'Sophie']);

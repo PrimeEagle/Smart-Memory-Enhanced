@@ -1424,6 +1424,7 @@ export function updateEntityPanel(characterName) {
       unmatched: [...ltReport.unmatched, ...sessionReport.unmatched],
     };
     const dialog = document.createElement('dialog');
+    dialog.className = 'sme_reconcile_dialog';
     const $report = $('<div class="sme_reconcile_report">').append('<h3>Canonical reconciliation results</h3>');
     const addSection = (label, rows, formatter) => {
       if (!rows.length) return;

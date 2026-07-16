@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-16
+
+### Fixed
+
+- Include the active user persona in canonical participant matching, including group chats.
+- Make the Entity Registry reconciliation-results dialog opaque and readable in SillyTavern's theme.
+
 ## [0.5.1] - 2026-07-16
 
 ### Added
