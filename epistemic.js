@@ -61,6 +61,7 @@ import { buildEpistemicExtractionPrompt } from './prompts.js';
 import { parseEpistemicResponse, parseEpistemicRetireIndices } from './parsers.js';
 import { getSceneParticipants } from './scenes.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
@@ -338,7 +339,7 @@ export async function extractEpistemicKnowledge(
       formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
     );
 
-    const response = await generateMemoryExtract(prompt, {
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.EPISTEMIC, characterName), {
       responseLength: settings.epistemic_response_length ?? 400,
     });
 

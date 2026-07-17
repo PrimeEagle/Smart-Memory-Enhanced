@@ -41,6 +41,7 @@ import {
   extension_prompt_roles,
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { applyDirectProvenance, isGrounded } from './grounding.js';
@@ -327,7 +328,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
       longtermMemories.length > 0 ? formatMemoriesForPrompt(longtermMemories.slice(0, 15)) : '';
 
     const response = await generateMemoryExtract(
-      buildSessionExtractionPrompt(chatHistory, existingText, longtermText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
+      applyPromptOverride(
+        buildSessionExtractionPrompt(chatHistory, existingText, longtermText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
+        PROMPT_TASKS.SESSION_EXTRACTION,
+        characterName,
+      ),
       { responseLength: settings.session_response_length ?? 500 },
     );
 
@@ -411,7 +416,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
         if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue;
         try {
           const triggerPrompt = buildTriggerGenerationPrompt(mem.content);
-          const triggerResponse = await generateMemoryExtract(triggerPrompt, {
+          const triggerResponse = await generateMemoryExtract(applyPromptOverride(triggerPrompt, PROMPT_TASKS.SESSION_EXTRACTION), {
             responseLength: 60,
           });
           const raw = parseTriggerResponse(triggerResponse, mem.content);
@@ -547,7 +552,7 @@ export async function consolidateSessionMemories(force = false, abortCheck = nul
       const batchText = unprocessed.map((m) => `[${m.type}] ${m.content}`).join('\n');
 
       const response = await generateMemoryExtract(
-        buildSessionConsolidationPrompt(type, baseText, batchText),
+        applyPromptOverride(buildSessionConsolidationPrompt(type, baseText, batchText), PROMPT_TASKS.SESSION_EXTRACTION),
         { responseLength: Math.max(400, (base.length + unprocessed.length) * 60) },
       );
 

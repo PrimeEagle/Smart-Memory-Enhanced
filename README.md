@@ -413,6 +413,18 @@ The settings panel has two modes so you can keep things simple or go deep:
 
 Switching from simple to advanced never overwrites your values - the advanced controls always show the current state.
 
+### Prompt Studio
+
+In Advanced mode, **Prompt Studio** lets you tune the instructions used for each memory task without editing extension files. Choose a task, then choose the scope for its additional instructions:
+
+- **Global** applies to every character and chat.
+- **Character card** applies only to the currently selected card, including a selected member in a group chat.
+- **This chat only** applies only to the open chat.
+
+Scopes cascade from Global to Character card to This chat; the most specific non-empty instruction wins. The Precise, Concise, and Detailed presets are editable starting points. You can preview the effective instructions, reset one scope without touching the others, and export/import overrides as JSON.
+
+Smart Memory always keeps its dynamic source context and required parser/output contract after your instructions. This prevents a customization from silently breaking tagged extraction, structured state updates, or other storage formats.
+
 | Setting           | Default | Description                                                                                                                                                                                                                                                             |
 | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Auto-tune budgets | Off     | Automatically adjusts per-tier injection budgets based on observed demand. Each tier's budget is set to its actual usage plus 15% headroom. Budgets never drop below their defaults. In group chats, budgets are sized for the most memory-heavy character seen this session |

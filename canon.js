@@ -41,6 +41,7 @@ import {
   saveSettingsDebounced,
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
 import { buildCanonSummaryPrompt } from './prompts.js';
@@ -155,7 +156,7 @@ export async function generateCanon(characterName) {
   const arcTexts = arcSummaries.map((s) => s.summary);
   const prompt = buildCanonSummaryPrompt(characterName, arcTexts, memoriesText);
 
-  const response = await generateMemoryExtract(prompt, {
+  const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.CANON, characterName), {
     responseLength: settings.canon_response_length ?? 600,
   });
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Prompt Studio with Global, Character card, and This chat scoped instruction overrides; Precise, Concise, and Detailed presets; preview, reset, and JSON import/export controls.
+
+### Changed
+
+- Memory-generation workflows retain their required source context and parser/output contracts when Prompt Studio instructions are applied.
+
 ## [0.6.1] - 2026-07-16
 
 ### Changed

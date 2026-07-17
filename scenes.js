@@ -43,6 +43,7 @@ import {
   extension_prompt_roles,
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
 import { buildSceneDetectPrompt, SCENE_SUMMARY_PROMPT } from './prompts.js';
@@ -106,7 +107,7 @@ export async function sceneSimilarity(a, b) {
 export async function detectSceneBreakAI(messageText, previousMessageText) {
   try {
     const prompt = buildSceneDetectPrompt(messageText, previousMessageText);
-    const response = await generateMemoryExtract(prompt, { responseLength: 5 });
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.SCENE_SUMMARY), { responseLength: 5 });
     return response?.trim().toUpperCase().startsWith('YES') ?? false;
   } catch (err) {
     console.error('[SmartMemory] AI scene break detection failed:', err);
@@ -189,7 +190,7 @@ export async function summarizeScene(sceneMessages) {
     // Truncate to 2000 chars to keep the prompt cost reasonable on local hardware.
     const prompt = SCENE_SUMMARY_PROMPT.replace('{{scene_text}}', sceneText.slice(0, 2000));
 
-    const response = await generateMemoryExtract(prompt, {
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.SCENE_SUMMARY), {
       responseLength: settings.scene_summary_length ?? 200,
     });
 

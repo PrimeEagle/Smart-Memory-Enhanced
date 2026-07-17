@@ -46,6 +46,7 @@ import {
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
 import { loadSessionMemories } from './session.js';
@@ -185,7 +186,7 @@ export async function generateProfiles(characterName, abortCheck = null) {
   );
 
   try {
-    const response = await generateMemoryExtract(prompt, {
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.PROFILES, characterName), {
       responseLength: settings.profiles_response_length ?? 600,
     });
 

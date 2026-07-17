@@ -50,6 +50,7 @@ import { buildStateCardPrompt } from './prompts.js';
 import { parseStateCardResponse } from './parsers.js';
 import { loadCharacterEntityRegistry, loadSessionEntityRegistry } from './graph-migration.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
@@ -299,7 +300,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
 
     const prompt = buildStateCardPrompt(chatExcerpt, entityList, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())));
 
-    const response = await generateMemoryExtract(prompt, { responseLength: 400 });
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.STATE_LEDGER, characterName), { responseLength: 400 });
     smLog('[SmartMemory] State ledger raw response:', response);
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;

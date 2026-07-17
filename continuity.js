@@ -40,6 +40,7 @@
  */
 
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import {
   setExtensionPrompt,
@@ -137,7 +138,7 @@ export async function checkContinuity(characterName) {
 
     const prompt = buildContinuityPrompt(facts, lastAiMessage.mes);
 
-    const response = await generateMemoryExtract(prompt, {
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.CONTINUITY, characterName), {
       responseLength: settings.continuity_response_length ?? 300,
     });
 
@@ -162,7 +163,7 @@ export async function generateRepair(contradictions, characterName) {
   const facts = gatherEstablishedFacts(characterName);
   const prompt = buildRepairPrompt(contradictions, facts);
 
-  const note = await generateMemoryExtract(prompt, {
+  const note = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.CONTINUITY, characterName), {
     responseLength: settings.continuity_response_length ?? 300,
   });
 
