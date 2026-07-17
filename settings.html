@@ -1575,9 +1575,15 @@
             </select>
           </div>
           <div class="sm-block">
-            <label for="sme_prompt_preset">Preset</label>
+            <label for="sme_prompt_preset">Built-in guidance</label>
             <select id="sme_prompt_preset" class="text_pole">
-              <option value="">Custom / no preset</option>
+              <option value="">Keep current customization</option>
+            </select>
+          </div>
+          <div class="sm-block">
+            <label for="sme_prompt_saved_template">Custom template</label>
+            <select id="sme_prompt_saved_template" class="text_pole">
+              <option value="">Choose a saved template…</option>
             </select>
           </div>
           <div class="sm-block">
@@ -1590,9 +1596,9 @@
             <button id="sme_prompt_reset" class="menu_button"><i class="fa-solid fa-rotate-left"></i> Reset This Scope</button>
           </div>
           <div class="sm-btn-row" style="margin-top: 6px">
-            <input id="sme_prompt_preset_name" class="text_pole" type="text" maxlength="60" placeholder="New preset name" />
-            <button id="sme_prompt_save_preset" class="menu_button"><i class="fa-solid fa-floppy-disk"></i> Save Preset</button>
-            <button id="sme_prompt_delete_preset" class="menu_button"><i class="fa-solid fa-trash"></i> Delete Preset</button>
+            <input id="sme_prompt_preset_name" class="text_pole" type="text" maxlength="60" placeholder="New custom template name" />
+            <button id="sme_prompt_save_preset" class="menu_button"><i class="fa-solid fa-floppy-disk"></i> Save Template</button>
+            <button id="sme_prompt_delete_preset" class="menu_button"><i class="fa-solid fa-trash"></i> Delete Template</button>
           </div>
           <div class="sm-btn-row" style="margin-top: 6px">
             <button id="sme_prompt_export" class="menu_button"><i class="fa-solid fa-file-export"></i> Export Overrides</button>

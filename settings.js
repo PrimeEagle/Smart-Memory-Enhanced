@@ -939,26 +939,25 @@ export function bindSettingsUI(ctrl) {
     return ctrl.getSelectedCharacterName();
   }
 
-  function refreshPromptPresetChoices(selected = '') {
+  function refreshPromptPresetChoices(selectedBuiltIn = '', selectedCustom = '') {
     const $preset = $('#sme_prompt_preset');
-    $preset.empty().append($('<option>', { value: '', text: 'Custom / no preset' }));
+    const $savedTemplate = $('#sme_prompt_saved_template');
+    $preset.empty().append($('<option>', { value: '', text: 'Keep current customization' }));
+    $savedTemplate.empty().append($('<option>', { value: '', text: 'Choose a saved template…' }));
     const presets = listPromptPresets();
     for (const preset of presets.builtIn) {
       $preset.append($('<option>', { value: preset.id, text: preset.label }));
     }
-    if (presets.custom.length) {
-      const $group = $('<optgroup>', { label: 'My presets' });
-      for (const preset of presets.custom) {
-        $group.append($('<option>', { value: preset.id, text: preset.label }));
-      }
-      $preset.append($group);
+    for (const preset of presets.custom) {
+      $savedTemplate.append($('<option>', { value: preset.id, text: preset.label }));
     }
-    $preset.val(selected);
+    $preset.val(selectedBuiltIn);
+    $savedTemplate.val(selectedCustom);
   }
 
-  function selectedPromptPreset() {
-    const id = $('#sme_prompt_preset').val();
-    return [...listPromptPresets().builtIn, ...listPromptPresets().custom].find((preset) => preset.id === id) ?? null;
+  function findPromptPreset(id) {
+    const presets = listPromptPresets();
+    return [...presets.builtIn, ...presets.custom].find((preset) => preset.id === id) ?? null;
   }
 
   function savePromptStudioScope() {
@@ -988,7 +987,7 @@ export function bindSettingsUI(ctrl) {
   $('#sme_prompt_scope').on('change', refreshPromptStudio);
   $('#sme_prompt_override').on('change', savePromptStudioScope);
   $('#sme_prompt_preset').on('change', function () {
-    const preset = selectedPromptPreset();
+    const preset = findPromptPreset($(this).val());
     if (!preset) return;
     if (preset.protected) {
       const task = $promptTask.val();
@@ -1001,12 +1000,20 @@ export function bindSettingsUI(ctrl) {
     }
     $('#sme_prompt_override').val(preset.instruction);
     savePromptStudioScope();
+    $('#sme_prompt_saved_template').val('');
+  });
+  $('#sme_prompt_saved_template').on('change', function () {
+    const preset = findPromptPreset($(this).val());
+    if (!preset) return;
+    $('#sme_prompt_override').val(preset.instruction);
+    savePromptStudioScope();
+    $('#sme_prompt_preset').val('');
   });
   $('#sme_prompt_save_preset').on('click', function () {
     try {
       const name = saveCustomPromptPreset($('#sme_prompt_preset_name').val(), $('#sme_prompt_override').val());
       saveSettingsDebounced();
-      refreshPromptPresetChoices(`custom:${name}`);
+      refreshPromptPresetChoices('', `custom:${name}`);
       $('#sme_prompt_preset_name').val('');
       toastr.success(`Saved preset “${name}”.`, 'Smart Memory Enhanced');
     } catch (err) {
@@ -1014,7 +1021,7 @@ export function bindSettingsUI(ctrl) {
     }
   });
   $('#sme_prompt_delete_preset').on('click', function () {
-    const preset = selectedPromptPreset();
+    const preset = findPromptPreset($('#sme_prompt_saved_template').val());
     if (!preset?.custom) {
       toastr.warning('Select one of your custom presets to delete it.', 'Smart Memory Enhanced');
       return;
