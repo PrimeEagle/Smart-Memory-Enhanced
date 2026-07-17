@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-17
+
+### Added
+
+- Standard Prompt Preset toolbar with save as, update, rename, restore, delete, individual import, and individual export actions.
+
+### Fixed
+
+- Refresh the Character Memory Policy description immediately when its dropdown changes.
+
 ## [0.6.3] - 2026-07-16
 
 ### Changed
