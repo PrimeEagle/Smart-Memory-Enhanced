@@ -979,8 +979,9 @@ export function bindSettingsUI(ctrl) {
     if (needsCharacter) $('#sme_prompt_scope').val('global');
     const activeScope = $('#sme_prompt_scope').val();
     $('#sme_prompt_default').val(getDefaultPromptPreview(task));
-    $('#sme_prompt_override').val(getPromptOverride(task, activeScope, characterName));
-    refreshPromptPresetChoices();
+    const storedOverride = getPromptOverride(task, activeScope, characterName);
+    $('#sme_prompt_override').val(storedOverride);
+    refreshPromptPresetChoices(storedOverride ? '' : 'builtin:default');
   }
 
   $promptTask.on('change', refreshPromptStudio);
@@ -989,6 +990,15 @@ export function bindSettingsUI(ctrl) {
   $('#sme_prompt_preset').on('change', function () {
     const preset = selectedPromptPreset();
     if (!preset) return;
+    if (preset.protected) {
+      const task = $promptTask.val();
+      const scope = $('#sme_prompt_scope').val();
+      resetPromptOverride(task, scope, promptStudioCharacter());
+      saveSettingsDebounced();
+      if (scope === 'chat') getContext().saveMetadata?.();
+      refreshPromptStudio();
+      return;
+    }
     $('#sme_prompt_override').val(preset.instruction);
     savePromptStudioScope();
   });

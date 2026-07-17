@@ -421,7 +421,7 @@ In Advanced mode, **Prompt Studio** lets you tune the instructions used for each
 - **Character card** applies only to the currently selected card, including a selected member in a group chat.
 - **This chat only** applies only to the open chat.
 
-Scopes cascade from Global to Character card to This chat; the most specific non-empty instruction wins. The Precise, Concise, and Detailed presets are editable starting points. You can also save the current instructions as a named custom preset, reuse it for any task or scope, and delete it when finished. Custom presets are included in JSON exports and imports.
+Scopes cascade from Global to Character card to This chat; the most specific non-empty instruction wins. **Default (built-in)** is the non-deletable original prompt template and restores the stock behavior at the selected scope. The Precise, Concise, and Detailed presets are editable starting points. You can also save the current instructions as a named custom preset, reuse it for any task or scope, and delete it when finished. Custom presets are included in JSON exports and imports.
 
 Smart Memory always keeps its dynamic source context and required parser/output contract after your instructions. This prevents a customization from silently breaking tagged extraction, structured state updates, or other storage formats.
 
