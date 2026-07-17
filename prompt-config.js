@@ -55,6 +55,37 @@ export const PROMPT_PRESETS = Object.freeze({
   },
 });
 
+export function listPromptPresets() {
+  return {
+    builtIn: Object.entries(PROMPT_PRESETS).map(([id, preset]) => ({
+      id: `builtin:${id}`,
+      label: preset.label,
+      instruction: preset.instruction,
+      custom: false,
+    })),
+    custom: Object.entries(settingsStore().presets)
+      .filter(([, instruction]) => typeof instruction === 'string' && instruction.trim())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, instruction]) => ({ id: `custom:${name}`, label: name, instruction, custom: true })),
+  };
+}
+
+export function saveCustomPromptPreset(name, instruction) {
+  const cleanName = String(name ?? '').trim().replace(/\s+/g, ' ');
+  const cleanInstruction = String(instruction ?? '').trim();
+  if (!cleanName || cleanName.length > 60) throw new Error('Preset names must be between 1 and 60 characters.');
+  if (!cleanInstruction) throw new Error('Enter instructions before saving a preset.');
+  if (Object.values(PROMPT_PRESETS).some((preset) => preset.label.toLowerCase() === cleanName.toLowerCase())) {
+    throw new Error('That name is reserved for a built-in preset.');
+  }
+  settingsStore().presets[cleanName] = cleanInstruction;
+  return cleanName;
+}
+
+export function deleteCustomPromptPreset(name) {
+  delete settingsStore().presets[String(name ?? '')];
+}
+
 function settingsStore() {
   const settings = extension_settings[MODULE_NAME];
   settings.prompt_overrides ??= { global: {}, presets: {} };
@@ -124,6 +155,7 @@ export function exportPromptOverrides(characterName = null) {
     format: 'smart-memory-enhanced-prompt-overrides',
     version: 1,
     global: { ...settingsStore().global },
+    presets: { ...settingsStore().presets },
     character: { ...(characterStore(characterName, false) ?? {}) },
     chat: { ...(chatStore(false) ?? {}) },
   };
@@ -139,6 +171,11 @@ export function importPromptOverrides(payload, characterName = null) {
       if (Object.values(PROMPT_TASKS).includes(task) && typeof value === 'string') {
         setPromptOverride(task, scope, value, characterName);
       }
+    }
+  }
+  if (payload.presets && typeof payload.presets === 'object' && !Array.isArray(payload.presets)) {
+    for (const [name, instruction] of Object.entries(payload.presets)) {
+      if (typeof instruction === 'string') saveCustomPromptPreset(name, instruction);
     }
   }
 }
