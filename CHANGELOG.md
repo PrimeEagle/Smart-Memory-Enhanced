@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-16
+
+### Changed
+
+- Make Default (built-in) a first-class, non-deletable Prompt Studio template that restores the original prompt behavior at the selected scope.
+- Clarify Prompt Studio's visible default prompt, customizable guidance, and protected runtime/parser responsibilities.
+
 ## [0.6.2] - 2026-07-16
 
 ### Added
