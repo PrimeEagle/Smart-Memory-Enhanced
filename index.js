@@ -1077,6 +1077,9 @@ async function onChatChangedImpl() {
   sceneBufferLastIndex = -1;
   respondedThisRound = new Set();
   selectedGroupCharacter = null;
+  // The selector is useful only in group chats. Hide it immediately so a
+  // previous group chat's selection never appears while a solo chat loads.
+  $('#sme_group_character_selector').hide();
   setContinuityBadge(null);
   setStatusMessage('');
   // Initialise to the current chat length so the first CHARACTER_MESSAGE_RENDERED
@@ -1318,6 +1321,7 @@ function updateGroupCharSelector() {
     selectedGroupCharacter = members[0];
     $select.val(selectedGroupCharacter);
   }
+  $('#sme_group_character_selector').show();
 }
 
 // ---- Group chat handlers ------------------------------------------------
