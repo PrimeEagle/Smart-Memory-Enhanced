@@ -67,6 +67,7 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy } from './longterm.js';
 
 // ---- Per-chat budget override -----------------------------------------------
 
@@ -167,6 +168,9 @@ export function isEpistemicEnabled() {
  */
 export function loadEpistemicKnowledge(characterName) {
   if (!characterName) return [];
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    return getContext().chatMetadata?.[META_KEY]?.card_local_epistemic?.[characterName] ?? [];
+  }
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.epistemic_knowledge ?? [];
 }
 
@@ -179,6 +183,14 @@ export function loadEpistemicKnowledge(characterName) {
  */
 export function saveEpistemicKnowledge(characterName, entries) {
   if (!characterName || !Array.isArray(entries)) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    (context.chatMetadata[META_KEY].card_local_epistemic ??= {})[characterName] = entries;
+    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local epistemic knowledge:', err));
+    return;
+  }
   const s = extension_settings[MODULE_NAME];
   if (!s.characters) s.characters = {};
   const existing = s.characters[characterName] ?? {};
@@ -227,6 +239,13 @@ export function remapEpistemicEntity(characterName, sourceName, targetName) {
  */
 export function clearEpistemicKnowledge(characterName) {
   if (!characterName) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    if (context.chatMetadata?.[META_KEY]?.card_local_epistemic) delete context.chatMetadata[META_KEY].card_local_epistemic[characterName];
+    context.saveMetadata?.();
+    return;
+  }
   const s = extension_settings[MODULE_NAME];
   if (!s.characters?.[characterName]) return;
   s.characters[characterName].epistemic_knowledge = [];
@@ -293,7 +312,7 @@ export async function extractEpistemicKnowledge(
   characterName,
   _characterCardExcerpt = '',
 ) {
-  if (!isEpistemicEnabled() || !characterName) return 0;
+  if (!isEpistemicEnabled() || !characterName || [CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return 0;
 
   const settings = extension_settings[MODULE_NAME];
 
@@ -502,7 +521,7 @@ export function injectEpistemicKnowledge(
     if (updateTelemetry) updateEpistemicTelemetry(0);
   };
 
-  if (!isEpistemicEnabled() || !characterName || !respondingCharName) {
+  if (!isEpistemicEnabled() || !characterName || !respondingCharName || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) {
     clear();
     return;
   }

@@ -80,6 +80,18 @@
         </div>
       </div>
 
+      <div class="sm-block sme_character_policy_block">
+        <label for="sme_character_memory_policy">Character Memory Policy</label>
+        <select id="sme_character_memory_policy" class="text_pole">
+          <option value="full">Full — persist and inject memories</option>
+          <option value="chat_local">Chat-Local Only — store memories in this chat only</option>
+          <option value="read_only">Read-Only — inject existing memories, never update them</option>
+          <option value="disabled">Disabled — do not inject or create memories</option>
+        </select>
+        <small class="sm-muted">Useful for reusable side-character cards. This policy applies to the selected character card.</small>
+        <div id="sme_character_policy_notice" class="sm-muted" style="margin-top: 5px"></div>
+      </div>
+
       <!-- Read-only mode - sits below the chat action buttons since it is a
            chat-level mode switch, not a per-tier setting -->
       <div class="sm-block">

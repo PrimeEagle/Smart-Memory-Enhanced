@@ -41,10 +41,10 @@ import {
   saveSettingsDebounced,
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
-import { extension_settings } from '../../../extensions.js';
+import { getContext, extension_settings } from '../../../extensions.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
 import { buildCanonSummaryPrompt } from './prompts.js';
-import { loadCharacterMemories } from './longterm.js';
+import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories } from './longterm.js';
 import { loadArcSummaries } from './arcs.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
@@ -60,6 +60,9 @@ import { reportTierTrimStats } from './trim-stats.js';
  */
 export function loadCanon(characterName) {
   if (!characterName) return null;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    return getContext().chatMetadata?.[MODULE_NAME]?.card_local_canon?.[characterName] ?? null;
+  }
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.canon ?? null;
 }
 
@@ -73,6 +76,15 @@ export function loadCanon(characterName) {
  */
 export function saveCanon(characterName, text) {
   if (!characterName || !text) return;
+  const policy = getCharacterMemoryPolicy(characterName);
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(policy)) return;
+  if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    context.chatMetadata ??= {}; context.chatMetadata[MODULE_NAME] ??= {};
+    (context.chatMetadata[MODULE_NAME].card_local_canon ??= {})[characterName] = { text, ts: Date.now() };
+    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local canon:', err));
+    return;
+  }
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
@@ -91,6 +103,15 @@ export function saveCanon(characterName, text) {
  */
 export function clearCanon(characterName) {
   if (!characterName) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    if (context.chatMetadata?.[MODULE_NAME]?.card_local_canon) delete context.chatMetadata[MODULE_NAME].card_local_canon[characterName];
+    context.saveMetadata?.();
+    setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
+    invalidateUnifiedCache(PROMPT_KEY_CANON);
+    return;
+  }
   const char = extension_settings[MODULE_NAME]?.characters?.[characterName];
   if (char) {
     delete char.canon;
@@ -115,6 +136,7 @@ export function clearCanon(characterName) {
  */
 export async function generateCanon(characterName) {
   if (!characterName) return null;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return null;
 
   const settings = extension_settings[MODULE_NAME];
   const arcSummaries = loadArcSummaries();
@@ -159,7 +181,7 @@ export async function generateCanon(characterName) {
 export function injectCanon(characterName) {
   const settings = extension_settings[MODULE_NAME];
 
-  if (!(settings.canon_enabled ?? true)) {
+  if (!(settings.canon_enabled ?? true) || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) {
     setMacroContent(MACRO_NAMES.canon, '');
     setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_CANON);

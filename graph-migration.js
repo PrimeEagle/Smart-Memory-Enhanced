@@ -50,6 +50,10 @@ import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
 import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName } from './canonical-entities.js';
 
+function getCharacterMemoryPolicy(characterName) {
+  return extension_settings[MODULE_NAME]?.characters?.[characterName]?.memory_policy ?? 'full';
+}
+
 function resolveApprovedIdentityAlias(name, roster) {
   const aliases = extension_settings[MODULE_NAME]?.identity_aliases ?? {};
   const approved = aliases[String(name).trim().toLowerCase()];
@@ -136,6 +140,9 @@ export function applyGraphDefaults(mem) {
  */
 export function loadCharacterEntityRegistry(characterName) {
   if (!characterName) return [];
+  if (getCharacterMemoryPolicy(characterName) === 'chat_local') {
+    return getContext().chatMetadata?.[META_KEY]?.card_local_entities?.[characterName] ?? [];
+  }
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.entities ?? [];
 }
 
@@ -151,6 +158,15 @@ export function loadCharacterEntityRegistry(characterName) {
  */
 export function saveCharacterEntityRegistry(characterName, entities) {
   if (!characterName || !Array.isArray(entities)) return;
+  const policy = getCharacterMemoryPolicy(characterName);
+  if (policy === 'read_only' || policy === 'disabled') return;
+  if (policy === 'chat_local') {
+    const context = getContext();
+    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    (context.chatMetadata[META_KEY].card_local_entities ??= {})[characterName] = entities;
+    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local entity registry:', err));
+    return;
+  }
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }

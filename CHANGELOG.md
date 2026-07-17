@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-16
+
+### Added
+
+- Per-character-card memory policies: Full, Chat-Local Only, Read-Only, and Disabled.
+
+### Changed
+
+- Chat-Local Only stores card-scoped memories, relationships, canon, perspectives, profiles, and entity registries in the current chat without copying reusable-card history.
+- Read-Only and Disabled policies now protect card-scoped writes and manual controls; Disabled also suppresses card-scoped injection.
+
 ## [0.5.5] - 2026-07-16
 
 ### Fixed
