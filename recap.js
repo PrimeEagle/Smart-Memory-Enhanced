@@ -29,6 +29,7 @@
  */
 
 import { generateMemorySummarize } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY } from './constants.js';
 import { RECAP_PROMPT } from './prompts.js';
@@ -76,7 +77,7 @@ export function getAwayHours() {
 export async function generateRecap() {
   const settings = extension_settings[MODULE_NAME];
   try {
-    const response = await generateMemorySummarize(RECAP_PROMPT, {
+    const response = await generateMemorySummarize(applyPromptOverride(RECAP_PROMPT, PROMPT_TASKS.RECAP), {
       responseLength: settings.recap_response_length ?? 300,
       includeLastMessage: true,
     });

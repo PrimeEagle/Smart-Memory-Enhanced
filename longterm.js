@@ -56,6 +56,7 @@ import {
   getCurrentChatId,
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import {
   estimateTokens,
@@ -175,7 +176,7 @@ async function verifyLongtermCandidates(candidates, existing) {
     if (superseded.has(pair.candText)) continue;
     try {
       const prompt = buildSupersessionConfirmPrompt(pair.candObj.content, pair.existingContent);
-      const raw = await generateMemoryExtract(prompt, { responseLength: 20 });
+      const raw = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.LONGTERM_EXTRACTION), { responseLength: 20 });
       const answer = raw
         .trim()
         .toUpperCase()
@@ -609,7 +610,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const existingText = formatMemoriesForPrompt(activeMemories);
 
     const response = await generateMemoryExtract(
-      buildExtractionPrompt(chatHistory, existingText, characterName, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
+      applyPromptOverride(
+        buildExtractionPrompt(chatHistory, existingText, characterName, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
+        PROMPT_TASKS.LONGTERM_EXTRACTION,
+        characterName,
+      ),
       {
         responseLength: settings.longterm_response_length || 600,
       },
@@ -750,7 +755,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue;
         try {
           const triggerPrompt = buildTriggerGenerationPrompt(mem.content);
-          const triggerResponse = await generateMemoryExtract(triggerPrompt, {
+          const triggerResponse = await generateMemoryExtract(applyPromptOverride(triggerPrompt, PROMPT_TASKS.LONGTERM_EXTRACTION, characterName), {
             responseLength: 60,
           });
           const raw = parseTriggerResponse(triggerResponse, mem.content);
@@ -796,7 +801,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           cardExcerpt,
           formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
         );
-        const relResponse = await generateMemoryExtract(relPrompt, { responseLength: 300 });
+        const relResponse = await generateMemoryExtract(applyPromptOverride(relPrompt, PROMPT_TASKS.RELATIONSHIPS, characterName), { responseLength: 300 });
         const deltas = parseRelationshipDeltaResponse(relResponse);
 
         // Only store pairs where the character is one of the parties.
@@ -979,7 +984,7 @@ export async function consolidateMemories(characterName, force = false) {
       const batchText = formatMemoriesForPrompt(unprocessed);
 
       const response = await generateMemoryExtract(
-        buildLongtermConsolidationPrompt(type, baseText, batchText),
+        applyPromptOverride(buildLongtermConsolidationPrompt(type, baseText, batchText), PROMPT_TASKS.LONGTERM_EXTRACTION, characterName),
         { responseLength: Math.max(400, (base.length + unprocessed.length) * 60) },
       );
 

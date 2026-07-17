@@ -55,6 +55,7 @@ import {
   saveSettingsDebounced,
 } from '../../../../script.js';
 import { generateMemoryExtract } from './generate.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
@@ -628,7 +629,7 @@ export async function generateArcSummary(arcContent) {
   const memoriesText = linkedMemories.map((m) => `[${m.type}] ${m.content}`).join('\n');
 
   const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText);
-  const response = await generateMemoryExtract(prompt, {
+  const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), {
     responseLength: settings.arc_summary_response_length ?? 300,
   });
 
@@ -672,7 +673,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const existingText = activeExisting.map((a) => `[arc] ${a.content}`).join('\n');
 
     const response = await generateMemoryExtract(
-      buildArcExtractionPrompt(chatHistory, existingText),
+      applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText), PROMPT_TASKS.ARC_EXTRACTION, characterName),
       { responseLength: settings.arcs_response_length ?? 400 },
     );
 

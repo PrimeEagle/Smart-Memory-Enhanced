@@ -112,6 +112,17 @@ import {
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
 import { runModelTest } from './model-test.js';
+import {
+  PROMPT_TASKS,
+  PROMPT_TASK_LABELS,
+  PROMPT_PRESETS,
+  getPromptOverride,
+  setPromptOverride,
+  resetPromptOverride,
+  resolvePromptOverride,
+  exportPromptOverrides,
+  importPromptOverrides,
+} from './prompt-config.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -361,6 +372,10 @@ export const defaultSettings = {
   // from character card fields). Auto-detection handles the common case of macros placed
   // in the system prompt or other card fields without needing this toggle.
   macros_enabled: false,
+
+  // Prompt Studio global overrides and preset storage. Character and chat
+  // overrides live with their respective character/chat data.
+  prompt_overrides: { global: {}, presets: {} },
 
   // Per-character memory storage (populated at runtime by longterm.js)
   characters: {},
@@ -907,7 +922,89 @@ export function bindSettingsUI(ctrl) {
     maybeInjectUnified();
     updateTokenDisplay();
     autoTuneBudgets(selection);
+    refreshPromptStudio();
   });
+
+  // ---- Prompt Studio ----------------------------------------------------
+  const promptTaskValues = Object.values(PROMPT_TASKS);
+  const $promptTask = $('#sme_prompt_task');
+  for (const task of promptTaskValues) {
+    $promptTask.append($('<option>', { value: task, text: PROMPT_TASK_LABELS[task] }));
+  }
+
+  function promptStudioCharacter() {
+    return ctrl.getSelectedCharacterName();
+  }
+
+  function savePromptStudioScope() {
+    const task = $promptTask.val();
+    const scope = $('#sme_prompt_scope').val();
+    if (!task) return;
+    setPromptOverride(task, scope, $('#sme_prompt_override').val(), promptStudioCharacter());
+    saveSettingsDebounced();
+    if (scope === 'chat') getContext().saveMetadata?.();
+  }
+
+  function refreshPromptStudio() {
+    const task = $promptTask.val();
+    const scope = $('#sme_prompt_scope').val();
+    const characterName = promptStudioCharacter();
+    const needsCharacter = scope === 'character' && !characterName;
+    $('#sme_prompt_scope option[value="character"]').prop('disabled', !characterName);
+    if (needsCharacter) $('#sme_prompt_scope').val('global');
+    const activeScope = $('#sme_prompt_scope').val();
+    $('#sme_prompt_override').val(getPromptOverride(task, activeScope, characterName));
+    $('#sme_prompt_preset').val('');
+  }
+
+  $promptTask.on('change', refreshPromptStudio);
+  $('#sme_prompt_scope').on('change', refreshPromptStudio);
+  $('#sme_prompt_override').on('change', savePromptStudioScope);
+  $('#sme_prompt_preset').on('change', function () {
+    const preset = PROMPT_PRESETS[$(this).val()];
+    if (!preset) return;
+    $('#sme_prompt_override').val(preset.instruction);
+    savePromptStudioScope();
+  });
+  $('#sme_prompt_reset').on('click', function () {
+    const task = $promptTask.val();
+    const scope = $('#sme_prompt_scope').val();
+    resetPromptOverride(task, scope, promptStudioCharacter());
+    saveSettingsDebounced();
+    if (scope === 'chat') getContext().saveMetadata?.();
+    refreshPromptStudio();
+  });
+  $('#sme_prompt_preview').on('click', function () {
+    const task = $promptTask.val();
+    const effective = resolvePromptOverride(task, promptStudioCharacter());
+    const source = effective ? `Effective additional instructions:\n\n${effective}` : 'No override is active for this task. Smart Memory will use its built-in instructions.';
+    callGenericPopup(`${source}\n\nThe required task context and parser/output contract remain protected and are added after these instructions.`, POPUP_TYPE.DISPLAY);
+  });
+  $('#sme_prompt_export').on('click', function () {
+    const text = JSON.stringify(exportPromptOverrides(promptStudioCharacter()), null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'smart-memory-enhanced-prompt-overrides.json';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+  $('#sme_prompt_import').on('click', () => $('#sme_prompt_import_file').trigger('click'));
+  $('#sme_prompt_import_file').on('change', async function () {
+    const file = this.files?.[0];
+    if (!file) return;
+    try {
+      importPromptOverrides(JSON.parse(await file.text()), promptStudioCharacter());
+      saveSettingsDebounced();
+      await getContext().saveMetadata?.();
+      refreshPromptStudio();
+      toastr.success('Prompt overrides imported.', 'Smart Memory Enhanced');
+    } catch (err) {
+      toastr.error(err.message || 'Could not import prompt overrides.', 'Smart Memory Enhanced');
+    }
+    this.value = '';
+  });
+  refreshPromptStudio();
 
   // ---- LLM source -----------------------------------------------------
 

@@ -51,6 +51,7 @@ import { loadSessionMemories } from './session.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 
 /**
  * Counts tokens across all non-system chat messages.
@@ -197,7 +198,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         .replace('{{existing_summary}}', existingSummary)
         .replace('{{new_events}}', newEvents);
 
-      raw = await generateMemorySummarize(updatePrompt, {
+      raw = await generateMemorySummarize(applyPromptOverride(updatePrompt, PROMPT_TASKS.COMPACTION), {
         responseLength: settings.compaction_response_length || 2000,
         includeLastMessage,
         // The prompt body already contains {{new_events}} and {{existing_summary}},
@@ -225,7 +226,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
             const prompt = buildUpdateSummaryPrompt(storedMemories)
               .replace('{{existing_summary}}', rollingSummary)
               .replace('{{new_events}}', events);
-            const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [] });
+            const response = await generateMemorySummarize(applyPromptOverride(prompt, PROMPT_TASKS.COMPACTION), { responseLength, chatMessages: [] });
             if (!response?.trim()) return null;
             rollingSummary = formatSummary(response);
             chunk = [];
@@ -239,13 +240,13 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
           const prompt = buildUpdateSummaryPrompt(storedMemories)
             .replace('{{existing_summary}}', rollingSummary)
             .replace('{{new_events}}', events);
-          const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [] });
+          const response = await generateMemorySummarize(applyPromptOverride(prompt, PROMPT_TASKS.COMPACTION), { responseLength, chatMessages: [] });
           if (!response?.trim()) return null;
           rollingSummary = formatSummary(response);
         }
         raw = rollingSummary;
       } else {
-        raw = await generateMemorySummarize(buildSummaryPrompt(storedMemories), {
+        raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {
           responseLength,
           includeLastMessage,
         });
