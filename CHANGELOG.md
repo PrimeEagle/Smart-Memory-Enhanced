@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-16
+
 ### Added
 
 - Prompt Studio with Global, Character card, and This chat scoped instruction overrides; Precise, Concise, and Detailed presets; preview, reset, and JSON import/export controls.
+- Custom named Prompt Studio presets that can be saved, reused, deleted, and included in JSON exports/imports.
 
 ### Changed
 
