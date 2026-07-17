@@ -71,6 +71,135 @@ export const PROMPT_PRESETS = Object.freeze({
   },
 });
 
+const PROFILE_STORE_KEY = 'prompt_preset_profiles';
+const ASSIGNMENT_KEY = 'prompt_preset_assignment';
+
+function blankTaskMap() {
+  return Object.fromEntries(Object.values(PROMPT_TASKS).map((task) => [task, '']));
+}
+
+function uniformTaskMap(instruction = '') {
+  return Object.fromEntries(Object.values(PROMPT_TASKS).map((task) => [task, instruction]));
+}
+
+function profileStore() {
+  const settings = extension_settings[MODULE_NAME];
+  settings[PROFILE_STORE_KEY] ??= { custom: {}, global: 'builtin:default' };
+  settings[PROFILE_STORE_KEY].custom ??= {};
+  settings[PROFILE_STORE_KEY].global ??= 'builtin:default';
+  return settings[PROFILE_STORE_KEY];
+}
+
+function builtInProfileEntries() {
+  return [
+    { id: 'builtin:default', label: 'Default (built-in)', tasks: blankTaskMap(), custom: false, protected: true },
+    ...Object.entries(PROMPT_PRESETS).map(([id, preset]) => ({
+      id: `builtin:${id}`,
+      label: preset.label,
+      tasks: uniformTaskMap(preset.instruction),
+      custom: false,
+      protected: true,
+    })),
+  ];
+}
+
+/** Returns portable profiles; each profile carries instructions for every task. */
+export function listPromptProfiles() {
+  const store = profileStore();
+  return {
+    builtIn: builtInProfileEntries(),
+    custom: Object.entries(store.custom)
+      .filter(([, profile]) => profile && typeof profile === 'object')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, profile]) => ({
+        id: `custom:${name}`,
+        label: name,
+        tasks: { ...blankTaskMap(), ...(profile.tasks ?? {}) },
+        custom: true,
+      })),
+  };
+}
+
+export function getPromptProfile(id) {
+  const profiles = listPromptProfiles();
+  return [...profiles.builtIn, ...profiles.custom].find((profile) => profile.id === id) ?? null;
+}
+
+function assignmentStore(scope, characterName = null, create = true) {
+  if (scope === 'global') return profileStore();
+  if (scope === 'character') {
+    if (!characterName) return null;
+    const settings = extension_settings[MODULE_NAME];
+    if (create) settings.characters ??= {};
+    if (!settings.characters?.[characterName] && !create) return null;
+    if (create) settings.characters[characterName] ??= {};
+    return settings.characters?.[characterName] ?? null;
+  }
+  const context = getContext();
+  if (!context.chatMetadata && !create) return null;
+  if (create) context.chatMetadata ??= {};
+  if (create) context.chatMetadata[META_KEY] ??= {};
+  return context.chatMetadata?.[META_KEY] ?? null;
+}
+
+export function getPromptProfileAssignment(scope, characterName = null) {
+  const store = assignmentStore(scope, characterName, false);
+  if (scope === 'global') return store?.global ?? 'builtin:default';
+  return store?.[ASSIGNMENT_KEY] ?? '';
+}
+
+export function setPromptProfileAssignment(scope, id, characterName = null) {
+  const store = assignmentStore(scope, characterName);
+  if (!store) return;
+  if (scope === 'global') store.global = getPromptProfile(id) ? id : 'builtin:default';
+  else store[ASSIGNMENT_KEY] = getPromptProfile(id) ? id : '';
+}
+
+export function resolvePromptProfileId(characterName = null) {
+  return getPromptProfileAssignment('chat', characterName)
+    || getPromptProfileAssignment('character', characterName)
+    || getPromptProfileAssignment('global', characterName)
+    || 'builtin:default';
+}
+
+export function resolvePromptProfileInstruction(task, characterName = null) {
+  return getPromptProfile(resolvePromptProfileId(characterName))?.tasks?.[task] ?? '';
+}
+
+export function savePromptProfile(name, tasks, { overwrite = false } = {}) {
+  const cleanName = String(name ?? '').trim().replace(/\s+/g, ' ');
+  assertCustomPresetName(cleanName);
+  const store = profileStore().custom;
+  if (store[cleanName] && !overwrite) throw new Error('A prompt preset with that name already exists.');
+  store[cleanName] = { tasks: { ...blankTaskMap(), ...(tasks ?? {}) } };
+  return `custom:${cleanName}`;
+}
+
+export function updatePromptProfile(id, tasks) {
+  const profile = getPromptProfile(id);
+  if (!profile?.custom) throw new Error('Only custom prompt presets can be updated.');
+  return savePromptProfile(profile.label, tasks, { overwrite: true });
+}
+
+export function deletePromptProfile(id) {
+  const profile = getPromptProfile(id);
+  if (!profile?.custom) throw new Error('Built-in prompt presets cannot be deleted.');
+  delete profileStore().custom[profile.label];
+}
+
+export function renamePromptProfile(id, name) {
+  const profile = getPromptProfile(id);
+  if (!profile?.custom) throw new Error('Only custom prompt presets can be renamed.');
+  const next = String(name ?? '').trim().replace(/\s+/g, ' ');
+  assertCustomPresetName(next);
+  const store = profileStore().custom;
+  if (next !== profile.label && store[next]) throw new Error('A prompt preset with that name already exists.');
+  const data = store[profile.label];
+  delete store[profile.label];
+  store[next] = data;
+  return `custom:${next}`;
+}
+
 /**
  * Returns the original extension prompt with clearly marked sample values.
  * Runtime chat text and memory records are intentionally not exposed in the
@@ -257,7 +386,10 @@ export function setPromptOverride(task, scope, value, characterName = null) {
 }
 
 export function resolvePromptOverride(task, characterName = null) {
-  // Chat is intentionally checked first: it is the most specific scope.
+  const profileInstruction = resolvePromptProfileInstruction(task, characterName);
+  if (profileInstruction) return profileInstruction;
+  // Legacy per-scope values remain as a fallback so existing customizations
+  // continue to work until they are saved into a portable Prompt Preset.
   return getPromptOverride(task, 'chat', characterName)
     || getPromptOverride(task, 'character', characterName)
     || getPromptOverride(task, 'global', characterName)

@@ -115,14 +115,15 @@ import { runModelTest } from './model-test.js';
 import {
   PROMPT_TASKS,
   PROMPT_TASK_LABELS,
-  listPromptPresets,
-  saveCustomPromptPreset,
-  deleteCustomPromptPreset,
-  updateCustomPromptPreset,
-  renameCustomPromptPreset,
-  getPromptPreset,
-  exportPromptPreset,
-  importPromptPreset,
+  listPromptProfiles,
+  getPromptProfile,
+  getPromptProfileAssignment,
+  setPromptProfileAssignment,
+  resolvePromptProfileId,
+  savePromptProfile,
+  updatePromptProfile,
+  deletePromptProfile,
+  renamePromptProfile,
   getDefaultPromptPreview,
   getPromptOverride,
   setPromptOverride,
@@ -945,175 +946,102 @@ export function bindSettingsUI(ctrl) {
   }
 
   let activePromptPresetId = 'builtin:default';
+  let promptPresetDraft = {};
 
-  function matchingPromptPresetId(instruction) {
-    const presets = listPromptPresets();
-    if (!instruction) return 'builtin:default';
-    return [...presets.builtIn, ...presets.custom].find((preset) => preset.instruction === instruction)?.id ?? '';
+  function activePromptPreset() { return getPromptProfile(activePromptPresetId); }
+
+  function fillProfileSelect(selector, assignment, { inherit = false, disabled = false } = {}) {
+    const $select = $(selector).empty();
+    if (inherit) $select.append($('<option>', { value: '', text: 'Inherit' }));
+    const profiles = listPromptProfiles();
+    for (const profile of [...profiles.builtIn, ...profiles.custom]) {
+      $select.append($('<option>', { value: profile.id, text: profile.label }));
+    }
+    $select.val(assignment || '');
+    $select.prop('disabled', disabled);
+  }
+
+  function refreshAssignments() {
+    const characterName = promptStudioCharacter();
+    fillProfileSelect('#sme_prompt_global_profile', getPromptProfileAssignment('global'));
+    fillProfileSelect('#sme_prompt_character_profile', getPromptProfileAssignment('character', characterName), { inherit: true, disabled: !characterName });
+    fillProfileSelect('#sme_prompt_chat_profile', getPromptProfileAssignment('chat', characterName), { inherit: true });
   }
 
   function refreshPromptPresetChoices(selected = activePromptPresetId) {
-    const $preset = $('#sme_prompt_preset');
-    const presets = listPromptPresets();
-    $preset.empty();
-    const $builtIn = $('<optgroup>', { label: 'Built-in presets' });
-    for (const preset of presets.builtIn) {
-      $builtIn.append($('<option>', { value: preset.id, text: preset.label }));
+    const $preset = $('#sme_prompt_preset').empty();
+    const profiles = listPromptProfiles();
+    for (const [label, entries] of [['Built-in presets', profiles.builtIn], ['My prompt presets', profiles.custom]]) {
+      if (!entries.length) continue;
+      const $group = $('<optgroup>', { label });
+      for (const profile of entries) $group.append($('<option>', { value: profile.id, text: profile.label }));
+      $preset.append($group);
     }
-    $preset.append($builtIn);
-    if (presets.custom.length) {
-      const $custom = $('<optgroup>', { label: 'My prompt presets' });
-      for (const preset of presets.custom) {
-        $custom.append($('<option>', { value: preset.id, text: preset.label }));
-      }
-      $preset.append($custom);
-    }
-    activePromptPresetId = getPromptPreset(selected) ? selected : 'builtin:default';
+    activePromptPresetId = getPromptProfile(selected) ? selected : resolvePromptProfileId(promptStudioCharacter());
     $preset.val(activePromptPresetId);
+    promptPresetDraft = { ...(activePromptPreset()?.tasks ?? {}) };
     updatePromptPresetToolbar();
   }
 
-  function activePromptPreset() {
-    return getPromptPreset(activePromptPresetId);
-  }
-
   function updatePromptPresetToolbar() {
-    const preset = activePromptPreset();
-    const editable = !!preset?.custom;
-    $('#sme_prompt_preset_save, #sme_prompt_preset_rename, #sme_prompt_preset_delete')
-      .prop('disabled', !editable);
-    $('#sme_prompt_preset_restore').prop('disabled', !preset);
-    $('#sme_prompt_preset_export').prop('disabled', !preset);
-  }
-
-  function savePromptStudioScope() {
-    const task = $promptTask.val();
-    const scope = $('#sme_prompt_scope').val();
-    if (!task) return;
-    setPromptOverride(task, scope, $('#sme_prompt_override').val(), promptStudioCharacter());
-    saveSettingsDebounced();
-    if (scope === 'chat') getContext().saveMetadata?.();
+    const editable = !!activePromptPreset()?.custom;
+    $('#sme_prompt_preset_save, #sme_prompt_preset_rename, #sme_prompt_preset_delete').prop('disabled', !editable);
   }
 
   function refreshPromptStudio() {
     const task = $promptTask.val();
-    const scope = $('#sme_prompt_scope').val();
-    const characterName = promptStudioCharacter();
-    const needsCharacter = scope === 'character' && !characterName;
-    $('#sme_prompt_scope option[value="character"]').prop('disabled', !characterName);
-    if (needsCharacter) $('#sme_prompt_scope').val('global');
-    const activeScope = $('#sme_prompt_scope').val();
     $('#sme_prompt_default').val(getDefaultPromptPreview(task));
-    const storedOverride = getPromptOverride(task, activeScope, characterName);
-    $('#sme_prompt_override').val(storedOverride);
-    refreshPromptPresetChoices(matchingPromptPresetId(storedOverride));
+    $('#sme_prompt_override').val(promptPresetDraft[task] ?? '');
+    refreshAssignments();
   }
 
   $promptTask.on('change', refreshPromptStudio);
-  $('#sme_prompt_scope').on('change', refreshPromptStudio);
-  $('#sme_prompt_override').on('change', savePromptStudioScope);
+  $('#sme_prompt_override').on('input', function () { promptPresetDraft[$promptTask.val()] = $(this).val(); });
   $('#sme_prompt_preset').on('change', function () {
     activePromptPresetId = $(this).val();
-    const preset = activePromptPreset();
-    if (!preset) return;
-    if (preset.protected) {
-      const task = $promptTask.val();
-      const scope = $('#sme_prompt_scope').val();
-      resetPromptOverride(task, scope, promptStudioCharacter());
-      saveSettingsDebounced();
-      if (scope === 'chat') getContext().saveMetadata?.();
-      refreshPromptStudio();
-      return;
-    }
-    $('#sme_prompt_override').val(preset.instruction);
-    savePromptStudioScope();
-    updatePromptPresetToolbar();
+    refreshPromptPresetChoices(activePromptPresetId);
+    refreshPromptStudio();
   });
+  $('#sme_prompt_global_profile').on('change', function () { setPromptProfileAssignment('global', $(this).val()); saveSettingsDebounced(); refreshPromptPresetChoices($(this).val()); refreshPromptStudio(); });
+  $('#sme_prompt_character_profile').on('change', function () { setPromptProfileAssignment('character', $(this).val(), promptStudioCharacter()); saveSettingsDebounced(); refreshPromptStudio(); });
+  $('#sme_prompt_chat_profile').on('change', async function () { setPromptProfileAssignment('chat', $(this).val(), promptStudioCharacter()); await getContext().saveMetadata?.(); refreshPromptStudio(); });
 
   $('#sme_prompt_preset_new').on('click', async function () {
-    try {
-      const name = await callGenericPopup('Name this Smart Memory Enhanced prompt preset:', POPUP_TYPE.INPUT);
-      if (!name) return;
-      const savedName = saveCustomPromptPreset(name, $('#sme_prompt_override').val());
-      saveSettingsDebounced();
-      refreshPromptPresetChoices(`custom:${savedName}`);
-      toastr.success(`Saved prompt preset “${savedName}”.`, 'Smart Memory Enhanced');
-    } catch (err) {
-      toastr.warning(err.message, 'Smart Memory Enhanced');
-    }
+    const name = await callGenericPopup('Name this Smart Memory Enhanced prompt preset:', POPUP_TYPE.INPUT);
+    if (!name) return;
+    try { const id = savePromptProfile(name, promptPresetDraft); saveSettingsDebounced(); refreshPromptPresetChoices(id); refreshPromptStudio(); }
+    catch (err) { toastr.warning(err.message, 'Smart Memory Enhanced'); }
   });
-
   $('#sme_prompt_preset_save').on('click', function () {
-    const preset = activePromptPreset();
-    if (!preset?.custom) return;
-    try {
-      updateCustomPromptPreset(preset.label, $('#sme_prompt_override').val());
-      saveSettingsDebounced();
-      toastr.success(`Updated prompt preset “${preset.label}”.`, 'Smart Memory Enhanced');
-    } catch (err) {
-      toastr.warning(err.message, 'Smart Memory Enhanced');
-    }
+    try { updatePromptProfile(activePromptPresetId, promptPresetDraft); saveSettingsDebounced(); toastr.success('Prompt preset updated.', 'Smart Memory Enhanced'); }
+    catch (err) { toastr.warning(err.message, 'Smart Memory Enhanced'); }
   });
-
   $('#sme_prompt_preset_rename').on('click', async function () {
     const preset = activePromptPreset();
     if (!preset?.custom) return;
     const name = await callGenericPopup('Rename this Smart Memory Enhanced prompt preset:', POPUP_TYPE.INPUT, preset.label);
     if (!name || name === preset.label) return;
-    try {
-      const renamed = renameCustomPromptPreset(preset.label, name);
-      saveSettingsDebounced();
-      refreshPromptPresetChoices(`custom:${renamed}`);
-      toastr.success(`Renamed prompt preset to “${renamed}”.`, 'Smart Memory Enhanced');
-    } catch (err) {
-      toastr.warning(err.message, 'Smart Memory Enhanced');
-    }
+    try { const id = renamePromptProfile(activePromptPresetId, name); saveSettingsDebounced(); refreshPromptPresetChoices(id); refreshPromptStudio(); }
+    catch (err) { toastr.warning(err.message, 'Smart Memory Enhanced'); }
   });
-
-  $('#sme_prompt_preset_restore').on('click', function () {
-    const preset = activePromptPreset();
-    if (!preset) return;
-    if (preset.protected) {
-      resetPromptOverride($promptTask.val(), $('#sme_prompt_scope').val(), promptStudioCharacter());
-    } else {
-      $('#sme_prompt_override').val(preset.instruction);
-      savePromptStudioScope();
-    }
-    saveSettingsDebounced();
-    if ($('#sme_prompt_scope').val() === 'chat') getContext().saveMetadata?.();
-    refreshPromptStudio();
-  });
-
+  $('#sme_prompt_preset_restore').on('click', function () { promptPresetDraft = { ...(activePromptPreset()?.tasks ?? {}) }; refreshPromptStudio(); });
   $('#sme_prompt_preset_delete').on('click', async function () {
     const preset = activePromptPreset();
-    if (!preset?.custom) {
-      toastr.warning('The Default and built-in prompt presets cannot be deleted.', 'Smart Memory Enhanced');
-      return;
-    }
-    if (!(await callGenericPopup(`Delete prompt preset “${preset.label}”?`, POPUP_TYPE.CONFIRM))) return;
-    deleteCustomPromptPreset(preset.label);
-    saveSettingsDebounced();
-    refreshPromptStudio();
-    toastr.success(`Deleted prompt preset “${preset.label}”.`, 'Smart Memory Enhanced');
+    if (!preset?.custom) return;
+    if (!(await callGenericPopup(`Delete prompt preset "${preset.label}"?`, POPUP_TYPE.CONFIRM))) return;
+    deletePromptProfile(activePromptPresetId); saveSettingsDebounced(); refreshPromptPresetChoices('builtin:default'); refreshPromptStudio();
   });
-  $('#sme_prompt_reset').on('click', function () {
-    const task = $promptTask.val();
-    const scope = $('#sme_prompt_scope').val();
-    resetPromptOverride(task, scope, promptStudioCharacter());
-    saveSettingsDebounced();
-    if (scope === 'chat') getContext().saveMetadata?.();
-    refreshPromptStudio();
-  });
+  $('#sme_prompt_reset').on('click', function () { promptPresetDraft[$promptTask.val()] = ''; refreshPromptStudio(); });
   $('#sme_prompt_preview').on('click', function () {
     const task = $promptTask.val();
-    const effective = resolvePromptOverride(task, promptStudioCharacter());
+    const effective = promptPresetDraft[task] ?? '';
     const source = effective ? `EFFECTIVE ADDITIONAL INSTRUCTIONS:\n${effective}\n\n` : '';
     callGenericPopup(`${source}PROTECTED BUILT-IN PROMPT:\n${getDefaultPromptPreview(task)}`, POPUP_TYPE.DISPLAY);
   });
   $('#sme_prompt_preset_export').on('click', function () {
     try {
       const preset = activePromptPreset();
-      const text = JSON.stringify(exportPromptPreset(preset.id), null, 2);
+      const text = JSON.stringify({ format: 'smart-memory-enhanced-prompt-preset', version: 2, name: preset.label, tasks: promptPresetDraft }, null, 2);
       const blob = new Blob([text], { type: 'application/json' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
@@ -1129,11 +1057,12 @@ export function bindSettingsUI(ctrl) {
     const file = this.files?.[0];
     if (!file) return;
     try {
-      const name = importPromptPreset(JSON.parse(await file.text()));
+      const payload = JSON.parse(await file.text());
+      if (payload?.format !== 'smart-memory-enhanced-prompt-preset' || payload?.version !== 2 || !payload?.tasks) throw new Error('This is not a full Smart Memory Enhanced prompt preset.');
+      const name = payload.name;
+      const id = savePromptProfile(name, payload.tasks, { overwrite: true });
       saveSettingsDebounced();
-      refreshPromptPresetChoices(`custom:${name}`);
-      $('#sme_prompt_override').val(getPromptPreset(`custom:${name}`).instruction);
-      savePromptStudioScope();
+      refreshPromptPresetChoices(id); refreshPromptStudio();
       toastr.success(`Imported prompt preset “${name}”.`, 'Smart Memory Enhanced');
     } catch (err) {
       toastr.error(err.message || 'Could not import prompt preset.', 'Smart Memory Enhanced');
@@ -1164,6 +1093,7 @@ export function bindSettingsUI(ctrl) {
     }
     this.value = '';
   });
+  refreshPromptPresetChoices();
   refreshPromptStudio();
 
   // ---- LLM source -----------------------------------------------------
