@@ -118,6 +118,7 @@ import {
   listPromptPresets,
   saveCustomPromptPreset,
   deleteCustomPromptPreset,
+  getDefaultPromptPreview,
   getPromptOverride,
   setPromptOverride,
   resetPromptOverride,
@@ -977,6 +978,7 @@ export function bindSettingsUI(ctrl) {
     $('#sme_prompt_scope option[value="character"]').prop('disabled', !characterName);
     if (needsCharacter) $('#sme_prompt_scope').val('global');
     const activeScope = $('#sme_prompt_scope').val();
+    $('#sme_prompt_default').val(getDefaultPromptPreview(task));
     $('#sme_prompt_override').val(getPromptOverride(task, activeScope, characterName));
     refreshPromptPresetChoices();
   }
@@ -1023,8 +1025,8 @@ export function bindSettingsUI(ctrl) {
   $('#sme_prompt_preview').on('click', function () {
     const task = $promptTask.val();
     const effective = resolvePromptOverride(task, promptStudioCharacter());
-    const source = effective ? `Effective additional instructions:\n\n${effective}` : 'No override is active for this task. Smart Memory will use its built-in instructions.';
-    callGenericPopup(`${source}\n\nThe required task context and parser/output contract remain protected and are added after these instructions.`, POPUP_TYPE.DISPLAY);
+    const source = effective ? `EFFECTIVE ADDITIONAL INSTRUCTIONS:\n${effective}\n\n` : '';
+    callGenericPopup(`${source}PROTECTED BUILT-IN PROMPT:\n${getDefaultPromptPreview(task)}`, POPUP_TYPE.DISPLAY);
   });
   $('#sme_prompt_export').on('click', function () {
     const text = JSON.stringify(exportPromptOverrides(promptStudioCharacter()), null, 2);

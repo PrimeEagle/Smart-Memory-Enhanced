@@ -9,6 +9,22 @@
 
 import { getContext, extension_settings } from '../../../extensions.js';
 import { META_KEY, MODULE_NAME } from './constants.js';
+import {
+  buildSummaryPrompt,
+  RECAP_PROMPT,
+  buildSessionExtractionPrompt,
+  buildSceneDetectPrompt,
+  SCENE_SUMMARY_PROMPT,
+  buildArcExtractionPrompt,
+  buildArcSummaryPrompt,
+  buildContinuityPrompt,
+  buildExtractionPrompt,
+  buildProfileGenerationPrompt,
+  buildCanonSummaryPrompt,
+  buildRelationshipDeltaPrompt,
+  buildEpistemicExtractionPrompt,
+  buildStateCardPrompt,
+} from './prompts.js';
 
 export const PROMPT_TASKS = Object.freeze({
   LONGTERM_EXTRACTION: 'longterm_extraction',
@@ -54,6 +70,45 @@ export const PROMPT_PRESETS = Object.freeze({
     instruction: 'Capture consequential specifics, motivations, changes, and constraints when the source clearly supports them. Do not invent details.',
   },
 });
+
+/**
+ * Returns the original extension prompt with clearly marked sample values.
+ * Runtime chat text and memory records are intentionally not exposed in the
+ * settings panel, but this lets users inspect the real prompt instructions.
+ */
+export function getDefaultPromptPreview(task) {
+  const sampleChat = '[CHAT HISTORY IS INSERTED HERE]';
+  const sampleMemories = '[STORED MEMORIES ARE INSERTED HERE]';
+  const sampleRoster = '[CANONICAL CHARACTER ROSTER IS INSERTED HERE]';
+  switch (task) {
+    case PROMPT_TASKS.LONGTERM_EXTRACTION:
+      return buildExtractionPrompt(sampleChat, sampleMemories, '[ACTIVE CHARACTER]', sampleRoster);
+    case PROMPT_TASKS.SESSION_EXTRACTION:
+      return buildSessionExtractionPrompt(sampleChat, sampleMemories, sampleMemories, sampleRoster);
+    case PROMPT_TASKS.SCENE_SUMMARY:
+      return `${buildSceneDetectPrompt('[CURRENT MESSAGE]', '[PREVIOUS MESSAGE]')}\n\n--- Scene summary ---\n\n${SCENE_SUMMARY_PROMPT.replace('{{scene_text}}', sampleChat)}`;
+    case PROMPT_TASKS.ARC_EXTRACTION:
+      return `${buildArcExtractionPrompt(sampleChat, '[OPEN ARCS ARE INSERTED HERE]')}\n\n--- Arc resolution summary ---\n\n${buildArcSummaryPrompt('[ARC]', '[SCENE SUMMARIES]', sampleMemories)}`;
+    case PROMPT_TASKS.CANON:
+      return buildCanonSummaryPrompt('[ACTIVE CHARACTER]', ['[RESOLVED ARC SUMMARY]'], sampleMemories);
+    case PROMPT_TASKS.PROFILES:
+      return buildProfileGenerationPrompt('[ACTIVE CHARACTER]', sampleMemories, sampleMemories, [{ name: '[ENTITY]', type: 'character' }], sampleRoster);
+    case PROMPT_TASKS.RELATIONSHIPS:
+      return buildRelationshipDeltaPrompt(sampleChat, '[CURRENT RELATIONSHIP STATE]', '[CHARACTER CARD EXCERPT]', sampleRoster);
+    case PROMPT_TASKS.EPISTEMIC:
+      return buildEpistemicExtractionPrompt(sampleChat, ['[PARTICIPANT]'], [], sampleRoster);
+    case PROMPT_TASKS.STATE_LEDGER:
+      return buildStateCardPrompt(sampleChat, [{ name: '[ENTITY]', type: 'character' }], sampleRoster);
+    case PROMPT_TASKS.COMPACTION:
+      return buildSummaryPrompt(sampleMemories);
+    case PROMPT_TASKS.RECAP:
+      return RECAP_PROMPT;
+    case PROMPT_TASKS.CONTINUITY:
+      return buildContinuityPrompt(sampleMemories, '[LATEST AI RESPONSE]');
+    default:
+      return '';
+  }
+}
 
 export function listPromptPresets() {
   return {
