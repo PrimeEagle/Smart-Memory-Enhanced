@@ -2329,6 +2329,7 @@ export function bindSettingsUI(ctrl) {
     setCharacterMemoryPolicy(characterName, $(this).val());
     saveSettingsDebounced();
     await injectMemories(characterName);
+    updateLongTermUI(characterName);
     updateTokenDisplay();
   });
 
