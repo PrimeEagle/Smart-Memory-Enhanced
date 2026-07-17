@@ -964,8 +964,9 @@ export function bindSettingsUI(ctrl) {
   function refreshAssignments() {
     const characterName = promptStudioCharacter();
     fillProfileSelect('#sme_prompt_global_profile', getPromptProfileAssignment('global'));
-    fillProfileSelect('#sme_prompt_character_profile', getPromptProfileAssignment('character', characterName), { inherit: true, disabled: !characterName });
     fillProfileSelect('#sme_prompt_chat_profile', getPromptProfileAssignment('chat', characterName), { inherit: true });
+    fillProfileSelect('#sme_prompt_character_profile', getPromptProfileAssignment('character', characterName), { inherit: true, disabled: !characterName });
+    $('#sme_prompt_character_profile_label').text(characterName ? `Character: ${characterName}` : 'Character (none selected)');
   }
 
   function refreshPromptPresetChoices(selected = activePromptPresetId) {

@@ -1567,13 +1567,20 @@
             <small class="sm-muted">Runtime chat, memory, and roster content is represented by placeholders. Default is non-deletable and can always be restored.</small>
           </div>
           <div class="sm-block">
-            <label for="sme_prompt_global_profile">Preset assignments</label>
-            <select id="sme_prompt_global_profile" class="text_pole"></select>
-            <small class="sm-muted">Global default</small>
-            <select id="sme_prompt_character_profile" class="text_pole" style="margin-top: 4px"></select>
-            <small class="sm-muted">Selected character card (or inherit Global)</small>
-            <select id="sme_prompt_chat_profile" class="text_pole" style="margin-top: 4px"></select>
-            <small class="sm-muted">This chat (or inherit Character/Global)</small>
+            <div class="sm-section-title">Preset assignments</div>
+            <div class="sme_prompt_assignment_row">
+              <label for="sme_prompt_global_profile">Global</label>
+              <select id="sme_prompt_global_profile" class="text_pole"></select>
+            </div>
+            <div class="sme_prompt_assignment_row">
+              <label for="sme_prompt_chat_profile">This Chat</label>
+              <select id="sme_prompt_chat_profile" class="text_pole"></select>
+            </div>
+            <div class="sme_prompt_assignment_row">
+              <label id="sme_prompt_character_profile_label" for="sme_prompt_character_profile">Character</label>
+              <select id="sme_prompt_character_profile" class="text_pole"></select>
+            </div>
+            <small class="sm-muted">Character inherits Global. This Chat inherits Character, then Global.</small>
           </div>
           <div class="sm-block">
             <label for="sme_prompt_preset">Prompt Preset</label>

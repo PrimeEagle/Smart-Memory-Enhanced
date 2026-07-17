@@ -29,6 +29,20 @@
   margin-bottom: 8px;
 }
 
+/* Prompt Studio assignment labels stay beside their own dropdowns, avoiding
+ * ambiguity when several scopes are configured together. */
+#smart_memory_enhanced_settings .sme_prompt_assignment_row {
+  display: grid;
+  grid-template-columns: minmax(110px, 34%) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+#smart_memory_enhanced_settings .sme_prompt_assignment_row label {
+  margin: 0;
+}
+
 /* ── Button rows ─────────────────────────────────────────────────────────── */
 
 /* Flex row where every direct .menu_button child stretches to an equal share

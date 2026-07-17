@@ -50,3 +50,15 @@ test('per-character policies: full, chat-local, read-only, and disabled policies
   assert.match(longterm, /CHARACTER_MEMORY_POLICIES\.READ_ONLY, CHARACTER_MEMORY_POLICIES\.DISABLED/);
   assert.match(longterm, /CHARACTER_MEMORY_POLICIES\.CHAT_LOCAL/);
 });
+
+test('Prompt Studio assignment labels stay beside their matching dropdowns and identify the selected character', () => {
+  const html = read('settings.html');
+  const assignments = html.slice(html.indexOf('Preset assignments'), html.indexOf('Prompt Preset'));
+  assert.ok(assignments.indexOf('sme_prompt_global_profile') < assignments.indexOf('sme_prompt_chat_profile'));
+  assert.ok(assignments.indexOf('sme_prompt_chat_profile') < assignments.indexOf('sme_prompt_character_profile'));
+  assert.match(assignments, /sme_prompt_character_profile_label/);
+  const settings = read('settings.js');
+  assert.match(settings, /#sme_prompt_character_profile_label'\)\.text\(characterName \? `Character: \$\{characterName\}`/);
+  const css = read('style.css');
+  assert.match(css, /\.sme_prompt_assignment_row \{[\s\S]*grid-template-columns/);
+});
