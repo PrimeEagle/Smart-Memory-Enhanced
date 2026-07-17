@@ -25,6 +25,7 @@ import {
   buildEpistemicExtractionPrompt,
   buildStateCardPrompt,
 } from './prompts.js';
+import { createTaskMap, resolveProfileAssignment } from './prompt-profile-utils.js';
 
 export const PROMPT_TASKS = Object.freeze({
   LONGTERM_EXTRACTION: 'longterm_extraction',
@@ -75,11 +76,11 @@ const PROFILE_STORE_KEY = 'prompt_preset_profiles';
 const ASSIGNMENT_KEY = 'prompt_preset_assignment';
 
 function blankTaskMap() {
-  return Object.fromEntries(Object.values(PROMPT_TASKS).map((task) => [task, '']));
+  return createTaskMap(Object.values(PROMPT_TASKS));
 }
 
 function uniformTaskMap(instruction = '') {
-  return Object.fromEntries(Object.values(PROMPT_TASKS).map((task) => [task, instruction]));
+  return createTaskMap(Object.values(PROMPT_TASKS), Object.fromEntries(Object.values(PROMPT_TASKS).map((task) => [task, instruction])));
 }
 
 function profileStore() {
@@ -156,10 +157,12 @@ export function setPromptProfileAssignment(scope, id, characterName = null) {
 }
 
 export function resolvePromptProfileId(characterName = null) {
-  return getPromptProfileAssignment('chat', characterName)
-    || getPromptProfileAssignment('character', characterName)
-    || getPromptProfileAssignment('global', characterName)
-    || 'builtin:default';
+  const knownIds = new Set([...listPromptProfiles().builtIn, ...listPromptProfiles().custom].map((profile) => profile.id));
+  return resolveProfileAssignment({
+    chat: getPromptProfileAssignment('chat', characterName),
+    character: getPromptProfileAssignment('character', characterName),
+    global: getPromptProfileAssignment('global', characterName),
+  }, knownIds);
 }
 
 export function resolvePromptProfileInstruction(task, characterName = null) {

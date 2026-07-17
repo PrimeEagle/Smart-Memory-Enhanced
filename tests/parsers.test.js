@@ -265,11 +265,11 @@ test('parseArcOutput: parses [arc] lines', () => {
   assert.equal(typeof result.add[0].ts, 'number');
 });
 
-test('parseArcOutput: skips [arc] with content 5 chars or fewer', () => {
-  // 5 chars - skipped
+test('parseArcOutput: requires arc content longer than 15 characters', () => {
+  // Short content is skipped.
   assert.equal(parseArcOutput('[arc] Quest', []).add.length, 0);
-  // 6 chars - accepted
-  assert.equal(parseArcOutput('[arc] Quests', []).add.length, 1);
+  // 16 characters - accepted.
+  assert.equal(parseArcOutput('[arc] The lost compass', []).add.length, 1);
 });
 
 test('parseArcOutput: resolves arc with sufficient Jaccard overlap', () => {
