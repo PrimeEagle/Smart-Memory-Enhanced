@@ -112,12 +112,21 @@ export function getDefaultPromptPreview(task) {
 
 export function listPromptPresets() {
   return {
-    builtIn: Object.entries(PROMPT_PRESETS).map(([id, preset]) => ({
+    builtIn: [
+      {
+        id: 'builtin:default',
+        label: 'Default (built-in)',
+        instruction: null,
+        custom: false,
+        protected: true,
+      },
+      ...Object.entries(PROMPT_PRESETS).map(([id, preset]) => ({
       id: `builtin:${id}`,
       label: preset.label,
       instruction: preset.instruction,
       custom: false,
-    })),
+      })),
+    ],
     custom: Object.entries(settingsStore().presets)
       .filter(([, instruction]) => typeof instruction === 'string' && instruction.trim())
       .sort(([a], [b]) => a.localeCompare(b))

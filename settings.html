@@ -1562,9 +1562,9 @@
             <select id="sme_prompt_task" class="text_pole"></select>
           </div>
           <div class="sm-block">
-            <label for="sme_prompt_default">Built-in prompt (reference)</label>
+            <label for="sme_prompt_default">Default template (protected reference)</label>
             <textarea id="sme_prompt_default" class="text_pole textarea_compact" rows="10" readonly></textarea>
-            <small class="sm-muted">Runtime chat, memory, and roster content is represented by placeholders. This protected prompt remains active even when you add instructions.</small>
+            <small class="sm-muted">Runtime chat, memory, and roster content is represented by placeholders. Default is non-deletable and can always be restored.</small>
           </div>
           <div class="sm-block">
             <label for="sme_prompt_scope">Edit scope</label>
@@ -1581,9 +1581,9 @@
             </select>
           </div>
           <div class="sm-block">
-            <label for="sme_prompt_override">Additional instructions</label>
+            <label for="sme_prompt_override">Template customization</label>
             <textarea id="sme_prompt_override" class="text_pole textarea_compact" rows="5" placeholder="For example: Prefer concise, factual entries. Do not infer motives."></textarea>
-            <small class="sm-muted">These instructions are added ahead of the protected built-in prompt and parser contract.</small>
+            <small class="sm-muted">Use this to tailor the Default template at the selected scope. Required parser/output rules remain protected.</small>
           </div>
           <div class="sm-btn-row">
             <button id="sme_prompt_preview" class="menu_button"><i class="fa-solid fa-eye"></i> Preview Effective Prompt</button>
