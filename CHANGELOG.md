@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-07-17
+
+### Changed
+
+- Clarify Prompt Studio preset assignments with labeled rows, Global → This Chat → Character ordering, and the active character name.
+- Add theme-neutral icons to Entity Registry, Continuity Checker, Prompt Studio, Configuration, and Developer section headers.
+
 ## [0.6.6] - 2026-07-17
 
 ### Added
