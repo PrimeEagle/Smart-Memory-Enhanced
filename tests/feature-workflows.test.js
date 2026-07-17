@@ -62,3 +62,20 @@ test('Prompt Studio assignment labels stay beside their matching dropdowns and i
   const css = read('style.css');
   assert.match(css, /\.sme_prompt_assignment_row \{[\s\S]*grid-template-columns/);
 });
+
+test('lower navigation sections have distinct theme-neutral header icons', () => {
+  const html = read('settings.html');
+  for (const [section, icon] of [
+    ['Entity Registry', 'fa-diagram-project'],
+    ['Continuity Checker', 'fa-shield-halved'],
+    ['Prompt Studio', 'fa-wand-magic-sparkles'],
+    ['Configuration', 'fa-sliders'],
+    ['Developer', 'fa-code'],
+  ]) {
+    const sectionIndex = html.lastIndexOf(section);
+    const nearby = html.slice(Math.max(0, sectionIndex - 250), sectionIndex);
+    assert.match(nearby, new RegExp(`${icon} sme_section_icon`));
+  }
+  const css = read('style.css');
+  assert.match(css, /\.sme_section_icon \{[\s\S]*opacity: 0\.72/);
+});

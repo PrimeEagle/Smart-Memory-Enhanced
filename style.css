@@ -79,6 +79,15 @@
   margin-top: 4px;
 }
 
+/* Section icons inherit the active theme's text color rather than assigning
+ * semantic colors, keeping the navigation glanceable without visual noise. */
+#smart_memory_enhanced_settings .sme_section_icon {
+  width: 1.1em;
+  margin: 0 0.35em 0 0.15em;
+  text-align: center;
+  opacity: 0.72;
+}
+
 /* ── Settings mode (simple / advanced) ──────────────────────────────────── */
 
 /* Hidden by default; shown when advanced mode is active (toggled via JS) */
