@@ -79,6 +79,8 @@ import {
   getReadOnlyStartIndex,
   setReadOnlyStartIndex,
   getReadOnlyStartTime,
+  getCharacterMemoryPolicy,
+  setCharacterMemoryPolicy,
 } from './longterm.js';
 import {
   clearEpistemicKnowledge,
@@ -2062,6 +2064,15 @@ export function bindSettingsUI(ctrl) {
     await injectMemories(ctrl.getSelectedCharacterName());
     await injectSessionMemories();
     updateSessionUI();
+  });
+
+  $('#sme_character_memory_policy').on('change', async function () {
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) return;
+    setCharacterMemoryPolicy(characterName, $(this).val());
+    saveSettingsDebounced();
+    await injectMemories(characterName);
+    updateTokenDisplay();
   });
 
   $('#sme_extract_now').on('click', async function () {

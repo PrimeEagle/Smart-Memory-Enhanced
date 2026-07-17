@@ -47,7 +47,7 @@ import {
 import { getContext, extension_settings } from '../../../extensions.js';
 import { generateMemoryExtract } from './generate.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
-import { loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
+import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
 import { loadSessionMemories } from './session.js';
 import { loadCharacterEntityRegistry } from './graph-migration.js';
 import { buildProfileGenerationPrompt } from './prompts.js';
@@ -82,6 +82,7 @@ export function loadProfiles(characterName) {
  */
 async function saveProfiles(profiles, characterName) {
   if (!characterName) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
@@ -151,7 +152,7 @@ export function areProfilesStale(thresholdMs = DEFAULT_STALE_THRESHOLD_MS, chara
  */
 export async function generateProfiles(characterName, abortCheck = null) {
   const settings = extension_settings[MODULE_NAME];
-  if (!settings.profiles_enabled || !characterName) return null;
+  if (!settings.profiles_enabled || !characterName || [CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return null;
 
   // Only pass active (non-retired) memories to the profile prompt.
   const longtermMemories = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
@@ -265,7 +266,7 @@ function formatProfiles(profiles, budget) {
 export function injectProfiles(characterName) {
   const settings = extension_settings[MODULE_NAME];
 
-  if (!settings.profiles_enabled) {
+  if (!settings.profiles_enabled || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) {
     setMacroContent(MACRO_NAMES.profiles, '');
     setExtensionPrompt(PROMPT_KEY_PROFILES, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_PROFILES);

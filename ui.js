@@ -69,6 +69,7 @@ import {
 } from './constants.js';
 import {
   loadCharacterMemories,
+  getCharacterMemoryPolicy,
   saveCharacterMemories,
   injectMemories,
   loadRelationshipHistory,
@@ -769,6 +770,21 @@ export function updateCanonUI(characterName) {
 
 /** Re-renders the long-term memories list and entity panel for the given character. */
 export function updateLongTermUI(characterName) {
+  const policy = characterName ? getCharacterMemoryPolicy(characterName) : 'full';
+  $('#sme_character_memory_policy').val(policy).prop('disabled', !characterName);
+  const isProtected = policy === 'read_only' || policy === 'disabled';
+  const policyText = {
+    full: 'Full: this card can create, retain, and inject reusable memories.',
+    chat_local: 'Chat-Local Only: starts with a fresh local store and never copies reusable-card history into this chat.',
+    read_only: 'Read-Only: existing card memories can be used, but this card cannot be changed.',
+    disabled: 'Disabled: card-scoped memory is neither injected nor updated.',
+  }[policy];
+  $('#sme_character_policy_notice').text(characterName
+    ? `${policyText} Shared chat tiers (summary, session, scenes, arcs, and State Ledger) remain chat-wide.`
+    : 'Select a character card to set its policy.');
+  $('#sme_generate_canon, #sme_add_relationship, #sme_clear_relationships, #sme_epistemic_add, #sme_epistemic_clear')
+    .prop('disabled', isProtected)
+    .attr('title', isProtected ? 'Blocked by this card\'s memory policy' : '');
   const memories = characterName ? loadCharacterMemories(characterName) : [];
   renderMemoriesList(memories, characterName);
   updateEntityPanel(characterName);
@@ -1397,6 +1413,7 @@ export function updateEntityPanel(characterName) {
 
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
+  const characterPolicy = characterName ? getCharacterMemoryPolicy(characterName) : 'full';
 
   const $reconcile = $('<button class="menu_button sme_reconcile_entities"><i class="fa-solid fa-wand-magic-sparkles"></i> Reconcile Canonical Entities</button>');
   $reconcile.attr('title', 'Safely merge existing unambiguous card-name variants. Ambiguous names are left unchanged.');
@@ -1638,6 +1655,10 @@ export function updateEntityPanel(characterName) {
         </button>
       </div>
     `);
+
+    if (characterPolicy === 'read_only' || characterPolicy === 'disabled') {
+      $row.find('.sme_entity_type_badge, button').prop('disabled', true).attr('title', 'Blocked by this card\'s memory policy');
+    }
 
     // Type-picker: clicking the badge opens an inline dropdown to change the type.
     $row.find('.sme_entity_type_badge').on('click', (e) => {

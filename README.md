@@ -5,9 +5,13 @@
 
 Smart Memory Enhanced is an experimental reliability, grounding, and configurability fork of [Smart Memory by Senjin the Dragon](https://github.com/senjinthedragon/Smart-Memory). It is independently maintained, is not affiliated with or endorsed by the original maintainer, and remains licensed under AGPL-3.0-or-later.
 
-**Current fork version: v0.5.5**
+**Current fork version: v0.6.0**
 
 Smart Memory Enhanced can run alongside the original Smart Memory extension. It uses its own settings, chat metadata, prompt slots, and UI identifiers; it does not read, copy, or modify the original extension's data.
+
+### Per-Character Memory Policies
+
+Each character card can use **Full**, **Chat-Local Only**, **Read-Only**, or **Disabled** memory behavior. Chat-Local Only keeps card-scoped data in the current chat and begins with a fresh local store; it never copies reusable-card history. Read-Only allows existing card-scoped context to inject but blocks changes, while Disabled blocks card-scoped injection and updates. Short-Term Summary, Session Memories, Scenes, Story Arcs, and State Ledger remain shared chat-wide story context.
 
 ---
 

@@ -207,6 +207,40 @@ async function verifyLongtermCandidates(candidates, existing) {
 
 // ---- Storage helpers ----------------------------------------------------
 
+export const CHARACTER_MEMORY_POLICIES = Object.freeze({
+  FULL: 'full',
+  CHAT_LOCAL: 'chat_local',
+  READ_ONLY: 'read_only',
+  DISABLED: 'disabled',
+});
+
+export function getCharacterMemoryPolicy(characterName) {
+  return extension_settings[MODULE_NAME]?.characters?.[characterName]?.memory_policy ?? CHARACTER_MEMORY_POLICIES.FULL;
+}
+
+export function setCharacterMemoryPolicy(characterName, policy) {
+  if (!Object.values(CHARACTER_MEMORY_POLICIES).includes(policy) || !characterName) return;
+  const settings = extension_settings[MODULE_NAME];
+  settings.characters ??= {};
+  settings.characters[characterName] = {
+    ...(settings.characters[characterName] ?? {}),
+    memory_policy: policy,
+  };
+}
+
+function loadChatLocalMemories(characterName) {
+  return getContext().chatMetadata?.[META_KEY]?.card_local_memories?.[characterName] ?? [];
+}
+
+async function saveChatLocalMemories(characterName, memories) {
+  const context = getContext();
+  context.chatMetadata ??= {};
+  context.chatMetadata[META_KEY] ??= {};
+  context.chatMetadata[META_KEY].card_local_memories ??= {};
+  context.chatMetadata[META_KEY].card_local_memories[characterName] = memories;
+  await context.saveMetadata();
+}
+
 /**
  * Returns the memory array for a character, or an empty array if none exist.
  * Migrates legacy entries (no consolidated flag) to consolidated: true on load
@@ -217,7 +251,9 @@ async function verifyLongtermCandidates(candidates, existing) {
 export function loadCharacterMemories(characterName) {
   if (!characterName) return [];
   const chars = extension_settings[MODULE_NAME].characters;
-  const memories = chars?.[characterName]?.memories ?? [];
+  const memories = getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL
+    ? loadChatLocalMemories(characterName)
+    : chars?.[characterName]?.memories ?? [];
   // Migrate: entries without the consolidated flag are pre-existing stable memories.
   // Entries without an importance score default to 2 (medium).
   // applyGraphDefaults is a safety net for entries that predate the one-shot
@@ -248,6 +284,11 @@ export function loadCharacterMemories(characterName) {
  */
 export function saveCharacterMemories(characterName, memories) {
   if (!characterName || !Array.isArray(memories)) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    saveChatLocalMemories(characterName, memories).catch((err) => smLog('[SmartMemory] Failed to save chat-local memories:', err));
+    return;
+  }
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
@@ -268,6 +309,13 @@ export function saveCharacterMemories(characterName, memories) {
  */
 export function clearCharacterMemories(characterName) {
   if (!characterName) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    if (context.chatMetadata?.[META_KEY]?.card_local_memories) delete context.chatMetadata[META_KEY].card_local_memories[characterName];
+    context.saveMetadata?.();
+    return;
+  }
   if (extension_settings[MODULE_NAME].characters?.[characterName]) {
     delete extension_settings[MODULE_NAME].characters[characterName];
   }
@@ -284,8 +332,9 @@ export function clearCharacterMemories(characterName) {
  */
 export function loadRelationshipHistory(characterName) {
   if (!characterName) return {};
-  const raw =
-    extension_settings[MODULE_NAME].characters?.[characterName]?.relationship_history ?? {};
+  const raw = getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL
+    ? getContext().chatMetadata?.[META_KEY]?.card_local_relationships?.[characterName] ?? {}
+    : extension_settings[MODULE_NAME].characters?.[characterName]?.relationship_history ?? {};
   // Normalize entries still in the old flat format { descriptors: string[], magnitude: string }
   // to the current per-descriptor format { descriptors: Array<{word, magnitude}> }.
   // This is a read-time safety net in case the schema migration did not run yet.
@@ -313,6 +362,14 @@ export function loadRelationshipHistory(characterName) {
  */
 export function saveRelationshipHistory(characterName, history) {
   if (!characterName || typeof history !== 'object') return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    (context.chatMetadata[META_KEY].card_local_relationships ??= {})[characterName] = history;
+    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local relationships:', err));
+    return;
+  }
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
@@ -408,6 +465,13 @@ export function remapRelationshipHistoryEntity(characterName, sourceName, target
  */
 export function clearRelationshipHistory(characterName) {
   if (!characterName) return;
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const context = getContext();
+    if (context.chatMetadata?.[META_KEY]?.card_local_relationships) delete context.chatMetadata[META_KEY].card_local_relationships[characterName];
+    context.saveMetadata?.();
+    return;
+  }
   const char = extension_settings[MODULE_NAME].characters?.[characterName];
   if (char) delete char.relationship_history;
 }
@@ -522,7 +586,8 @@ function mergeMemories(existing, incoming, maxTotal) {
  */
 export async function extractAndStoreMemories(characterName, recentMessages, statusFn = null) {
   const settings = extension_settings[MODULE_NAME];
-  if (!settings.longterm_enabled || !characterName) return 0;
+  const policy = getCharacterMemoryPolicy(characterName);
+  if (!settings.longterm_enabled || !characterName || policy === CHARACTER_MEMORY_POLICIES.DISABLED || policy === CHARACTER_MEMORY_POLICIES.READ_ONLY) return 0;
 
   try {
     const chatHistory = recentMessages
@@ -1047,8 +1112,9 @@ function shouldInjectMemory(memory, respondingChar) {
 
 export async function injectMemories(characterName, updateTelemetry = false) {
   const settings = extension_settings[MODULE_NAME];
+  const policy = getCharacterMemoryPolicy(characterName);
 
-  if (!settings.longterm_enabled || !characterName) {
+  if (!settings.longterm_enabled || !characterName || policy === CHARACTER_MEMORY_POLICIES.DISABLED) {
     setMacroContent(MACRO_NAMES.longterm, '');
     setMacroContent(MACRO_NAMES.triggered, '');
     setExtensionPrompt(PROMPT_KEY_LONG, '', extension_prompt_types.NONE, 0);
@@ -1293,7 +1359,7 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
     if (updateTelemetry) updateRelationshipTelemetry(0);
   };
 
-  if (!settings.relationships_enabled || !characterName) return clear();
+  if (!settings.relationships_enabled || !characterName || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) return clear();
 
   const history = loadRelationshipHistory(characterName);
   const pairs = Object.entries(history);
