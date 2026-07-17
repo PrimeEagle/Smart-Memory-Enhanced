@@ -134,20 +134,75 @@ export function listPromptPresets() {
   };
 }
 
-export function saveCustomPromptPreset(name, instruction) {
-  const cleanName = String(name ?? '').trim().replace(/\s+/g, ' ');
-  const cleanInstruction = String(instruction ?? '').trim();
-  if (!cleanName || cleanName.length > 60) throw new Error('Preset names must be between 1 and 60 characters.');
-  if (!cleanInstruction) throw new Error('Enter instructions before saving a preset.');
-  if (Object.values(PROMPT_PRESETS).some((preset) => preset.label.toLowerCase() === cleanName.toLowerCase())) {
+function cleanPresetName(name) {
+  return String(name ?? '').trim().replace(/\s+/g, ' ');
+}
+
+function assertCustomPresetName(name) {
+  if (!name || name.length > 60) throw new Error('Preset names must be between 1 and 60 characters.');
+  if (Object.values(PROMPT_PRESETS).some((preset) => preset.label.toLowerCase() === name.toLowerCase()) || name.toLowerCase() === 'default') {
     throw new Error('That name is reserved for a built-in preset.');
   }
+}
+
+export function getPromptPreset(id) {
+  const presets = listPromptPresets();
+  return [...presets.builtIn, ...presets.custom].find((preset) => preset.id === id) ?? null;
+}
+
+export function saveCustomPromptPreset(name, instruction, { overwrite = false } = {}) {
+  const cleanName = cleanPresetName(name);
+  const cleanInstruction = String(instruction ?? '').trim();
+  assertCustomPresetName(cleanName);
+  if (!cleanInstruction) throw new Error('Enter instructions before saving a preset.');
+  if (settingsStore().presets[cleanName] && !overwrite) throw new Error('A custom preset with that name already exists.');
   settingsStore().presets[cleanName] = cleanInstruction;
   return cleanName;
 }
 
 export function deleteCustomPromptPreset(name) {
   delete settingsStore().presets[String(name ?? '')];
+}
+
+export function updateCustomPromptPreset(name, instruction) {
+  const cleanName = cleanPresetName(name);
+  if (!Object.hasOwn(settingsStore().presets, cleanName)) throw new Error('Only custom presets can be updated.');
+  return saveCustomPromptPreset(cleanName, instruction, { overwrite: true });
+}
+
+export function renameCustomPromptPreset(oldName, newName) {
+  const oldClean = cleanPresetName(oldName);
+  const nextClean = cleanPresetName(newName);
+  const store = settingsStore().presets;
+  if (!Object.hasOwn(store, oldClean)) throw new Error('Only custom presets can be renamed.');
+  assertCustomPresetName(nextClean);
+  if (oldClean !== nextClean && Object.hasOwn(store, nextClean)) throw new Error('A custom preset with that name already exists.');
+  const instruction = store[oldClean];
+  delete store[oldClean];
+  store[nextClean] = instruction;
+  return nextClean;
+}
+
+export function exportPromptPreset(id) {
+  const preset = getPromptPreset(id);
+  if (!preset) throw new Error('Choose a prompt preset first.');
+  return {
+    format: 'smart-memory-enhanced-prompt-preset',
+    version: 1,
+    name: preset.label,
+    instruction: preset.instruction ?? '',
+    built_in: !preset.custom,
+  };
+}
+
+export function importPromptPreset(payload) {
+  if (!payload || payload.format !== 'smart-memory-enhanced-prompt-preset' || payload.version !== 1) {
+    throw new Error('This is not a Smart Memory Enhanced prompt preset file.');
+  }
+  if (typeof payload.name !== 'string' || typeof payload.instruction !== 'string') {
+    throw new Error('The prompt preset file is missing a name or instructions.');
+  }
+  return saveCustomPromptPreset(payload.name, payload.instruction, { overwrite: true });
 }
 
 function settingsStore() {
@@ -239,7 +294,7 @@ export function importPromptOverrides(payload, characterName = null) {
   }
   if (payload.presets && typeof payload.presets === 'object' && !Array.isArray(payload.presets)) {
     for (const [name, instruction] of Object.entries(payload.presets)) {
-      if (typeof instruction === 'string') saveCustomPromptPreset(name, instruction);
+      if (typeof instruction === 'string') saveCustomPromptPreset(name, instruction, { overwrite: true });
     }
   }
 }
