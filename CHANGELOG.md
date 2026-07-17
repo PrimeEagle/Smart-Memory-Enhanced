@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-07-17
+
+### Changed
+
+- Redesign Prompt Presets as portable profiles containing every memory task, separately from Global, Character, and This Chat preset assignments with inheritance.
+
 ## [0.6.4] - 2026-07-17
 
 ### Added
