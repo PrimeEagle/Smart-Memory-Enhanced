@@ -63,6 +63,7 @@ import { getSceneParticipants } from './scenes.js';
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
+import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
@@ -395,13 +396,13 @@ export async function extractEpistemicKnowledge(
 
     // Assign ids and source range.
     const context = getContext();
-    const chatLen = context.chat?.length ?? 1;
-    const windowEnd = Math.max(0, chatLen - 2);
-    const windowStart = Math.max(0, windowEnd - sceneMessages.length + 1);
+    const sourceMessageIndices = sceneMessages.map((message) => Number.isInteger(message.__sme_original_index)
+      ? message.__sme_original_index : context.chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
     for (const entry of parsed) {
       entry.id = generateMemoryId();
       entry.ts = Date.now();
-      entry.source_messages = [windowStart, windowEnd];
+      entry.source_message_indices = sourceMessageIndices;
+      validateGeneratedRecord(entry);
     }
 
     // Fetch embeddings for all content strings in one batch when possible.
@@ -540,7 +541,7 @@ export function injectEpistemicKnowledge(
     return;
   }
 
-  const entries = loadEpistemicKnowledge(characterName);
+  const entries = loadEpistemicKnowledge(characterName).filter(isGeneratedRecordApproved);
   if (entries.length === 0) {
     clear();
     return;

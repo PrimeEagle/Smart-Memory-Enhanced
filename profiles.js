@@ -58,6 +58,7 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 
 // Default staleness threshold: 30 minutes. Profiles generated within this
 // window are considered current and will not be regenerated on chat load.
@@ -156,8 +157,8 @@ export async function generateProfiles(characterName, abortCheck = null) {
   if (!settings.profiles_enabled || !characterName || [CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return null;
 
   // Only pass active (non-retired) memories to the profile prompt.
-  const longtermMemories = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
-  const sessionMemories = loadSessionMemories().filter((m) => !m.superseded_by);
+  const longtermMemories = loadCharacterMemories(characterName).filter((m) => !m.superseded_by && isGeneratedRecordApproved(m));
+  const sessionMemories = loadSessionMemories().filter((m) => !m.superseded_by && isGeneratedRecordApproved(m));
 
   if (longtermMemories.length === 0 && sessionMemories.length === 0) {
     // Nothing stored yet - skip generation rather than producing empty profiles.
@@ -215,7 +216,13 @@ export async function generateProfiles(characterName, abortCheck = null) {
       .filter(Boolean)
       .join('\n');
 
-    const profiles = { ...parsed, generated_at: Date.now() };
+    const profiles = {
+      ...parsed,
+      generated_at: Date.now(),
+      parent_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
+      source_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
+    };
+    validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
     if (abortCheck?.()) return null;
     await saveProfiles(profiles, characterName);
     return profiles;
@@ -275,7 +282,7 @@ export function injectProfiles(characterName) {
   }
 
   const profiles = loadProfiles(characterName);
-  if (!profiles) {
+  if (!profiles || !isGeneratedRecordApproved(profiles)) {
     setMacroContent(MACRO_NAMES.profiles, '');
     setExtensionPrompt(PROMPT_KEY_PROFILES, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_PROFILES);

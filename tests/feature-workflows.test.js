@@ -32,11 +32,23 @@ test('scene archive: retention, injection, provenance, audit, and legacy setting
   assert.match(settings, /scene_inject_count = extension_settings\[MODULE_NAME\]\.scene_max_history/);
   assert.match(settings, /Scenes: \$\{sceneAudit\.candidates\} detected/);
   assert.match(scenes, /trimSceneArchive/);
-  assert.match(scenes, /selectScenesForInjection\(history, settings\.scene_inject_count/);
+  assert.match(scenes, /selectScenesForInjection\([\s\S]*settings\.scene_inject_count/);
   assert.match(scenes, /metadata\.sceneHistory = previous/);
   assert.match(ui, /sme_jump_scene/);
   assert.match(ui, /sme_resummarize_scene/);
   assert.match(ui, /source_start_index/);
+});
+
+test('cross-tier grounding: scenes, arcs, profiles, and epistemic entries validate before injection', () => {
+  const scenes = read('scenes.js');
+  const arcs = read('arcs.js');
+  const profiles = read('profiles.js');
+  const epistemic = read('epistemic.js');
+  for (const source of [scenes, arcs, profiles, epistemic]) assert.match(source, /validateGeneratedRecord/);
+  assert.match(scenes, /history\.filter\(isGeneratedRecordApproved\)/);
+  assert.match(arcs, /isGeneratedRecordApproved\(a\)/);
+  assert.match(profiles, /!isGeneratedRecordApproved\(profiles\)/);
+  assert.match(epistemic, /loadEpistemicKnowledge\(characterName\)\.filter\(isGeneratedRecordApproved\)/);
 });
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {

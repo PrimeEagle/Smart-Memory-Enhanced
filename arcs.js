@@ -68,6 +68,7 @@ import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
 
@@ -638,6 +639,7 @@ export async function generateArcSummary(arcContent) {
     summary: response.trim(),
     sourceSceneTs: sceneHistory.map((s) => s.ts),
     sourceMemoryIds: [...allMemoryIds],
+    sourceMessageIndices: [...new Set(sceneHistory.flatMap((scene) => scene.source_message_indices ?? []))],
   };
 }
 
@@ -740,13 +742,17 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         try {
           const result = await generateArcSummary(resolved.content);
           if (result) {
-            arcSummaries.push({
+            const summaryRecord = {
               summary: result.summary,
               arc: resolved.content,
               source_scene_ids: result.sourceSceneTs,
               source_memory_ids: result.sourceMemoryIds,
+              source_message_indices: result.sourceMessageIndices,
+              parent_memory_ids: [],
               ts: Date.now(),
-            });
+            };
+            validateGeneratedRecord(summaryRecord);
+            arcSummaries.push(summaryRecord);
             smLog(`[SmartMemory] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
           }
         } catch (err) {
@@ -839,7 +845,16 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       .filter(Boolean);
     const finalActive = finalBase.filter((a) => !a.resolved);
     const finalResolved = finalBase.filter((a) => a.resolved);
-    const finalNew = dedupedAdd.filter((n) => !finalActive.some((a) => a.content === n.content));
+    const sourceMessageIndices = messages
+      .map((message) => Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))
+      .filter((index) => Number.isInteger(index) && index >= 0);
+    const finalNew = dedupedAdd
+      .filter((n) => !finalActive.some((a) => a.content === n.content))
+      .map((arc) => {
+        const record = { ...arc, source_message_indices: sourceMessageIndices, source_memory_ids: [], parent_memory_ids: [] };
+        validateGeneratedRecord(record);
+        return record;
+      });
     const merged = [...finalActive, ...finalNew].slice(-max);
 
     if (abortCheck?.()) return 0;
@@ -866,7 +881,7 @@ export function injectArcs() {
     return;
   }
 
-  const arcs = loadArcs().filter((a) => !a.resolved);
+  const arcs = loadArcs().filter((a) => !a.resolved && isGeneratedRecordApproved(a));
   if (arcs.length === 0) {
     setMacroContent(MACRO_NAMES.arcs, '');
     setExtensionPrompt(PROMPT_KEY_ARCS, '', extension_prompt_types.NONE, 0);
