@@ -782,6 +782,25 @@ export function bindSettingsUI(ctrl) {
     return false;
   }
 
+  const clearChatLocalCharacterData = (context, characterName = null) => {
+    const keys = [
+      'card_local_memories',
+      'card_local_relationships',
+      'card_local_epistemic',
+      'card_local_entities',
+      'card_local_canon',
+    ];
+    for (const metadataKey of [META_KEY, MODULE_NAME]) {
+      const metadata = context.chatMetadata?.[metadataKey];
+      if (!metadata) continue;
+      for (const key of keys) {
+        if (!metadata[key]) continue;
+        if (characterName) delete metadata[key][characterName];
+        else delete metadata[key];
+      }
+    }
+  };
+
   /**
    * Runs extraction on messages generated during the read-only window, then
    * lifts the gate without purging or ghosting anything. Called when the user
@@ -3320,6 +3339,9 @@ export function bindSettingsUI(ctrl) {
     await clearArcs();
     await clearArcSummaries();
     await clearProfiles();
+    // Chat-Local Only stores are part of this chat, not reusable character
+    // history. Forget This Chat must remove them for every group member.
+    clearChatLocalCharacterData(context);
     // Epistemic knowledge is extension_settings-scoped (persists across chats)
     // and is intentionally NOT cleared here - same reasoning as state ledger.
     await context.saveMetadata();
@@ -3385,6 +3407,7 @@ export function bindSettingsUI(ctrl) {
     await clearArcSummaries();
     await clearProfiles(characterName);
     await clearStateLedger();
+    clearChatLocalCharacterData(context, characterName);
     // Dismiss any open recap modal.
     $('#sme_recap_overlay').remove();
 

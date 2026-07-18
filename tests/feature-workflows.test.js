@@ -93,6 +93,18 @@ test('secondary tiers: relationship history, State Ledger, and canon use approve
   assert.match(canon, /isGrounded\(m\)/);
 });
 
+test('chat-local cleanup: Forget This Chat and Fresh Start remove every chat-local store', () => {
+  const settings = read('settings.js');
+  const canon = read('canon.js');
+  for (const key of ['card_local_memories', 'card_local_relationships', 'card_local_epistemic', 'card_local_entities', 'card_local_canon']) {
+    assert.match(settings, new RegExp(`'${key}'`));
+  }
+  assert.match(settings, /clearChatLocalCharacterData\(context\);/);
+  assert.match(settings, /clearChatLocalCharacterData\(context, characterName\);/);
+  assert.match(canon, /metadata\?\.\[META_KEY\]\?\.card_local_canon/);
+  assert.match(canon, /metadata\?\.\[MODULE_NAME\]\?\.card_local_canon/);
+});
+
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
   assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\] \}/);
