@@ -1,7 +1,7 @@
 /** Grounding helpers for newly extracted memories. */
 import { normalizeMemoryProvenance, validateMemoryAncestry } from './record-validation.js';
 
-export function applyDirectProvenance(memories, recentMessages, chatWindowStart) {
+export function applyDirectProvenance(memories, recentMessages, chatWindowStart, originalMessageIndices = null) {
   for (const memory of memories) {
     const claimedIndices = Array.isArray(memory.source_message_indices) ? memory.source_message_indices : [];
     const validRelative = [...new Set(claimedIndices.filter(
@@ -9,7 +9,7 @@ export function applyDirectProvenance(memories, recentMessages, chatWindowStart)
     ))];
     const hasMalformedClaim = claimedIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= recentMessages.length);
     if (claimedIndices.length > 0) {
-      memory.source_message_indices = validRelative.map((index) => chatWindowStart + index);
+      memory.source_message_indices = validRelative.map((index) => originalMessageIndices?.[index] ?? (chatWindowStart + index));
     }
     const normalized = normalizeMemoryProvenance(memory);
     const indices = normalized.indices;

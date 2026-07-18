@@ -2735,7 +2735,16 @@ export function bindSettingsUI(ctrl) {
 
       // Filter to real messages only so system/hidden entries don't inflate
       // the chunk count or confuse the model.
-      const allMessages = stableChat.filter((m) => m.mes && !m.is_system);
+      const allMessages = stableChat
+        .map((message, stableIndex) => {
+          // Non-enumerable metadata is intentionally omitted from chat saves.
+          // It lets every catch-up extraction retain source indices from the
+          // original chat after system messages have been filtered out.
+          const originalIndex = context.chat.indexOf(message);
+          Object.defineProperty(message, '__sme_original_index', { value: originalIndex >= 0 ? originalIndex : stableIndex, configurable: true });
+          return message;
+        })
+        .filter((m) => m.mes && !m.is_system);
       const total = allMessages.length;
 
       // Process the chat in token-limited chunks sequentially. Each extraction

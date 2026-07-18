@@ -13,6 +13,13 @@ test('grounding: valid citations become direct provenance with absolute message 
   assert.equal(isGrounded(memories[0]), true);
 });
 
+test('grounding: filtered catch-up messages retain their original chat indices', () => {
+  const memories = [{ content: 'The gate is locked.', source_message_indices: [0, 1] }];
+  applyDirectProvenance(memories, [{}, {}], 0, [2001, 2003]);
+  assert.deepEqual(memories[0].source_message_indices, [2001, 2003]);
+  assert.deepEqual(memories[0].source_messages, [[2001, 2001], [2003, 2003]]);
+});
+
 test('grounding: missing or malformed citations are quarantined for review', () => {
   const memories = [
     { content: 'Unsupported claim.' },
