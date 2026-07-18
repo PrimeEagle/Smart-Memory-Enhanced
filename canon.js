@@ -43,7 +43,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
-import { estimateTokens, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
+import { estimateTokens, META_KEY, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
 import { buildCanonSummaryPrompt } from './prompts.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories } from './longterm.js';
 import { loadArcSummaries } from './arcs.js';
@@ -64,7 +64,12 @@ import { isGrounded } from './grounding.js';
 export function loadCanon(characterName) {
   if (!characterName) return null;
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    return getContext().chatMetadata?.[MODULE_NAME]?.card_local_canon?.[characterName] ?? null;
+    const metadata = getContext().chatMetadata;
+    // Read the original Chat-Local store as a compatibility fallback, but use
+    // the shared extension metadata key for all new writes and clears.
+    return metadata?.[META_KEY]?.card_local_canon?.[characterName]
+      ?? metadata?.[MODULE_NAME]?.card_local_canon?.[characterName]
+      ?? null;
   }
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.canon ?? null;
 }
@@ -83,8 +88,8 @@ export function saveCanon(characterName, text) {
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(policy)) return;
   if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
-    context.chatMetadata ??= {}; context.chatMetadata[MODULE_NAME] ??= {};
-    (context.chatMetadata[MODULE_NAME].card_local_canon ??= {})[characterName] = { text, ts: Date.now() };
+    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    (context.chatMetadata[META_KEY].card_local_canon ??= {})[characterName] = { text, ts: Date.now() };
     context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local canon:', err));
     return;
   }
@@ -109,6 +114,8 @@ export function clearCanon(characterName) {
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
+    if (context.chatMetadata?.[META_KEY]?.card_local_canon) delete context.chatMetadata[META_KEY].card_local_canon[characterName];
+    // Clear historical misplaced entries as well.
     if (context.chatMetadata?.[MODULE_NAME]?.card_local_canon) delete context.chatMetadata[MODULE_NAME].card_local_canon[characterName];
     context.saveMetadata?.();
     setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
