@@ -170,6 +170,7 @@ import {
   updateFreshStartUI,
   updateEntityPanel,
   updateTokenDisplay,
+  reconcileCanonicalEntities,
   updateEmbeddingNotice,
   setCatchUpErrorCount,
 } from './ui.js';
@@ -1113,6 +1114,30 @@ export function bindSettingsUI(ctrl) {
   });
   refreshPromptPresetChoices();
   refreshPromptStudio();
+
+  const exportCatchUpDiagnostics = () => {
+    const report = getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
+    if (!report) return toastr.info('No Memorize Chat diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'smart-memory-enhanced-diagnostics.json';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  $('#sme_export_diagnostics').prop('disabled', !getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics).on('click', exportCatchUpDiagnostics);
+  $('#sme_preview_catch_up').on('click', async () => {
+    const context = getContext();
+    const messages = (context.chat ?? []).filter((message) => message.mes && !message.is_system);
+    const tokenEstimate = messages.reduce((total, message) => total + estimateTokens(`${message.name}: ${message.mes}`), 0);
+    const chunkBudget = Math.max(500, Math.floor(getMaxContextSize(0) * 0.35));
+    let scenes = 0;
+    for (const message of messages) if (detectSceneBreakHeuristic(message.mes ?? '')) scenes++;
+    await callGenericPopup(
+      `Preview only - nothing will be generated or saved.\n\n${messages.length} usable messages\n~${tokenEstimate.toLocaleString()} chat tokens\n~${Math.ceil(tokenEstimate / chunkBudget)} extraction chunks\n${scenes} heuristic scene-break candidates\n\nThis checks workload and scene boundaries. It does not call the model, so it cannot show candidate memories or grounding decisions.`,
+      POPUP_TYPE.DISPLAY,
+    );
+  });
 
   // ---- LLM source -----------------------------------------------------
 
@@ -2777,6 +2802,7 @@ export function bindSettingsUI(ctrl) {
       extractionFailuresByTier: {},
       saveFailures: 0,
       status: 'completed',
+      chunks: [],
     };
     let currentChunkFailed = false;
     const recordCatchUpError = (label, err, tier = null, isSave = false) => {
@@ -2951,6 +2977,14 @@ export function bindSettingsUI(ctrl) {
         updateTokenDisplay();
 
         runResult.totalChunks++;
+        runResult.chunks.push({
+          number: runResult.totalChunks,
+          source_start_index: chunk[0]?.__sme_original_index ?? null,
+          source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
+          message_count: chunk.length,
+          token_estimate: chunkTokens,
+          status: currentChunkFailed ? 'partial' : 'completed',
+        });
         if (currentChunkFailed) runResult.failedChunks++;
         else runResult.completedChunks++;
 
@@ -3154,6 +3188,15 @@ export function bindSettingsUI(ctrl) {
       updateScenesUI();
       updateArcsUI();
       updateProfilesUI(loadProfiles(characterName));
+      // Catch-up can surface first-name variants that only become resolvable
+      // after the full roster and extracted evidence are available.
+      const reconciliation = await reconcileCanonicalEntities(characterName);
+      runResult.identityResolution = {
+        matched: reconciliation.matched.length,
+        merged: reconciliation.merged.length,
+        needs_review: reconciliation.skipped.length,
+        unmatched: reconciliation.unmatched.length,
+      };
       maybeInjectUnified();
       updateTokenDisplay();
       saveSettingsDebounced();
@@ -3186,6 +3229,26 @@ export function bindSettingsUI(ctrl) {
           positionClass: 'toast-bottom-right',
         });
       }
+      // Keep a compact, exportable audit trail. It intentionally excludes chat
+      // text and raw provider output, while retaining the information needed to
+      // diagnose source ranges, failures, and scene processing.
+      const diagnostics = {
+        version: 1,
+        created_at: Date.now(),
+        status: runResult.status,
+        chunks: runResult.chunks,
+        sceneDetection: runResult.sceneDetection ?? null,
+        tiers: runResult.extractionFailuresByTier,
+        identityResolution: runResult.identityResolution ?? null,
+        persistence_failures: runResult.saveFailures,
+        retried_requests: runResult.retriedRequests,
+        errors: catchUpErrorCount,
+      };
+      if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
+      if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
+      catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
+      await catchUpContext.saveMetadata?.();
+      $('#sme_export_diagnostics').prop('disabled', false);
     } catch (err) {
       recordCatchUpError('run failure', err);
       showError('Catch-up', err);
