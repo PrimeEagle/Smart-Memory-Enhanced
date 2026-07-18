@@ -587,7 +587,7 @@ function mergeMemories(existing, incoming, maxTotal) {
  * @param {Array} recentMessages - Last N message objects from context.chat.
  * @returns {Promise<number>} Count of new memories added (0 on failure or nothing found).
  */
-export async function extractAndStoreMemories(characterName, recentMessages, statusFn = null) {
+export async function extractAndStoreMemories(characterName, recentMessages, statusFn = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
   const policy = getCharacterMemoryPolicy(characterName);
   if (!settings.longterm_enabled || !characterName || policy === CHARACTER_MEMORY_POLICIES.DISABLED || policy === CHARACTER_MEMORY_POLICIES.READ_ONLY) return 0;
@@ -663,6 +663,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       mem.source_chat_id = sourceChatId;
       mem.witnessed_by = witnessedBy;
       validateGeneratedMemoryRecord(mem, activeMemories);
+    }
+    if (options.dryRun) {
+      return {
+        dryRun: true,
+        parsed: parsed.length,
+        candidates: newMemories.map((memory) => ({ type: memory.type, content: memory.content, grounding_status: memory.grounding_status, validation_status: memory.validation_status, validation_issues: memory.validation_issues ?? [] })),
+      };
     }
 
     const maxMemories = settings.longterm_max_memories || 25;

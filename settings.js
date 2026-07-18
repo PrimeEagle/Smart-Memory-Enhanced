@@ -1115,8 +1115,10 @@ export function bindSettingsUI(ctrl) {
   refreshPromptPresetChoices();
   refreshPromptStudio();
 
+  let latestDryRunDiagnostics = null;
   const exportCatchUpDiagnostics = () => {
-    const report = getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
+    const metadata = getContext().chatMetadata?.[META_KEY];
+    const report = latestDryRunDiagnostics ?? metadata?.catch_up_diagnostics;
     if (!report) return toastr.info('No Memorize Chat diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
@@ -1133,10 +1135,31 @@ export function bindSettingsUI(ctrl) {
     const chunkBudget = Math.max(500, Math.floor(getMaxContextSize(0) * 0.35));
     let scenes = 0;
     for (const message of messages) if (detectSceneBreakHeuristic(message.mes ?? '')) scenes++;
-    await callGenericPopup(
-      `Preview only - nothing will be generated or saved.\n\n${messages.length} usable messages\n~${tokenEstimate.toLocaleString()} chat tokens\n~${Math.ceil(tokenEstimate / chunkBudget)} extraction chunks\n${scenes} heuristic scene-break candidates\n\nThis checks workload and scene boundaries. It does not call the model, so it cannot show candidate memories or grounding decisions.`,
-      POPUP_TYPE.DISPLAY,
-    );
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) return toastr.warning('No character is active.', 'Smart Memory Enhanced');
+    const button = $('#sme_preview_catch_up').prop('disabled', true);
+    try {
+      const [longterm, session] = await Promise.all([
+        extractAndStoreMemories(characterName, messages, null, { dryRun: true }),
+        extractSessionMemories(messages, null, { dryRun: true }),
+      ]);
+      const candidates = [...(longterm?.candidates ?? []), ...(session?.candidates ?? [])];
+      const reviewCount = candidates.filter((candidate) => candidate.validation_status === 'needs_review').length;
+      latestDryRunDiagnostics = {
+        version: 1, created_at: Date.now(), dry_run: true,
+        workload: { messages: messages.length, token_estimate: tokenEstimate, chunk_estimate: Math.ceil(tokenEstimate / chunkBudget), heuristic_scene_candidates: scenes },
+        longterm, session,
+      };
+      $('#sme_export_diagnostics').prop('disabled', false);
+      await callGenericPopup(
+        `Dry run complete - no memories or entities were saved.\n\n${messages.length} usable messages\n~${tokenEstimate.toLocaleString()} chat tokens\n~${Math.ceil(tokenEstimate / chunkBudget)} extraction chunks\n${scenes} heuristic scene-break candidates\n${longterm?.candidates?.length ?? 0} long-term candidates\n${session?.candidates?.length ?? 0} session candidates\n${reviewCount} candidates need grounding review\n\nExport Diagnostics contains the candidate details.`,
+        POPUP_TYPE.DISPLAY,
+      );
+    } catch (error) {
+      showError('Dry run', error);
+    } finally {
+      button.prop('disabled', false);
+    }
   });
 
   // ---- LLM source -----------------------------------------------------

@@ -56,12 +56,21 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   const html = read('settings.html');
   assert.match(html, /sme_preview_catch_up/);
   assert.match(html, /sme_export_diagnostics/);
-  assert.match(settings, /Preview only - nothing will be generated or saved/);
+  assert.match(settings, /Dry run complete - no memories or entities were saved/);
   assert.match(settings, /catch_up_diagnostics/);
   assert.match(settings, /source_start_index/);
   assert.match(settings, /raw provider output/);
   assert.match(settings, /reconcileCanonicalEntities\(characterName\)/);
   assert.match(settings, /identityResolution/);
+});
+
+test('dry run: primary extraction returns grounded candidates before persistence', () => {
+  const longterm = read('longterm.js');
+  const session = read('session.js');
+  assert.match(longterm, /if \(options\.dryRun\) \{/);
+  assert.match(session, /if \(options\.dryRun\) \{/);
+  assert.match(longterm, /dryRun: true/);
+  assert.match(session, /validation_issues/);
 });
 
 test('secondary tiers: relationship history, State Ledger, and canon use approved evidence only', () => {
