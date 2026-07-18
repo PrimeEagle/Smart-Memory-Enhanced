@@ -60,6 +60,8 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /catch_up_diagnostics/);
   assert.match(settings, /source_start_index/);
   assert.match(settings, /raw provider output/);
+  assert.match(settings, /reconcileCanonicalEntities\(characterName\)/);
+  assert.match(settings, /identityResolution/);
 });
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {

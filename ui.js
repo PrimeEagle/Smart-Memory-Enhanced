@@ -1413,6 +1413,36 @@ export function updateProfilesUI(profiles) {
  *
  * @param {string|null} characterName - Current character name for long-term registry lookup.
  */
+/** Safely reconciles unambiguous canonical entity aliases without opening UI. */
+export async function reconcileCanonicalEntities(characterName) {
+  const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
+  const sessionEntities = loadSessionEntityRegistry();
+  const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
+  const sessionMemories = loadSessionMemories();
+  const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
+  const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
+  if (ltReport.changed) {
+    saveCharacterEntityRegistry(characterName, ltEntities);
+    saveCharacterMemories(characterName, longtermMemories);
+    saveSettingsDebounced();
+  }
+  if (sessionReport.changed) {
+    await saveSessionEntityRegistry(sessionEntities);
+    await saveSessionMemories(sessionMemories);
+  }
+  if (characterName) {
+    reconcileRelationshipHistoryCanonicalNames(characterName);
+    reconcileEpistemicCanonicalNames(characterName);
+    await reconcileProfileCanonicalNames(characterName);
+  }
+  return {
+    matched: [...ltReport.matched, ...sessionReport.matched],
+    merged: [...ltReport.merged, ...sessionReport.merged],
+    skipped: [...ltReport.skipped, ...sessionReport.skipped],
+    unmatched: [...ltReport.unmatched, ...sessionReport.unmatched],
+  };
+}
+
 export function updateEntityPanel(characterName) {
   const $panel = $('#sme_entity_panel');
   $panel.empty();
@@ -1424,31 +1454,8 @@ export function updateEntityPanel(characterName) {
   const $reconcile = $('<button class="menu_button sme_reconcile_entities"><i class="fa-solid fa-wand-magic-sparkles"></i> Reconcile Canonical Entities</button>');
   $reconcile.attr('title', 'Safely merge existing unambiguous card-name variants. Ambiguous names are left unchanged.');
   $reconcile.on('click', async () => {
-    const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
-    const sessionMemories = loadSessionMemories();
-    const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
-    const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
-    if (ltReport.changed) {
-      saveCharacterEntityRegistry(characterName, ltEntities);
-      saveCharacterMemories(characterName, longtermMemories);
-      saveSettingsDebounced();
-    }
-    if (sessionReport.changed) {
-      await saveSessionEntityRegistry(sessionEntities);
-      await saveSessionMemories(sessionMemories);
-    }
-    if (characterName) {
-      reconcileRelationshipHistoryCanonicalNames(characterName);
-      reconcileEpistemicCanonicalNames(characterName);
-      await reconcileProfileCanonicalNames(characterName);
-    }
+    const report = await reconcileCanonicalEntities(characterName);
     updateEntityPanel(characterName);
-    const report = {
-      matched: [...ltReport.matched, ...sessionReport.matched],
-      merged: [...ltReport.merged, ...sessionReport.merged],
-      skipped: [...ltReport.skipped, ...sessionReport.skipped],
-      unmatched: [...ltReport.unmatched, ...sessionReport.unmatched],
-    };
     const dialog = document.createElement('dialog');
     dialog.className = 'sme_reconcile_dialog';
     for (const eventName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {

@@ -170,6 +170,7 @@ import {
   updateFreshStartUI,
   updateEntityPanel,
   updateTokenDisplay,
+  reconcileCanonicalEntities,
   updateEmbeddingNotice,
   setCatchUpErrorCount,
 } from './ui.js';
@@ -3187,6 +3188,15 @@ export function bindSettingsUI(ctrl) {
       updateScenesUI();
       updateArcsUI();
       updateProfilesUI(loadProfiles(characterName));
+      // Catch-up can surface first-name variants that only become resolvable
+      // after the full roster and extracted evidence are available.
+      const reconciliation = await reconcileCanonicalEntities(characterName);
+      runResult.identityResolution = {
+        matched: reconciliation.matched.length,
+        merged: reconciliation.merged.length,
+        needs_review: reconciliation.skipped.length,
+        unmatched: reconciliation.unmatched.length,
+      };
       maybeInjectUnified();
       updateTokenDisplay();
       saveSettingsDebounced();
@@ -3229,6 +3239,7 @@ export function bindSettingsUI(ctrl) {
         chunks: runResult.chunks,
         sceneDetection: runResult.sceneDetection ?? null,
         tiers: runResult.extractionFailuresByTier,
+        identityResolution: runResult.identityResolution ?? null,
         persistence_failures: runResult.saveFailures,
         retried_requests: runResult.retriedRequests,
         errors: catchUpErrorCount,
