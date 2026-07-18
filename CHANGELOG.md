@@ -5,6 +5,122 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Smart Memory Enhanced fork history
+
+Smart Memory Enhanced is an independent fork of Smart Memory. The versioned
+entries below document changes made by this fork beginning with v0.1.0. The
+original Smart Memory history is preserved after the v0.1.0 entry for reference;
+it is not a list of features added by this fork.
+
+### Fork-wide additions and improvements
+
+#### Independent installation and branding
+
+- Renamed the extension, settings panel, manifest metadata, README, and all
+  user-facing controls to **Smart Memory Enhanced**.
+- Isolated settings, prompt slots, chat metadata, and DOM identifiers under the
+  Enhanced namespace. Smart Memory and Smart Memory Enhanced can therefore be
+  installed in the same SillyTavern instance and retain separate data.
+- Stopped copying settings from the original extension after the initial
+  compatibility transition, making Enhanced fully self-contained.
+
+#### Reliable Memorize Chat runs
+
+- Added a running error total to Memorize Chat: no extra indicator when there
+  are no errors, yellow after 1–10 errors, and red after 11 or more. The count
+  resets after Forget This Chat and Fresh Start.
+- Added provider request queuing, configurable concurrency and spacing,
+  exponential backoff, Retry-After handling, and retry reporting. Only
+  transient failures such as rate limits, gateway errors, timeouts, and network
+  interruptions are retried; malformed requests are surfaced without retrying.
+- Made catch-up completion truthful: runs now report completed, partial,
+  failed, or cancelled rather than appearing successful after silently failed
+  work.
+- Made persistence transactional for catch-up chunks. Extraction, parsing,
+  validation, staging, chat save, and commit are treated as one unit; failed
+  saves are retried where appropriate and failed commits roll in-memory state
+  back rather than marking unpersisted data successful.
+
+#### Grounded, reviewable memories
+
+- Added source-message provenance and validation status to newly extracted
+  long-term and session memories.
+- Quarantines missing, malformed, and out-of-window citations from injection,
+  consolidation, entity creation, and graph linking until a user explicitly
+  approves them.
+- Added grounding review notices, an inline queue, and a full review dialog
+  with source links, validation details, editing, save, approve, reject, and
+  delete actions.
+- Reworked narrow drawer cards into concise previews with a readable modal for
+  detailed review. Modal actions advance through queued items and no longer
+  close the surrounding Extensions panel.
+
+#### Context-aware generation and token display
+
+- Normalizes Connection Profile chat messages for strict local templates by
+  merging adjacent same-role messages and ensuring a valid opening user turn.
+- Uses configured Connection Profile context limits and incrementally compacts
+  oversized chats instead of sending an unbounded first request.
+- Corrected Token Usage to read SillyTavern's active context size. It now has
+  two distinct visualizations: a full-width tier mix and a separate context
+  consumption bar with the exact token count.
+- Improved trim feedback and fixed the tier-mix marker so it accurately
+  identifies trimmed content.
+
+#### Entity, identity, and graph safeguards
+
+- Added canonical character-card rosters, active group-member filtering, and
+  active-persona matching. Identity resolution safely handles exact names,
+  approved aliases, unique first names, unresolved NPCs, and ambiguous or
+  unsupported surname variants.
+- Canonicalized Relationship History, Character & World Profiles, Perspectives
+  & Secrets, and State Ledger data before storage. New Relationship and State
+  Ledger character records use stable card-ID-backed keys while retaining human
+  readable labels.
+- Added an identity review queue for ambiguous and rejected candidates,
+  reconciliation reports showing matches/merges/skips, duplicate-merge
+  reference updates, and safe entity rename support that preserves old names as
+  aliases.
+- Kept existing data safe through non-destructive reconciliation and reference
+  migration across long-term memories, session memories, profiles, epistemic
+  records, relationships, and State Ledger cards.
+
+#### Character memory policies
+
+- Added per-character-card policies: **Full**, **Chat-Local Only**,
+  **Read-Only**, and **Disabled**.
+- Chat-Local Only keeps character-specific memories, relationships, canon,
+  profiles, perspectives, and entity registries inside the current chat.
+- Read-Only prevents card-scoped writes while preserving existing injection;
+  Disabled prevents both card-scoped injection and creation.
+- Added a group-chat character selector for viewing and configuring the active
+  member's policy, with dynamic explanatory text.
+
+#### Prompt Studio and preset profiles
+
+- Added Prompt Studio for inspecting the protected built-in prompt reference
+  and configuring scoped memory-task instructions without allowing users to
+  break required runtime context or parser contracts.
+- Added built-in Default, Precise, Concise, and Detailed prompt profiles, plus
+  custom named Prompt Presets with save as, update, rename, restore, delete,
+  import, and export actions. The protected Default profile cannot be deleted.
+- Redesigned presets as portable, complete task profiles rather than a single
+  instruction field. Profiles can be assigned at Global, Character, and This
+  Chat scopes with inheritance.
+- Clarified the assignment interface with labeled rows, the order Global →
+  This Chat → Character, and the current selected character name.
+
+#### Interface polish and regression coverage
+
+- Improved review and reconciliation dialog readability, title casing, button
+  labels, event isolation, and mobile-safe behavior.
+- Added theme-neutral icons to Entity Registry, Continuity Checker, Prompt
+  Studio, Configuration, and Developer headers for quick visual recognition.
+- Expanded automated coverage across parsing, grounding, provider retry policy,
+  staged persistence rollback, entity reconciliation and rename safeguards,
+  review workflows, card policies, prompt profiles, and UI contracts. The test
+  suite also retains extraction regression fixtures.
+
 ## [Unreleased]
 
 ## [0.6.7] - 2026-07-17
