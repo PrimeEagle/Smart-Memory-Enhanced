@@ -22,6 +22,23 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(source, /rollbackCatchUpTransaction\(transaction\)/);
 });
 
+test('scene archive: retention, injection, provenance, audit, and legacy settings use separate semantics', () => {
+  const settings = read('settings.js');
+  const scenes = read('scenes.js');
+  const ui = read('ui.js');
+  assert.match(settings, /scene_archive_max: 100/);
+  assert.match(settings, /scene_inject_count: 5/);
+  assert.match(settings, /const hadSceneInjectCount/);
+  assert.match(settings, /scene_inject_count = extension_settings\[MODULE_NAME\]\.scene_max_history/);
+  assert.match(settings, /Scenes: \$\{sceneAudit\.candidates\} detected/);
+  assert.match(scenes, /trimSceneArchive/);
+  assert.match(scenes, /selectScenesForInjection\(history, settings\.scene_inject_count/);
+  assert.match(scenes, /metadata\.sceneHistory = previous/);
+  assert.match(ui, /sme_jump_scene/);
+  assert.match(ui, /sme_resummarize_scene/);
+  assert.match(ui, /source_start_index/);
+});
+
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
   assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\] \}/);

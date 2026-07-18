@@ -107,6 +107,7 @@ import {
   loadSceneHistory,
   saveSceneHistory,
   clearSceneHistory,
+  createSceneRecord,
   detectSceneBreakAI,
   detectSceneBreakHeuristic,
 } from './scenes.js';
@@ -275,7 +276,10 @@ export const defaultSettings = {
   // Scene detection
   scene_enabled: true,
   scene_ai_detect: false,
+  // scene_max_history is retained only as a migration source for older data.
   scene_max_history: 5,
+  scene_archive_max: 100,
+  scene_inject_count: 5,
   scene_min_messages: 3,
   scene_summary_length: 200,
   scene_inject_budget: 300,
@@ -658,10 +662,22 @@ export function loadSettings() {
     // requires nor imports configuration from the original Smart Memory.
     extension_settings[MODULE_NAME] = {};
   }
+  const hadSceneInjectCount = Object.prototype.hasOwnProperty.call(extension_settings[MODULE_NAME], 'scene_inject_count');
+  const hadSceneArchiveMax = Object.prototype.hasOwnProperty.call(extension_settings[MODULE_NAME], 'scene_archive_max');
   for (const [key, value] of Object.entries(defaultSettings)) {
     if (extension_settings[MODULE_NAME][key] === undefined) {
       extension_settings[MODULE_NAME][key] = value;
     }
+  }
+
+  // Scene history used to use one setting as both a storage cap and injection
+  // limit. Preserve the old value as the visible injection count while giving
+  // the archive a safer independent capacity.
+  if (!hadSceneInjectCount) {
+    extension_settings[MODULE_NAME].scene_inject_count = extension_settings[MODULE_NAME].scene_max_history ?? 5;
+  }
+  if (!hadSceneArchiveMax) {
+    extension_settings[MODULE_NAME].scene_archive_max = 100;
   }
 
   // Migration: replace old bracket-wrapped template defaults with plain-text equivalents.
@@ -2438,15 +2454,25 @@ export function bindSettingsUI(ctrl) {
       saveSettingsDebounced();
     });
 
-  $('#sme_scene_max_history')
-    .val(s.scene_max_history)
+  $('#sme_scene_inject_count')
+    .val(s.scene_inject_count)
     .on('input', function () {
       const val = parseInt($(this).val(), 10);
-      extension_settings[MODULE_NAME].scene_max_history = val;
-      $('#sme_scene_max_history_value').text(val);
+      extension_settings[MODULE_NAME].scene_inject_count = val;
+      $('#sme_scene_inject_count_value').text(val);
+      saveSettingsDebounced();
+      injectSceneHistory();
+    });
+  $('#sme_scene_inject_count_value').text(s.scene_inject_count);
+  $('#sme_scene_archive_max')
+    .val(s.scene_archive_max)
+    .on('input', function () {
+      const val = parseInt($(this).val(), 10);
+      extension_settings[MODULE_NAME].scene_archive_max = val;
+      $('#sme_scene_archive_max_value').text(val);
       saveSettingsDebounced();
     });
-  $('#sme_scene_max_history_value').text(s.scene_max_history);
+  $('#sme_scene_archive_max_value').text(s.scene_archive_max);
 
   $(`input[name="sme_scene_position"][value="${s.scene_position}"]`).prop('checked', true);
   $('input[name="sme_scene_position"]').on('change', function () {
@@ -2492,9 +2518,7 @@ export function bindSettingsUI(ctrl) {
       const summary = await summarizeScene(messages);
       if (summary) {
         const history = loadSceneHistory();
-        const max = extension_settings[MODULE_NAME].scene_max_history ?? 5;
-        history.push({ summary, ts: Date.now() });
-        if (history.length > max) history.splice(0, history.length - max);
+        history.push(createSceneRecord(summary, messages, { detected_by: 'manual' }));
         await saveSceneHistory(history);
         // Reset the buffer - we just archived what was in it.
         ctrl.sceneMessageBuffer = [];
@@ -2523,6 +2547,52 @@ export function bindSettingsUI(ctrl) {
     updateScenesUI();
     setStatusMessage('Scene history cleared.');
   });
+
+  // Delegated because the archive list is re-rendered after each change.
+  $(document)
+    .off('click.smeSceneArchive', '.sme_jump_scene, .sme_edit_scene, .sme_delete_scene, .sme_resummarize_scene')
+    .on('click.smeSceneArchive', '.sme_jump_scene, .sme_edit_scene, .sme_delete_scene, .sme_resummarize_scene', async function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = Number($(this).data('index'));
+      const history = loadSceneHistory();
+      const scene = history[index];
+      if (!scene) return;
+
+      if ($(this).hasClass('sme_jump_scene')) {
+        const message = $(`#chat .mes[mesid="${scene.source_start_index}"]`)[0];
+        if (message) message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        else toastr.info(`Source message ${scene.source_start_index + 1} is not currently rendered in the chat.`, 'Smart Memory Enhanced');
+        return;
+      }
+
+      if ($(this).hasClass('sme_edit_scene')) {
+        const summary = await callGenericPopup('Edit scene summary:', POPUP_TYPE.INPUT, scene.summary);
+        if (summary === false || summary === null || !String(summary).trim()) return;
+        history[index] = { ...scene, summary: String(summary).trim(), detected_by: 'manual' };
+      } else if ($(this).hasClass('sme_delete_scene')) {
+        if (!(await callGenericPopup('Delete this scene from the archive?', POPUP_TYPE.CONFIRM))) return;
+        history.splice(index, 1);
+      } else {
+        const context = getContext();
+        const messages = (scene.source_message_indices ?? []).map((sourceIndex) => context.chat[sourceIndex]).filter(Boolean);
+        if (messages.length === 0) {
+          toastr.warning('This archived scene has no readable source range to summarize again.', 'Smart Memory Enhanced');
+          return;
+        }
+        const summary = await summarizeScene(messages);
+        if (!summary) return;
+        history[index] = createSceneRecord(summary, messages, {
+          id: scene.id,
+          source_memory_ids: scene.source_memory_ids ?? [],
+          detected_by: 'manual',
+        });
+      }
+      await saveSceneHistory(history);
+      injectSceneHistory();
+      updateScenesUI();
+      updateTokenDisplay();
+    });
 
   // ---- Story arcs -----------------------------------------------------
   $('#sme_arcs_enabled')
@@ -2894,10 +2964,10 @@ export function bindSettingsUI(ctrl) {
         if (settings.scene_enabled) {
           setStatusMessage('Detecting scene breaks...');
           const sceneHistory = loadSceneHistory();
-          const max = settings.scene_max_history ?? 5;
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0 };
           let prevAiMsg = '';
 
           /**
@@ -2939,18 +3009,21 @@ export function bindSettingsUI(ctrl) {
 
             if (isBreak) {
               sceneCount++;
+              sceneAudit.candidates++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
               const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
                 recordCatchUpError('scene summary error', err);
+                sceneAudit.failed++;
                 return null;
               });
               if (sceneSummary && !(await isDuplicateScene(sceneSummary))) {
-                sceneHistory.push({
-                  summary: sceneSummary,
-                  ts: Date.now(),
-                  source_memory_ids: [],
-                });
-                if (sceneHistory.length > max) sceneHistory.splice(0, sceneHistory.length - max);
+                sceneHistory.push(createSceneRecord(sceneSummary, sceneBuffer, {
+                  detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
+                  detection_message_index: msg.__sme_original_index ?? null,
+                }));
+                sceneAudit.generated++;
+              } else if (sceneSummary) {
+                sceneAudit.duplicates++;
               }
               if (isEpistemicEnabled() && !isFreshStart()) {
                 setStatusMessage(
@@ -2966,13 +3039,20 @@ export function bindSettingsUI(ctrl) {
 
           // Summarize any remaining messages after the last break as the current scene.
           if (!ctrl.catchUpCancelled && sceneBuffer.length >= minMessages) {
+            sceneAudit.candidates++;
             const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
               recordCatchUpError('final scene summary error', err);
+              sceneAudit.failed++;
               return null;
             });
             if (sceneSummary && !(await isDuplicateScene(sceneSummary))) {
-              sceneHistory.push({ summary: sceneSummary, ts: Date.now(), source_memory_ids: [] });
-              if (sceneHistory.length > max) sceneHistory.splice(0, sceneHistory.length - max);
+              sceneHistory.push(createSceneRecord(sceneSummary, sceneBuffer, {
+                detected_by: 'final',
+                detection_message_index: sceneBuffer.at(-1)?.__sme_original_index ?? null,
+              }));
+              sceneAudit.generated++;
+            } else if (sceneSummary) {
+              sceneAudit.duplicates++;
             }
             if (isEpistemicEnabled() && !isFreshStart()) {
               setStatusMessage('Extracting epistemic knowledge from final scene...');
@@ -2985,6 +3065,7 @@ export function bindSettingsUI(ctrl) {
           await saveSceneHistory(sceneHistory).catch((err) => {
             recordCatchUpError('scene history save error', err);
           });
+          runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;
           updateTokenDisplay();
@@ -3095,8 +3176,12 @@ export function bindSettingsUI(ctrl) {
           { timeOut: 8000, positionClass: 'toast-bottom-right' },
         );
       } else {
-        setStatusMessage('Catch-up complete.');
-        toastr.success('Full catch-up extraction finished.', 'Smart Memory Enhanced', {
+        const sceneAudit = runResult.sceneDetection;
+        const sceneSummary = sceneAudit
+          ? ` Scenes: ${sceneAudit.candidates} detected, ${sceneAudit.generated} generated, ${sceneAudit.duplicates} duplicates, ${sceneAudit.failed} failed, ${sceneAudit.retained} archived, ${sceneAudit.injected} injected.`
+          : '';
+        setStatusMessage(`Catch-up complete.${sceneSummary}`);
+        toastr.success(`Full catch-up extraction finished.${sceneSummary}`, 'Smart Memory Enhanced', {
           timeOut: 4000,
           positionClass: 'toast-bottom-right',
         });

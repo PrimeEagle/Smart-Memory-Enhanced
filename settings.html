@@ -584,17 +584,20 @@
 
           <p class="sm-section-title">Settings</p>
           <div class="sm-block">
-            <label
-              >Keep last <b><span id="sme_scene_max_history_value"></span></b> scenes</label
-            >
+            <label>Inject last <b><span id="sme_scene_inject_count_value"></span></b> scenes</label>
             <input
-              id="sme_scene_max_history"
+              id="sme_scene_inject_count"
               type="range"
               min="1"
               max="15"
               step="1"
-              value="{{defaultSettings.scene_max_history}}"
+              value="{{defaultSettings.scene_inject_count}}"
             />
+          </div>
+          <div class="sm-block">
+            <label>Archive up to <b><span id="sme_scene_archive_max_value"></span></b> scenes</label>
+            <input id="sme_scene_archive_max" type="range" min="10" max="500" step="10" value="{{defaultSettings.scene_archive_max}}" />
+            <small class="sm-muted">The archive keeps historical scenes for review; only the recent subset above is injected.</small>
           </div>
 
           <p class="sm-section-title sm-advanced-only">Injection</p>

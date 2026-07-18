@@ -1166,8 +1166,14 @@ export function updateScenesUI() {
   }
 
   history.forEach((s, i) => {
+    const range = Number.isInteger(s.source_start_index) && Number.isInteger(s.source_end_index)
+      ? ` &middot; messages ${s.source_start_index + 1}-${s.source_end_index + 1}`
+      : '';
+    const method = s.detected_by ? ` &middot; ${s.detected_by}` : '';
+    const validation = s.validation_status && s.validation_status !== 'validated' ? ` &middot; ${s.validation_status}` : '';
+    const canJump = Number.isInteger(s.source_start_index);
     $list.append(
-      `<div class="sme_scene_item"><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div>`,
+      `<div class="sme_scene_item"><div><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div><small class="sm-muted">${range}${method}${validation}</small><span class="sme_scene_actions">${canJump ? `<button class="sme_jump_scene menu_button" data-index="${i}" title="Jump to the source messages"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}<button class="sme_resummarize_scene menu_button" data-index="${i}" title="Generate this summary again from its source messages"><i class="fa-solid fa-rotate"></i></button><button class="sme_edit_scene menu_button" data-index="${i}" title="Edit scene summary"><i class="fa-solid fa-pencil"></i></button><button class="sme_delete_scene menu_button" data-index="${i}" title="Delete scene"><i class="fa-solid fa-trash-can"></i></button></span></div>`,
     );
   });
 }
