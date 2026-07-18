@@ -123,6 +123,19 @@ it is not a list of features added by this fork.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-18
+
+### Fixed
+
+- Fresh Start now clears stale injected Relationship History, Perspectives &
+  Secrets, and Canon prompt slots before refreshing Token Usage. The Memory
+  tier mix and context token total immediately reflect the cleared state.
+
+### Tests
+
+- Added regression coverage for refreshing cleared personal prompt slots before
+  updating token usage.
+
 ## [0.7.1] - 2026-07-18
 
 ### Fixed
