@@ -54,6 +54,7 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
+import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -160,7 +161,11 @@ export async function saveSceneHistory(scenes) {
   const max = extension_settings[MODULE_NAME]?.scene_archive_max ?? 100;
   const metadata = context.chatMetadata[META_KEY];
   const previous = metadata.sceneHistory;
-  const staged = trimSceneArchive(scenes.map((scene) => normalizeSceneRecord(scene, generateMemoryId)), max);
+  const staged = trimSceneArchive(scenes.map((scene) => {
+    const normalized = normalizeSceneRecord(scene, generateMemoryId);
+    if (normalized.detected_by !== 'legacy') validateGeneratedRecord(normalized);
+    return normalized;
+  }), max);
   metadata.sceneHistory = staged;
   try {
     await context.saveMetadata();
@@ -371,7 +376,9 @@ export function injectSceneHistory() {
   // If a single scene still exceeds the budget, hard-truncate so the injection
   // is always within the cap regardless of individual summary length.
   const budget = settings.scene_inject_budget ?? 300;
-  const injectionCandidates = selectScenesForInjection(history, settings.scene_inject_count ?? 5);
+  const injectionCandidates = selectScenesForInjection(
+    history.filter(isGeneratedRecordApproved), settings.scene_inject_count ?? 5,
+  );
   const fullText = injectionCandidates.map((sc, i) => `Scene ${i + 1}: ${sc.summary}`).join('\n');
   const fullTokens = estimateTokens(`Previous scenes:\n${fullText}`);
   const trimmed = [...injectionCandidates];

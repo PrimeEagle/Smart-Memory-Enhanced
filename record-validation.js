@@ -67,6 +67,35 @@ export function validateMemoryAncestry(memoryId, parentIds, memoryStore = []) {
   return { valid: issues.length === 0, parentIds: parents.filter((id) => id !== memoryId), issues: [...new Set(issues)] };
 }
 
+/**
+ * Applies the common, tier-agnostic grounding contract to a generated record.
+ * Records without direct source messages may still be valid when they are
+ * explicitly derived from approved parent records (profiles and resolutions).
+ */
+export function validateGeneratedRecord(record, options = {}) {
+  const { requireSources = true, allowDerived = false, parentStore = [] } = options;
+  const provenance = normalizeMemoryProvenance(record);
+  const ancestry = validateMemoryAncestry(record.id, record.parent_memory_ids, parentStore);
+  record.parent_memory_ids = ancestry.parentIds;
+  const hasDerivedEvidence = allowDerived && record.parent_memory_ids.length > 0;
+  const issues = [...(record.validation_issues ?? []), ...ancestry.issues];
+  if ((!provenance.hasSources && !hasDerivedEvidence && requireSources) || !ancestry.valid) {
+    if (!provenance.hasSources && !hasDerivedEvidence) issues.push('No valid source evidence was supplied.');
+    record.grounding_status = 'ungrounded';
+    record.validation_status = 'needs_review';
+    record.validation_issues = [...new Set(issues)];
+    return { valid: false, issues: record.validation_issues };
+  }
+  record.grounding_status = hasDerivedEvidence && !provenance.hasSources ? 'derived' : 'direct';
+  record.validation_status = 'validated';
+  record.validation_issues = [];
+  return { valid: true, issues: [] };
+}
+
+export function isGeneratedRecordApproved(record) {
+  return record?.grounding_status !== 'ungrounded' || record?.validation_status === 'approved';
+}
+
 export function sanitizeStructuredModelOutput(raw, taskType = 'generic') {
   let text = String(raw ?? '').replace(/\r\n?/g, '\n').trim();
   text = text.replace(/^```[^\n]*\n?|\n?```$/g, '');
