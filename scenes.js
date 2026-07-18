@@ -45,7 +45,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
-import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
+import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
 import { buildSceneDetectPrompt, SCENE_SUMMARY_PROMPT } from './prompts.js';
 import { detectSceneBreakHeuristic } from './parsers.js';
 import { smLog } from './logging.js';
@@ -53,6 +53,7 @@ import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -123,7 +124,29 @@ export async function detectSceneBreakAI(messageText, previousMessageText) {
  */
 export function loadSceneHistory() {
   const context = getContext();
-  return context.chatMetadata?.[META_KEY]?.sceneHistory ?? [];
+  return (context.chatMetadata?.[META_KEY]?.sceneHistory ?? []).map((scene) => normalizeSceneRecord(scene, generateMemoryId));
+}
+
+/**
+ * Creates a scene record with stable source indices from the active chat.
+ * Catch-up messages retain their original index on a non-persisted property;
+ * normal chat messages are resolved directly against the current chat.
+ */
+export function createSceneRecord(summary, messages = [], details = {}) {
+  const context = getContext();
+  const sourceMessageIndices = messages
+    .map((message) => Number.isInteger(message.__sme_original_index)
+      ? message.__sme_original_index
+      : context.chat?.indexOf(message))
+    .filter((index) => Number.isInteger(index) && index >= 0);
+  return normalizeSceneRecord({
+    id: generateMemoryId(),
+    summary,
+    ts: Date.now(),
+    source_memory_ids: [],
+    source_message_indices: sourceMessageIndices,
+    ...details,
+  }, generateMemoryId);
 }
 
 /**
@@ -134,8 +157,18 @@ export async function saveSceneHistory(scenes) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].sceneHistory = scenes;
-  await context.saveMetadata();
+  const max = extension_settings[MODULE_NAME]?.scene_archive_max ?? 100;
+  const metadata = context.chatMetadata[META_KEY];
+  const previous = metadata.sceneHistory;
+  const staged = trimSceneArchive(scenes.map((scene) => normalizeSceneRecord(scene, generateMemoryId)), max);
+  metadata.sceneHistory = staged;
+  try {
+    await context.saveMetadata();
+  } catch (error) {
+    // Do not leave a failed scene save visible as if it were committed.
+    metadata.sceneHistory = previous;
+    throw error;
+  }
 }
 
 /**
@@ -208,7 +241,7 @@ export async function summarizeScene(sceneMessages) {
  * the completed scene and appends it to scene history.
  *
  * Uses AI detection if scene_ai_detect is enabled, otherwise heuristics.
- * Respects scene_max_history - oldest scenes are dropped when the limit is exceeded.
+ * Archives scenes independently from the smaller injected-scene subset.
  *
  * @param {string} lastMessageText - Text of the last AI message.
  * @param {Array} recentMessages - Messages accumulated since the last scene break.
@@ -270,11 +303,10 @@ export async function processSceneBreak(
     }
   }
 
-  const max = settings.scene_max_history ?? 5;
-
   // source_memory_ids is populated after extraction via linkMemoriesToLastScene.
-  history.push({ summary, ts: Date.now(), source_memory_ids: [] });
-  if (history.length > max) history.splice(0, history.length - max);
+  history.push(createSceneRecord(summary, recentMessages, {
+    detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
+  }));
 
   if (abortCheck?.()) return false;
   await saveSceneHistory(history);
@@ -339,9 +371,10 @@ export function injectSceneHistory() {
   // If a single scene still exceeds the budget, hard-truncate so the injection
   // is always within the cap regardless of individual summary length.
   const budget = settings.scene_inject_budget ?? 300;
-  const fullText = history.map((sc, i) => `Scene ${i + 1}: ${sc.summary}`).join('\n');
+  const injectionCandidates = selectScenesForInjection(history, settings.scene_inject_count ?? 5);
+  const fullText = injectionCandidates.map((sc, i) => `Scene ${i + 1}: ${sc.summary}`).join('\n');
   const fullTokens = estimateTokens(`Previous scenes:\n${fullText}`);
-  const trimmed = [...history];
+  const trimmed = [...injectionCandidates];
   while (trimmed.length > 1) {
     const text = trimmed.map((sc, i) => `Scene ${i + 1}: ${sc.summary}`).join('\n');
     if (estimateTokens(text) <= budget) break;
