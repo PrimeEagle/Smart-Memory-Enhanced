@@ -105,6 +105,15 @@ test('chat-local cleanup: Forget This Chat and Fresh Start remove every chat-loc
   assert.match(canon, /metadata\?\.\[MODULE_NAME\]\?\.card_local_canon/);
 });
 
+test('Fresh Start refreshes cleared personal prompt slots before updating token usage', () => {
+  const settings = read('settings.js');
+  const freshStart = settings.slice(settings.indexOf("$('#sme_fresh_start_button')"), settings.indexOf('// ---- Embedding deduplication'));
+  assert.match(freshStart, /injectRelationshipHistory\(characterName\)/);
+  assert.match(freshStart, /injectEpistemicKnowledge\(characterName, characterName\)/);
+  assert.match(freshStart, /injectCanon\(characterName\)/);
+  assert.ok(freshStart.indexOf('injectRelationshipHistory(characterName)') < freshStart.indexOf('updateTokenDisplay()'));
+});
+
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
   assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\] \}/);
