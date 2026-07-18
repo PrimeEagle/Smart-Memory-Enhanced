@@ -51,6 +51,17 @@ test('cross-tier grounding: scenes, arcs, profiles, and epistemic entries valida
   assert.match(epistemic, /loadEpistemicKnowledge\(characterName\)\.filter\(isGeneratedRecordApproved\)/);
 });
 
+test('operational workflow: Memorize Chat has a no-save workload preview and exports compact diagnostics', () => {
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  assert.match(html, /sme_preview_catch_up/);
+  assert.match(html, /sme_export_diagnostics/);
+  assert.match(settings, /Preview only - nothing will be generated or saved/);
+  assert.match(settings, /catch_up_diagnostics/);
+  assert.match(settings, /source_start_index/);
+  assert.match(settings, /raw provider output/);
+});
+
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
   assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\] \}/);
