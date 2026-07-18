@@ -296,7 +296,7 @@ async function deduplicateSession(existing, incoming, max) {
  *   bails out before writing to chatMetadata. Used by the automatic extraction path to abort when
  *   the user switches chats mid-extraction.
  */
-export async function extractSessionMemories(recentMessages, abortCheck = null) {
+export async function extractSessionMemories(recentMessages, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.session_enabled) return 0;
 
@@ -359,6 +359,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
       : null;
     applyDirectProvenance(incoming, recentMessages, windowStart, originalMessageIndices);
     for (const memory of incoming) validateGeneratedMemoryRecord(memory, existing);
+    if (options.dryRun) {
+      return {
+        dryRun: true,
+        parsed: incoming.length,
+        candidates: incoming.map((memory) => ({ type: memory.type, content: memory.content, grounding_status: memory.grounding_status, validation_status: memory.validation_status, validation_issues: memory.validation_issues ?? [] })),
+      };
+    }
 
     const max = settings.session_max_memories ?? 30;
     const merged = await deduplicateSession(existing, incoming, max);
