@@ -654,7 +654,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Derive the characters present in this extraction window so the injection
     // path can downgrade memories the responding character did not witness.
     const witnessedBy = getSceneParticipants(recentMessages);
-    applyDirectProvenance(newMemories, recentMessages, windowStart);
+    const originalMessageIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
+      ? recentMessages.map((message) => message.__sme_original_index)
+      : null;
+    applyDirectProvenance(newMemories, recentMessages, windowStart, originalMessageIndices);
     for (const mem of newMemories) {
       mem.source_chat_id = sourceChatId;
       mem.witnessed_by = witnessedBy;

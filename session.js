@@ -354,7 +354,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     const chatLen = context.chat?.length ?? 1;
     const windowEnd = Math.max(0, chatLen - 2);
     const windowStart = Math.max(0, windowEnd - recentMessages.length + 1);
-    applyDirectProvenance(incoming, recentMessages, windowStart);
+    const originalMessageIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
+      ? recentMessages.map((message) => message.__sme_original_index)
+      : null;
+    applyDirectProvenance(incoming, recentMessages, windowStart, originalMessageIndices);
     for (const memory of incoming) validateGeneratedMemoryRecord(memory, existing);
 
     const max = settings.session_max_memories ?? 30;
