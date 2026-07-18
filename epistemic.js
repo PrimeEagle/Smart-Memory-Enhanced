@@ -348,7 +348,7 @@ export async function extractEpistemicKnowledge(
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
     // Parse retire indices first so the caller can filter before dedup.
-    const retireIndices = parseEpistemicRetireIndices(response);
+    const retireIndices = new Set([...parseEpistemicRetireIndices(response)].filter((index) => index >= 1 && index <= existing.length));
     const retiredCount = retireIndices.size;
 
     // Filter existing entries - remove any the model flagged as superseded.
@@ -362,6 +362,8 @@ export async function extractEpistemicKnowledge(
     }
 
     const roster = buildCanonicalCharacterRoster(getContext());
+    const perSubjectCap = Math.max(1, Number(settings.epistemic_max_per_subject_per_scene) || 5);
+    const acceptedBySubject = new Map();
     const parsed = parseEpistemicResponse(response).flatMap((entry) => {
       const subject = resolveCanonicalCharacterName(entry.subject, roster);
       const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
@@ -369,9 +371,20 @@ export async function extractEpistemicKnowledge(
         smLog(`[SmartMemory] Epistemic entry skipped due to ambiguous identity: ${entry.subject}`);
         return [];
       }
+      const canonicalSubject = subject.canonicalName ?? entry.subject;
+      const count = acceptedBySubject.get(canonicalSubject) ?? 0;
+      if (count >= perSubjectCap) {
+        smLog(`[SmartMemory] Epistemic entry skipped: per-scene cap reached for ${canonicalSubject}.`);
+        return [];
+      }
+      if (entry.content.length < 8 || entry.content.length > 500 || /\b(?:retire|retires)\s*\[?\d+/i.test(entry.content)) {
+        smLog(`[SmartMemory] Epistemic entry skipped: malformed content for ${canonicalSubject}.`);
+        return [];
+      }
+      acceptedBySubject.set(canonicalSubject, count + 1);
       return [{
         ...entry,
-        subject: subject.canonicalName ?? entry.subject,
+        subject: canonicalSubject,
         target: target?.canonicalName ?? entry.target,
       }];
     });

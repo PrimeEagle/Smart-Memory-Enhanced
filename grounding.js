@@ -1,11 +1,18 @@
 /** Grounding helpers for newly extracted memories. */
+import { normalizeMemoryProvenance, validateMemoryAncestry } from './record-validation.js';
+
 export function applyDirectProvenance(memories, recentMessages, chatWindowStart) {
   for (const memory of memories) {
-    const claimedIndices = memory.source_message_indices ?? [];
-    const indices = [...new Set(claimedIndices.filter(
+    const claimedIndices = Array.isArray(memory.source_message_indices) ? memory.source_message_indices : [];
+    const validRelative = [...new Set(claimedIndices.filter(
       (index) => Number.isInteger(index) && index >= 0 && index < recentMessages.length,
     ))];
-    const hasMalformedClaim = claimedIndices.length > 0 && indices.length !== claimedIndices.length;
+    const hasMalformedClaim = claimedIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= recentMessages.length);
+    if (claimedIndices.length > 0) {
+      memory.source_message_indices = validRelative.map((index) => chatWindowStart + index);
+    }
+    const normalized = normalizeMemoryProvenance(memory);
+    const indices = normalized.indices;
     if (indices.length === 0 || hasMalformedClaim) {
       memory.grounding_status = 'ungrounded';
       memory.source_messages = [];
@@ -19,12 +26,22 @@ export function applyDirectProvenance(memories, recentMessages, chatWindowStart)
     memory.source_message_indices = indices;
     memory.validation_status = 'validated';
     memory.validation_issues = [];
-    memory.source_messages = indices.map((index) => {
-      const absoluteIndex = chatWindowStart + index;
-      return [absoluteIndex, absoluteIndex];
-    });
+    // normalizeMemoryProvenance already rebuilt legacy ranges from the
+    // authoritative absolute indices above.
   }
   return memories;
+}
+
+export function validateGeneratedMemoryRecord(memory, memoryStore = []) {
+  normalizeMemoryProvenance(memory);
+  const ancestry = validateMemoryAncestry(memory.id, memory.parent_memory_ids, memoryStore);
+  memory.parent_memory_ids = ancestry.parentIds;
+  if (!ancestry.valid) {
+    memory.grounding_status = 'ungrounded';
+    memory.validation_status = 'needs_review';
+    memory.validation_issues = [...new Set([...(memory.validation_issues ?? []), ...ancestry.issues])];
+  }
+  return ancestry;
 }
 
 export function isGrounded(memory) {

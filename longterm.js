@@ -75,7 +75,7 @@ import {
   resolveEntityNames,
   reconcileEntityRegistry,
 } from './graph-migration.js';
-import { applyDirectProvenance, isGrounded } from './grounding.js';
+import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
 import { buildCanonicalCharacterRoster, buildStableRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
@@ -286,6 +286,7 @@ export function loadCharacterMemories(characterName) {
 export function saveCharacterMemories(characterName, memories) {
   if (!characterName || !Array.isArray(memories)) return;
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  for (const memory of memories) validateGeneratedMemoryRecord(memory, memories);
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     saveChatLocalMemories(characterName, memories).catch((err) => smLog('[SmartMemory] Failed to save chat-local memories:', err));
     return;
@@ -657,6 +658,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     for (const mem of newMemories) {
       mem.source_chat_id = sourceChatId;
       mem.witnessed_by = witnessedBy;
+      validateGeneratedMemoryRecord(mem, activeMemories);
     }
 
     const maxMemories = settings.longterm_max_memories || 25;
