@@ -8,6 +8,9 @@ import {
   formatSummary,
   detectSceneBreakHeuristic,
   parseProfileOutput,
+  parseRelationshipDeltaResponse,
+  parseEpistemicResponse,
+  parseEpistemicRetireIndices,
 } from '../parsers.js';
 import { applyDirectProvenance } from '../grounding.js';
 
@@ -562,4 +565,24 @@ test('parseProfileOutput: trims whitespace from sections', () => {
   assert.ok(result !== null);
   // Content should be trimmed but not empty
   assert.ok(result.character_state.length > 0);
+});
+
+test('parseRelationshipDeltaResponse: strips Markdown numbering before strict pair parsing', () => {
+  const parsed = parseRelationshipDeltaResponse('1. **Alissa Kawaguchi -> Paul Schmidt: warm(high)**\n2. **Paul Schmidt -> Alissa Kawaguchi: protective(medium)**');
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].subject, 'Alissa Kawaguchi');
+  assert.equal(parsed[0].target, 'Paul Schmidt');
+  assert.deepEqual(parsed[0].updates, [{ word: 'warm', magnitude: 'high' }]);
+});
+
+test('parseRelationshipDeltaResponse: rejects descriptor prose contamination', () => {
+  assert.deepEqual(parseRelationshipDeltaResponse('Paul Schmidt -> Alissa Kawaguchi: open she is now willing to discuss everything with him'), []);
+});
+
+test('epistemic parser: separates inline retirement control text from content', () => {
+  const raw = "[knows] Alissa | She can handle Kyle's feelings (retires [24])";
+  assert.deepEqual(parseEpistemicRetireIndices(raw), new Set([24]));
+  const parsed = parseEpistemicResponse(raw);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].content, "She can handle Kyle's feelings");
 });

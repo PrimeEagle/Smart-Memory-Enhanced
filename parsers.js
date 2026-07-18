@@ -47,6 +47,7 @@
  */
 
 import { MEMORY_TYPES, SESSION_TYPES, generateMemoryId } from './constants.js';
+import { sanitizeStructuredModelOutput } from './record-validation.js';
 
 // ---- Long-term extraction -----------------------------------------------
 
@@ -506,7 +507,7 @@ const UPGRADE_HEDGE_RE = /^(?:very|extremely|deeply|intensely|profoundly)\s+/i;
  * @returns {Array<{subject: string, target: string, updates: Array<{word: string, magnitude: string}>, removals: string[]}>}
  */
 export function parseRelationshipDeltaResponse(response) {
-  const lines = String(response || '')
+  const lines = sanitizeStructuredModelOutput(response, 'relationship')
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l && l.toUpperCase() !== 'NONE');
@@ -519,9 +520,12 @@ export function parseRelationshipDeltaResponse(response) {
     const subject = match[1].trim();
     const target = match[2].trim();
     const rest = match[3].trim();
+    const validName = (name) => name.length > 0 && name.length <= 80 && !/[\d*#|\[\]]/.test(name);
+    if (!validName(subject) || !validName(target)) continue;
 
     const updates = [];
     const removals = [];
+    let malformed = false;
 
     for (const token of rest.split(',')) {
       const raw = token.trim();
@@ -536,7 +540,8 @@ export function parseRelationshipDeltaResponse(response) {
           .replace(/[^a-z\s-]/g, '')
           .trim()
           .toLowerCase();
-        if (word) removals.push(word);
+        if (word && word.split(/\s+/).length <= 4) removals.push(word);
+        else malformed = true;
         continue;
       }
 
@@ -565,9 +570,9 @@ export function parseRelationshipDeltaResponse(response) {
         word = word.replace(DOWNGRADE_HEDGE_RE, '').replace(UPGRADE_HEDGE_RE, '').trim();
       }
 
-      if (word && !MAGNITUDE_KEYWORDS.has(word)) {
+      if (word && word.split(/\s+/).length <= 4 && !MAGNITUDE_KEYWORDS.has(word)) {
         updates.push({ word, magnitude });
-      }
+      } else malformed = true;
     }
 
     // Deduplicate updates by root word: hedge normalization can produce the same
@@ -582,7 +587,7 @@ export function parseRelationshipDeltaResponse(response) {
     }
     const dedupedUpdates = [...deduped.values()];
 
-    if (subject && target && (dedupedUpdates.length > 0 || removals.length > 0)) {
+    if (!malformed && subject && target && (dedupedUpdates.length > 0 || removals.length > 0)) {
       results.push({ subject, target, updates: dedupedUpdates, removals });
     }
   }
@@ -671,11 +676,12 @@ const EPISTEMIC_VALID_TYPES = new Set(['knows', 'unaware', 'suspects', 'believes
  * @returns {Array<{type: string, subject: string, target: string|null, content: string}>}
  */
 export function parseEpistemicResponse(text) {
-  if (!text || text.trim().toUpperCase() === 'NONE') return [];
+  const sanitized = sanitizeStructuredModelOutput(text, 'epistemic');
+  if (!sanitized || sanitized.trim().toUpperCase() === 'NONE') return [];
 
   const entries = [];
 
-  for (const raw of text.split('\n')) {
+  for (const raw of sanitized.split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('#') || line.startsWith('-')) continue;
 
@@ -725,8 +731,9 @@ const EPISTEMIC_RETIRE_LINE_RE = /^\[retire\]/i;
  */
 export function parseEpistemicRetireIndices(text) {
   const indices = new Set();
-  if (!text) return indices;
-  for (const raw of text.split('\n')) {
+  const sanitized = sanitizeStructuredModelOutput(text, 'epistemic');
+  if (!sanitized) return indices;
+  for (const raw of sanitized.split('\n')) {
     const trimmed = raw.trim();
     if (!EPISTEMIC_RETIRE_LINE_RE.test(trimmed)) continue;
     const nums = trimmed.replace(EPISTEMIC_RETIRE_LINE_RE, '').match(/\d+/g);

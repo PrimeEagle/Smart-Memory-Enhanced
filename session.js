@@ -44,7 +44,7 @@ import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { applyDirectProvenance, isGrounded } from './grounding.js';
+import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -174,6 +174,7 @@ export function loadSessionMemories() {
  */
 export async function saveSessionMemories(memories) {
   const context = getContext();
+  for (const memory of memories ?? []) validateGeneratedMemoryRecord(memory, memories);
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].sessionMemories = memories;
@@ -354,6 +355,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
     const windowEnd = Math.max(0, chatLen - 2);
     const windowStart = Math.max(0, windowEnd - recentMessages.length + 1);
     applyDirectProvenance(incoming, recentMessages, windowStart);
+    for (const memory of incoming) validateGeneratedMemoryRecord(memory, existing);
 
     const max = settings.session_max_memories ?? 30;
     const merged = await deduplicateSession(existing, incoming, max);
@@ -373,7 +375,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null) 
       );
       const oldMem = existing.find((m) => m.id === oldId);
 
-      if (newMem && oldMem && !oldMem.superseded_by) {
+      if (newMem && oldMem && !oldMem.superseded_by && newMem.id !== oldMem.id) {
         if (!newMem.supersedes) newMem.supersedes = [];
         if (!newMem.supersedes.includes(oldId)) newMem.supersedes.push(oldId);
         newMem.valid_from = newMem.valid_from ?? messageIndex;

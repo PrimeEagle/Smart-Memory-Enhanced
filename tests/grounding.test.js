@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDirectProvenance, isGrounded } from '../grounding.js';
+import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from '../grounding.js';
 
 test('grounding: valid citations become direct provenance with absolute message ranges', () => {
   const memories = [{ content: 'The gate is locked.', source_message_indices: [0, 2] }];
@@ -8,7 +8,7 @@ test('grounding: valid citations become direct provenance with absolute message 
 
   assert.equal(memories[0].grounding_status, 'direct');
   assert.equal(memories[0].validation_status, 'validated');
-  assert.deepEqual(memories[0].source_message_indices, [0, 2]);
+  assert.deepEqual(memories[0].source_message_indices, [14, 16]);
   assert.deepEqual(memories[0].source_messages, [[14, 14], [16, 16]]);
   assert.equal(isGrounded(memories[0]), true);
 });
@@ -28,13 +28,21 @@ test('grounding: missing or malformed citations are quarantined for review', () 
   }
 });
 
-test('grounding: duplicated citations are treated as malformed rather than silently accepted', () => {
+test('grounding: duplicated citations are normalized rather than creating competing provenance', () => {
   const memories = [{ content: 'The gate is locked.', source_message_indices: [0, 0] }];
   applyDirectProvenance(memories, [{}], 0);
-  assert.equal(memories[0].validation_status, 'needs_review');
-  assert.match(memories[0].validation_issues[0], /outside this extraction chunk/);
+  assert.equal(memories[0].validation_status, 'validated');
+  assert.deepEqual(memories[0].source_message_indices, [0]);
 });
 
 test('grounding: an explicitly approved quarantined memory is injectable', () => {
   assert.equal(isGrounded({ grounding_status: 'ungrounded', validation_status: 'approved' }), true);
+});
+
+test('grounding: self-parent ancestry is removed and quarantined before persistence', () => {
+  const memory = { id: 'A', parent_memory_ids: ['A'], source_message_indices: [4] };
+  validateGeneratedMemoryRecord(memory, []);
+  assert.deepEqual(memory.parent_memory_ids, []);
+  assert.equal(memory.validation_status, 'needs_review');
+  assert.match(memory.validation_issues.join(' '), /cannot list itself/);
 });

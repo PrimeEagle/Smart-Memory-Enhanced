@@ -62,6 +62,14 @@ test('canonical roster: active user persona is included alongside group members'
   assert.equal(resolveCanonicalCharacterName('Aaron Holland', result).status, 'resolved');
 });
 
+test('canonical roster: a unique persona first name resolves without creating a duplicate entity', () => {
+  const personaRoster = buildCanonicalCharacterRoster({ name1: 'Kyle Holland', characters: [] });
+  const result = resolveCanonicalCharacterName('Kyle', personaRoster);
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.canonicalName, 'Kyle Holland');
+  assert.equal(result.shouldCreateEntity, false);
+});
+
 test('integration: registry candidates collapse to the canonical card identity', () => {
   const candidates = ['Paul', 'Paul Kawaguchi', 'Sophie'].map((name) => resolveCanonicalCharacterName(name, roster));
   assert.deepEqual(candidates.map((entry) => entry.canonicalName ?? entry.candidateName), ['Paul Schmidt', 'Paul Schmidt', 'Sophie']);

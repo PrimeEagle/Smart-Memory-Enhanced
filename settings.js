@@ -335,6 +335,7 @@ export const defaultSettings = {
   epistemic_inject_unaware: true,
   epistemic_secondhand_framing: true,
   epistemic_response_length: 400,
+  epistemic_max_per_subject_per_scene: 5,
   epistemic_inject_budget: 200,
   epistemic_depth: 1,
   epistemic_position: extension_prompt_types.IN_CHAT,
