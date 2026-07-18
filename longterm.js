@@ -76,6 +76,7 @@ import {
   reconcileEntityRegistry,
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
+import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { buildCanonicalCharacterRoster, buildStableRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
@@ -812,6 +813,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         // Only store pairs where the character is one of the parties.
         if (deltas.length > 0) {
           const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+          const relationshipSources = recentMessages.map((message) => Number.isInteger(message.__sme_original_index)
+            ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
           for (const { subject: rawSubject, target: rawTarget, updates, removals } of deltas) {
             const subjectResult = resolveCanonicalCharacterName(rawSubject, canonicalRoster);
             const targetResult = resolveCanonicalCharacterName(rawTarget, canonicalRoster);
@@ -844,7 +847,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               for (const [w, m] of sorted.slice(0, REL_DESCRIPTOR_CAP)) descMap.set(w, m);
             }
 
-            relHistory[key] = {
+            const relationshipRecord = {
               descriptors: Array.from(descMap.entries()).map(([word, magnitude]) => ({
                 word,
                 magnitude,
@@ -855,6 +858,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               target_canonical_card_id: pair.target.cardId,
               updatedAt: Date.now(),
             };
+            relationshipRecord.source_message_indices = relationshipSources;
+            relationshipRecord.parent_memory_ids = [];
+            validateGeneratedRecord(relationshipRecord);
+            relHistory[key] = relationshipRecord;
           }
           saveRelationshipHistory(characterName, relHistory);
           smLog(`[SmartMemory] Relationship deltas applied: ${deltas.length} pair(s)`);
@@ -1372,7 +1379,7 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
   if (!settings.relationships_enabled || !characterName || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) return clear();
 
   const history = loadRelationshipHistory(characterName);
-  const pairs = Object.entries(history);
+  const pairs = Object.entries(history).filter(([, state]) => isGeneratedRecordApproved(state));
   if (pairs.length === 0) return clear();
 
   // Build a set of names mentioned in recent messages to filter relevant pairs.

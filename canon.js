@@ -51,6 +51,8 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import { isGeneratedRecordApproved } from './record-validation.js';
+import { isGrounded } from './grounding.js';
 
 // ---- Storage ------------------------------------------------------------
 
@@ -140,7 +142,7 @@ export async function generateCanon(characterName) {
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return null;
 
   const settings = extension_settings[MODULE_NAME];
-  const arcSummaries = loadArcSummaries();
+  const arcSummaries = loadArcSummaries().filter(isGeneratedRecordApproved);
   if (arcSummaries.length === 0) {
     smLog('[SmartMemory] Canon generation skipped - no arc summaries available.');
     return null;
@@ -149,7 +151,7 @@ export async function generateCanon(characterName) {
   // Use high-importance (importance >= 2) long-term memories as the foundation.
   // Cap at 30 to keep the prompt cost manageable on local hardware.
   const memories = loadCharacterMemories(characterName)
-    .filter((m) => !m.superseded_by && (m.importance ?? 1) >= 2)
+    .filter((m) => !m.superseded_by && (m.importance ?? 1) >= 2 && isGrounded(m))
     .slice(0, 30);
   const memoriesText = memories.map((m) => `[${m.type}] ${m.content}`).join('\n');
 
