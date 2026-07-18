@@ -3416,9 +3416,12 @@ export function bindSettingsUI(ctrl) {
     // Clear all injection slots.
     loadAndInjectSummary();
     await injectMemories(characterName);
+    injectRelationshipHistory(characterName);
     injectSessionMemories();
     injectSceneHistory();
     injectArcs();
+    injectEpistemicKnowledge(characterName, characterName);
+    injectCanon(characterName);
     injectProfiles(characterName);
     injectStateLedger();
 
