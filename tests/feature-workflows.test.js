@@ -64,6 +64,18 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /identityResolution/);
 });
 
+test('secondary tiers: relationship history, State Ledger, and canon use approved evidence only', () => {
+  const relationships = read('longterm.js');
+  const ledger = read('state-ledger.js');
+  const canon = read('canon.js');
+  assert.match(relationships, /relationshipRecord\.source_message_indices/);
+  assert.match(relationships, /isGeneratedRecordApproved\(state\)/);
+  assert.match(ledger, /source_message_indices: sourceMessageIndices/);
+  assert.match(ledger, /Object\.entries\(ledger\)\.filter\(\(\[, fields\]\) => isGeneratedRecordApproved\(fields\)\)/);
+  assert.match(canon, /loadArcSummaries\(\)\.filter\(isGeneratedRecordApproved\)/);
+  assert.match(canon, /isGrounded\(m\)/);
+});
+
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
   assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\] \}/);

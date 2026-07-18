@@ -56,6 +56,7 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { buildCanonicalCharacterRoster, buildStableLedgerKey, formatCanonicalRosterForPrompt, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 
 // ---- Field schema -----------------------------------------------------------
 
@@ -315,6 +316,8 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     if (abortCheck?.()) return 0;
     const ledger = loadStateLedger();
     const roster = buildCanonicalCharacterRoster(getContext());
+    const sourceMessageIndices = messages.map((message) => Number.isInteger(message.__sme_original_index)
+      ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
     let count = 0;
     for (const [key, fields] of updates) {
       const [rawName, type] = key.split('|');
@@ -324,12 +327,16 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
         continue;
       }
       const canonicalKey = stableLedgerKey(resolution.canonicalName ?? rawName, type);
-      ledger[canonicalKey] = {
+      const record = {
         ...(ledger[canonicalKey] ?? {}),
         ...fields,
         _name: resolution.canonicalName ?? rawName,
         _canonical_card_id: resolution.canonicalId ?? null,
+        source_message_indices: sourceMessageIndices,
+        parent_memory_ids: [],
       };
+      validateGeneratedRecord(record);
+      ledger[canonicalKey] = record;
       count++;
     }
     await saveStateLedger(ledger);
@@ -352,7 +359,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
  * @returns {string}
  */
 function buildStateLedgerBlock(ledger) {
-  const entries = Object.entries(ledger);
+  const entries = Object.entries(ledger).filter(([, fields]) => isGeneratedRecordApproved(fields));
   if (entries.length === 0) return '';
 
   // Group by type for a readable block.
