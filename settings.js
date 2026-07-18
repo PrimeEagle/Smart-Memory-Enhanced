@@ -1139,20 +1139,21 @@ export function bindSettingsUI(ctrl) {
     if (!characterName) return toastr.warning('No character is active.', 'Smart Memory Enhanced');
     const button = $('#sme_preview_catch_up').prop('disabled', true);
     try {
-      const [longterm, session] = await Promise.all([
+      const [longterm, session, arcs] = await Promise.all([
         extractAndStoreMemories(characterName, messages, null, { dryRun: true }),
         extractSessionMemories(messages, null, { dryRun: true }),
+        extractArcs(messages, characterName, null, { dryRun: true }),
       ]);
       const candidates = [...(longterm?.candidates ?? []), ...(session?.candidates ?? [])];
       const reviewCount = candidates.filter((candidate) => candidate.validation_status === 'needs_review').length;
       latestDryRunDiagnostics = {
         version: 1, created_at: Date.now(), dry_run: true,
         workload: { messages: messages.length, token_estimate: tokenEstimate, chunk_estimate: Math.ceil(tokenEstimate / chunkBudget), heuristic_scene_candidates: scenes },
-        longterm, session,
+        longterm, session, arcs,
       };
       $('#sme_export_diagnostics').prop('disabled', false);
       await callGenericPopup(
-        `Dry run complete - no memories or entities were saved.\n\n${messages.length} usable messages\n~${tokenEstimate.toLocaleString()} chat tokens\n~${Math.ceil(tokenEstimate / chunkBudget)} extraction chunks\n${scenes} heuristic scene-break candidates\n${longterm?.candidates?.length ?? 0} long-term candidates\n${session?.candidates?.length ?? 0} session candidates\n${reviewCount} candidates need grounding review\n\nExport Diagnostics contains the candidate details.`,
+        `Dry run complete - no memories or entities were saved.\n\n${messages.length} usable messages\n~${tokenEstimate.toLocaleString()} chat tokens\n~${Math.ceil(tokenEstimate / chunkBudget)} extraction chunks\n${scenes} heuristic scene-break candidates\n${longterm?.candidates?.length ?? 0} long-term candidates\n${session?.candidates?.length ?? 0} session candidates\n${arcs?.candidates?.length ?? 0} story-arc candidates\n${arcs?.resolved_candidates ?? 0} potential arc resolutions\n${reviewCount} candidates need grounding review\n\nExport Diagnostics contains the candidate details.`,
         POPUP_TYPE.DISPLAY,
       );
     } catch (error) {

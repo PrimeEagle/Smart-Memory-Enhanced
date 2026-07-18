@@ -656,7 +656,7 @@ export async function generateArcSummary(arcContent) {
  *   the user switches chats mid-extraction.
  * @returns {Promise<number>} Count of new arcs added (0 on failure or nothing found).
  */
-export async function extractArcs(messages, characterName = null, abortCheck = null) {
+export async function extractArcs(messages, characterName = null, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.arcs_enabled) return 0;
 
@@ -726,6 +726,16 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
           `[SmartMemory] Arc session-filter: ${rawAdd.length} candidates -> ${add.length} kept`,
         );
       }
+    }
+
+    if (options.dryRun) {
+      const sourceMessageIndices = messages.map((message) => Number.isInteger(message.__sme_original_index)
+        ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
+      return {
+        dryRun: true,
+        candidates: add.map((arc) => ({ content: arc.content, source_message_indices: sourceMessageIndices })),
+        resolved_candidates: resolve.length,
+      };
     }
 
     // Convert resolve indices to arc objects immediately, before any async work.

@@ -73,6 +73,14 @@ test('dry run: primary extraction returns grounded candidates before persistence
   assert.match(session, /validation_issues/);
 });
 
+test('dry run: story arc candidates are analyzed before any arc-save path', () => {
+  const arcs = read('arcs.js');
+  const settings = read('settings.js');
+  assert.match(arcs, /if \(options\.dryRun\) \{/);
+  assert.match(arcs, /resolved_candidates/);
+  assert.match(settings, /extractArcs\(messages, characterName, null, \{ dryRun: true \}\)/);
+});
+
 test('secondary tiers: relationship history, State Ledger, and canon use approved evidence only', () => {
   const relationships = read('longterm.js');
   const ledger = read('state-ledger.js');
