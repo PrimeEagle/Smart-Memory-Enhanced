@@ -123,6 +123,23 @@ it is not a list of features added by this fork.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-18
+
+### Fixed
+
+- **Forget This Chat** now removes every Chat-Local Only store for the chat,
+  including local long-term memories, relationships, Perspectives & Secrets,
+  entity registries, and canon for all group members.
+- **Fresh Start** now removes the selected character's Chat-Local Only data as
+  part of its reset.
+- Moved newly saved chat-local canon data to the normal Smart Memory Enhanced
+  chat-metadata container, while retaining a read-and-clear fallback for data
+  written to the prior location.
+
+### Tests
+
+- Added regression coverage for complete Chat-Local Only cleanup.
+
 ## [0.7.0] - 2026-07-18
 
 ### Added
