@@ -123,6 +123,60 @@ it is not a list of features added by this fork.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-18
+
+### Added
+
+- Separate scene archive retention from the smaller scene-injection window.
+  Archives retain up to their configured cap while only recent, budget-fitting
+  scenes are injected.
+- Scene provenance: stable IDs, original source-message ranges, detection
+  method, validation state, source jump, edit, delete, and re-summarize
+  controls.
+- Catch-up scene audit reporting for detected candidates, generated summaries,
+  duplicate rejections, failures, archived scenes, and injected scenes.
+- Shared record validation for secondary generated tiers, including source
+  normalization, ancestry checking, grounding status, validation status, and
+  review issues.
+- Exportable, privacy-conscious Memorize Chat diagnostics with chunk ranges,
+  retries, persistence failures, tier failures, scene results, and identity
+  reconciliation outcomes. Chat text and raw provider responses are excluded.
+- A no-write **Preview Memorize Chat** dry run. It calls the configured model
+  for long-term, session, and story-arc extraction, validates the candidates,
+  and exposes a temporary report through Export Diagnostics without saving
+  memories, entities, settings, or chat metadata.
+
+### Changed
+
+- Catch-up automatically performs safe canonical-entity reconciliation after
+  extraction and includes match, merge, review, and unmatched counts in its
+  diagnostics.
+- Newly generated scenes, arcs, resolved arc summaries, profiles, epistemic
+  entries, Relationship History updates, and State Ledger updates carry the
+  shared grounding contract where source evidence is available.
+- Prompt injection excludes newly ungrounded secondary records. Canon generation
+  uses only approved arc summaries and grounded memory evidence; profiles use
+  approved memory evidence.
+- Legacy records remain readable for compatibility, while newly generated
+  source-less records are marked for review instead of silently becoming prompt
+  evidence.
+
+### Fixed
+
+- Scene archive saves now stage and roll back in-memory changes when metadata
+  persistence fails.
+- Scene retention no longer mistakes the injected-scene count for the archive
+  storage limit.
+- Filtered catch-up windows preserve original chat indices for scene, arc,
+  epistemic, relationship, and State Ledger provenance.
+
+### Tests
+
+- Expanded the automated suite to 126 checks, covering scene archive retention
+  and provenance, shared cross-tier grounding, operational diagnostics,
+  no-write primary-tier dry runs, and story-arc dry-run analysis, in addition
+  to the established extraction regression harness.
+
 ## [0.6.7] - 2026-07-17
 
 ### Changed
