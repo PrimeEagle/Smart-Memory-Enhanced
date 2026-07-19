@@ -759,7 +759,7 @@ export function buildTriggerGenerationPrompt(content) {
  *
  * Given a scene and the current baseline relationship state for known pairs,
  * the model outputs one line per pair that changed, in the format:
- *   subject->target: descriptor, descriptor, magnitude=low|medium|high
+ *   subject -> target: descriptor(magnitude), descriptor(magnitude)
  *
  * For new character pairs with no prior state, the caller may include a
  * character card excerpt so the model can seed the initial state from it.
@@ -809,7 +809,10 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `- Use magnitude to express intensity, not hedge words: nervous(low) not slightly nervous(medium)\n` +
     `- Capture ALL named characters with observable relationships - NPCs and characters without cards count\n` +
     `- Include named animals and non-human characters if they have a meaningful relationship with someone\n` +
+    `- Both sides must be named characters. Never use rooms, homes, places, objects, activities, organizations, or concepts.\n` +
     `- Do not include unnamed extras or background crowd members\n` +
+    `- Output descriptor(low), descriptor(medium), descriptor(high), or !descriptor only. Do not write new, added, updated, resolved, Markdown, numbering, or explanations.\n` +
+    `- Valid: Alice -> Bob: trusting(high). Invalid: Alice -> Bob's apartment: closer new.\n` +
     `- Output NONE if no relevant pairs appear in the scene\n\n` +
     `Format: Subject -> Target: descriptor(magnitude), descriptor(magnitude)\n\n` +
     canonicalRoster + cardSection +

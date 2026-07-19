@@ -829,6 +829,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           const relationshipSources = recentMessages.map((message) => Number.isInteger(message.__sme_original_index)
             ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
           for (const { subject: rawSubject, target: rawTarget, updates, removals } of deltas) {
+            const looksLikeCharacterName = (name) => {
+              const normalized = String(name ?? '').trim();
+              return /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(normalized) &&
+                !/\b(?:apartment|room|house|home|office|street|city|town|running|walking|sleeping)\b/i.test(normalized);
+            };
+            if (!looksLikeCharacterName(rawSubject) || !looksLikeCharacterName(rawTarget)) {
+              smLog(`[SmartMemory] Relationship pair skipped: both parties must be named characters (${rawSubject} -> ${rawTarget}).`);
+              continue;
+            }
             const subjectResult = resolveCanonicalCharacterName(rawSubject, canonicalRoster);
             const targetResult = resolveCanonicalCharacterName(rawTarget, canonicalRoster);
             if (subjectResult.status === 'ambiguous' || targetResult.status === 'ambiguous') {
@@ -871,9 +880,14 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               target_canonical_card_id: pair.target.cardId,
               updatedAt: Date.now(),
             };
-            relationshipRecord.source_message_indices = relationshipSources;
+            relationshipRecord.source_message_indices = [...new Set([
+              ...(existing.source_message_indices ?? []),
+              ...relationshipSources,
+            ])].sort((a, b) => a - b);
+            relationshipRecord.last_update_source_indices = relationshipSources;
             relationshipRecord.parent_memory_ids = [];
             validateGeneratedRecord(relationshipRecord);
+            relationshipRecord.evidence_ranges = relationshipRecord.source_messages;
             relHistory[key] = relationshipRecord;
           }
           saveRelationshipHistory(characterName, relHistory);

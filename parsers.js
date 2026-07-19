@@ -531,6 +531,17 @@ export function parseRelationshipDeltaResponse(response) {
       const raw = token.trim();
       if (!raw) continue;
 
+      // Relationship descriptors are a small data language, not free prose.
+      // Validate before the legacy cleanup below so malformed model fragments
+      // cannot be silently turned into a plausible-looking stored value.
+      const strictRemoval = /^!([a-z]+(?:-[a-z]+){0,2})$/i.exec(raw);
+      const strictDescriptor = /^([a-z]+(?:-[a-z]+){0,2})\((low|medium|high)\)$/i.exec(raw);
+      const strictWord = (strictRemoval?.[1] ?? strictDescriptor?.[1] ?? '').toLowerCase();
+      if ((!strictRemoval && !strictDescriptor) || /(?:new|added|updated|resolved|remove|inv)$/i.test(strictWord)) {
+        malformed = true;
+        continue;
+      }
+
       // Removal marker: !descriptor
       if (raw.startsWith('!')) {
         const word = raw
