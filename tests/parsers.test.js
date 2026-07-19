@@ -4,6 +4,7 @@ import {
   parseExtractionOutput,
   parseSessionOutput,
   parseArcOutput,
+  parseSceneSummaryOutput,
   parseContradictions,
   formatSummary,
   detectSceneBreakHeuristic,
@@ -268,6 +269,15 @@ test('parseArcOutput: parses [arc] lines', () => {
   assert.equal(typeof result.add[0].ts, 'number');
 });
 
+test('parseArcOutput: retains explicit structured character participants', () => {
+  const result = parseArcOutput(
+    '[arc:characters=Kyle Holland, Sophie, invalid name] Kyle and Sophie agree to investigate the lighthouse.',
+    [],
+  );
+  assert.equal(result.add.length, 1);
+  assert.deepEqual(result.add[0].character_participants, ['Kyle Holland', 'Sophie']);
+});
+
 test('parseArcOutput: requires arc content longer than 15 characters', () => {
   // Short content is skipped.
   assert.equal(parseArcOutput('[arc] Quest', []).add.length, 0);
@@ -481,6 +491,37 @@ test('detectSceneBreakHeuristic: does not trigger on bare word "later"', () => {
   // "later" alone should not match - requires context like "hours later" or "later that day"
   assert.equal(detectSceneBreakHeuristic('We can talk about that later.'), false);
   assert.equal(detectSceneBreakHeuristic('She would figure it out later.'), false);
+});
+
+// =========================================================================
+// parseSceneSummaryOutput
+// =========================================================================
+
+test('parseSceneSummaryOutput: parses [SCENE] and [CHARACTERS] sections', () => {
+  const result = parseSceneSummaryOutput([
+    '[SCENE]',
+    'Kyle and Sophie agree to investigate the abandoned lighthouse before dawn.',
+    '[/SCENE]',
+    '[CHARACTERS]',
+    'Kyle Holland, Sophie, Kyle Holland, invalid name',
+    '[/CHARACTERS]',
+  ].join('\n'));
+
+  assert.deepEqual(result, {
+    summary: 'Kyle and Sophie agree to investigate the abandoned lighthouse before dawn.',
+    characterParticipants: ['Kyle Holland', 'Sophie'],
+  });
+});
+
+test('parseSceneSummaryOutput: preserves legacy untagged summaries', () => {
+  assert.deepEqual(
+    parseSceneSummaryOutput('The party leaves the inn and heads for the old road.'),
+    {
+      summary: 'The party leaves the inn and heads for the old road.',
+      characterParticipants: [],
+    },
+  );
+  assert.equal(parseSceneSummaryOutput(''), null);
 });
 
 // =========================================================================
