@@ -907,6 +907,24 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
       }
     }
+    // Relationship History is independently grounded evidence. Its named
+    // character pair can introduce a real NPC even when primary extraction
+    // did not retain a matching memory record.
+    for (const [pairKey, relationship] of Object.entries(relHistory)) {
+      if (!isGeneratedRecordApproved(relationship)) continue;
+      const relationshipEntityRecord = {
+        id: `relationship:${pairKey}`,
+        grounding_status: relationship.grounding_status,
+        validation_status: relationship.validation_status,
+        source_message_indices: relationship.source_message_indices ?? [],
+      };
+      resolveEntityNames(
+        relationshipEntityRecord,
+        [relationship.subject_name, relationship.target_name].filter(Boolean).map((name) => `${name}/character`),
+        messageIndex,
+        entityRegistry,
+      );
+    }
     // Reconcile after every extraction pass, not just after consolidation.
     // Local models often omit the :entity= tag even when the entity is clearly
     // named in the memory content. The substring pass here catches those misses

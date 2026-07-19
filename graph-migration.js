@@ -537,7 +537,7 @@ export function reconcileEntityRegistry(entityRegistry, currentMemories) {
   entityRegistry.splice(
     0,
     entityRegistry.length,
-    ...entityRegistry.filter((e) => e.memory_ids.length > 0),
+    ...entityRegistry.filter((e) => e.memory_ids.length > 0 || (e.source_record_ids?.length ?? 0) > 0),
   );
   if (entityRegistry.length < before) {
     smLog(
