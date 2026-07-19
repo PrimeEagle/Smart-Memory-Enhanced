@@ -48,7 +48,7 @@ import { getContext, extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
-import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName, resolveEntityCandidate } from './canonical-entities.js';
 
 function getCharacterMemoryPolicy(characterName) {
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.memory_policy ?? 'full';
@@ -298,7 +298,7 @@ function parseEntityToken(token) {
   return { name, classifiedType: VALID_TYPES.includes(type) ? type : null };
 }
 
-function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType = null) {
+function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType = null, evidence = null) {
   const existing = findEntityByName(rawName, registry);
 
   if (existing) {
@@ -306,6 +306,11 @@ function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType 
       existing.memory_ids.push(memoryId);
     }
     existing.last_seen = Math.max(existing.last_seen, messageIndex);
+    if (evidence?.source_record_ids?.length) {
+      existing.source_record_ids = [...new Set([...(existing.source_record_ids ?? []), ...evidence.source_record_ids])];
+      existing.source_message_indices = [...new Set([...(existing.source_message_indices ?? []), ...(evidence.source_message_indices ?? [])])].sort((a, b) => a - b);
+      existing.creation_reason ??= evidence.creation_reason;
+    }
 
     // Record new spelling variants as aliases.
     const lower = rawName.toLowerCase().trim();
@@ -331,6 +336,9 @@ function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType 
     first_seen: messageIndex,
     last_seen: messageIndex,
     memory_ids: [memoryId],
+    source_record_ids: evidence?.source_record_ids ?? [memoryId],
+    source_message_indices: evidence?.source_message_indices ?? [],
+    creation_reason: evidence?.creation_reason ?? 'grounded-record',
   };
   registry.push(entity);
   return entity.id;
@@ -369,18 +377,24 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     .filter((n) => n && n.trim().length > 0)
     .flatMap((n) => {
       const { name, classifiedType } = parseEntityToken(n.trim());
-      const resolution = resolveApprovedIdentityAlias(name, roster) ?? resolveCanonicalCharacterName(name, roster, registry);
+      const resolution = resolveApprovedIdentityAlias(name, roster) ?? resolveEntityCandidate(name, roster, [registry], {
+        grounding_status: mem.grounding_status,
+        source_record_ids: [mem.id],
+        source_message_indices: mem.source_message_indices ?? [],
+      });
       recordIdentityReviewCandidate(resolution, { memoryId: mem.id, entityType: classifiedType });
       if (resolution.status === 'ambiguous') {
         smLog(`[SmartMemory] Entity candidate "${name}" quarantined: ${resolution.reason}`);
         return [];
       }
       const resolvedName = resolution.canonicalName ?? name;
-      const id = upsertEntity(resolvedName, mem.id, messageIndex, registry, classifiedType);
+      if (resolution.shouldCreateEntity && !resolution.promotion?.allowed) return [];
+      const id = upsertEntity(resolvedName, mem.id, messageIndex, registry, classifiedType, resolution.promotion);
       const entity = registry.find((entry) => entry.id === id);
       if (entity && resolution.canonicalId) {
         entity.canonical_card_id = resolution.canonicalId;
-        entity.source = 'character-card';
+        entity.type = 'character';
+        entity.source = (roster.characters ?? []).find((entry) => entry.id === resolution.canonicalId)?.source ?? 'character-card';
         if (resolution.status === 'rejected') {
           entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), name])];
         }
@@ -397,8 +411,11 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
   const roster = buildCanonicalCharacterRoster(context);
   const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
   for (const entity of [...registry]) {
-    if (entity.type !== 'character') continue;
-    const result = resolveCanonicalCharacterName(entity.name, roster, registry.filter((entry) => entry.id !== entity.id));
+    if (!['character', 'unknown'].includes(entity.type)) continue;
+    const result = resolveEntityCandidate(entity.name, roster, [registry.filter((entry) => entry.id !== entity.id)], {
+      source_record_ids: entity.source_record_ids ?? entity.memory_ids ?? [],
+      source_message_indices: entity.source_message_indices ?? [],
+    });
     if (result.status === 'ambiguous') {
       report.skipped.push({ name: entity.name, reason: result.reason });
       continue;
@@ -414,6 +431,8 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
         entity.name = result.canonicalName;
         entity.canonical_card_id = result.canonicalId;
+        entity.type = 'character';
+        entity.source = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId)?.source ?? 'character-card';
         report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason });
         report.changed = true;
       }

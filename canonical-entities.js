@@ -30,9 +30,11 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
   const personaName = String(options.personaName ?? context?.name1 ?? context?.userName ?? '').trim();
+  const personaRecord = options.persona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
+  const personaId = personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
   if (personaName && !characters.some((entry) => normalize(entry.canonicalName) === normalize(personaName))) {
     characters.push({
-      id: `persona:${normalize(personaName)}`,
+      id: `persona:${personaId}`,
       canonicalName: personaName,
       aliases: [words(personaName)[0]].filter(Boolean),
       descriptionExcerpt: '',
@@ -73,6 +75,35 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
   const existing = existingEntities.find((entry) => normalize(entry.name) === candidateNorm || (entry.aliases ?? []).some((alias) => normalize(alias) === candidateNorm));
   if (existing) return { status: 'resolved', candidateName: candidate, canonicalName: existing.name, canonicalId: existing.canonical_card_id ?? null, reason: 'Existing approved entity alias.', shouldCreateEntity: false, shouldAddAlias: false };
   return { status: 'unresolved', candidateName: candidate, reason: 'Not represented by a relevant character card.', shouldCreateEntity: true, shouldAddAlias: false };
+}
+
+/**
+ * The single identity decision used by extraction and reconciliation. It keeps
+ * roster matching scoped to the active chat and returns promotion evidence for
+ * genuinely new grounded NPCs.
+ */
+export function resolveEntityCandidate(candidate, canonicalRoster, registries = [], evidence = {}) {
+  const name = typeof candidate === 'string' ? candidate : candidate?.name;
+  const entries = Array.isArray(registries)
+    ? registries.flatMap((registry) => Array.isArray(registry) ? registry : [registry])
+    : [];
+  const resolution = resolveCanonicalCharacterName(name, canonicalRoster, entries);
+  const sourceRecordIds = [...new Set((evidence.source_record_ids ?? evidence.sourceRecordIds ?? []).filter(Boolean))];
+  const sourceMessageIndices = [...new Set((evidence.source_message_indices ?? evidence.sourceMessageIndices ?? []).filter(Number.isInteger))];
+  const explicitlyGrounded = evidence.grounding_status === 'direct' || sourceMessageIndices.length > 0;
+  const repeated = Number(evidence.repeated_mentions ?? evidence.repeatedMentions ?? 0) >= 2 || sourceRecordIds.length >= 2;
+  return {
+    ...resolution,
+    candidateName: String(name ?? '').trim(),
+    promotion: resolution.shouldCreateEntity && (explicitlyGrounded || repeated || evidence.manual === true)
+      ? {
+        allowed: true,
+        creation_reason: evidence.manual ? 'manual' : explicitlyGrounded ? 'grounded-record' : 'repeated-mention',
+        source_record_ids: sourceRecordIds,
+        source_message_indices: sourceMessageIndices,
+      }
+      : { allowed: false },
+  };
 }
 
 export function canonicalizeRelationshipPair(subject, target, roster) {
