@@ -8,6 +8,7 @@ import {
   canonicalizeRelationshipPair,
   reconcileCanonicalLedger,
   remapEntityIdInMemories,
+  resolveEntityCandidate,
   resolveCanonicalCharacterName,
 } from '../canonical-entities.js';
 
@@ -68,6 +69,31 @@ test('canonical roster: a unique persona first name resolves without creating a 
   assert.equal(result.status, 'resolved');
   assert.equal(result.canonicalName, 'Kyle Holland');
   assert.equal(result.shouldCreateEntity, false);
+});
+
+test('entity resolver uses the active persona identity and keeps its stable scoped key', () => {
+  const personaRoster = buildCanonicalCharacterRoster({
+    name1: 'Kyle Holland',
+    persona: { id: 'persona-kyle', name: 'Kyle Holland' },
+    characters: [],
+  });
+  const result = resolveEntityCandidate('Kyle', personaRoster, [], { source_message_indices: [41] });
+  assert.equal(personaRoster.characters[0].id, 'persona:persona-kyle');
+  assert.equal(result.canonicalName, 'Kyle Holland');
+  assert.equal(result.promotion.allowed, false);
+});
+
+test('entity resolver permits a grounded unknown NPC but never promotes an unsupported canonical variant', () => {
+  const npc = resolveEntityCandidate('Sophie', roster, [], {
+    grounding_status: 'direct', source_record_ids: ['scene-4'], source_message_indices: [20, 21],
+  });
+  assert.equal(npc.promotion.allowed, true);
+  assert.equal(npc.promotion.creation_reason, 'grounded-record');
+  const variant = resolveEntityCandidate('Paul Kawaguchi', roster, [], {
+    grounding_status: 'direct', source_message_indices: [20],
+  });
+  assert.equal(variant.status, 'rejected');
+  assert.equal(variant.promotion.allowed, false);
 });
 
 test('integration: registry candidates collapse to the canonical card identity', () => {
