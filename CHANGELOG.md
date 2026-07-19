@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-07-19
+
+### Fixed
+
+- Fixed a `ReferenceError` that could stop Memorize Chat long-term extraction
+  after relationship processing. Relationship History is now kept in scope for
+  the later independent-evidence Entity Registry promotion pass.
+
+### Tests
+
+- Added regression coverage ensuring relationship history remains available to
+  the promotion pass.
+
 ## [0.8.1] - 2026-07-19
 
 ### Fixed
