@@ -51,11 +51,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened Relationship History with strict descriptor tokens, character-only
   participant checks, cumulative evidence ranges, and separate last-update
   citations.
+- Validates Relationship History participants against their known Entity
+  Registry types. Established places, objects, factions, and concepts are
+  rejected as relationship participants, while grounded previously unknown NPCs
+  remain eligible for promotion.
 - Reduced Perspectives & Secrets noise by suppressing routine witnessed
   actions, capping repeated types, and prioritizing secrecy, suspicions,
   false beliefs, and meaningful ignorance.
 - Resolved arc summaries now inherit original arc, scene, memory, and
   resolution-window provenance before validation.
+- Added structured participant contracts for secondary narrative tiers: scene
+  summaries use `[SCENE]` and `[CHARACTERS]` sections, and new story arcs may
+  use `[arc:characters=Name One,Name Two]`. Explicit names are retained with
+  the generated record and safely passed through canonical Entity Registry
+  resolution rather than inferred from free-form prose.
 - Profiles preserve the prior valid profile when new output is empty,
   placeholder-only, or fails grounding validation; saved profiles retain their
   evidence IDs.
@@ -182,6 +191,10 @@ it is not a list of features added by this fork.
   staged persistence rollback, entity reconciliation and rename safeguards,
   review workflows, card policies, prompt profiles, and UI contracts. The test
   suite also retains extraction regression fixtures.
+- Added focused parser cases for structured scene sections and structured
+  arc-participant syntax, including duplicate removal, invalid-name filtering,
+  and compatibility with legacy untagged scene summaries. The complete suite
+  passes 140 unit/integration tests and 48 regression-harness assertions.
 
 ## [0.7.2] - 2026-07-18
 
