@@ -70,6 +70,11 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(epistemic, /resolveEntityNames\(entry, names/);
   assert.match(longterm, /Relationship History is independently grounded evidence/);
   assert.match(longterm, /reconcileCanonicalEntityRegistry\(entityRegistry, getContext\(\), finalActive\)/);
+  assert.ok(
+    longterm.indexOf('const relHistory = loadRelationshipHistory(characterName);')
+      < longterm.indexOf('for (const [pairKey, relationship] of Object.entries(relHistory))'),
+    'Relationship history must remain available to the later promotion pass.',
+  );
   assert.match(graph, /e\.memory_ids\.length > 0 \|\| \(e\.source_record_ids\?\.length/);
 });
 

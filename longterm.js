@@ -793,13 +793,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Load once so relationship validation and the subsequent promotion pass
     // consult the same current entity types.
     const entityRegistry = loadCharacterEntityRegistry(characterName);
+    // This same history is first updated by relationship extraction and then
+    // consulted by the independent-evidence entity-promotion pass below.
+    // Keep it in the extraction scope rather than the inner extraction block.
+    const relHistory = loadRelationshipHistory(characterName);
 
     // Relationship delta extraction: runs after memory extraction so newly
     // added memories are already in finalActive and entity names are known.
     // Sequential like trigger generation to avoid OOM on limited VRAM.
     {
-      const relHistory = loadRelationshipHistory(characterName);
-
       // Build the current-state string from stored history for the prompt baseline.
       // Format: "pair: word(magnitude), word(magnitude)" so the model sees existing magnitudes.
       const stateLines = Object.entries(relHistory)
