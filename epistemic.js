@@ -365,6 +365,11 @@ export async function extractEpistemicKnowledge(
     const roster = buildCanonicalCharacterRoster(getContext());
     const perSubjectCap = Math.max(1, Number(settings.epistemic_max_per_subject_per_scene) || 5);
     const acceptedBySubject = new Map();
+    const acceptedBySubjectAndType = new Map();
+    const typeCaps = { knows: 2, unaware: 2, suspects: 3, believes: 3, hiding: 3 };
+    const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
+      /\b(?:walked|looked|smiled|entered|left|sat|stood|held|moved|went|spoke|said)\b/i.test(entry.content) &&
+      !/\b(?:secret|lie|hidden|identity|plan|plot|promise|threat|revealed|discovered|learned|overheard|witnessed|saw)\b/i.test(entry.content);
     const parsed = parseEpistemicResponse(response).flatMap((entry) => {
       const subject = resolveCanonicalCharacterName(entry.subject, roster);
       const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
@@ -382,7 +387,18 @@ export async function extractEpistemicKnowledge(
         smLog(`[SmartMemory] Epistemic entry skipped: malformed content for ${canonicalSubject}.`);
         return [];
       }
+      if (isRoutineKnowledge(entry)) {
+        smLog(`[SmartMemory] Epistemic entry skipped: routine witnessed event for ${canonicalSubject}.`);
+        return [];
+      }
+      const typeKey = `${canonicalSubject}|${entry.type}`;
+      const typeCount = acceptedBySubjectAndType.get(typeKey) ?? 0;
+      if (typeCount >= (typeCaps[entry.type] ?? 2)) {
+        smLog(`[SmartMemory] Epistemic entry skipped: ${entry.type} cap reached for ${canonicalSubject}.`);
+        return [];
+      }
       acceptedBySubject.set(canonicalSubject, count + 1);
+      acceptedBySubjectAndType.set(typeKey, typeCount + 1);
       return [{
         ...entry,
         subject: canonicalSubject,

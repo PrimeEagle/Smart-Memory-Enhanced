@@ -868,8 +868,8 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
   return (
     NO_ACTION_PREAMBLE +
     `[EPISTEMIC EXTRACTION TASK - Output structured data only. Do NOT continue the roleplay.]\n\n` + canonicalRoster +
-    `You are building a knowledge map: for each named character, what do they know,\n` +
-    `what do they falsely believe, what do they suspect, and what are they concealing?\n\n` +
+    `You are building a selective knowledge map: preserve only knowledge states that\n` +
+    `matter for future behavior, secrecy, misunderstanding, dramatic irony, or perspective accuracy.\n\n` +
     `Output one entry per character per fact, using these tags:\n\n` +
     `[knows]    Character | fact they have direct knowledge of\n` +
     `[unaware]  Character | fact they do not know (but others do)\n` +
@@ -878,11 +878,14 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
     `[hiding]   Concealer from Target | what they are actively concealing\n\n` +
     `Rules:\n` +
     `- Only record what is established by the scene - do not infer beyond what is shown\n` +
+    `- Do NOT turn ordinary, universally witnessed actions into [knows] entries\n` +
+    `- Prefer fewer high-value entries: normally 3-6 total per character per scene\n` +
+    `- Prioritize hiding, believes, suspects, unaware, and meaningful changes in knowledge over routine knows\n` +
     `- Use the character's name exactly as it appears in the scene\n` +
     `- Each line covers one character and one fact\n` +
     `- Do not output the same fact twice for the same character\n\n` +
-    `- WITNESS RULE: if the scene explicitly states a character observed or witnessed\n` +
-    `  something, you MUST output a [knows] line for that character - do not omit it\n\n` +
+    `- WITNESS RULE: use [knows] for witnessing only when it creates an asymmetric\n` +
+    `  perspective, reveals a secret, or will materially affect later choices\n\n` +
     `- UNAWARE COMPLEMENT: when you write [knows] X | fact, ask whether another named\n` +
     `  character does not know that fact. If the scene establishes they do not, write\n` +
     `  the corresponding [unaware] line for them\n\n` +
