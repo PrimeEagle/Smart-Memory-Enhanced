@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-07-19
+
+### Fixed
+
+- Completed staged persistence for Memorize Chat. Perspectives & Secrets, scene
+  history, profiles, chat-local canon, and short-term compaction now join the
+  catch-up transaction instead of issuing additional direct chat saves. This
+  prevents the repeated `Timeout waiting for chat to save` failures observed
+  during long runs.
+
+### Tests
+
+- Extended staged-persistence coverage across every catch-up metadata tier.
+
 ## [0.8.4] - 2026-07-19
 
 ### Fixed
