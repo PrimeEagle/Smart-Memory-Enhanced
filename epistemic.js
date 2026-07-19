@@ -70,6 +70,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy } from './longterm.js';
+import { loadCharacterEntityRegistry, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 
 // ---- Per-chat budget override -----------------------------------------------
 
@@ -447,6 +448,21 @@ export async function extractEpistemicKnowledge(
     if (newEntries.length === 0 && retiredCount === 0) {
       smLog('[SmartMemory] All epistemic candidates were duplicates of existing entries.');
       return 0;
+    }
+
+    // A named, approved epistemic record is independent grounded evidence.
+    // Promote its character participants even if the primary memory tiers
+    // happened to quarantine or deduplicate the same scene.
+    if (newEntries.length > 0) {
+      const entityRegistry = loadCharacterEntityRegistry(characterName);
+      for (const entry of newEntries) {
+        if (!isGeneratedRecordApproved(entry)) continue;
+        const names = [entry.subject, entry.target]
+          .filter(Boolean)
+          .map((name) => `${name}/character`);
+        resolveEntityNames(entry, names, Math.max(...(entry.source_message_indices ?? [0])), entityRegistry);
+      }
+      if (entityRegistry.length > 0) saveCharacterEntityRegistry(characterName, entityRegistry);
     }
 
     saveEpistemicKnowledge(characterName, [...survivingExisting, ...newEntries]);
