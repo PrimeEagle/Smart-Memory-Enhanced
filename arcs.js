@@ -608,11 +608,13 @@ export async function reopenArc(index, characterName, groupId = null) {
  * On Profile A the call is bundled into the same extraction window to
  * avoid adding a standalone model call.
  *
- * @param {string} arcContent - The resolved arc's content string.
+ * @param {Object} resolvedArc - The resolved arc record.
+ * @param {Array} [messages] - Current chat messages, used for resolution evidence.
  * @returns {Promise<{summary: string, sourceSceneTs: number[], sourceMemoryIds: string[]}|null>}
  */
-export async function generateArcSummary(arcContent) {
+export async function generateArcSummary(resolvedArc, messages = []) {
   const settings = extension_settings[MODULE_NAME];
+  const arcContent = resolvedArc?.content ?? '';
 
   // Use only the most recent scenes as context. The arc being summarized was
   // active and resolved in the recent portion of the chat; attributing it to
@@ -629,6 +631,9 @@ export async function generateArcSummary(arcContent) {
     .slice(0, 20); // cap to keep prompt cost manageable on local hardware
   const memoriesText = linkedMemories.map((m) => `[${m.type}] ${m.content}`).join('\n');
 
+  const resolutionMessageIndices = messages.slice(-10)
+    .map((message) => Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))
+    .filter((index) => Number.isInteger(index) && index >= 0);
   const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText);
   const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), {
     responseLength: settings.arc_summary_response_length ?? 300,
@@ -639,7 +644,12 @@ export async function generateArcSummary(arcContent) {
     summary: response.trim(),
     sourceSceneTs: sceneHistory.map((s) => s.ts),
     sourceMemoryIds: [...allMemoryIds],
-    sourceMessageIndices: [...new Set(sceneHistory.flatMap((scene) => scene.source_message_indices ?? []))],
+    sourceMessageIndices: [...new Set([
+      ...(resolvedArc?.source_message_indices ?? []),
+      ...sceneHistory.flatMap((scene) => scene.source_message_indices ?? []),
+      ...resolutionMessageIndices,
+    ])].sort((a, b) => a - b),
+    parentArcId: resolvedArc?.id ?? null,
   };
 }
 
@@ -750,7 +760,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       const arcSummaries = loadArcSummaries();
       for (const resolved of resolvedArcObjects) {
         try {
-          const result = await generateArcSummary(resolved.content);
+          const result = await generateArcSummary(resolved, messages);
           if (result) {
             const summaryRecord = {
               summary: result.summary,
@@ -758,6 +768,8 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
               source_scene_ids: result.sourceSceneTs,
               source_memory_ids: result.sourceMemoryIds,
               source_message_indices: result.sourceMessageIndices,
+              parent_arc_id: result.parentArcId,
+              derivation_type: 'resolved-arc-summary',
               parent_memory_ids: [],
               ts: Date.now(),
             };
