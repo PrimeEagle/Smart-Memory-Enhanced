@@ -790,6 +790,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       }
     }
 
+    // Load once so relationship validation and the subsequent promotion pass
+    // consult the same current entity types.
+    const entityRegistry = loadCharacterEntityRegistry(characterName);
+
     // Relationship delta extraction: runs after memory extraction so newly
     // added memories are already in finalActive and entity names are known.
     // Sequential like trigger generation to avoid OOM on limited VRAM.
@@ -827,6 +831,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         // Only store pairs where the character is one of the parties.
         if (deltas.length > 0) {
           const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+          const knownEntityType = (name) => {
+            const normalized = String(name ?? '').trim().toLowerCase();
+            return entityRegistry.find((entity) =>
+              entity.name?.trim().toLowerCase() === normalized ||
+              (entity.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized),
+            )?.type ?? null;
+          };
           const relationshipSources = recentMessages.map((message) => Number.isInteger(message.__sme_original_index)
             ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
           for (const { subject: rawSubject, target: rawTarget, updates, removals } of deltas) {
@@ -837,6 +848,12 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             };
             if (!looksLikeCharacterName(rawSubject) || !looksLikeCharacterName(rawTarget)) {
               smLog(`[SmartMemory] Relationship pair skipped: both parties must be named characters (${rawSubject} -> ${rawTarget}).`);
+              continue;
+            }
+            const subjectType = knownEntityType(rawSubject);
+            const targetType = knownEntityType(rawTarget);
+            if ([subjectType, targetType].some((type) => type && type !== 'unknown' && type !== 'character')) {
+              smLog(`[SmartMemory] Relationship pair skipped: a known participant is not a character (${rawSubject} -> ${rawTarget}).`);
               continue;
             }
             const subjectResult = resolveCanonicalCharacterName(rawSubject, canonicalRoster);
@@ -902,7 +919,6 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Resolve entity names to ids for any new memories that carried
     // _raw_entity_names through the pipeline. The entity registry is loaded,
     // updated in place, then persisted alongside the memories.
-    const entityRegistry = loadCharacterEntityRegistry(characterName);
     for (const mem of finalActive) {
       if (isGrounded(mem) && Array.isArray(mem._raw_entity_names)) {
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
