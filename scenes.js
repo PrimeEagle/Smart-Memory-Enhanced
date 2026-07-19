@@ -47,7 +47,7 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
 import { buildSceneDetectPrompt, SCENE_SUMMARY_PROMPT } from './prompts.js';
-import { detectSceneBreakHeuristic } from './parsers.js';
+import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
@@ -233,13 +233,7 @@ export async function summarizeScene(sceneMessages) {
       responseLength: settings.scene_summary_length ?? 200,
     });
 
-    if (!response?.trim()) return null;
-    const sceneMatch = response.match(/\[SCENE\]([\s\S]*?)\[\/SCENE\]/i);
-    const charactersMatch = response.match(/\[CHARACTERS\]([\s\S]*?)\[\/CHARACTERS\]/i);
-    const summary = (sceneMatch?.[1] ?? response).trim();
-    const characterParticipants = (charactersMatch?.[1] ?? '')
-      .split(/[\n,]/).map((name) => name.trim()).filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name));
-    return { summary, characterParticipants: [...new Set(characterParticipants)] };
+    return parseSceneSummaryOutput(response);
   } catch (err) {
     console.error('[SmartMemory] Scene summary failed:', err);
     throw err;

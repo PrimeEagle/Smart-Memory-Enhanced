@@ -281,6 +281,30 @@ export function parseArcOutput(text, existingArcs) {
   return { add: toAdd, resolve: [...new Set(toResolve)] };
 }
 
+// ---- Structured scene summary parser -----------------------------------
+
+/**
+ * Parses the structured response used for a completed scene summary.
+ * Older prompt overrides may still return plain text, which is retained as
+ * the summary with no explicit participants.
+ *
+ * @param {string} text - Raw model response.
+ * @returns {{summary: string, characterParticipants: string[]}|null}
+ */
+export function parseSceneSummaryOutput(text) {
+  if (!text?.trim()) return null;
+
+  const sceneMatch = text.match(/\[SCENE\]([\s\S]*?)\[\/SCENE\]/i);
+  const charactersMatch = text.match(/\[CHARACTERS\]([\s\S]*?)\[\/CHARACTERS\]/i);
+  const summary = (sceneMatch?.[1] ?? text).trim();
+  const characterParticipants = (charactersMatch?.[1] ?? '')
+    .split(/[\n,]/)
+    .map((name) => name.trim())
+    .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name));
+
+  return { summary, characterParticipants: [...new Set(characterParticipants)] };
+}
+
 // ---- Continuity check ---------------------------------------------------
 
 // Phrases that indicate the model is saying "all clear" rather than listing
