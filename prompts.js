@@ -81,7 +81,7 @@ export function buildSummaryPrompt(storedMemories = '') {
 
 IMPORTANT: Summarize only the actual roleplay exchanges between characters. Do NOT reproduce, restate, or copy any injected memory context that appears before the conversation - this includes character history, long-term memories, character profiles, scene history, session details, or story arcs. Those are already stored separately. Only the story events that happened in the chat messages belong in this summary.
 
-Write the summary between [SUMMARY] and [/SUMMARY] markers. Cover all nine sections below - do not skip or abbreviate any of them.
+Write the summary between [SUMMARY] and [/SUMMARY] markers. Cover all seven factual sections below. Record only events and states already established in the chat; never predict what happens next or treat user preference as story fact.
 
 [SUMMARY]
 1. Scene & Setting: Current location, time of day, atmosphere, and any relevant environmental details.
@@ -96,11 +96,7 @@ Write the summary between [SUMMARY] and [/SUMMARY] markers. Cover all nine secti
 
 6. Story Threads: Unresolved tensions, promises made, questions raised, or ongoing conflicts.
 
-7. User's Direction: What themes, tone, or direction the user has been steering the story toward.
-
-8. Current Moment: Precisely where the story was at the moment this summary was triggered - what was just said or done.
-
-9. Next Beat: The most natural immediate continuation based on what was happening.
+7. Current Moment: Precisely where the story was at the moment this summary was triggered - what was just said or done.
 [/SUMMARY]`
   );
 }
@@ -124,7 +120,7 @@ export function buildUpdateSummaryPrompt(storedMemories = '') {
 
 IMPORTANT: Summarize only the actual roleplay exchanges between characters. Do NOT reproduce, restate, or copy any injected memory context - this includes character history, long-term memories, character profiles, scene history, session details, or story arcs. Those are already stored separately. Only story events from the chat messages belong in this summary.
 
-CRITICAL: You must reproduce every section in full. Do NOT write "Same as before", "Unchanged", "As previously noted", or any similar shorthand. The existing summary will not be available after this update - any section you omit or abbreviate is permanently lost.
+CRITICAL: You must reproduce every factual section in full. Do NOT write "Same as before", "Unchanged", "As previously noted", or any similar shorthand. The existing summary will not be available after this update - any section you omit or abbreviate is permanently lost. Do not predict future events or place suggestions, likely actions, or user direction in this factual summary.
 
 Section update rules - follow these exactly:
 - Section 1 (Scene & Setting): REWRITE to describe the current location, time, and atmosphere only. Do not accumulate past locations.
@@ -133,9 +129,7 @@ Section update rules - follow these exactly:
 - Section 4 (Relationship Dynamics): REWRITE to reflect the current state of relationships.
 - Section 5 (Revealed Information): APPEND any newly revealed facts. Keep all prior entries.
 - Section 6 (Story Threads): UPDATE - add new threads, mark resolved ones as resolved.
-- Section 7 (User's Direction): REWRITE to reflect the current tone and direction.
-- Section 8 (Current Moment): REWRITE to describe precisely where the story is right now.
-- Section 9 (Next Beat): REWRITE to reflect the most natural immediate continuation.
+- Section 7 (Current Moment): REWRITE to describe precisely where the story is right now.
 
 EXISTING SUMMARY:
 {{existing_summary}}
@@ -143,7 +137,7 @@ EXISTING SUMMARY:
 NEW EVENTS TO INCORPORATE:
 {{new_events}}
 
-Write the complete updated summary between [SUMMARY] and [/SUMMARY] markers using the same 9-section format. Reproduce all nine sections in full.
+Write the complete updated summary between [SUMMARY] and [/SUMMARY] markers using the same 7-section factual format. Reproduce all seven sections in full.
 
 [SUMMARY]
 1. Scene & Setting:
@@ -152,9 +146,7 @@ Write the complete updated summary between [SUMMARY] and [/SUMMARY] markers usin
 4. Relationship Dynamics:
 5. Revealed Information:
 6. Story Threads:
-7. User's Direction:
-8. Current Moment:
-9. Next Beat:
+7. Current Moment:
 [/SUMMARY]`
   );
 }
@@ -559,7 +551,7 @@ export function buildProfileGenerationPrompt(
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the memories above - do not invent facts not in the source material. If a field cannot be determined from the memories, write "unknown".
+${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
