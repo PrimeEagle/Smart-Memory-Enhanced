@@ -49,6 +49,53 @@ export function normalizeMemoryProvenance(memory, options = {}) {
   return { indices, ranges: memory.source_messages, hasSources: indices.length > 0 };
 }
 
+/**
+ * Translates a model's chunk-relative provenance claim into the original chat
+ * coordinate system, normalizes it on the record that will be stored, and only
+ * then applies the common grounding validation.  Callers that already have
+ * full-chat indices may omit sourceContext (or set indicesAreRelative: false).
+ */
+export function prepareRecordForValidation(record, sourceContext = {}, validationOptions = {}) {
+  const {
+    originalMessageIndices = null,
+    sourceOffset = 0,
+    sourceLength = null,
+    chatLength = null,
+    indicesAreRelative = false,
+  } = sourceContext;
+  const rawIndices = Array.isArray(record.source_message_indices) && record.source_message_indices.length
+    ? record.source_message_indices.map(Number)
+    : expandRanges(record.source_messages);
+  const invalidClaim = rawIndices.some((index) => !Number.isInteger(index) || index < 0 ||
+    (indicesAreRelative && sourceLength != null && index >= sourceLength));
+  let mapped = rawIndices.filter(Number.isInteger).filter((index) => index >= 0);
+  if (indicesAreRelative) {
+    mapped = mapped
+      .filter((index) => sourceLength == null || index < sourceLength)
+      .map((index) => originalMessageIndices?.[index] ?? (sourceOffset + index));
+  }
+  record.source_message_indices = mapped;
+  record.source_messages = [];
+  normalizeMemoryProvenance(record, { chatLength });
+  if (invalidClaim) {
+    record.source_message_indices = [];
+    record.source_messages = [];
+  }
+  const result = validateGeneratedRecord(record, validationOptions);
+  if (invalidClaim && !result.valid) {
+    record.validation_issues = ['One or more claimed source messages are outside this extraction chunk.'];
+  }
+  // A valid source set and the old missing-source error are mutually exclusive.
+  // Keeping this assertion close to the normalization boundary makes regressions
+  // visible in development without changing production persistence behavior.
+  console.assert(
+    !(record.source_message_indices.length > 0 && record.validation_issues?.some((issue) => /no (valid )?source messages? (were )?supplied/i.test(issue))),
+    '[SmartMemory] Provenance invariant violated: sourced record retained a missing-source error.',
+    record,
+  );
+  return result;
+}
+
 export function validateMemoryAncestry(memoryId, parentIds, memoryStore = []) {
   const parents = [...new Set((parentIds ?? []).filter(validId))];
   const issues = [];
@@ -68,6 +115,25 @@ export function validateMemoryAncestry(memoryId, parentIds, memoryStore = []) {
 }
 
 /**
+ * Replaces references to disposable extraction candidates with their evidence.
+ * A consolidation result may only retain parent IDs that still exist in the
+ * transaction's final store; all other ancestry is flattened into direct
+ * source-message provenance.
+ */
+export function flattenConsolidationProvenance(record, sourceCandidates = [], finalStore = []) {
+  const finalIds = new Set(finalStore.map((entry) => entry?.id).filter(validId));
+  const sourceIndices = [record, ...sourceCandidates]
+    .flatMap((entry) => normalizeMemoryProvenance(entry).indices);
+  const inheritedParents = [record, ...sourceCandidates]
+    .flatMap((entry) => entry?.parent_memory_ids ?? [])
+    .filter((id) => validId(id) && id !== record.id && finalIds.has(id));
+  record.source_message_indices = uniqueSorted(sourceIndices);
+  record.source_messages = toRanges(record.source_message_indices);
+  record.parent_memory_ids = [...new Set(inheritedParents)];
+  return record;
+}
+
+/**
  * Applies the common, tier-agnostic grounding contract to a generated record.
  * Records without direct source messages may still be valid when they are
  * explicitly derived from approved parent records (profiles and resolutions).
@@ -78,7 +144,10 @@ export function validateGeneratedRecord(record, options = {}) {
   const ancestry = validateMemoryAncestry(record.id, record.parent_memory_ids, parentStore);
   record.parent_memory_ids = ancestry.parentIds;
   const hasDerivedEvidence = allowDerived && record.parent_memory_ids.length > 0;
-  const issues = [...(record.validation_issues ?? []), ...ancestry.issues];
+  // Validation is final state, not an accumulation of parser-time guesses.
+  // In particular, a parser may initially mark a record source-less before the
+  // caller has translated its chunk-relative sources to original chat indices.
+  const issues = [...ancestry.issues];
   if ((!provenance.hasSources && !hasDerivedEvidence && requireSources) || !ancestry.valid) {
     if (!provenance.hasSources && !hasDerivedEvidence) issues.push('No valid source evidence was supplied.');
     record.grounding_status = 'ungrounded';

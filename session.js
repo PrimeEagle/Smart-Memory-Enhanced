@@ -45,6 +45,7 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
+import { flattenConsolidationProvenance, validateGeneratedRecord } from './record-validation.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -341,23 +342,29 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
+    // Do not let candidate verification observe parser-time, chunk-relative
+    // source claims.  Normalize them to original chat indices first.
+    const provenanceContext = getContext();
+    const provenanceChatLength = provenanceContext.chat?.length ?? 1;
+    const provenanceWindowEnd = Math.max(0, provenanceChatLength - 2);
+    const provenanceWindowStart = Math.max(0, provenanceWindowEnd - recentMessages.length + 1);
+    const provenanceOriginalIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
+      ? recentMessages.map((message) => message.__sme_original_index)
+      : null;
+    const parsedCandidates = parseSessionOutput(response);
+    applyDirectProvenance(parsedCandidates, recentMessages, provenanceWindowStart, provenanceOriginalIndices);
+
     const {
       verified: incoming,
       superseded: supersessionMap,
       confirmed: confirmedIds,
-    } = await verifySessionCandidates(parseSessionOutput(response), existing);
+    } = await verifySessionCandidates(parsedCandidates, existing);
     if (incoming.length === 0) return 0;
 
     // Tag each new memory with the source message range so users can jump back
     // to the passage that prompted the extraction.
     const context = getContext();
     const chatLen = context.chat?.length ?? 1;
-    const windowEnd = Math.max(0, chatLen - 2);
-    const windowStart = Math.max(0, windowEnd - recentMessages.length + 1);
-    const originalMessageIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
-      ? recentMessages.map((message) => message.__sme_original_index)
-      : null;
-    applyDirectProvenance(incoming, recentMessages, windowStart, originalMessageIndices);
     for (const memory of incoming) validateGeneratedMemoryRecord(memory, existing);
     if (options.dryRun) {
       return {
@@ -592,8 +599,19 @@ export async function consolidateSessionMemories(force = false, abortCheck = nul
         getEmbeddingBatch,
       );
 
-      // Replace this type's entries. Other types are untouched.
+      // Consolidation candidates are ephemeral.  Preserve their evidence on
+      // the surviving records, but never leave a parent ID that disappears
+      // when the type bucket is replaced.
+      const allInputs = [...base, ...unprocessed];
       const otherTypes = memories.filter((m) => m.type !== type);
+      const finalStore = [...otherTypes, ...reconciledType];
+      for (const entry of reconciledType) {
+        const match = allInputs.find((memory) => memory.id === entry.id);
+        flattenConsolidationProvenance(entry, match ? [match] : allInputs.filter(isGrounded), finalStore);
+        validateGeneratedRecord(entry, { parentStore: finalStore });
+      }
+
+      // Replace this type's entries. Other types are untouched.
       memories.splice(0, memories.length, ...otherTypes, ...reconciledType);
 
       const before = base.length + unprocessed.length;
