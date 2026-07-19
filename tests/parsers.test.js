@@ -579,6 +579,14 @@ test('parseRelationshipDeltaResponse: rejects descriptor prose contamination', (
   assert.deepEqual(parseRelationshipDeltaResponse('Paul Schmidt -> Alissa Kawaguchi: open she is now willing to discuss everything with him'), []);
 });
 
+test('parseRelationshipDeltaResponse: rejects malformed descriptor fragments but accepts strict removals', () => {
+  assert.deepEqual(parseRelationshipDeltaResponse('Alissa -> Kyle: uncertainnew(high)'), []);
+  assert.deepEqual(parseRelationshipDeltaResponse('Alissa -> Kyle: trusting'), []);
+  assert.deepEqual(parseRelationshipDeltaResponse('Alissa -> Kyle: trusting(high), !wary'), [{
+    subject: 'Alissa', target: 'Kyle', updates: [{ word: 'trusting', magnitude: 'high' }], removals: ['wary'],
+  }]);
+});
+
 test('epistemic parser: separates inline retirement control text from content', () => {
   const raw = "[knows] Alissa | She can handle Kyle's feelings (retires [24])";
   assert.deepEqual(parseEpistemicRetireIndices(raw), new Set([24]));
