@@ -15,11 +15,15 @@ test('provider failures: transient server and network failures are retried, whil
 
 test('chat-save failures: catch-up persistence is staged and rolls back failed commits', () => {
   const source = read('catchup-transaction.js');
+  const longterm = read('longterm.js');
+  const graph = read('graph-migration.js');
   assert.match(source, /metadataDirty: false/);
   assert.match(source, /activeTransaction\.metadataDirty = true/);
   assert.match(source, /await saveGroupChatDirect\(transaction\.context\)/);
   assert.match(source, /await saveChat\(\)/);
   assert.match(source, /rollbackCatchUpTransaction\(transaction\)/);
+  assert.match(longterm, /await saveChatMetadata\(context\)/);
+  assert.match(graph, /saveChatMetadata\(context\)\.catch/);
 });
 
 test('scene archive: retention, injection, provenance, audit, and legacy settings use separate semantics', () => {

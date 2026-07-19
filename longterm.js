@@ -58,6 +58,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -241,7 +242,7 @@ async function saveChatLocalMemories(characterName, memories) {
   context.chatMetadata[META_KEY] ??= {};
   context.chatMetadata[META_KEY].card_local_memories ??= {};
   context.chatMetadata[META_KEY].card_local_memories[characterName] = memories;
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 /**
@@ -317,7 +318,7 @@ export function clearCharacterMemories(characterName) {
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
     if (context.chatMetadata?.[META_KEY]?.card_local_memories) delete context.chatMetadata[META_KEY].card_local_memories[characterName];
-    context.saveMetadata?.();
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local memories:', err));
     return;
   }
   if (extension_settings[MODULE_NAME].characters?.[characterName]) {
@@ -371,7 +372,7 @@ export function saveRelationshipHistory(characterName, history) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_relationships ??= {})[characterName] = history;
-    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local relationships:', err));
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local relationships:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -473,7 +474,7 @@ export function clearRelationshipHistory(characterName) {
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
     if (context.chatMetadata?.[META_KEY]?.card_local_relationships) delete context.chatMetadata[META_KEY].card_local_relationships[characterName];
-    context.saveMetadata?.();
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local relationships:', err));
     return;
   }
   const char = extension_settings[MODULE_NAME].characters?.[characterName];
@@ -1548,7 +1549,7 @@ export async function setFreshStart(value) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].freshStart = value;
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 /**
@@ -1580,7 +1581,7 @@ export async function setReadOnlyStartIndex(index) {
     context.chatMetadata[META_KEY].readOnlyStartIndex = index;
     context.chatMetadata[META_KEY].readOnlyStartTime = Date.now();
   }
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 /**

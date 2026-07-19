@@ -45,6 +45,7 @@
 
 import { saveSettingsDebounced } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
@@ -164,7 +165,7 @@ export function saveCharacterEntityRegistry(characterName, entities) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_entities ??= {})[characterName] = entities;
-    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local entity registry:', err));
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local entity registry:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -202,7 +203,7 @@ export async function saveSessionEntityRegistry(entities) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].sessionEntities = entities;
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 /**
@@ -214,7 +215,7 @@ export async function clearSessionEntityRegistry() {
   const context = getContext();
   if (context.chatMetadata?.[META_KEY]) {
     context.chatMetadata[META_KEY].sessionEntities = [];
-    await context.saveMetadata();
+    await saveChatMetadata(context);
   }
 }
 
@@ -1170,7 +1171,7 @@ export async function ensureChatMigrated() {
 
   smLog(`[SmartMemory] Migrating chat data to schema v${SCHEMA_VERSION}...`);
   context.chatMetadata[META_KEY] = applyMigrations(meta, CHAT_MIGRATIONS);
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 
   smLog('[SmartMemory] Chat data migration complete.');
   return true;
