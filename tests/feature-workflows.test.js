@@ -37,6 +37,8 @@ test('scene archive: retention, injection, provenance, audit, and legacy setting
   assert.match(ui, /sme_jump_scene/);
   assert.match(ui, /sme_resummarize_scene/);
   assert.match(ui, /source_start_index/);
+  assert.match(settings, /isDuplicateScene\(sceneResult\.summary\)/);
+  assert.match(settings, /character_participants: sceneResult\.characterParticipants/);
 });
 
 test('cross-tier grounding: scenes, arcs, profiles, and epistemic entries validate before injection', () => {

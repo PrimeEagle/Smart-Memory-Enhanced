@@ -3088,18 +3088,19 @@ export function bindSettingsUI(ctrl) {
               sceneCount++;
               sceneAudit.candidates++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
-              const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
+              const sceneResult = await summarizeScene(sceneBuffer).catch((err) => {
                 recordCatchUpError('scene summary error', err);
                 sceneAudit.failed++;
                 return null;
               });
-              if (sceneSummary && !(await isDuplicateScene(sceneSummary))) {
-                sceneHistory.push(createSceneRecord(sceneSummary, sceneBuffer, {
+              if (sceneResult?.summary && !(await isDuplicateScene(sceneResult.summary))) {
+                sceneHistory.push(createSceneRecord(sceneResult.summary, sceneBuffer, {
                   detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
                   detection_message_index: msg.__sme_original_index ?? null,
+                  character_participants: sceneResult.characterParticipants,
                 }));
                 sceneAudit.generated++;
-              } else if (sceneSummary) {
+              } else if (sceneResult?.summary) {
                 sceneAudit.duplicates++;
               }
               if (isEpistemicEnabled() && !isFreshStart()) {
@@ -3117,18 +3118,19 @@ export function bindSettingsUI(ctrl) {
           // Summarize any remaining messages after the last break as the current scene.
           if (!ctrl.catchUpCancelled && sceneBuffer.length >= minMessages) {
             sceneAudit.candidates++;
-            const sceneSummary = await summarizeScene(sceneBuffer).catch((err) => {
+            const sceneResult = await summarizeScene(sceneBuffer).catch((err) => {
               recordCatchUpError('final scene summary error', err);
               sceneAudit.failed++;
               return null;
             });
-            if (sceneSummary && !(await isDuplicateScene(sceneSummary))) {
-              sceneHistory.push(createSceneRecord(sceneSummary, sceneBuffer, {
+            if (sceneResult?.summary && !(await isDuplicateScene(sceneResult.summary))) {
+              sceneHistory.push(createSceneRecord(sceneResult.summary, sceneBuffer, {
                 detected_by: 'final',
                 detection_message_index: sceneBuffer.at(-1)?.__sme_original_index ?? null,
+                character_participants: sceneResult.characterParticipants,
               }));
               sceneAudit.generated++;
-            } else if (sceneSummary) {
+            } else if (sceneResult?.summary) {
               sceneAudit.duplicates++;
             }
             if (isEpistemicEnabled() && !isFreshStart()) {
