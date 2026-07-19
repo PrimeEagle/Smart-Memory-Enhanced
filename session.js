@@ -59,6 +59,7 @@ import {
   loadSessionEntityRegistry,
   saveSessionEntityRegistry,
   resolveEntityNames,
+  reconcileCanonicalEntityRegistry,
   reconcileEntityRegistry,
 } from './graph-migration.js';
 import {
@@ -463,6 +464,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // omitted by the model get linked via substring match immediately rather
     // than waiting for the next consolidation cycle.
     if (entityRegistry.length > 0) {
+      reconcileCanonicalEntityRegistry(entityRegistry, getContext(), finalActive);
       reconcileEntityRegistry(entityRegistry, finalActive);
       if (!abortCheck?.()) await saveSessionEntityRegistry(entityRegistry);
     }

@@ -73,6 +73,7 @@ import {
   loadCharacterEntityRegistry,
   saveCharacterEntityRegistry,
   resolveEntityNames,
+  reconcileCanonicalEntityRegistry,
   reconcileEntityRegistry,
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
@@ -931,6 +932,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // immediately so memories don't float as isolated nodes until the next
     // consolidation cycle (which may never come for small memory sets).
     if (entityRegistry.length > 0) {
+      // Apply the same roster-scoped resolver to existing variants (including
+      // persona first names) before repairing ordinary memory links.
+      reconcileCanonicalEntityRegistry(entityRegistry, getContext(), finalActive);
       reconcileEntityRegistry(entityRegistry, finalActive);
       saveCharacterEntityRegistry(characterName, entityRegistry);
     }
