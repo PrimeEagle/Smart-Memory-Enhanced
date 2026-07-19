@@ -58,7 +58,7 @@ import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
+import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
 import { buildArcExtractionPrompt, buildArcSummaryPrompt } from './prompts.js';
 import { parseArcOutput } from './parsers.js';
 import { loadSceneHistory } from './scenes.js';
@@ -69,6 +69,7 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
+import { loadCharacterEntityRegistry, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 
 // ---- Deduplication ------------------------------------------------------
 
@@ -873,7 +874,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const finalNew = dedupedAdd
       .filter((n) => !finalActive.some((a) => a.content === n.content))
       .map((arc) => {
-        const record = { ...arc, source_message_indices: sourceMessageIndices, source_memory_ids: [], parent_memory_ids: [] };
+        const record = { ...arc, id: generateMemoryId(), source_message_indices: sourceMessageIndices, source_memory_ids: [], parent_memory_ids: [] };
         validateGeneratedRecord(record);
         return record;
       });
@@ -881,6 +882,19 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 
     if (abortCheck?.()) return 0;
     await saveArcs([...merged, ...finalResolved]);
+    if (characterName) {
+      const registry = loadCharacterEntityRegistry(characterName);
+      for (const arc of merged) {
+        if (!isGeneratedRecordApproved(arc) || !arc.character_participants?.length) continue;
+        resolveEntityNames(
+          arc,
+          arc.character_participants.map((name) => `${name}/character`),
+          Math.max(...(arc.source_message_indices ?? [0])),
+          registry,
+        );
+      }
+      if (registry.length) saveCharacterEntityRegistry(characterName, registry);
+    }
     return dedupedAdd.length;
   } catch (err) {
     console.error('[SmartMemory] Arc extraction failed:', err);
