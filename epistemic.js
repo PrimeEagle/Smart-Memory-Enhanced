@@ -50,6 +50,7 @@ import {
   saveSettingsDebounced,
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import {
   MODULE_NAME,
   META_KEY,
@@ -112,8 +113,7 @@ function saveEpistemicBudgetOverride(newBudget) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].epistemicBudgetOverride = newBudget;
-  context
-    .saveMetadata()
+  saveChatMetadata(context)
     .catch((err) => console.error('[SmartMemory] Failed to save epistemic budget override:', err));
 }
 
@@ -191,7 +191,7 @@ export function saveEpistemicKnowledge(characterName, entries) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_epistemic ??= {})[characterName] = entries;
-    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local epistemic knowledge:', err));
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local epistemic knowledge:', err));
     return;
   }
   const s = extension_settings[MODULE_NAME];
@@ -246,7 +246,7 @@ export function clearEpistemicKnowledge(characterName) {
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
     if (context.chatMetadata?.[META_KEY]?.card_local_epistemic) delete context.chatMetadata[META_KEY].card_local_epistemic[characterName];
-    context.saveMetadata?.();
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local epistemic knowledge:', err));
     return;
   }
   const s = extension_settings[MODULE_NAME];

@@ -45,6 +45,7 @@ import {
   extension_prompt_roles,
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
@@ -90,7 +91,7 @@ async function saveProfiles(profiles, characterName) {
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   if (!context.chatMetadata[META_KEY].profiles) context.chatMetadata[META_KEY].profiles = {};
   context.chatMetadata[META_KEY].profiles[characterName] = profiles;
-  await context.saveMetadata();
+  await saveChatMetadata(context);
 }
 
 export async function reconcileProfileCanonicalNames(characterName) {
@@ -356,7 +357,7 @@ export async function clearProfiles(characterName) {
     } else {
       delete context.chatMetadata[META_KEY].profiles;
     }
-    await context.saveMetadata();
+    await saveChatMetadata(context);
   }
   setExtensionPrompt(PROMPT_KEY_PROFILES, '', extension_prompt_types.NONE, 0);
   invalidateUnifiedCache(PROMPT_KEY_PROFILES);

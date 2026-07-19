@@ -42,6 +42,7 @@ import {
   memory_sources,
 } from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_SHORT, META_KEY } from './constants.js';
 import { buildSummaryPrompt, buildUpdateSummaryPrompt } from './prompts.js';
@@ -271,7 +272,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
       !includeLastMessage && lastChatMsg && !lastChatMsg.is_user && !lastChatMsg.is_system
         ? context.chat.length - 1
         : context.chat.length;
-    await context.saveMetadata();
+    await saveChatMetadata(context);
 
     return summary;
   } catch (err) {

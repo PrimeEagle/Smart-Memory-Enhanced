@@ -17,6 +17,9 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   const source = read('catchup-transaction.js');
   const longterm = read('longterm.js');
   const graph = read('graph-migration.js');
+  const epistemic = read('epistemic.js');
+  const scenes = read('scenes.js');
+  const compaction = read('compaction.js');
   assert.match(source, /metadataDirty: false/);
   assert.match(source, /activeTransaction\.metadataDirty = true/);
   assert.match(source, /await saveGroupChatDirect\(transaction\.context\)/);
@@ -24,6 +27,9 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(source, /rollbackCatchUpTransaction\(transaction\)/);
   assert.match(longterm, /await saveChatMetadata\(context\)/);
   assert.match(graph, /saveChatMetadata\(context\)\.catch/);
+  assert.match(epistemic, /saveChatMetadata\(context\)\.catch/);
+  assert.match(scenes, /await saveChatMetadata\(context\)/);
+  assert.match(compaction, /await saveChatMetadata\(context\)/);
 });
 
 test('scene archive: retention, injection, provenance, audit, and legacy settings use separate semantics', () => {

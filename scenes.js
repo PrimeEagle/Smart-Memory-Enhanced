@@ -45,6 +45,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
 import { buildSceneDetectPrompt, SCENE_SUMMARY_PROMPT } from './prompts.js';
 import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
@@ -169,7 +170,7 @@ export async function saveSceneHistory(scenes) {
   }), max);
   metadata.sceneHistory = staged;
   try {
-    await context.saveMetadata();
+    await saveChatMetadata(context);
   } catch (error) {
     // Do not leave a failed scene save visible as if it were committed.
     metadata.sceneHistory = previous;
@@ -184,7 +185,7 @@ export async function clearSceneHistory() {
   const context = getContext();
   if (context.chatMetadata?.[META_KEY]) {
     context.chatMetadata[META_KEY].sceneHistory = [];
-    await context.saveMetadata();
+    await saveChatMetadata(context);
   }
 }
 

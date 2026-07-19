@@ -43,6 +43,7 @@ import {
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, META_KEY, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
 import { buildCanonSummaryPrompt } from './prompts.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories } from './longterm.js';
@@ -90,7 +91,7 @@ export function saveCanon(characterName, text) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_canon ??= {})[characterName] = { text, ts: Date.now() };
-    context.saveMetadata().catch((err) => smLog('[SmartMemory] Failed to save chat-local canon:', err));
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local canon:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -117,7 +118,7 @@ export function clearCanon(characterName) {
     if (context.chatMetadata?.[META_KEY]?.card_local_canon) delete context.chatMetadata[META_KEY].card_local_canon[characterName];
     // Clear historical misplaced entries as well.
     if (context.chatMetadata?.[MODULE_NAME]?.card_local_canon) delete context.chatMetadata[MODULE_NAME].card_local_canon[characterName];
-    context.saveMetadata?.();
+    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local canon:', err));
     setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_CANON);
     return;
