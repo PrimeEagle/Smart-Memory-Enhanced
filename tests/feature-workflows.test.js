@@ -51,6 +51,40 @@ test('cross-tier grounding: scenes, arcs, profiles, and epistemic entries valida
   assert.match(epistemic, /loadEpistemicKnowledge\(characterName\)\.filter\(isGeneratedRecordApproved\)/);
 });
 
+test('integrity round: primary provenance is prepared before verification and consolidation flattens temporary parents', () => {
+  const longterm = read('longterm.js');
+  const session = read('session.js');
+  const validation = read('record-validation.js');
+  assert.match(longterm, /applyDirectProvenance\(parsed, recentMessages, provenanceWindowStart/);
+  assert.match(session, /applyDirectProvenance\(parsedCandidates, recentMessages, provenanceWindowStart/);
+  assert.match(validation, /prepareRecordForValidation/);
+  assert.match(validation, /flattenConsolidationProvenance/);
+  assert.match(validation, /disposable extraction candidates/);
+});
+
+test('integrity round: secondary evidence promotes entities and canonical reconciliation runs automatically', () => {
+  const longterm = read('longterm.js');
+  const epistemic = read('epistemic.js');
+  const graph = read('graph-migration.js');
+  assert.match(epistemic, /A named, approved epistemic record is independent grounded evidence/);
+  assert.match(epistemic, /resolveEntityNames\(entry, names/);
+  assert.match(longterm, /Relationship History is independently grounded evidence/);
+  assert.match(longterm, /reconcileCanonicalEntityRegistry\(entityRegistry, getContext\(\), finalActive\)/);
+  assert.match(graph, /e\.memory_ids\.length > 0 \|\| \(e\.source_record_ids\?\.length/);
+});
+
+test('integrity round: resolved arcs inherit evidence, profiles fail safely, and short summaries stay factual', () => {
+  const arcs = read('arcs.js');
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  assert.match(arcs, /derivation_type: 'resolved-arc-summary'/);
+  assert.match(arcs, /parent_arc_id: result\.parentArcId/);
+  assert.match(profiles, /preserving the prior profile/);
+  assert.match(profiles, /evidence_ids/);
+  assert.doesNotMatch(prompts.slice(prompts.indexOf('export function buildSummaryPrompt'), prompts.indexOf('// ---- Short-term: progressive update')), /Next Beat/);
+  assert.doesNotMatch(prompts.slice(prompts.indexOf('export function buildSummaryPrompt'), prompts.indexOf('// ---- Short-term: progressive update')), /User's Direction/);
+});
+
 test('operational workflow: Memorize Chat has a no-save workload preview and exports compact diagnostics', () => {
   const settings = read('settings.js');
   const html = read('settings.html');
