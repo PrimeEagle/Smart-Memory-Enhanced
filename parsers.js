@@ -241,16 +241,18 @@ export function parseArcOutput(text, existingArcs) {
   const toAdd = [];
   const toResolve = [];
 
-  const addPattern = /^\[arc\]\s+(.+)$/gim;
+  const addPattern = /^\[arc(?:\s*:\s*characters=([^\]]+))?\]\s+(.+)$/gim;
   const resolvedPattern = /^\[resolved\]\s+(.+)$/gim;
 
   let match;
   while ((match = addPattern.exec(text)) !== null) {
-    const content = match[1].trim();
+    const participants = (match[1] ?? '').split(',').map((name) => name.trim())
+      .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name));
+    const content = match[2].trim();
     // Require a minimum length to filter obvious noise; rely on the prompt
     // to distinguish arcs from facts rather than vocabulary-based signals,
     // which reject valid arcs from models that phrase threads as noun phrases.
-    if (content.length > 15) toAdd.push({ content, ts: Date.now() });
+    if (content.length > 15) toAdd.push({ content, ts: Date.now(), character_participants: [...new Set(participants)] });
   }
 
   while ((match = resolvedPattern.exec(text)) !== null) {

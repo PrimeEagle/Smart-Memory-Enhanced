@@ -263,7 +263,15 @@ Answer YES or NO only. Nothing else.`;
 
 export const SCENE_SUMMARY_PROMPT =
   NO_ACTION_PREAMBLE +
-  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Be concise. Output only the summary text. No notes, no commentary, no disclaimers.
+  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list only the named CHARACTERS who actively participated. Do not list places, objects, organizations, or concepts.
+
+Output exactly:
+[SCENE]
+<summary>
+[/SCENE]
+[CHARACTERS]
+Name One, Name Two
+[/CHARACTERS]
 
 SCENE:
 {{scene_text}}`;
@@ -299,11 +307,11 @@ These are NOT arcs - do not output them:
 - Facts about events that already occurred, even dramatic ones
 
 Output format - one entry per line, two tags allowed:
-  [arc] <new unresolved thread from this conversation, not already listed above>
+  [arc:characters=Name One,Name Two] <new unresolved thread from this conversation, not already listed above>
   [resolved] <title or brief description of an existing arc that was explicitly closed>
 
 Examples (abstract only; never copy these details):
-  [arc] <ENTITY_A> made an unresolved threat against <ENTITY_B>.
+  [arc:characters=<ENTITY_A>,<ENTITY_B>] <ENTITY_A> made an unresolved threat against <ENTITY_B>.
   [arc] The identity of whoever burned the granary is still unknown.
   [resolved] The missing heir was found alive in the northern keep.
   NOT an arc: "Kira was captured by the guards." - this is a fact, not an open thread.

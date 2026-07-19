@@ -55,6 +55,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
+import { loadCharacterEntityRegistry, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -232,7 +233,13 @@ export async function summarizeScene(sceneMessages) {
       responseLength: settings.scene_summary_length ?? 200,
     });
 
-    return response?.trim() || null;
+    if (!response?.trim()) return null;
+    const sceneMatch = response.match(/\[SCENE\]([\s\S]*?)\[\/SCENE\]/i);
+    const charactersMatch = response.match(/\[CHARACTERS\]([\s\S]*?)\[\/CHARACTERS\]/i);
+    const summary = (sceneMatch?.[1] ?? response).trim();
+    const characterParticipants = (charactersMatch?.[1] ?? '')
+      .split(/[\n,]/).map((name) => name.trim()).filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name));
+    return { summary, characterParticipants: [...new Set(characterParticipants)] };
   } catch (err) {
     console.error('[SmartMemory] Scene summary failed:', err);
     throw err;
@@ -285,8 +292,9 @@ export async function processSceneBreak(
 
   smLog('[SmartMemory] Scene break detected.');
 
-  const summary = await summarizeScene(recentMessages);
-  if (!summary) return false;
+  const sceneResult = await summarizeScene(recentMessages);
+  if (!sceneResult?.summary) return false;
+  const { summary, characterParticipants } = sceneResult;
 
   const history = loadSceneHistory();
 
@@ -309,12 +317,25 @@ export async function processSceneBreak(
   }
 
   // source_memory_ids is populated after extraction via linkMemoriesToLastScene.
-  history.push(createSceneRecord(summary, recentMessages, {
+  const sceneRecord = createSceneRecord(summary, recentMessages, {
     detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
-  }));
+    character_participants: characterParticipants,
+  });
+  history.push(sceneRecord);
 
   if (abortCheck?.()) return false;
   await saveSceneHistory(history);
+  const characterName = getContext().name2 || getContext().characterName;
+  if (characterName && isGeneratedRecordApproved(sceneRecord) && sceneRecord.character_participants?.length) {
+    const registry = loadCharacterEntityRegistry(characterName);
+    resolveEntityNames(
+      sceneRecord,
+      sceneRecord.character_participants.map((name) => `${name}/character`),
+      Math.max(...(sceneRecord.source_message_indices ?? [0])),
+      registry,
+    );
+    if (registry.length) saveCharacterEntityRegistry(characterName, registry);
+  }
   return true;
 }
 
