@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-19
+
+### Data integrity and provenance
+
+- Centralized primary-memory provenance preparation so chunk-relative source
+  claims are translated, normalized, and validated before candidate
+  verification or persistence.
+- Prevented stale missing-source validation errors from surviving after valid
+  citations are attached, with regression coverage for the invariant.
+- Flattened consolidation ancestry into source evidence when temporary
+  candidates are removed, preventing dangling parent-memory IDs and cycles.
+
+### Identity and entity safety
+
+- Made active personas stable, roster-scoped canonical identities and applied
+  the shared canonical resolver automatically during extraction and
+  consolidation.
+- Promotes approved named participants from Perspectives & Secrets and
+  Relationship History, allowing grounded new NPCs to enter the Entity Registry
+  even when primary memory extraction does not retain the scene.
+
+### Grounded secondary tiers
+
+- Hardened Relationship History with strict descriptor tokens, character-only
+  participant checks, cumulative evidence ranges, and separate last-update
+  citations.
+- Reduced Perspectives & Secrets noise by suppressing routine witnessed
+  actions, capping repeated types, and prioritizing secrecy, suspicions,
+  false beliefs, and meaningful ignorance.
+- Resolved arc summaries now inherit original arc, scene, memory, and
+  resolution-window provenance before validation.
+- Profiles preserve the prior valid profile when new output is empty,
+  placeholder-only, or fails grounding validation; saved profiles retain their
+  evidence IDs.
+
+### Factual short-term memory and verification
+
+- Removed speculative “User's Direction” and “Next Beat” sections from
+  short-term compaction. Summaries now retain factual history only.
+- Added integration coverage for this integrity round. The complete suite
+  passes 137 unit/integration tests and 48 regression-harness assertions.
+
 ## Smart Memory Enhanced fork history
 
 Smart Memory Enhanced is an independent fork of Smart Memory. The versioned
