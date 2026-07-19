@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-07-19
+
+### Fixed
+
+- Relationship History now validates participants against known Entity Registry
+  types, rejecting established places, objects, factions, and concepts while
+  still allowing grounded new NPCs.
+
+### Added
+
+- Scene summaries can return a structured `[SCENE]` and `[CHARACTERS]` response,
+  preserving explicit participant names for safe Entity Registry promotion.
+- Story-arc extraction supports `[arc:characters=Name One,Name Two]` so new
+  arc records can retain structured participant context.
+
+### Tests
+
+- Added targeted parser coverage for the structured scene and story-arc
+  participant formats, including legacy untagged scene-summary compatibility.
+
 ## [0.8.0] - 2026-07-19
 
 ### Data integrity and provenance
@@ -162,8 +182,6 @@ it is not a list of features added by this fork.
   staged persistence rollback, entity reconciliation and rename safeguards,
   review workflows, card policies, prompt profiles, and UI contracts. The test
   suite also retains extraction regression fixtures.
-
-## [Unreleased]
 
 ## [0.7.2] - 2026-07-18
 
