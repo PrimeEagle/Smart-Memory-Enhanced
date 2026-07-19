@@ -76,7 +76,7 @@ import {
   reconcileEntityRegistry,
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
-import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
+import { flattenConsolidationProvenance, isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { buildCanonicalCharacterRoster, buildStableRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
@@ -632,6 +632,19 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       return 0;
     }
 
+    // Source citations belong to the numbered extraction window.  Translate
+    // and validate them before candidate verification so every later pipeline
+    // stage works on final, original-chat provenance rather than parser-time
+    // placeholder status.
+    const provenanceContext = getContext();
+    const provenanceChatLength = provenanceContext.chat?.length ?? 1;
+    const provenanceWindowEnd = Math.max(0, provenanceChatLength - 2);
+    const provenanceWindowStart = Math.max(0, provenanceWindowEnd - recentMessages.length + 1);
+    const provenanceOriginalIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
+      ? recentMessages.map((message) => message.__sme_original_index)
+      : null;
+    applyDirectProvenance(parsed, recentMessages, provenanceWindowStart, provenanceOriginalIndices);
+
     const {
       verified: newMemories,
       superseded: supersessionMap,
@@ -648,17 +661,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // can jump back to the passage that prompted the extraction.
     const context = getContext();
     const chatLen = context.chat?.length ?? 1;
-    // Window ends one before the last message (last AI turn is excluded from extraction).
-    const windowEnd = Math.max(0, chatLen - 2);
-    const windowStart = Math.max(0, windowEnd - recentMessages.length + 1);
     const sourceChatId = getCurrentChatId() ?? null;
     // Derive the characters present in this extraction window so the injection
     // path can downgrade memories the responding character did not witness.
     const witnessedBy = getSceneParticipants(recentMessages);
-    const originalMessageIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
-      ? recentMessages.map((message) => message.__sme_original_index)
-      : null;
-    applyDirectProvenance(newMemories, recentMessages, windowStart, originalMessageIndices);
     for (const mem of newMemories) {
       mem.source_chat_id = sourceChatId;
       mem.witnessed_by = witnessedBy;
@@ -1032,39 +1038,27 @@ export async function consolidateMemories(characterName, force = false) {
         getEmbeddingBatch,
       );
 
-      // Carry source provenance forward: for each reconciled entry that matches
-      // a pre-consolidation memory by ID, inherit its source_messages and
-      // source_chat_id. Synthesized composite entries get the most recent range
-      // from the unprocessed batch they were derived from.
+      // Carry source provenance forward without retaining references to the
+      // temporary candidates that this transaction is about to replace.
       const allInputs = [...base, ...unprocessed];
-      const mostRecentSource = unprocessed.reduce((best, m) => {
-        const ranges = m.source_messages;
-        if (!Array.isArray(ranges) || ranges.length === 0) return best;
-        const last = ranges[ranges.length - 1];
-        return !best || last[1] > best[1] ? last : best;
-      }, null);
       const mostRecentChatId =
         unprocessed.find((m) => Array.isArray(m.source_messages) && m.source_messages.length > 0)
           ?.source_chat_id ?? null;
+      const otherTypes = memories.filter((m) => m.type !== type);
+      const finalStore = [...otherTypes, ...reconciledType];
       for (const entry of reconciledType) {
         const match = allInputs.find((m) => m.id === entry.id);
-        if (match && Array.isArray(match.source_messages) && match.source_messages.length > 0) {
-          entry.source_messages = match.source_messages;
+        const evidence = match ? [match] : allInputs.filter(isGrounded);
+        flattenConsolidationProvenance(entry, evidence, finalStore);
+        if (match?.source_messages?.length) {
           entry.source_chat_id = match.source_chat_id ?? null;
-          entry.grounding_status = 'derived';
-          entry.parent_memory_ids = [match.id];
-        } else if (!entry.source_messages?.length && mostRecentSource) {
-          entry.source_messages = [mostRecentSource];
+        } else if (entry.source_message_indices.length) {
           entry.source_chat_id = mostRecentChatId;
-          entry.grounding_status = 'derived';
-          entry.parent_memory_ids = unprocessed.filter(isGrounded).map((m) => m.id);
-        } else {
-          entry.grounding_status = 'ungrounded';
         }
+        validateGeneratedRecord(entry, { parentStore: finalStore });
       }
 
       // Replace this type's entries. Other types are untouched.
-      const otherTypes = memories.filter((m) => m.type !== type);
       memories.splice(0, memories.length, ...otherTypes, ...reconciledType);
 
       const before = base.length + unprocessed.length;
