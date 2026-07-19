@@ -202,6 +202,17 @@ export async function generateProfiles(characterName, abortCheck = null) {
       );
       return null;
     }
+    const profileFields = ['character_state', 'world_state', 'relationship_matrix'];
+    const hasGroundedField = profileFields.some((field) => {
+      const value = String(parsed[field] ?? '').trim();
+      return value.length > 0 && !/^(?:unknown|none|none identified)$/i.test(value);
+    });
+    if (!hasGroundedField) {
+      // An empty or placeholder-only response must never erase a useful,
+      // previously approved profile.
+      smLog('[SmartMemory] Profile generation produced no supported fields; preserving the prior profile.');
+      return loadProfiles(characterName);
+    }
 
     const roster = buildCanonicalCharacterRoster(getContext());
     parsed.relationship_matrix = parsed.relationship_matrix
@@ -221,8 +232,13 @@ export async function generateProfiles(characterName, abortCheck = null) {
       generated_at: Date.now(),
       parent_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
       source_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
+      evidence_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
     };
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
+    if (!isGeneratedRecordApproved(profiles)) {
+      smLog('[SmartMemory] Profile generation failed grounding validation; preserving the prior profile.');
+      return loadProfiles(characterName);
+    }
     if (abortCheck?.()) return null;
     await saveProfiles(profiles, characterName);
     return profiles;
