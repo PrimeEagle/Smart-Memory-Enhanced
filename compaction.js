@@ -276,7 +276,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
 
     return summary;
   } catch (err) {
-    console.error('[SmartMemory] Compaction failed:', err);
+    console.error('[Smart Memory Enhanced] Compaction failed:', err);
     throw err;
   }
 }

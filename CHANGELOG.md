@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.10] - 2026-07-20
+
+### Fixed
+
+- Catch-up profile generation now treats malformed provider output as a
+  run-level failure. The profile is still safely rejected and existing approved
+  profile data is preserved, but Memorize Chat increments its error total
+  rather than appearing completely clean when its scene pass succeeds.
+- Standardized Smart Memory Enhanced-owned browser-console prefixes as
+  `[Smart Memory Enhanced]`, making its messages distinguishable from the
+  original Smart Memory extension when both are installed.
+
+### Notes
+
+- Browser DevTools entries such as `Forced reflow` and long `setTimeout` or
+  `setInterval` handler warnings are performance diagnostics. They are not
+  Smart Memory Enhanced extraction or persistence failures unless accompanied
+  by an extension error message or a failed run status.
+- Profile generation requires the configured model to return the structured
+  `[CHARACTER STATE]`, `[WORLD STATE]`, and `[RELATIONSHIP MATRIX]` sections.
+  A conversational preamble, altered headings, or a response truncated by the
+  generation limit will be rejected instead of being stored as a profile.
+
+### Tests
+
+- Added coverage that malformed profile output reaches the catch-up error path
+  and that the extension no longer emits the ambiguous `[SmartMemory]` prefix.
+
 ## [0.8.9] - 2026-07-19
 
 ### Fixed

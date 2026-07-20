@@ -245,7 +245,7 @@ export async function reconcileStateLedgerCanonicalNames() {
   const changed = JSON.stringify(reconciled) !== JSON.stringify(ledger);
   if (changed) {
     await saveStateLedger(reconciled);
-    smLog('[SmartMemory] State Ledger reconciled canonical name variants.');
+    smLog('[Smart Memory Enhanced] State Ledger reconciled canonical name variants.');
   }
   return changed;
 }
@@ -271,7 +271,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
   // ledger parser can validate message evidence, treating it as grounded would
   // let an unverified provider response alter structured state.
   if (extension_settings[MODULE_NAME]?.state_ledger_requires_grounding !== false) {
-    smLog('[SmartMemory] State ledger extraction skipped: source grounding is required.');
+    smLog('[Smart Memory Enhanced] State ledger extraction skipped: source grounding is required.');
     return 0;
   }
 
@@ -302,13 +302,13 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     const prompt = buildStateCardPrompt(chatExcerpt, entityList, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())));
 
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.STATE_LEDGER, characterName), { responseLength: 400 });
-    smLog('[SmartMemory] State ledger raw response:', response);
+    smLog('[Smart Memory Enhanced] State ledger raw response:', response);
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
     const updates = parseStateCardResponse(response);
     if (updates.size === 0) {
-      smLog('[SmartMemory] State ledger extraction produced no parseable updates.');
+      smLog('[Smart Memory Enhanced] State ledger extraction produced no parseable updates.');
       return 0;
     }
 
@@ -323,7 +323,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
       const [rawName, type] = key.split('|');
       const resolution = resolveCanonicalCharacterName(rawName, roster, [...ltEntities, ...sessionEntities]);
       if (resolution.status === 'ambiguous') {
-        smLog(`[SmartMemory] State Ledger candidate "${rawName}" skipped: ${resolution.reason}`);
+        smLog(`[Smart Memory Enhanced] State Ledger candidate "${rawName}" skipped: ${resolution.reason}`);
         continue;
       }
       const canonicalKey = stableLedgerKey(resolution.canonicalName ?? rawName, type);
@@ -341,10 +341,10 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     }
     await saveStateLedger(ledger);
 
-    smLog(`[SmartMemory] State ledger: updated ${count} entity cards.`);
+    smLog(`[Smart Memory Enhanced] State ledger: updated ${count} entity cards.`);
     return count;
   } catch (err) {
-    smLog('[SmartMemory] State ledger extraction failed:', err.message);
+    smLog('[Smart Memory Enhanced] State ledger extraction failed:', err.message);
     return 0;
   }
 }

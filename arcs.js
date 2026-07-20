@@ -534,7 +534,7 @@ export async function resolveArcWithSummary(index, characterName = null, groupId
     await saveArcSummaries(summaries);
     return true;
   } catch (err) {
-    console.error('[SmartMemory] Arc summary generation failed:', err);
+    console.error('[Smart Memory Enhanced] Arc summary generation failed:', err);
     return false;
   }
 }
@@ -690,7 +690,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       { responseLength: settings.arcs_response_length ?? 400 },
     );
 
-    smLog('[SmartMemory] Arc extraction response:', response);
+    smLog('[Smart Memory Enhanced] Arc extraction response:', response);
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
@@ -734,7 +734,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         });
 
         smLog(
-          `[SmartMemory] Arc session-filter: ${rawAdd.length} candidates -> ${add.length} kept`,
+          `[Smart Memory Enhanced] Arc session-filter: ${rawAdd.length} candidates -> ${add.length} kept`,
         );
       }
     }
@@ -776,10 +776,10 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
             };
             validateGeneratedRecord(summaryRecord);
             arcSummaries.push(summaryRecord);
-            smLog(`[SmartMemory] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
+            smLog(`[Smart Memory Enhanced] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
           }
         } catch (err) {
-          console.error('[SmartMemory] Arc summary generation failed:', err);
+          console.error('[Smart Memory Enhanced] Arc summary generation failed:', err);
           // Non-fatal - arc is still resolved even if summarization fails.
         }
       }
@@ -897,7 +897,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     }
     return dedupedAdd.length;
   } catch (err) {
-    console.error('[SmartMemory] Arc extraction failed:', err);
+    console.error('[Smart Memory Enhanced] Arc extraction failed:', err);
     throw err;
   }
 }

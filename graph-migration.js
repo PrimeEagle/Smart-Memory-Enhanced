@@ -165,7 +165,7 @@ export function saveCharacterEntityRegistry(characterName, entities) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_entities ??= {})[characterName] = entities;
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local entity registry:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local entity registry:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -385,7 +385,7 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
       });
       recordIdentityReviewCandidate(resolution, { memoryId: mem.id, entityType: classifiedType });
       if (resolution.status === 'ambiguous') {
-        smLog(`[SmartMemory] Entity candidate "${name}" quarantined: ${resolution.reason}`);
+        smLog(`[Smart Memory Enhanced] Entity candidate "${name}" quarantined: ${resolution.reason}`);
         return [];
       }
       const resolvedName = resolution.canonicalName ?? name;
@@ -542,7 +542,7 @@ export function reconcileEntityRegistry(entityRegistry, currentMemories) {
   );
   if (entityRegistry.length < before) {
     smLog(
-      `[SmartMemory] Pruned ${before - entityRegistry.length} entity entries with no linked memories.`,
+      `[Smart Memory Enhanced] Pruned ${before - entityRegistry.length} entity entries with no linked memories.`,
     );
   }
 }
@@ -1061,7 +1061,7 @@ function assertNonDestructive(before, after, stepVersion, _path = '', allowDelet
     const path = _path ? `${_path}.${key}` : String(key);
     if (after == null || !(key in after)) {
       if (allowDelete.has(path)) continue;
-      throw new Error(`[SmartMemory] Migration v${stepVersion} deleted field "${path}".`);
+      throw new Error(`[Smart Memory Enhanced] Migration v${stepVersion} deleted field "${path}".`);
     }
     const bVal = before[key];
     const aVal = after[key];
@@ -1069,7 +1069,7 @@ function assertNonDestructive(before, after, stepVersion, _path = '', allowDelet
       assertNonDestructive(bVal, aVal, stepVersion, path, allowDelete);
     } else if (bVal !== aVal) {
       throw new Error(
-        `[SmartMemory] Migration v${stepVersion} overwrote field "${path}": was ${JSON.stringify(bVal)}, now ${JSON.stringify(aVal)}.`,
+        `[Smart Memory Enhanced] Migration v${stepVersion} overwrote field "${path}": was ${JSON.stringify(bVal)}, now ${JSON.stringify(aVal)}.`,
       );
     }
   }
@@ -1103,7 +1103,7 @@ function applyMigrations(container, steps) {
       const before = structuredClone(current);
       current = stepFn(current);
       assertNonDestructive(before, current, version + 1, '', allowDelete);
-      smLog(`[SmartMemory] Applied migration step v${version + 1}.`);
+      smLog(`[Smart Memory Enhanced] Applied migration step v${version + 1}.`);
     } else {
       // A missing step is normal when one registry has no change for a given
       // version (e.g. CHAT_MIGRATIONS has v3 but CHARACTER_MIGRATIONS does not).
@@ -1138,13 +1138,13 @@ export function ensureCharacterMigrated(characterName) {
 
   if ((charData.schema_version ?? 0) >= SCHEMA_VERSION) return false;
 
-  smLog(`[SmartMemory] Migrating character "${characterName}" to schema v${SCHEMA_VERSION}...`);
+  smLog(`[Smart Memory Enhanced] Migrating character "${characterName}" to schema v${SCHEMA_VERSION}...`);
   const migrated = applyMigrations(charData, CHARACTER_MIGRATIONS);
   if (!settings.characters) settings.characters = {};
   settings.characters[characterName] = migrated;
   saveSettingsDebounced();
 
-  smLog(`[SmartMemory] Character "${characterName}" migration complete.`);
+  smLog(`[Smart Memory Enhanced] Character "${characterName}" migration complete.`);
   return true;
 }
 
@@ -1169,10 +1169,10 @@ export async function ensureChatMigrated() {
 
   if ((meta.schema_version ?? 0) >= SCHEMA_VERSION) return false;
 
-  smLog(`[SmartMemory] Migrating chat data to schema v${SCHEMA_VERSION}...`);
+  smLog(`[Smart Memory Enhanced] Migrating chat data to schema v${SCHEMA_VERSION}...`);
   context.chatMetadata[META_KEY] = applyMigrations(meta, CHAT_MIGRATIONS);
   await saveChatMetadata(context);
 
-  smLog('[SmartMemory] Chat data migration complete.');
+  smLog('[Smart Memory Enhanced] Chat data migration complete.');
   return true;
 }

@@ -188,13 +188,13 @@ async function verifyLongtermCandidates(candidates, existing) {
       if (answer === 'UPDATE') {
         superseded.set(pair.candText, pair.existingId);
         smLog(
-          `[SmartMemory] Method B supersession: "${pair.candObj.content.slice(0, 60)}" replaces id ${pair.existingId}`,
+          `[Smart Memory Enhanced] Method B supersession: "${pair.candObj.content.slice(0, 60)}" replaces id ${pair.existingId}`,
         );
       }
     } catch (err) {
       // Non-fatal: if B fails, the candidate is treated as a new independent memory.
       smLog(
-        `[SmartMemory] Method B confirmation failed for "${pair.candText.slice(0, 60)}": ${err.message}`,
+        `[Smart Memory Enhanced] Method B confirmation failed for "${pair.candText.slice(0, 60)}": ${err.message}`,
       );
     }
   }
@@ -291,7 +291,7 @@ export function saveCharacterMemories(characterName, memories) {
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
   for (const memory of memories) validateGeneratedMemoryRecord(memory, memories);
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    saveChatLocalMemories(characterName, memories).catch((err) => smLog('[SmartMemory] Failed to save chat-local memories:', err));
+    saveChatLocalMemories(characterName, memories).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local memories:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -318,7 +318,7 @@ export function clearCharacterMemories(characterName) {
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
     if (context.chatMetadata?.[META_KEY]?.card_local_memories) delete context.chatMetadata[META_KEY].card_local_memories[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local memories:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local memories:', err));
     return;
   }
   if (extension_settings[MODULE_NAME].characters?.[characterName]) {
@@ -372,7 +372,7 @@ export function saveRelationshipHistory(characterName, history) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_relationships ??= {})[characterName] = history;
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local relationships:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local relationships:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -474,7 +474,7 @@ export function clearRelationshipHistory(characterName) {
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
     if (context.chatMetadata?.[META_KEY]?.card_local_relationships) delete context.chatMetadata[META_KEY].card_local_relationships[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local relationships:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local relationships:', err));
     return;
   }
   const char = extension_settings[MODULE_NAME].characters?.[characterName];
@@ -624,13 +624,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       },
     );
 
-    smLog(`[SmartMemory] Raw extraction response for "${characterName}":`, response);
+    smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
     const parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
-      smLog('[SmartMemory] Extraction response produced no parseable lines. Check format above.');
+      smLog('[Smart Memory Enhanced] Extraction response produced no parseable lines. Check format above.');
       return 0;
     }
 
@@ -654,7 +654,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     } = await verifyLongtermCandidates(parsed, activeMemories);
     if (newMemories.length === 0) {
       smLog(
-        `[SmartMemory] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
+        `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
       );
       return 0;
     }
@@ -730,7 +730,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         newlyRetiredIds.add(oldId);
 
         smLog(
-          `[SmartMemory] Supersession: "${oldMem.content.slice(0, 60)}" retired by "${newMem.content.slice(0, 60)}"`,
+          `[Smart Memory Enhanced] Supersession: "${oldMem.content.slice(0, 60)}" retired by "${newMem.content.slice(0, 60)}"`,
         );
       }
     }
@@ -782,10 +782,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           const raw = parseTriggerResponse(triggerResponse, mem.content);
           mem.triggers = filterTriggersByFrequency(raw, finalActive);
           smLog(
-            `[SmartMemory] Triggers for "${mem.content.slice(0, 50)}": ${mem.triggers.join(', ')}`,
+            `[Smart Memory Enhanced] Triggers for "${mem.content.slice(0, 50)}": ${mem.triggers.join(', ')}`,
           );
         } catch (err) {
-          smLog(`[SmartMemory] Trigger generation failed: ${err.message}`);
+          smLog(`[Smart Memory Enhanced] Trigger generation failed: ${err.message}`);
           mem.triggers = [];
         }
       }
@@ -850,19 +850,19 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
                 !/\b(?:apartment|room|house|home|office|street|city|town|running|walking|sleeping)\b/i.test(normalized);
             };
             if (!looksLikeCharacterName(rawSubject) || !looksLikeCharacterName(rawTarget)) {
-              smLog(`[SmartMemory] Relationship pair skipped: both parties must be named characters (${rawSubject} -> ${rawTarget}).`);
+              smLog(`[Smart Memory Enhanced] Relationship pair skipped: both parties must be named characters (${rawSubject} -> ${rawTarget}).`);
               continue;
             }
             const subjectType = knownEntityType(rawSubject);
             const targetType = knownEntityType(rawTarget);
             if ([subjectType, targetType].some((type) => type && type !== 'unknown' && type !== 'character')) {
-              smLog(`[SmartMemory] Relationship pair skipped: a known participant is not a character (${rawSubject} -> ${rawTarget}).`);
+              smLog(`[Smart Memory Enhanced] Relationship pair skipped: a known participant is not a character (${rawSubject} -> ${rawTarget}).`);
               continue;
             }
             const subjectResult = resolveCanonicalCharacterName(rawSubject, canonicalRoster);
             const targetResult = resolveCanonicalCharacterName(rawTarget, canonicalRoster);
             if (subjectResult.status === 'ambiguous' || targetResult.status === 'ambiguous') {
-              smLog(`[SmartMemory] Relationship pair skipped due to ambiguous identity: ${rawSubject} -> ${rawTarget}`);
+              smLog(`[Smart Memory Enhanced] Relationship pair skipped due to ambiguous identity: ${rawSubject} -> ${rawTarget}`);
               continue;
             }
             const pair = getRelationshipHistoryPair(rawSubject, rawTarget, canonicalRoster);
@@ -912,10 +912,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             relHistory[key] = relationshipRecord;
           }
           saveRelationshipHistory(characterName, relHistory);
-          smLog(`[SmartMemory] Relationship deltas applied: ${deltas.length} pair(s)`);
+          smLog(`[Smart Memory Enhanced] Relationship deltas applied: ${deltas.length} pair(s)`);
         }
       } catch (err) {
-        smLog(`[SmartMemory] Relationship extraction failed: ${err.message}`);
+        smLog(`[Smart Memory Enhanced] Relationship extraction failed: ${err.message}`);
       }
     }
 
@@ -977,11 +977,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
 
     smLog(
-      `[SmartMemory] Saved ${added} new memories for "${characterName}". Active: ${finalActive.length}, Retired: ${updatedRetired.length}`,
+      `[Smart Memory Enhanced] Saved ${added} new memories for "${characterName}". Active: ${finalActive.length}, Retired: ${updatedRetired.length}`,
     );
     return added;
   } catch (err) {
-    console.error('[SmartMemory] Memory extraction failed:', err);
+    console.error('[Smart Memory Enhanced] Memory extraction failed:', err);
     throw err;
   }
 }
@@ -1068,7 +1068,7 @@ export async function consolidateMemories(characterName, force = false) {
         { responseLength: Math.max(400, (base.length + unprocessed.length) * 60) },
       );
 
-      smLog(`[SmartMemory] Consolidation response for [${type}]:`, response);
+      smLog(`[Smart Memory Enhanced] Consolidation response for [${type}]:`, response);
 
       if (!response || response.trim().toUpperCase() === 'NONE') {
         // Model found nothing to add - mark unprocessed as consolidated as-is.
@@ -1123,10 +1123,10 @@ export async function consolidateMemories(characterName, force = false) {
       dirty = true;
 
       smLog(
-        `[SmartMemory] [${type}] consolidation: ${unprocessed.length} unprocessed -> ${promoted.length} promoted. Base: ${base.length}. Removed: ${Math.max(0, removed)}.`,
+        `[Smart Memory Enhanced] [${type}] consolidation: ${unprocessed.length} unprocessed -> ${promoted.length} promoted. Base: ${base.length}. Removed: ${Math.max(0, removed)}.`,
       );
     } catch (err) {
-      console.error(`[SmartMemory] Consolidation failed for type [${type}]:`, err);
+      console.error(`[Smart Memory Enhanced] Consolidation failed for type [${type}]:`, err);
       // On failure, mark unprocessed as consolidated so they don't block future passes.
       // Set dirty before the forEach so a mid-loop error still triggers the save.
       dirty = true;

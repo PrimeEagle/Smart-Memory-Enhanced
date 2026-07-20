@@ -114,7 +114,7 @@ function saveEpistemicBudgetOverride(newBudget) {
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].epistemicBudgetOverride = newBudget;
   saveChatMetadata(context)
-    .catch((err) => console.error('[SmartMemory] Failed to save epistemic budget override:', err));
+    .catch((err) => console.error('[Smart Memory Enhanced] Failed to save epistemic budget override:', err));
 }
 
 /**
@@ -191,7 +191,7 @@ export function saveEpistemicKnowledge(characterName, entries) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_epistemic ??= {})[characterName] = entries;
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local epistemic knowledge:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local epistemic knowledge:', err));
     return;
   }
   const s = extension_settings[MODULE_NAME];
@@ -246,7 +246,7 @@ export function clearEpistemicKnowledge(characterName) {
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const context = getContext();
     if (context.chatMetadata?.[META_KEY]?.card_local_epistemic) delete context.chatMetadata[META_KEY].card_local_epistemic[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local epistemic knowledge:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local epistemic knowledge:', err));
     return;
   }
   const s = extension_settings[MODULE_NAME];
@@ -345,7 +345,7 @@ export async function extractEpistemicKnowledge(
       responseLength: settings.epistemic_response_length ?? 400,
     });
 
-    smLog('[SmartMemory] Epistemic raw response:', response);
+    smLog('[Smart Memory Enhanced] Epistemic raw response:', response);
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
@@ -359,7 +359,7 @@ export async function extractEpistemicKnowledge(
 
     if (retiredCount > 0) {
       smLog(
-        `[SmartMemory] Epistemic: retired ${retiredCount} superseded entries for "${characterName}".`,
+        `[Smart Memory Enhanced] Epistemic: retired ${retiredCount} superseded entries for "${characterName}".`,
       );
     }
 
@@ -375,27 +375,27 @@ export async function extractEpistemicKnowledge(
       const subject = resolveCanonicalCharacterName(entry.subject, roster);
       const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
       if (subject.status === 'ambiguous' || target?.status === 'ambiguous') {
-        smLog(`[SmartMemory] Epistemic entry skipped due to ambiguous identity: ${entry.subject}`);
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped due to ambiguous identity: ${entry.subject}`);
         return [];
       }
       const canonicalSubject = subject.canonicalName ?? entry.subject;
       const count = acceptedBySubject.get(canonicalSubject) ?? 0;
       if (count >= perSubjectCap) {
-        smLog(`[SmartMemory] Epistemic entry skipped: per-scene cap reached for ${canonicalSubject}.`);
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped: per-scene cap reached for ${canonicalSubject}.`);
         return [];
       }
       if (entry.content.length < 8 || entry.content.length > 500 || /\b(?:retire|retires)\s*\[?\d+/i.test(entry.content)) {
-        smLog(`[SmartMemory] Epistemic entry skipped: malformed content for ${canonicalSubject}.`);
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped: malformed content for ${canonicalSubject}.`);
         return [];
       }
       if (isRoutineKnowledge(entry)) {
-        smLog(`[SmartMemory] Epistemic entry skipped: routine witnessed event for ${canonicalSubject}.`);
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped: routine witnessed event for ${canonicalSubject}.`);
         return [];
       }
       const typeKey = `${canonicalSubject}|${entry.type}`;
       const typeCount = acceptedBySubjectAndType.get(typeKey) ?? 0;
       if (typeCount >= (typeCaps[entry.type] ?? 2)) {
-        smLog(`[SmartMemory] Epistemic entry skipped: ${entry.type} cap reached for ${canonicalSubject}.`);
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped: ${entry.type} cap reached for ${canonicalSubject}.`);
         return [];
       }
       acceptedBySubject.set(canonicalSubject, count + 1);
@@ -407,7 +407,7 @@ export async function extractEpistemicKnowledge(
       }];
     });
     if (parsed.length === 0 && retiredCount === 0) {
-      smLog('[SmartMemory] Epistemic extraction produced no parseable lines.');
+      smLog('[Smart Memory Enhanced] Epistemic extraction produced no parseable lines.');
       return 0;
     }
 
@@ -446,7 +446,7 @@ export async function extractEpistemicKnowledge(
     }
 
     if (newEntries.length === 0 && retiredCount === 0) {
-      smLog('[SmartMemory] All epistemic candidates were duplicates of existing entries.');
+      smLog('[Smart Memory Enhanced] All epistemic candidates were duplicates of existing entries.');
       return 0;
     }
 
@@ -467,11 +467,11 @@ export async function extractEpistemicKnowledge(
 
     saveEpistemicKnowledge(characterName, [...survivingExisting, ...newEntries]);
     smLog(
-      `[SmartMemory] Epistemic: added ${newEntries.length} new entries, retired ${retiredCount} for "${characterName}".`,
+      `[Smart Memory Enhanced] Epistemic: added ${newEntries.length} new entries, retired ${retiredCount} for "${characterName}".`,
     );
     return newEntries.length;
   } catch (err) {
-    smLog('[SmartMemory] Epistemic extraction failed:', err.message);
+    smLog('[Smart Memory Enhanced] Epistemic extraction failed:', err.message);
     return 0;
   }
 }

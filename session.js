@@ -220,7 +220,7 @@ export async function purgeSessionMemoriesSince(since) {
   }
 
   await saveSessionMemories(kept);
-  smLog(`[SmartMemory] Purged ${removed} session memories from read-only window.`);
+  smLog(`[Smart Memory Enhanced] Purged ${removed} session memories from read-only window.`);
   return removed;
 }
 
@@ -339,7 +339,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       { responseLength: settings.session_response_length ?? 500 },
     );
 
-    smLog('[SmartMemory] Session extraction response:', response);
+    smLog('[Smart Memory Enhanced] Session extraction response:', response);
 
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
@@ -403,7 +403,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         newlyRetiredIds.add(oldId);
 
         smLog(
-          `[SmartMemory] Session supersession: "${oldMem.content.slice(0, 60)}" retired by "${newMem.content.slice(0, 60)}"`,
+          `[Smart Memory Enhanced] Session supersession: "${oldMem.content.slice(0, 60)}" retired by "${newMem.content.slice(0, 60)}"`,
         );
       }
     }
@@ -442,10 +442,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           const raw = parseTriggerResponse(triggerResponse, mem.content);
           mem.triggers = filterTriggersByFrequency(raw, finalActive);
           smLog(
-            `[SmartMemory] Session triggers for "${mem.content.slice(0, 50)}": ${mem.triggers.join(', ')}`,
+            `[Smart Memory Enhanced] Session triggers for "${mem.content.slice(0, 50)}": ${mem.triggers.join(', ')}`,
           );
         } catch (err) {
-          smLog(`[SmartMemory] Session trigger generation failed: ${err.message}`);
+          smLog(`[Smart Memory Enhanced] Session trigger generation failed: ${err.message}`);
           mem.triggers = [];
         }
       }
@@ -483,7 +483,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     return added;
   } catch (err) {
-    console.error('[SmartMemory] Session extraction failed:', err);
+    console.error('[Smart Memory Enhanced] Session extraction failed:', err);
     throw err;
   }
 }
@@ -577,7 +577,7 @@ export async function consolidateSessionMemories(force = false, abortCheck = nul
         { responseLength: Math.max(400, (base.length + unprocessed.length) * 60) },
       );
 
-      smLog(`[SmartMemory] Session consolidation response for [${type}]:`, response);
+      smLog(`[Smart Memory Enhanced] Session consolidation response for [${type}]:`, response);
 
       if (!response || response.trim().toUpperCase() === 'NONE') {
         // Nothing to add - mark unprocessed as consolidated as-is.
@@ -623,10 +623,10 @@ export async function consolidateSessionMemories(force = false, abortCheck = nul
       dirty = true;
 
       smLog(
-        `[SmartMemory] Session [${type}] consolidation: ${unprocessed.length} unprocessed -> ${promoted.length} promoted. Base: ${base.length}. Removed: ${Math.max(0, removed)}.`,
+        `[Smart Memory Enhanced] Session [${type}] consolidation: ${unprocessed.length} unprocessed -> ${promoted.length} promoted. Base: ${base.length}. Removed: ${Math.max(0, removed)}.`,
       );
     } catch (err) {
-      console.error(`[SmartMemory] Session consolidation failed for type [${type}]:`, err);
+      console.error(`[Smart Memory Enhanced] Session consolidation failed for type [${type}]:`, err);
       // On failure, mark unprocessed as consolidated so they don't block future passes.
       // Set dirty before the forEach so a mid-loop error still triggers the save.
       dirty = true;

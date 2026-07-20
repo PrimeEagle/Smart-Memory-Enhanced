@@ -70,6 +70,18 @@ test('Enhanced slash commands and global UI hooks use independent names', () => 
   assert.match(css, /body\.sme-read-only/);
 });
 
+test('catch-up reports unparseable profile output and Enhanced owns its console prefix', () => {
+  const profiles = read('profiles.js');
+  const settings = read('settings.js');
+  assert.match(profiles, /options\.throwOnFailure/);
+  assert.match(profiles, /if \(options\.throwOnFailure\) throw error/);
+  assert.match(settings, /generateProfiles\(name, null, \{ throwOnFailure: true \}\)/);
+  assert.match(profiles, /\[Smart Memory Enhanced\] Profile generation produced unparseable output/);
+  for (const file of ['index.js', 'settings.js', 'longterm.js', 'session.js', 'profiles.js']) {
+    assert.doesNotMatch(read(file), /\[SmartMemory\]/);
+  }
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [

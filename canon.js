@@ -91,7 +91,7 @@ export function saveCanon(characterName, text) {
     const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
     (context.chatMetadata[META_KEY].card_local_canon ??= {})[characterName] = { text, ts: Date.now() };
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to save chat-local canon:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local canon:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -118,7 +118,7 @@ export function clearCanon(characterName) {
     if (context.chatMetadata?.[META_KEY]?.card_local_canon) delete context.chatMetadata[META_KEY].card_local_canon[characterName];
     // Clear historical misplaced entries as well.
     if (context.chatMetadata?.[MODULE_NAME]?.card_local_canon) delete context.chatMetadata[MODULE_NAME].card_local_canon[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[SmartMemory] Failed to clear chat-local canon:', err));
+    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local canon:', err));
     setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
     invalidateUnifiedCache(PROMPT_KEY_CANON);
     return;
@@ -152,7 +152,7 @@ export async function generateCanon(characterName) {
   const settings = extension_settings[MODULE_NAME];
   const arcSummaries = loadArcSummaries().filter(isGeneratedRecordApproved);
   if (arcSummaries.length === 0) {
-    smLog('[SmartMemory] Canon generation skipped - no arc summaries available.');
+    smLog('[Smart Memory Enhanced] Canon generation skipped - no arc summaries available.');
     return null;
   }
 
@@ -175,7 +175,7 @@ export async function generateCanon(characterName) {
   const text = response.trim();
   saveCanon(characterName, text);
   smLog(
-    `[SmartMemory] Canon summary generated for "${characterName}" (${estimateTokens(text)} tokens).`,
+    `[Smart Memory Enhanced] Canon summary generated for "${characterName}" (${estimateTokens(text)} tokens).`,
   );
   return text;
 }

@@ -114,7 +114,7 @@ export async function detectSceneBreakAI(messageText, previousMessageText) {
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.SCENE_SUMMARY), { responseLength: 5 });
     return response?.trim().toUpperCase().startsWith('YES') ?? false;
   } catch (err) {
-    console.error('[SmartMemory] AI scene break detection failed:', err);
+    console.error('[Smart Memory Enhanced] AI scene break detection failed:', err);
     return false;
   }
 }
@@ -236,7 +236,7 @@ export async function summarizeScene(sceneMessages) {
 
     return parseSceneSummaryOutput(response);
   } catch (err) {
-    console.error('[SmartMemory] Scene summary failed:', err);
+    console.error('[Smart Memory Enhanced] Scene summary failed:', err);
     throw err;
   }
 }
@@ -274,7 +274,7 @@ export async function processSceneBreak(
   const nonSystemMessages = recentMessages.filter((m) => !m.is_system);
   if (nonSystemMessages.length < minMessages) {
     smLog(
-      `[SmartMemory] Scene break suppressed - only ${nonSystemMessages.length}/${minMessages} messages in buffer.`,
+      `[Smart Memory Enhanced] Scene break suppressed - only ${nonSystemMessages.length}/${minMessages} messages in buffer.`,
     );
     return false;
   }
@@ -285,7 +285,7 @@ export async function processSceneBreak(
 
   if (!isBreak) return false;
 
-  smLog('[SmartMemory] Scene break detected.');
+  smLog('[Smart Memory Enhanced] Scene break detected.');
 
   const sceneResult = await summarizeScene(recentMessages);
   if (!sceneResult?.summary) return false;
@@ -305,7 +305,7 @@ export async function processSceneBreak(
     const threshold = semantic ? 0.82 : 0.55;
     if (score >= threshold) {
       smLog(
-        `[SmartMemory] Scene summary too similar to a recent scene (${semantic ? 'semantic' : 'jaccard'} ${score.toFixed(3)}) - skipping duplicate.`,
+        `[Smart Memory Enhanced] Scene summary too similar to a recent scene (${semantic ? 'semantic' : 'jaccard'} ${score.toFixed(3)}) - skipping duplicate.`,
       );
       return false;
     }

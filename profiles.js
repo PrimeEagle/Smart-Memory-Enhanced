@@ -151,9 +151,11 @@ export function areProfilesStale(thresholdMs = DEFAULT_STALE_THRESHOLD_MS, chara
  *
  * @param {string} characterName - Active character name.
  * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
+ * @param {{throwOnFailure?: boolean}} [options] - Lets a transactional caller
+ * surface invalid provider output in its run-level error total.
  * @returns {Promise<{character_state: string, world_state: string, relationship_matrix: string, generated_at: number}|null>}
  */
-export async function generateProfiles(characterName, abortCheck = null) {
+export async function generateProfiles(characterName, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.profiles_enabled || !characterName || [CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return null;
 
@@ -192,15 +194,15 @@ export async function generateProfiles(characterName, abortCheck = null) {
       responseLength: settings.profiles_response_length ?? 600,
     });
 
-    smLog('[SmartMemory] Profile generation response:', response);
+    smLog('[Smart Memory Enhanced] Profile generation response:', response);
 
     if (!response) return null;
 
     const parsed = parseProfileOutput(response);
     if (!parsed) {
-      console.warn(
-        '[SmartMemory] Profile generation produced unparseable output. Check format above.',
-      );
+      const error = new Error('Profile generation produced unparseable output.');
+      console.warn('[Smart Memory Enhanced] Profile generation produced unparseable output. Check format above.');
+      if (options.throwOnFailure) throw error;
       return null;
     }
     const profileFields = ['character_state', 'world_state', 'relationship_matrix'];
@@ -211,7 +213,7 @@ export async function generateProfiles(characterName, abortCheck = null) {
     if (!hasGroundedField) {
       // An empty or placeholder-only response must never erase a useful,
       // previously approved profile.
-      smLog('[SmartMemory] Profile generation produced no supported fields; preserving the prior profile.');
+      smLog('[Smart Memory Enhanced] Profile generation produced no supported fields; preserving the prior profile.');
       return loadProfiles(characterName);
     }
 
@@ -237,14 +239,15 @@ export async function generateProfiles(characterName, abortCheck = null) {
     };
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
     if (!isGeneratedRecordApproved(profiles)) {
-      smLog('[SmartMemory] Profile generation failed grounding validation; preserving the prior profile.');
+      smLog('[Smart Memory Enhanced] Profile generation failed grounding validation; preserving the prior profile.');
       return loadProfiles(characterName);
     }
     if (abortCheck?.()) return null;
     await saveProfiles(profiles, characterName);
     return profiles;
   } catch (err) {
-    console.error('[SmartMemory] Profile generation failed:', err);
+    console.error('[Smart Memory Enhanced] Profile generation failed:', err);
+    if (options.throwOnFailure) throw err;
     return null;
   }
 }

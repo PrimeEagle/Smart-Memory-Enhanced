@@ -142,11 +142,11 @@ export async function checkContinuity(characterName) {
       responseLength: settings.continuity_response_length ?? 300,
     });
 
-    smLog('[SmartMemory] Continuity check response:', response);
+    smLog('[Smart Memory Enhanced] Continuity check response:', response);
 
     return parseContradictions(response);
   } catch (err) {
-    console.error('[SmartMemory] Continuity check failed:', err);
+    console.error('[Smart Memory Enhanced] Continuity check failed:', err);
     throw err;
   }
 }
@@ -167,7 +167,7 @@ export async function generateRepair(contradictions, characterName) {
     responseLength: settings.continuity_response_length ?? 300,
   });
 
-  smLog('[SmartMemory] Repair note generated:', note);
+  smLog('[Smart Memory Enhanced] Repair note generated:', note);
   return typeof note === 'string' ? note.trim() : null;
 }
 

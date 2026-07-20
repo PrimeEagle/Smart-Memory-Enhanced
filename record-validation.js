@@ -90,7 +90,7 @@ export function prepareRecordForValidation(record, sourceContext = {}, validatio
   // visible in development without changing production persistence behavior.
   console.assert(
     !(record.source_message_indices.length > 0 && record.validation_issues?.some((issue) => /no (valid )?source messages? (were )?supplied/i.test(issue))),
-    '[SmartMemory] Provenance invariant violated: sourced record retained a missing-source error.',
+    '[Smart Memory Enhanced] Provenance invariant violated: sourced record retained a missing-source error.',
     record,
   );
   return result;

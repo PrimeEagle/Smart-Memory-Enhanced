@@ -762,7 +762,7 @@ export function loadSettings() {
  * @param {Error} err - The caught error.
  */
 function showError(operation, err) {
-  console.error(`[SmartMemory] ${operation} failed:`, err);
+  console.error(`[Smart Memory Enhanced] ${operation} failed:`, err);
   toastr.error(`${operation} failed. Check the browser console for details.`, 'Smart Memory Enhanced', {
     timeOut: 6000,
     positionClass: 'toast-bottom-right',
@@ -863,11 +863,11 @@ export function bindSettingsUI(ctrl) {
           : windowMessages;
         if (nameWindow.length > 0) {
           await extractAndStoreMemories(name, nameWindow).catch((err) =>
-            console.error('[SmartMemory] Commit long-term extraction error:', err),
+            console.error('[Smart Memory Enhanced] Commit long-term extraction error:', err),
           );
           if (settings.consolidation_enabled) {
             await consolidateMemories(name).catch((err) =>
-              console.error('[SmartMemory] Commit consolidation error:', err),
+              console.error('[Smart Memory Enhanced] Commit consolidation error:', err),
             );
           }
         }
@@ -880,13 +880,13 @@ export function bindSettingsUI(ctrl) {
               updateProfilesUI(profiles);
             }
           })
-          .catch((err) => console.error('[SmartMemory] Commit profile generation error:', err));
+          .catch((err) => console.error('[Smart Memory Enhanced] Commit profile generation error:', err));
       }
     }
 
     if (settings.arcs_enabled) {
       await extractArcs(windowMessages).catch((err) =>
-        console.error('[SmartMemory] Commit arc extraction error:', err),
+        console.error('[Smart Memory Enhanced] Commit arc extraction error:', err),
       );
     }
 
@@ -1288,7 +1288,7 @@ export function bindSettingsUI(ctrl) {
         `Could not reach Ollama at ${extension_settings[MODULE_NAME].ollama_url || 'http://localhost:11434'}. Is it running?`,
         'Smart Memory Enhanced',
       );
-      console.error('[SmartMemory] Ollama model fetch failed:', err);
+      console.error('[Smart Memory Enhanced] Ollama model fetch failed:', err);
       // Fetch failed - reveal the manual text input and hide the refresh
       // button (it would just fail again until Ollama is reachable).
       $select.hide();
@@ -1332,7 +1332,7 @@ export function bindSettingsUI(ctrl) {
       $btn.show();
     } catch (err) {
       toastr.error(`Could not reach Ollama at ${embeddingUrl}. Is it running?`, 'Smart Memory Enhanced');
-      console.error('[SmartMemory] Embedding model fetch failed:', err);
+      console.error('[Smart Memory Enhanced] Embedding model fetch failed:', err);
       $select.hide();
       $manual.val(prevModel ?? '').show();
       $btn.hide();
@@ -1555,7 +1555,7 @@ export function bindSettingsUI(ctrl) {
     try {
       outcome = await runModelTest(() => !modelTestRunning);
     } catch (err) {
-      console.error('[SmartMemory] Model test failed:', err);
+      console.error('[Smart Memory Enhanced] Model test failed:', err);
       $result.html(
         '<div class="sme_model_test_fail"><i class="fa-solid fa-circle-xmark"></i> Test failed with an error. Check the browser console for details.</div>',
       );
@@ -2345,7 +2345,7 @@ export function bindSettingsUI(ctrl) {
         // Discard: purge session memories then ghost the messages.
         if (startTime !== null) {
           await purgeSessionMemoriesSince(startTime).catch((err) =>
-            console.error('[SmartMemory] Session memory purge failed:', err),
+            console.error('[Smart Memory Enhanced] Session memory purge failed:', err),
           );
         }
         if (hasWindow) {
@@ -2526,7 +2526,7 @@ export function bindSettingsUI(ctrl) {
         await clearStateLedger();
       });
     } catch (err) {
-      console.error('[SmartMemory] Clear session persistence failed:', err);
+      console.error('[Smart Memory Enhanced] Clear session persistence failed:', err);
       setStatusMessage('Session memories were not cleared because the chat could not be saved.');
       toastr.error('Could not save the cleared session memories. Please try again.', 'Smart Memory Enhanced');
       return;
@@ -2886,7 +2886,7 @@ export function bindSettingsUI(ctrl) {
       currentChunkFailed = true;
       if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
       if (isSave) runResult.saveFailures++;
-      console.error(`[SmartMemory] Catch-up ${label}:`, err);
+      console.error(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
     };
     const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
     setCatchUpErrorCount(0);
@@ -3230,7 +3230,7 @@ export function bindSettingsUI(ctrl) {
       if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
         for (const name of catchUpCharacterNames) {
           setStatusMessage(`Generating character & world profiles for ${name}...`);
-          const profiles = await generateProfiles(name).catch((err) => {
+          const profiles = await generateProfiles(name, null, { throwOnFailure: true }).catch((err) => {
             recordCatchUpError('profile generation error', err);
             return null;
           });
@@ -3404,7 +3404,7 @@ export function bindSettingsUI(ctrl) {
         // and is intentionally NOT cleared here - same reasoning as state ledger.
       });
     } catch (err) {
-      console.error('[SmartMemory] Forget This Chat persistence failed:', err);
+      console.error('[Smart Memory Enhanced] Forget This Chat persistence failed:', err);
       setStatusMessage('Chat context was not cleared because the chat could not be saved.');
       toastr.error('Could not save the cleared chat context. Please try again.', 'Smart Memory Enhanced');
       return;
@@ -3475,7 +3475,7 @@ export function bindSettingsUI(ctrl) {
         clearChatLocalCharacterData(context, characterName);
       });
     } catch (err) {
-      console.error('[SmartMemory] Fresh Start persistence failed:', err);
+      console.error('[Smart Memory Enhanced] Fresh Start persistence failed:', err);
       setStatusMessage('Fresh Start was not saved. Nothing was cleared. Please try again.');
       toastr.error('Could not save Fresh Start. Nothing was cleared.', 'Smart Memory Enhanced');
       return;
@@ -3965,7 +3965,7 @@ export function bindSettingsUI(ctrl) {
             setStatusMessage('Correction queued.');
             toastr.info('Correction queued for next response.', 'Smart Memory Enhanced');
           } catch (repairErr) {
-            console.error('[SmartMemory] Repair generation failed:', repairErr);
+            console.error('[Smart Memory Enhanced] Repair generation failed:', repairErr);
             setStatusMessage('Repair failed - see console.');
           }
         }

@@ -92,7 +92,7 @@ export async function generateRecap() {
     });
     return response?.trim() || null;
   } catch (err) {
-    console.error('[SmartMemory] Recap generation failed:', err);
+    console.error('[Smart Memory Enhanced] Recap generation failed:', err);
     throw err;
   }
 }

@@ -572,7 +572,7 @@ async function onCharacterMessageRendered(messageId, type) {
             }
           }
         } catch (err) {
-          console.error('[SmartMemory] Compaction error:', err);
+          console.error('[Smart Memory Enhanced] Compaction error:', err);
         } finally {
           compactionRunning = false;
         }
@@ -607,7 +607,7 @@ async function onCharacterMessageRendered(messageId, type) {
             setStatusMessage('Scene break detected.');
           }
         } catch (err) {
-          console.error('[SmartMemory] Scene detection error:', err);
+          console.error('[Smart Memory Enhanced] Scene detection error:', err);
         }
       }
 
@@ -623,12 +623,12 @@ async function onCharacterMessageRendered(messageId, type) {
         );
 
         smLog(
-          `[SmartMemory] Solo counter: ${messagesSinceLastExtraction}/${extractEvery} (extractionRunning=${extractionRunning})`,
+          `[Smart Memory Enhanced] Solo counter: ${messagesSinceLastExtraction}/${extractEvery} (extractionRunning=${extractionRunning})`,
         );
 
         if (messagesSinceLastExtraction >= extractEvery) {
           extractionRunning = true;
-          smLog(`[SmartMemory] Solo extraction starting at ${new Date().toISOString()}`);
+          smLog(`[Smart Memory Enhanced] Solo extraction starting at ${new Date().toISOString()}`);
 
           // Use separate windows per tier. Both memory tiers use a smart window
           // that starts from just after the last processed message so already-seen
@@ -735,7 +735,7 @@ async function onCharacterMessageRendered(messageId, type) {
 
               const count = await extractSessionMemories(sessionWindow, chatChanged).catch(
                 (err) => {
-                  console.error('[SmartMemory] Session extraction error:', err);
+                  console.error('[Smart Memory Enhanced] Session extraction error:', err);
                   return 0;
                 },
               );
@@ -743,7 +743,7 @@ async function onCharacterMessageRendered(messageId, type) {
               if (!consolidationRunning) {
                 consolidationRunning = true;
                 await consolidateSessionMemories(false, chatChanged).catch((err) => {
-                  console.error('[SmartMemory] Session consolidation error:', err);
+                  console.error('[Smart Memory Enhanced] Session consolidation error:', err);
                 });
                 consolidationRunning = false;
               }
@@ -759,7 +759,7 @@ async function onCharacterMessageRendered(messageId, type) {
                   .filter((id) => id && !priorSessionIds.has(id));
                 if (newIds.length > 0) {
                   await linkMemoriesToLastScene(newIds).catch((err) =>
-                    console.error('[SmartMemory] Scene memory linking failed:', err),
+                    console.error('[Smart Memory Enhanced] Scene memory linking failed:', err),
                   );
                 }
               }
@@ -777,14 +777,14 @@ async function onCharacterMessageRendered(messageId, type) {
                 longtermWindow,
                 setStatusMessage,
               ).catch((err) => {
-                console.error('[SmartMemory] Long-term extraction error:', err);
+                console.error('[Smart Memory Enhanced] Long-term extraction error:', err);
                 return 0;
               });
               // Run consolidation after extraction if new memories were added.
               if (count > 0 && settings.consolidation_enabled && !consolidationRunning) {
                 consolidationRunning = true;
                 const removed = await consolidateMemories(characterName).catch((err) => {
-                  console.error('[SmartMemory] Consolidation error:', err);
+                  console.error('[Smart Memory Enhanced] Consolidation error:', err);
                   return 0;
                 });
                 consolidationRunning = false;
@@ -825,7 +825,7 @@ async function onCharacterMessageRendered(messageId, type) {
               const arcWindow = getStableExtractionWindow(context.chat, 100);
               const count = await extractArcs(arcWindow, characterName, chatChanged).catch(
                 (err) => {
-                  console.error('[SmartMemory] Arc extraction error:', err);
+                  console.error('[Smart Memory Enhanced] Arc extraction error:', err);
                   return 0;
                 },
               );
@@ -838,7 +838,7 @@ async function onCharacterMessageRendered(messageId, type) {
             if (!isFreshStart()) {
               await runStateCardExtraction(characterName, longtermWindow, chatChanged).catch(
                 (err) => {
-                  console.error('[SmartMemory] State ledger extraction error:', err);
+                  console.error('[Smart Memory Enhanced] State ledger extraction error:', err);
                 },
               );
               injectStateLedger(true);
@@ -857,7 +857,7 @@ async function onCharacterMessageRendered(messageId, type) {
                     updateProfilesUI(profiles);
                   }
                 })
-                .catch((err) => console.error('[SmartMemory] Profile generation error:', err));
+                .catch((err) => console.error('[Smart Memory Enhanced] Profile generation error:', err));
               // Reset the scheduled-regen counter since we just regenerated.
               messagesSinceLastProfileRegen = 0;
             }
@@ -876,7 +876,7 @@ async function onCharacterMessageRendered(messageId, type) {
             ) {
               await generateCanon(characterName)
                 .then(() => injectCanon(characterName))
-                .catch((err) => console.error('[SmartMemory] Auto-canon error:', err));
+                .catch((err) => console.error('[Smart Memory Enhanced] Auto-canon error:', err));
             }
 
             // Refresh entity panel after extraction since new entities may have been linked.
@@ -901,13 +901,13 @@ async function onCharacterMessageRendered(messageId, type) {
             }
           } catch (err) {
             if (err === CHAT_SWITCHED) {
-              smLog('[SmartMemory] Extraction aborted: chat switched mid-extraction.');
+              smLog('[Smart Memory Enhanced] Extraction aborted: chat switched mid-extraction.');
             } else {
-              console.error('[SmartMemory] Extraction error:', err);
+              console.error('[Smart Memory Enhanced] Extraction error:', err);
             }
             setStatusMessage('');
           } finally {
-            smLog(`[SmartMemory] Solo extraction finished at ${new Date().toISOString()}`);
+            smLog(`[Smart Memory Enhanced] Solo extraction finished at ${new Date().toISOString()}`);
             stopActivityLoader(activityHandle);
             // Restore original budget settings so chat-load / settings-change injection
             // paths use the user's configured values, not this turn's adapted values.
@@ -947,7 +947,7 @@ async function onCharacterMessageRendered(messageId, type) {
           })
           .catch((err) => {
             stopActivityLoader(schedProfileHandle);
-            console.error('[SmartMemory] Scheduled profile regeneration error:', err);
+            console.error('[Smart Memory Enhanced] Scheduled profile regeneration error:', err);
           });
       }
 
@@ -1003,7 +1003,7 @@ async function onCharacterMessageRendered(messageId, type) {
                     'Smart Memory',
                   );
                 } catch (repairErr) {
-                  console.error('[SmartMemory] Auto-repair failed:', repairErr);
+                  console.error('[Smart Memory Enhanced] Auto-repair failed:', repairErr);
                   $result.append(
                     $('<p class="sme_repair_queued">').text(
                       'Correction could not be generated - check console.',
@@ -1014,7 +1014,7 @@ async function onCharacterMessageRendered(messageId, type) {
             }
           })
           .catch((err) => {
-            console.error('[SmartMemory] Auto-continuity check failed:', err);
+            console.error('[Smart Memory Enhanced] Auto-continuity check failed:', err);
           })
           .finally(() => {
             stopActivityLoader(continuityHandle);
@@ -1174,7 +1174,7 @@ async function onChatChangedImpl() {
               activeRecapHandle = null;
               if (recapRunningForChat === groupChatMeta) recapRunningForChat = null;
               recapSuppressed = false;
-              console.error('[SmartMemory] Auto-recap failed:', err);
+              console.error('[Smart Memory Enhanced] Auto-recap failed:', err);
               setStatusMessage('');
             });
         }
@@ -1272,7 +1272,7 @@ async function onChatChangedImpl() {
             activeRecapHandle = null;
             if (recapRunningForChat === soloChatMeta) recapRunningForChat = null;
             recapSuppressed = false;
-            console.error('[SmartMemory] Auto-recap failed:', err);
+            console.error('[Smart Memory Enhanced] Auto-recap failed:', err);
             setStatusMessage('');
           });
       }
@@ -1294,7 +1294,7 @@ function updateGroupCharSelector() {
   const context = getContext();
   const group = context.groups?.find((g) => g.id === context.groupId);
   if (!group) {
-    smLog('[SmartMemory] updateGroupCharSelector: group not found for groupId', context.groupId);
+    smLog('[Smart Memory Enhanced] updateGroupCharSelector: group not found for groupId', context.groupId);
     return;
   }
 
@@ -1303,7 +1303,7 @@ function updateGroupCharSelector() {
     .filter(Boolean);
 
   if (members.length === 0) {
-    smLog('[SmartMemory] updateGroupCharSelector: no resolvable members in group', group.id);
+    smLog('[Smart Memory Enhanced] updateGroupCharSelector: no resolvable members in group', group.id);
     return;
   }
 
@@ -1485,7 +1485,7 @@ async function onGroupWrapperFinished({ type } = {}) {
             }
           }
         } catch (err) {
-          console.error('[SmartMemory] Compaction error:', err);
+          console.error('[Smart Memory Enhanced] Compaction error:', err);
         } finally {
           compactionRunning = false;
         }
@@ -1520,7 +1520,7 @@ async function onGroupWrapperFinished({ type } = {}) {
             setStatusMessage('Scene break detected.');
           }
         } catch (err) {
-          console.error('[SmartMemory] Scene detection error:', err);
+          console.error('[Smart Memory Enhanced] Scene detection error:', err);
         }
       }
 
@@ -1536,12 +1536,12 @@ async function onGroupWrapperFinished({ type } = {}) {
         );
 
         smLog(
-          `[SmartMemory] Group counter: ${messagesSinceLastExtraction}/${extractEvery} (extractionRunning=${extractionRunning})`,
+          `[Smart Memory Enhanced] Group counter: ${messagesSinceLastExtraction}/${extractEvery} (extractionRunning=${extractionRunning})`,
         );
 
         if (messagesSinceLastExtraction >= extractEvery) {
           extractionRunning = true;
-          smLog(`[SmartMemory] Group extraction starting at ${new Date().toISOString()}`);
+          smLog(`[Smart Memory Enhanced] Group extraction starting at ${new Date().toISOString()}`);
 
           const lastExtractCutoff = context.chatMetadata?.[META_KEY]?.lastExtractCutoff ?? null;
           const sessionWindow = getSmartExtractionWindow(
@@ -1618,14 +1618,14 @@ async function onGroupWrapperFinished({ type } = {}) {
 
                 const count = await extractSessionMemories(sessionWindow, chatChanged).catch(
                   (err) => {
-                    console.error('[SmartMemory] Session extraction error:', err);
+                    console.error('[Smart Memory Enhanced] Session extraction error:', err);
                     return 0;
                   },
                 );
                 if (!consolidationRunning) {
                   consolidationRunning = true;
                   await consolidateSessionMemories(false, chatChanged).catch((err) => {
-                    console.error('[SmartMemory] Session consolidation error:', err);
+                    console.error('[Smart Memory Enhanced] Session consolidation error:', err);
                   });
                   consolidationRunning = false;
                 }
@@ -1639,7 +1639,7 @@ async function onGroupWrapperFinished({ type } = {}) {
                     .filter((id) => id && !priorSessionIds.has(id));
                   if (newIds.length > 0) {
                     await linkMemoriesToLastScene(newIds).catch((err) =>
-                      console.error('[SmartMemory] Scene memory linking failed:', err),
+                      console.error('[Smart Memory Enhanced] Scene memory linking failed:', err),
                     );
                   }
                 }
@@ -1667,13 +1667,13 @@ async function onGroupWrapperFinished({ type } = {}) {
                     characterLongtermWindow,
                     setStatusMessage,
                   ).catch((err) => {
-                    console.error('[SmartMemory] Long-term extraction error:', err);
+                    console.error('[Smart Memory Enhanced] Long-term extraction error:', err);
                     return 0;
                   });
                   if (count > 0 && settings.consolidation_enabled && !consolidationRunning) {
                     consolidationRunning = true;
                     const removed = await consolidateMemories(characterName).catch((err) => {
-                      console.error('[SmartMemory] Consolidation error:', err);
+                      console.error('[Smart Memory Enhanced] Consolidation error:', err);
                       return 0;
                     });
                     consolidationRunning = false;
@@ -1701,7 +1701,7 @@ async function onGroupWrapperFinished({ type } = {}) {
                         if (characterName === selectedGroupCharacter) updateProfilesUI(profiles);
                       }
                     })
-                    .catch((err) => console.error('[SmartMemory] Profile generation error:', err));
+                    .catch((err) => console.error('[Smart Memory Enhanced] Profile generation error:', err));
                   messagesSinceLastProfileRegen = 0;
                 }
               }
@@ -1715,7 +1715,7 @@ async function onGroupWrapperFinished({ type } = {}) {
               if (settings.arcs_enabled && !isFreshStart()) {
                 const arcWindow = getStableExtractionWindow(context.chat, 100);
                 const count = await extractArcs(arcWindow, null, chatChanged).catch((err) => {
-                  console.error('[SmartMemory] Arc extraction error:', err);
+                  console.error('[Smart Memory Enhanced] Arc extraction error:', err);
                   return 0;
                 });
                 injectArcs();
@@ -1750,7 +1750,7 @@ async function onGroupWrapperFinished({ type } = {}) {
               if (chatChanged()) throw CHAT_SWITCHED;
               if (!isFreshStart()) {
                 await runStateCardExtraction(null, longtermWindow, chatChanged).catch((err) => {
-                  console.error('[SmartMemory] State ledger extraction error:', err);
+                  console.error('[Smart Memory Enhanced] State ledger extraction error:', err);
                 });
                 injectStateLedger(true);
               }
@@ -1768,7 +1768,7 @@ async function onGroupWrapperFinished({ type } = {}) {
                 for (const characterName of roundResponders) {
                   await generateCanon(characterName)
                     .then(() => injectCanon(characterName))
-                    .catch((err) => console.error('[SmartMemory] Auto-canon error:', err));
+                    .catch((err) => console.error('[Smart Memory Enhanced] Auto-canon error:', err));
                 }
               }
 
@@ -1795,13 +1795,13 @@ async function onGroupWrapperFinished({ type } = {}) {
               }
             } catch (err) {
               if (err === CHAT_SWITCHED) {
-                smLog('[SmartMemory] Group extraction aborted: chat switched mid-extraction.');
+                smLog('[Smart Memory Enhanced] Group extraction aborted: chat switched mid-extraction.');
               } else {
-                console.error('[SmartMemory] Extraction error:', err);
+                console.error('[Smart Memory Enhanced] Extraction error:', err);
               }
               setStatusMessage('');
             } finally {
-              smLog(`[SmartMemory] Group extraction finished at ${new Date().toISOString()}`);
+              smLog(`[Smart Memory Enhanced] Group extraction finished at ${new Date().toISOString()}`);
               stopActivityLoader(activityHandle);
               Object.assign(settings, originalBudgets);
               saveSettingsDebounced();
@@ -1836,7 +1836,7 @@ async function onGroupWrapperFinished({ type } = {}) {
             })
             .catch((err) => {
               stopActivityLoader(schedProfileHandle);
-              console.error('[SmartMemory] Scheduled profile regeneration error:', err);
+              console.error('[Smart Memory Enhanced] Scheduled profile regeneration error:', err);
             });
         }
       }
@@ -1865,7 +1865,7 @@ async function onGroupWrapperFinished({ type } = {}) {
             }
           })
           .catch((err) => {
-            console.error('[SmartMemory] Auto-continuity check failed:', err);
+            console.error('[Smart Memory Enhanced] Auto-continuity check failed:', err);
           })
           .finally(() => {
             stopActivityLoader(continuityHandle);
@@ -2029,7 +2029,7 @@ jQuery(async function () {
     ) {
       await generateCanon(charName)
         .then(() => injectCanon(charName))
-        .catch((err) => console.error('[SmartMemory] Auto-canon after manual resolve error:', err));
+        .catch((err) => console.error('[Smart Memory Enhanced] Auto-canon after manual resolve error:', err));
     }
   });
   eventSource.on(event_types.GROUP_WRAPPER_STARTED, onGroupWrapperStarted);
@@ -2283,5 +2283,5 @@ jQuery(async function () {
     }),
   );
 
-  smLog('[SmartMemory] Loaded.');
+  smLog('[Smart Memory Enhanced] Loaded.');
 });
