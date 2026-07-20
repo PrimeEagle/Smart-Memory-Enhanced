@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2026-07-19
+
+### Fixed
+
+- Extended the staged transaction through scene detection and every final
+  catch-up tier. This prevents those final operations from bypassing chunk
+  staging and issuing repeated direct chat saves.
+- Final persistence failures now retry, roll back staged final metadata, count
+  toward the Memorize Chat error total, and mark the run partial instead of
+  silently appearing successful.
+
+### Tests
+
+- Added an audit regression that covers all ten catch-up metadata writers and
+  fails if any of them bypasses the staged-save helper.
+
 ## [0.8.5] - 2026-07-19
 
 ### Fixed
