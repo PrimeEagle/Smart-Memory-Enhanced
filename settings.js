@@ -61,6 +61,7 @@ import {
 import {
   beginCatchUpTransaction,
   commitCatchUpTransaction,
+  rollbackCatchUpTransaction,
 } from './catchup-transaction.js';
 import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
 import {
@@ -2848,6 +2849,7 @@ export function bindSettingsUI(ctrl) {
       chunks: [],
     };
     let currentChunkFailed = false;
+    let finalTransaction = null;
     const recordCatchUpError = (label, err, tier = null, isSave = false) => {
       catchUpErrorCount++;
       setCatchUpErrorCount(catchUpErrorCount);
@@ -3033,6 +3035,11 @@ export function bindSettingsUI(ctrl) {
 
         i += chunk.length;
       }
+
+      // Scene detection and the final cross-tier passes run after the chunk
+      // loop. Keep one transaction open for this whole phase so their metadata
+      // writes do not fall back to individual SillyTavern chat saves.
+      finalTransaction = beginCatchUpTransaction(catchUpContext);
 
       if (!ctrl.catchUpCancelled) {
         // Scene: walk through the full chat detecting and summarizing scenes.
@@ -3246,6 +3253,38 @@ export function bindSettingsUI(ctrl) {
       updateTokenDisplay();
       saveSettingsDebounced();
 
+      // Persist the final diagnostics with the same staged commit. The status
+      // is a pre-commit projection; a failed final commit is then recorded and
+      // reflected in the user-visible completion status below.
+      const projectedStatus = ctrl.catchUpCancelled
+        ? 'cancelled'
+        : catchUpErrorCount > 0
+          ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
+          : 'completed';
+      // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
+      const diagnostics = {
+        version: 1,
+        created_at: Date.now(),
+        status: projectedStatus,
+        chunks: runResult.chunks,
+        sceneDetection: runResult.sceneDetection ?? null,
+        tiers: runResult.extractionFailuresByTier,
+        identityResolution: runResult.identityResolution ?? null,
+        persistence_failures: runResult.saveFailures,
+        retried_requests: runResult.retriedRequests,
+        errors: catchUpErrorCount,
+      };
+      if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
+      if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
+      catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
+      try {
+        await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+      } catch (err) {
+        recordCatchUpError('final persistence error', err, null, true);
+      } finally {
+        finalTransaction = null;
+      }
+
       if (ctrl.catchUpCancelled) {
         runResult.status = 'cancelled';
         setStatusMessage('Catch-up cancelled.');
@@ -3255,11 +3294,14 @@ export function bindSettingsUI(ctrl) {
         });
       } else if (catchUpErrorCount > 0) {
         runResult.status = runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial';
+        const persistenceDetail = runResult.saveFailures > 0
+          ? `, ${runResult.saveFailures} persistence failure${runResult.saveFailures === 1 ? '' : 's'}`
+          : '';
         setStatusMessage(
-          `Catch-up ${runResult.status}: ${runResult.completedChunks}/${runResult.totalChunks} chunks completed, ${runResult.failedChunks} failed.`,
+          `Catch-up ${runResult.status}: ${runResult.completedChunks}/${runResult.totalChunks} chunks completed, ${runResult.failedChunks} failed${persistenceDetail}.`,
         );
         toastr.warning(
-          `Catch-up ${runResult.status}. ${runResult.failedChunks} chunk${runResult.failedChunks === 1 ? '' : 's'} failed after ${runResult.retriedRequests} retr${runResult.retriedRequests === 1 ? 'y' : 'ies'}.`,
+          `Catch-up ${runResult.status}. ${runResult.failedChunks} chunk${runResult.failedChunks === 1 ? '' : 's'} failed${persistenceDetail} after ${runResult.retriedRequests} retr${runResult.retriedRequests === 1 ? 'y' : 'ies'}.`,
           'Smart Memory Enhanced',
           { timeOut: 8000, positionClass: 'toast-bottom-right' },
         );
@@ -3274,27 +3316,9 @@ export function bindSettingsUI(ctrl) {
           positionClass: 'toast-bottom-right',
         });
       }
-      // Keep a compact, exportable audit trail. It intentionally excludes chat
-      // text and raw provider output, while retaining the information needed to
-      // diagnose source ranges, failures, and scene processing.
-      const diagnostics = {
-        version: 1,
-        created_at: Date.now(),
-        status: runResult.status,
-        chunks: runResult.chunks,
-        sceneDetection: runResult.sceneDetection ?? null,
-        tiers: runResult.extractionFailuresByTier,
-        identityResolution: runResult.identityResolution ?? null,
-        persistence_failures: runResult.saveFailures,
-        retried_requests: runResult.retriedRequests,
-        errors: catchUpErrorCount,
-      };
-      if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
-      if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
-      catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
-      await catchUpContext.saveMetadata?.();
       $('#sme_export_diagnostics').prop('disabled', false);
     } catch (err) {
+      if (finalTransaction) rollbackCatchUpTransaction(finalTransaction);
       recordCatchUpError('run failure', err);
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');

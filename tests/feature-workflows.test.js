@@ -20,6 +20,7 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   const epistemic = read('epistemic.js');
   const scenes = read('scenes.js');
   const compaction = read('compaction.js');
+  const settings = read('settings.js');
   assert.match(source, /metadataDirty: false/);
   assert.match(source, /activeTransaction\.metadataDirty = true/);
   assert.match(source, /await saveGroupChatDirect\(transaction\.context\)/);
@@ -30,6 +31,8 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(epistemic, /saveChatMetadata\(context\)\.catch/);
   assert.match(scenes, /await saveChatMetadata\(context\)/);
   assert.match(compaction, /await saveChatMetadata\(context\)/);
+  assert.match(settings, /finalTransaction = beginCatchUpTransaction\(catchUpContext\)/);
+  assert.match(settings, /final persistence error/);
 });
 
 test('scene archive: retention, injection, provenance, audit, and legacy settings use separate semantics', () => {
