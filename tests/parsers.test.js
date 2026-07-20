@@ -640,6 +640,17 @@ test('parseProfileOutput: trims whitespace from sections', () => {
   assert.ok(result.character_state.length > 0);
 });
 
+test('parseProfileOutput: accepts labelled Markdown headings from local models', () => {
+  const result = parseProfileOutput('## Character State\nGoals: keep the treaty intact\n\n## World State\nLocation: council chamber');
+  assert.equal(result.character_state, 'Goals: keep the treaty intact');
+  assert.equal(result.world_state, 'Location: council chamber');
+});
+
+test('parseProfileOutput: accepts an unclosed but recognisable profile tag', () => {
+  const result = parseProfileOutput('<character-state>\nGoals: leave safely');
+  assert.equal(result.character_state, 'Goals: leave safely');
+});
+
 test('parseRelationshipDeltaResponse: strips Markdown numbering before strict pair parsing', () => {
   const parsed = parseRelationshipDeltaResponse('1. **Alissa Kawaguchi -> Paul Schmidt: warm(high)**\n2. **Paul Schmidt -> Alissa Kawaguchi: protective(medium)**');
   assert.equal(parsed.length, 2);

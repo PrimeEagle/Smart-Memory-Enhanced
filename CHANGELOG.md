@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.12] - 2026-07-20
+
+### Fixed
+
+- Made Profile generation tolerant of common local-model structured-output
+  variations: Markdown/plain labelled sections, XML-like tags with spaces or
+  hyphens, and an unclosed final section. Output still requires an explicit
+  recognized profile label, so conversational prose cannot overwrite an
+  approved profile.
+
+### Tests
+
+- Added profile parser coverage for labelled Markdown sections and unclosed
+  recognizable tags.
+
 ## [0.8.11] - 2026-07-20
 
 ### Fixed

@@ -446,15 +446,30 @@ function stripHtmlTags(text) {
  */
 export function parseProfileOutput(response) {
   if (!response) return null;
+  const text = String(response).replace(/```(?:xml|markdown|text)?\s*/gi, '').trim();
+  const sectionNames = {
+    character_state: 'character[ _-]*state',
+    world_state: 'world[ _-]*state',
+    relationship_matrix: 'relationship[ _-]*(?:matrix|relationships?)',
+  };
 
   /**
-   * Extracts the content between a pair of XML-style tags.
-   * @param {string} tag
+   * Extracts an XML-like section or a clearly labelled Markdown/plain heading.
+   * @param {keyof sectionNames} key
    * @returns {string|null}
    */
-  function extractSection(tag) {
-    const m = response.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
-    return m ? m[1].trim() : null;
+  function extractSection(key) {
+    const label = sectionNames[key];
+    const allLabels = Object.values(sectionNames).join('|');
+    const tagged = text.match(new RegExp(`<${label}\\s*>([\\s\\S]*?)(?:<\\/${label}\\s*>|$)`, 'i'));
+    if (tagged?.[1].trim()) return tagged[1].trim();
+    const heading = new RegExp(`(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\[\\s*)?(${label})(?:\\s*\\])?\\s*:?\\s*(?:\\n|$)`, 'i');
+    const match = heading.exec(text);
+    if (!match) return null;
+    const afterHeading = text.slice(match.index + match[0].length);
+    const nextHeading = afterHeading.search(new RegExp(`\\n\\s*(?:#{1,6}\\s*)?(?:\\[\\s*)?(?:${allLabels})(?:\\s*\\])?\\s*:?(?:\\s*\\n|\\s*$)`, 'i'));
+    const value = (nextHeading < 0 ? afterHeading : afterHeading.slice(0, nextHeading)).trim();
+    return value || null;
   }
 
   const character_state = extractSection('character_state');
