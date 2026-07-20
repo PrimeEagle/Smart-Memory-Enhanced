@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7] - 2026-07-19
+
+### Fixed
+
+- Fresh Start, Forget This Chat, and Clear Session Memories now stage their
+  complete cleanup and issue one retried final chat save, rather than queuing
+  several overlapping saves that could time out partway through.
+- If that final save still fails, the cleanup rolls back in memory and the
+  extension clearly reports that nothing was cleared.
+
+### Tests
+
+- Added regression coverage for the staged cleanup paths and their visible
+  persistence-failure reporting.
+
 ## [0.8.6] - 2026-07-19
 
 ### Fixed

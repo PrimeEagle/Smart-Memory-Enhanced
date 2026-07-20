@@ -62,6 +62,7 @@ import {
   beginCatchUpTransaction,
   commitCatchUpTransaction,
   rollbackCatchUpTransaction,
+  saveChatMetadata,
 } from './catchup-transaction.js';
 import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
 import {
@@ -137,6 +138,26 @@ import {
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
+
+/**
+ * Apply a user-initiated chat cleanup as one persisted operation. The storage
+ * helpers used by the cleanup continue to call saveChatMetadata(), but the
+ * active transaction stages those requests until the complete cleanup is
+ * ready. This avoids queuing several overlapping SillyTavern chat saves.
+ */
+async function runStagedChatCleanup(context, mutate) {
+  const transaction = beginCatchUpTransaction(context);
+  try {
+    await mutate();
+    // Direct metadata edits (for example deleting the summary) also need to
+    // mark the transaction dirty when no tier-specific helper did so.
+    await saveChatMetadata(context);
+    await retryTransientMemoryOperation(() => commitCatchUpTransaction(transaction));
+  } catch (error) {
+    rollbackCatchUpTransaction(transaction);
+    throw error;
+  }
+}
 import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
   getHardwareProfile,
@@ -2498,9 +2519,18 @@ export function bindSettingsUI(ctrl) {
     if (isCatchUpRunning()) return;
     if (!(await callGenericPopup('Clear all session memories for this chat?', POPUP_TYPE.CONFIRM)))
       return;
-    await clearSessionMemories();
-    await clearSessionEntityRegistry();
-    await clearStateLedger();
+    try {
+      await runStagedChatCleanup(getContext(), async () => {
+        await clearSessionMemories();
+        await clearSessionEntityRegistry();
+        await clearStateLedger();
+      });
+    } catch (err) {
+      console.error('[SmartMemory] Clear session persistence failed:', err);
+      setStatusMessage('Session memories were not cleared because the chat could not be saved.');
+      toastr.error('Could not save the cleared session memories. Please try again.', 'Smart Memory Enhanced');
+      return;
+    }
     injectSessionMemories();
     injectStateLedger();
     updateSessionUI();
@@ -3353,24 +3383,32 @@ export function bindSettingsUI(ctrl) {
     const context = getContext();
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-    // Wipe short-term summary state.
-    delete context.chatMetadata[META_KEY].summary;
-    delete context.chatMetadata[META_KEY].summaryEnd;
-    delete context.chatMetadata[META_KEY].summaryUpdated;
+    try {
+      await runStagedChatCleanup(context, async () => {
+        // Wipe short-term summary state.
+        delete context.chatMetadata[META_KEY].summary;
+        delete context.chatMetadata[META_KEY].summaryEnd;
+        delete context.chatMetadata[META_KEY].summaryUpdated;
 
-    // Clear the other chat-scoped tiers.
-    await clearSessionMemories();
-    await clearSessionEntityRegistry();
-    await clearSceneHistory();
-    await clearArcs();
-    await clearArcSummaries();
-    await clearProfiles();
-    // Chat-Local Only stores are part of this chat, not reusable character
-    // history. Forget This Chat must remove them for every group member.
-    clearChatLocalCharacterData(context);
-    // Epistemic knowledge is extension_settings-scoped (persists across chats)
-    // and is intentionally NOT cleared here - same reasoning as state ledger.
-    await context.saveMetadata();
+        // Clear the other chat-scoped tiers.
+        await clearSessionMemories();
+        await clearSessionEntityRegistry();
+        await clearSceneHistory();
+        await clearArcs();
+        await clearArcSummaries();
+        await clearProfiles();
+        // Chat-Local Only stores are part of this chat, not reusable character
+        // history. Forget This Chat must remove them for every group member.
+        clearChatLocalCharacterData(context);
+        // Epistemic knowledge is extension_settings-scoped (persists across chats)
+        // and is intentionally NOT cleared here - same reasoning as state ledger.
+      });
+    } catch (err) {
+      console.error('[SmartMemory] Forget This Chat persistence failed:', err);
+      setStatusMessage('Chat context was not cleared because the chat could not be saved.');
+      toastr.error('Could not save the cleared chat context. Please try again.', 'Smart Memory Enhanced');
+      return;
+    }
 
     // Clearing chatMetadata means loadAndInjectSummary will clear the slot.
     loadAndInjectSummary();
@@ -3408,36 +3446,45 @@ export function bindSettingsUI(ctrl) {
     )
       return;
 
-    // Clear long-term memories, relationship history, epistemic knowledge, and canon for the character.
-    if (characterName) {
-      clearCharacterMemories(characterName);
-      clearRelationshipHistory(characterName);
-      clearEpistemicKnowledge(characterName);
-      clearCanon(characterName);
-      saveSettingsDebounced();
-    }
-
     // Clear all chat-scoped tiers.
     const context = getContext();
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-    delete context.chatMetadata[META_KEY].summary;
-    delete context.chatMetadata[META_KEY].summaryEnd;
-    delete context.chatMetadata[META_KEY].summaryUpdated;
-    delete context.chatMetadata[META_KEY].lastExtractCutoff;
+    try {
+      await runStagedChatCleanup(context, async () => {
+        // Clear long-term memories, relationship history, epistemic knowledge, and canon for the character.
+        if (characterName) {
+          clearCharacterMemories(characterName);
+          clearRelationshipHistory(characterName);
+          clearEpistemicKnowledge(characterName);
+          clearCanon(characterName);
+        }
 
-    await clearSessionMemories();
-    await clearSessionEntityRegistry();
-    await clearSceneHistory();
-    await clearArcs();
-    await clearArcSummaries();
-    await clearProfiles(characterName);
-    await clearStateLedger();
-    clearChatLocalCharacterData(context, characterName);
+        delete context.chatMetadata[META_KEY].summary;
+        delete context.chatMetadata[META_KEY].summaryEnd;
+        delete context.chatMetadata[META_KEY].summaryUpdated;
+        delete context.chatMetadata[META_KEY].lastExtractCutoff;
+
+        await clearSessionMemories();
+        await clearSessionEntityRegistry();
+        await clearSceneHistory();
+        await clearArcs();
+        await clearArcSummaries();
+        await clearProfiles(characterName);
+        await clearStateLedger();
+        clearChatLocalCharacterData(context, characterName);
+      });
+    } catch (err) {
+      console.error('[SmartMemory] Fresh Start persistence failed:', err);
+      setStatusMessage('Fresh Start was not saved. Nothing was cleared. Please try again.');
+      toastr.error('Could not save Fresh Start. Nothing was cleared.', 'Smart Memory Enhanced');
+      return;
+    }
+    // Character-scoped stores live in extension settings. Do not schedule that
+    // separate persistence write until the chat transaction has committed.
+    if (characterName) saveSettingsDebounced();
     // Dismiss any open recap modal.
     $('#sme_recap_overlay').remove();
-
-    await context.saveMetadata();
 
     // Clear all injection slots.
     loadAndInjectSummary();

@@ -33,6 +33,10 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(compaction, /await saveChatMetadata\(context\)/);
   assert.match(settings, /finalTransaction = beginCatchUpTransaction\(catchUpContext\)/);
   assert.match(settings, /final persistence error/);
+  assert.match(settings, /runStagedChatCleanup/);
+  assert.match(settings, /Fresh Start persistence failed/);
+  assert.match(settings, /Forget This Chat persistence failed/);
+  assert.match(settings, /Clear session persistence failed/);
 });
 
 test('catch-up metadata writers cannot bypass staged saving', () => {
