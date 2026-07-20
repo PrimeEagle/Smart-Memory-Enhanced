@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.13] - 2026-07-20
+
+### Fixed
+
+- Resolved arc summaries are now treated as high-risk derived records. New and
+  legacy summaries stay quarantined until deterministic and semantic checks,
+  or explicit user approval, establish that they are safe to use.
+- Prevented unverified, ambiguous, and rejected arc summaries from triggering
+  canon regeneration or being counted as canon source material.
+- Added a formatting-only recovery attempt for otherwise usable profile output
+  from local models, while preserving the previous approved profile if repair
+  still fails.
+
+### Improved
+
+- Added strict evidence-only arc-summary prompting, deterministic checks for
+  invented names and high-risk unsupported claims, plus a one-label semantic
+  verifier.
+- Added an in-panel resolved-summary review queue with source-message links,
+  approve/reject controls, and Save & Reverify for edited summaries.
+- Legacy arc summaries now receive stable IDs and are persistently migrated to
+  their quarantined state when a chat is loaded.
+- Canonical reconciliation now safely rewrites only deterministic card/persona
+  aliases across new and existing long-term/session memories, scenes, arcs,
+  and profiles. Collective labels are rejected as entity candidates.
+- Export Diagnostics now records derived-summary verification totals.
+
+### Tests
+
+- Added coverage for arc-summary validation, verifier gating, review workflow,
+  legacy migration, controlled canonical rewriting, profile recovery, and
+  collective-entity filtering.
+
 ## [0.8.12] - 2026-07-20
 
 ### Fixed

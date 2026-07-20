@@ -52,11 +52,11 @@ import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './co
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
 import { loadSessionMemories } from './session.js';
 import { loadCharacterEntityRegistry } from './graph-migration.js';
-import { buildProfileGenerationPrompt } from './prompts.js';
+import { buildProfileFormatRepairPrompt, buildProfileGenerationPrompt } from './prompts.js';
 import { parseProfileOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
-import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
@@ -96,16 +96,25 @@ async function saveProfiles(profiles, characterName) {
 
 export async function reconcileProfileCanonicalNames(characterName) {
   const profiles = loadProfiles(characterName);
-  if (!profiles?.relationship_matrix) return false;
+  if (!profiles) return false;
   const roster = buildCanonicalCharacterRoster(getContext());
-  const matrix = profiles.relationship_matrix.split('\n').map((line) => {
+  const next = { ...profiles };
+  const replacements = [];
+  for (const field of ['character_state', 'world_state', 'relationship_matrix']) {
+    const narrative = canonicalizeNarrativeNames(next[field], roster);
+    next[field] = narrative.text;
+    replacements.push(...narrative.replacements);
+  }
+  const matrix = String(next.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
     if (!match) return line;
     const result = resolveCanonicalCharacterName(match[1].trim(), roster);
     return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName} (${match[2]}): ${match[3]}`;
   }).join('\n');
-  if (matrix === profiles.relationship_matrix) return false;
-  await saveProfiles({ ...profiles, relationship_matrix: matrix }, characterName);
+  next.relationship_matrix = matrix;
+  if (next.character_state === profiles.character_state && next.world_state === profiles.world_state && next.relationship_matrix === profiles.relationship_matrix) return false;
+  next.identity_replacements = replacements;
+  await saveProfiles(next, characterName);
   return true;
 }
 
@@ -198,7 +207,18 @@ export async function generateProfiles(characterName, abortCheck = null, options
 
     if (!response) return null;
 
-    const parsed = parseProfileOutput(response);
+    let parsed = parseProfileOutput(response);
+    // Local models sometimes retain usable facts but miss the parser contract.
+    // A single formatting-only repair preserves that evidence without allowing a
+    // second model call to invent a replacement profile.
+    if (!parsed) {
+      const repaired = await generateMemoryExtract(
+        applyPromptOverride(buildProfileFormatRepairPrompt(response), PROMPT_TASKS.PROFILES, characterName),
+        { responseLength: settings.profiles_response_length ?? 600 },
+      );
+      parsed = parseProfileOutput(repaired);
+      if (parsed) smLog('[Smart Memory Enhanced] Recovered profile output with a format-only repair.');
+    }
     if (!parsed) {
       const error = new Error('Profile generation produced unparseable output.');
       console.warn('[Smart Memory Enhanced] Profile generation produced unparseable output. Check format above.');
@@ -218,6 +238,12 @@ export async function generateProfiles(characterName, abortCheck = null, options
     }
 
     const roster = buildCanonicalCharacterRoster(getContext());
+    const identityReplacements = [];
+    for (const field of ['character_state', 'world_state', 'relationship_matrix']) {
+      const narrative = canonicalizeNarrativeNames(parsed[field], roster);
+      parsed[field] = narrative.text;
+      identityReplacements.push(...narrative.replacements);
+    }
     parsed.relationship_matrix = parsed.relationship_matrix
       .split('\n')
       .map((line) => {
@@ -239,6 +265,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
       parent_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
       source_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
       evidence_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
+      identity_replacements: identityReplacements,
     };
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
     if (!isGeneratedRecordApproved(profiles)) {

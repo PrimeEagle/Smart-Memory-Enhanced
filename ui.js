@@ -91,11 +91,13 @@ import {
   demoteArc,
   reopenArc,
   loadArcSummaries,
+  reverifyArcSummary,
   loadPersistentArcs,
   savePersistentArcs,
   loadGroupPersistentArcs,
   saveGroupPersistentArcs,
 } from './arcs.js';
+import { isRecordApprovedForPropagation } from './record-validation.js';
 import { loadCanon } from './canon.js';
 import { loadProfiles, reconcileProfileCanonicalNames, remapProfileEntity } from './profiles.js';
 import {
@@ -109,6 +111,7 @@ import {
   mergeEntitiesById,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -429,6 +432,88 @@ function needsGroundingReview(memory) {
     memory?.validation_status === 'needs_review' ||
     (memory?.grounding_status === 'ungrounded' && memory?.validation_status !== 'approved' && memory?.validation_status !== 'rejected')
   );
+}
+
+function needsArcSummaryReview(summary) {
+  return summary?.validation_status === 'needs_review' || summary?.semantic_support === 'not_checked';
+}
+
+/** Reviews derived arc prose independently from primary-memory review. */
+function showArcSummaryReviewDialog(summaryId) {
+  $('#sme_arc_summary_review_dialog').remove();
+  const summaries = loadArcSummaries();
+  const summary = summaries.find((item) => item.id === summaryId);
+  if (!summary) return;
+  const dialog = document.createElement('dialog');
+  dialog.id = 'sme_arc_summary_review_dialog';
+  for (const eventName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+    dialog.addEventListener(eventName, (event) => event.stopPropagation());
+  }
+  const close = () => { dialog.close(); dialog.remove(); };
+  const $card = $('<div class="sme_memory_review_card">');
+  const $header = $('<div class="sme_memory_review_header">');
+  $header.append($('<strong class="sme_memory_review_title">').text('Resolved Arc Summary Review'));
+  $header.append($('<button class="menu_button" title="Close"><i class="fa-solid fa-xmark"></i></button>').on('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); close();
+  }));
+  $card.append($header);
+  $card.append($('<div class="sme_memory_review_status">').text(
+    (summary.validation_issues ?? []).join(' ') || 'This derived summary needs review before it can influence canon.',
+  ));
+  $card.append($('<label class="sme_memory_review_label">').text('Resolved arc'), $('<div class="sme_memory_review_sources">').text(summary.arc ?? 'No linked arc text was stored.'));
+  const $summaryText = $('<textarea class="text_pole sme_memory_review_text">').val(summary.summary ?? '');
+  $card.append($('<label class="sme_memory_review_label">').text('Summary'), $summaryText);
+  const sourceIndices = [...new Set(summary.source_message_indices ?? [])].filter(Number.isInteger);
+  const $sources = $('<div class="sme_memory_review_sources">').append($('<strong>').text('Source messages'));
+  if (sourceIndices.length) {
+    for (const index of sourceIndices) {
+      $sources.append($('<button class="menu_button">').text(`Message ${index}`).on('click', () => {
+        close(); scrollToMemorySource(index, index);
+      }));
+    }
+  } else {
+    $sources.append($('<span>').text('No direct chat-message links were stored.'));
+  }
+  $card.append($sources);
+  const $footer = $('<div class="sme_memory_review_footer">');
+  const finish = async (approved) => {
+    const current = loadArcSummaries();
+    const target = current.find((item) => item.id === summaryId);
+    if (!target) return;
+    target.validation_status = approved ? 'approved' : 'rejected';
+    target.semantic_support = approved ? 'user_approved' : 'unsupported';
+    target.validation_issues = approved ? [] : [...(target.validation_issues ?? []), 'Rejected during user review.'];
+    await saveArcSummaries(current);
+    updateArcsUI();
+    const next = loadArcSummaries().find(needsArcSummaryReview);
+    close();
+    if (next) showArcSummaryReviewDialog(next.id);
+  };
+  $footer.append($('<button class="menu_button">Save & Reverify</button>').on('click', async (event) => {
+    event.preventDefault(); event.stopPropagation();
+    const current = loadArcSummaries();
+    const target = current.find((item) => item.id === summaryId);
+    if (!target || !$summaryText.val().trim()) return;
+    target.summary = $summaryText.val().trim();
+    await reverifyArcSummary(target);
+    await saveArcSummaries(current);
+    updateArcsUI();
+    close();
+  }));
+  $footer.append($('<button class="menu_button sme_approve_grounding">Approve</button>').on('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); finish(true);
+  }));
+  $footer.append($('<button class="menu_button sme_reject_grounding">Reject</button>').on('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); finish(false);
+  }));
+  $footer.append($('<button class="menu_button">Close</button>').on('click', (event) => {
+    event.preventDefault(); event.stopPropagation(); close();
+  }));
+  $card.append($footer);
+  $(dialog).append($card).on('click', (event) => { event.stopPropagation(); if (event.target === dialog) close(); });
+  dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+  document.body.appendChild(dialog);
+  dialog.showModal();
 }
 
 function groundingReviewMarkup(memory) {
@@ -759,7 +844,7 @@ export function updateCanonUI(characterName) {
   const canon = characterName ? loadCanon(characterName) : null;
   $('#sme_canon_display').val(canon?.text || '');
   if (canon) {
-    const arcCount = loadArcSummaries().length;
+    const arcCount = loadArcSummaries().filter(isRecordApprovedForPropagation).length;
     $('#sme_canon_status').text(
       `Canon: ${estimateTokens(canon.text)} tokens, sourced from ${arcCount} arc summar${arcCount === 1 ? 'y' : 'ies'}.`,
     );
@@ -1237,6 +1322,17 @@ export function updateArcsUI() {
 
   // Show the resolved section only when there are resolved arcs.
   $resolvedSection.toggle(resolvedArcs.length > 0);
+  const pendingSummaries = loadArcSummaries().filter(needsArcSummaryReview);
+  if (pendingSummaries.length > 0) {
+    const $notice = $('<div class="sme_review_queue_notice">').append(
+      $('<span>').html(`<i class="fa-solid fa-shield-halved"></i> ${pendingSummaries.length} resolved arc ${pendingSummaries.length === 1 ? 'summary needs' : 'summaries need'} review.`),
+      $('<button class="menu_button">Review Resolved Summaries</button>').on('click', (event) => {
+        event.preventDefault(); event.stopPropagation(); showArcSummaryReviewDialog(pendingSummaries[0].id);
+      }),
+    );
+    $resolvedList.prepend($notice);
+    $resolvedSection.toggle(true);
+  }
 
   $resolvedList.find('.sme_reopen_arc').on('click', async function () {
     const idx = parseInt($(this).data('index'), 10);
@@ -1419,14 +1515,25 @@ export async function reconcileCanonicalEntities(characterName) {
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
   const sessionMemories = loadSessionMemories();
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const rewriteStoredNarratives = (memories) => memories.reduce((count, memory) => {
+    if (typeof memory.content !== 'string') return count;
+    const narrative = canonicalizeNarrativeNames(memory.content, roster);
+    if (!narrative.replacements.length) return count;
+    memory.content = narrative.text;
+    memory.identity_replacements = narrative.replacements;
+    return count + narrative.replacements.length;
+  }, 0);
+  const longtermRewrites = rewriteStoredNarratives(longtermMemories);
+  const sessionRewrites = rewriteStoredNarratives(sessionMemories);
   const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
   const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
-  if (ltReport.changed) {
+  if (ltReport.changed || longtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
     saveSettingsDebounced();
   }
-  if (sessionReport.changed) {
+  if (sessionReport.changed || sessionRewrites > 0) {
     await saveSessionEntityRegistry(sessionEntities);
     await saveSessionMemories(sessionMemories);
   }
@@ -1440,6 +1547,7 @@ export async function reconcileCanonicalEntities(characterName) {
     merged: [...ltReport.merged, ...sessionReport.merged],
     skipped: [...ltReport.skipped, ...sessionReport.skipped],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched],
+    narrative_rewrites: longtermRewrites + sessionRewrites,
   };
 }
 
@@ -1482,6 +1590,9 @@ export function updateEntityPanel(characterName) {
     addSection('Merged', report.merged, (row) => `${row.name} → ${row.canonicalName} (${row.match})`);
     addSection('Needs review', report.skipped, (row) => `${row.name}: ${row.reason}`);
     addSection('No card match', report.unmatched, (row) => `${row.name}: ${row.reason}`);
+    if (report.narrative_rewrites > 0) {
+      $report.append($('<p class="sm-muted">').text(`${report.narrative_rewrites} deterministic card/persona name rewrite(s) applied to stored memories.`));
+    }
     if (!$report.find('li').length) $report.append('<p class="sm-muted">No eligible character entries needed reconciliation.</p>');
     $report.append($('<button class="menu_button">Close</button>').on('click', (event) => {
       event.preventDefault();

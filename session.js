@@ -75,7 +75,7 @@ import {
   getHardwareProfile,
 } from './embeddings.js';
 import { loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
-import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 import {
   buildCurrentSceneStateBlock,
   prioritizeMemories,
@@ -449,6 +449,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           mem.triggers = [];
         }
       }
+    }
+
+    // Normalize only deterministic card/persona aliases in generated prose.
+    // Unknown names remain untouched so this cannot create or rename NPCs.
+    const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+    for (const mem of finalActive) {
+      const narrative = canonicalizeNarrativeNames(mem.content, canonicalRoster);
+      mem.content = narrative.text;
+      if (narrative.replacements.length) mem.identity_replacements = narrative.replacements;
     }
 
     // Resolve entity names to ids for any new memories that carried

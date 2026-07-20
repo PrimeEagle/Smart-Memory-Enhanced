@@ -165,6 +165,19 @@ export function isGeneratedRecordApproved(record) {
   return record?.grounding_status !== 'ungrounded' || record?.validation_status === 'approved';
 }
 
+/**
+ * Stronger propagation gate for records that can influence future generation.
+ * Derived records with semantic verification metadata are usable only after a
+ * supported verification result (or an explicit user approval).
+ */
+export function isRecordApprovedForPropagation(record) {
+  if (record?.validation_status === 'approved') return true;
+  if (record?.grounding_status === 'derived' || Object.hasOwn(record ?? {}, 'semantic_support')) {
+    return record?.validation_status === 'validated' && record?.semantic_support === 'supported';
+  }
+  return isGeneratedRecordApproved(record);
+}
+
 export function sanitizeStructuredModelOutput(raw, taskType = 'generic') {
   let text = String(raw ?? '').replace(/\r\n?/g, '\n').trim();
   text = text.replace(/^```[^\n]*\n?|\n?```$/g, '');

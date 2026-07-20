@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { flattenConsolidationProvenance, isGeneratedRecordApproved, normalizeMemoryProvenance, prepareRecordForValidation, sanitizeStructuredModelOutput, validateGeneratedRecord, validateMemoryAncestry } from '../record-validation.js';
+import { flattenConsolidationProvenance, isGeneratedRecordApproved, isRecordApprovedForPropagation, normalizeMemoryProvenance, prepareRecordForValidation, sanitizeStructuredModelOutput, validateGeneratedRecord, validateMemoryAncestry } from '../record-validation.js';
 
 test('provenance normalization expands legacy ranges without false missing-source errors', () => {
   const memory = { source_messages: [[2001, 2003]], source_message_indices: [] };
@@ -30,6 +30,12 @@ test('shared cross-tier validation quarantines source-less generated records and
   const derived = { id: 'profile-1', parent_memory_ids: ['memory-1'] };
   assert.equal(validateGeneratedRecord(derived, { allowDerived: true, parentStore: [parent] }).valid, true);
   assert.equal(derived.grounding_status, 'derived');
+});
+
+test('derived summaries cannot propagate before semantic verification', () => {
+  assert.equal(isRecordApprovedForPropagation({ grounding_status: 'derived', validation_status: 'pending_verification', semantic_support: 'not_checked' }), false);
+  assert.equal(isRecordApprovedForPropagation({ grounding_status: 'derived', validation_status: 'validated', semantic_support: 'supported' }), true);
+  assert.equal(isRecordApprovedForPropagation({ grounding_status: 'derived', validation_status: 'needs_review', semantic_support: 'unsupported' }), false);
 });
 
 test('preparation maps chunk-relative sources before validation and clears stale missing-source errors', () => {

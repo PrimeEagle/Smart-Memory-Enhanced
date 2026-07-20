@@ -114,6 +114,7 @@ import {
   detectSceneBreakHeuristic,
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
+import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import {
   PROMPT_TASKS,
@@ -1820,9 +1821,9 @@ export function bindSettingsUI(ctrl) {
       toastr.warning('No character loaded.', 'Smart Memory Enhanced');
       return;
     }
-    if (loadArcSummaries().length === 0) {
+    if (loadArcSummaries().filter(isRecordApprovedForPropagation).length === 0) {
       toastr.warning(
-        'Canon requires at least one resolved arc summary. Resolve a story arc first.',
+        'Canon requires at least one verified resolved arc summary. Review or resolve a story arc first.',
         'Smart Memory Enhanced',
       );
       return;
@@ -3308,6 +3309,7 @@ export function bindSettingsUI(ctrl) {
         retried_requests: runResult.retriedRequests,
         errors: catchUpErrorCount,
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
+        arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries()),
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
@@ -4001,4 +4003,15 @@ export function bindSettingsUI(ctrl) {
       large: false,
     });
   });
+}
+
+function summarizeArcSummaryVerification(summaries = []) {
+  const result = { total: summaries.length, supported: 0, pending_review: 0, rejected: 0, legacy_unverified: 0 };
+  for (const summary of summaries) {
+    if (summary.validation_status === 'approved' || summary.semantic_support === 'supported' || summary.semantic_support === 'user_approved') result.supported++;
+    else if (summary.validation_status === 'rejected' || summary.semantic_support === 'unsupported') result.rejected++;
+    else result.pending_review++;
+    if (summary.verification_state === 'legacy_unverified') result.legacy_unverified++;
+  }
+  return result;
 }

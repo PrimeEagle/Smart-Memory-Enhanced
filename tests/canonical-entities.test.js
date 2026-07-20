@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCanonicalCharacterRoster,
+  canonicalizeNarrativeNames,
   canonicalizeStructuredParticipants,
   buildIdentityReviewCandidate,
   buildStableLedgerKey,
@@ -71,6 +72,15 @@ test('canonical roster: a unique persona first name resolves without creating a 
   assert.equal(result.status, 'resolved');
   assert.equal(result.canonicalName, 'Kyle Holland');
   assert.equal(result.shouldCreateEntity, false);
+});
+
+test('canonical roster: generated prose uses deterministic card-name replacements only', () => {
+  const result = canonicalizeNarrativeNames('Paul Kawaguchi asks Kyle to wait for Sophie.', buildCanonicalCharacterRoster({
+    name1: 'Kyle Holland',
+    characters: [{ id: 'paul', name: 'Paul Schmidt', description: '' }],
+  }));
+  assert.equal(result.text, 'Paul Schmidt asks Kyle Holland to wait for Sophie.');
+  assert.deepEqual(result.replacements.map((entry) => entry.to), ['Paul Schmidt', 'Kyle Holland']);
 });
 
 test('contradictory card-like names do not receive a canonical storage ID', () => {

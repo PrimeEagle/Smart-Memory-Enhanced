@@ -82,6 +82,59 @@ test('catch-up reports unparseable profile output and Enhanced owns its console 
   }
 });
 
+test('profile recovery repairs formatting once without replacing source evidence', () => {
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  assert.match(profiles, /let parsed = parseProfileOutput\(response\)/);
+  assert.match(profiles, /buildProfileFormatRepairPrompt\(response\)/);
+  assert.match(profiles, /parseProfileOutput\(repaired\)/);
+  assert.match(profiles, /canonicalizeNarrativeNames\(parsed\[field\], roster\)/);
+  assert.match(prompts, /\[PROFILE FORMAT REPAIR\]/);
+  assert.match(prompts, /Copy only claims already present/);
+});
+
+test('derived resolved summaries have an in-panel review queue', () => {
+  const ui = read('ui.js');
+  assert.match(ui, /Resolved Arc Summary Review/);
+  assert.match(ui, /Review Resolved Summaries/);
+  assert.match(ui, /target\.validation_status = approved \? 'approved' : 'rejected'/);
+});
+
+test('generated prose rewrites only deterministic card or persona aliases before storage', () => {
+  assert.match(read('longterm.js'), /canonicalizeNarrativeNames\(mem\.content, narrativeRoster\)/);
+  assert.match(read('session.js'), /canonicalizeNarrativeNames\(mem\.content, canonicalRoster\)/);
+});
+
+test('catch-up diagnostics report derived arc-summary verification outcomes', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /arc_summary_verification: summarizeArcSummaryVerification\(loadArcSummaries\(\)\)/);
+  assert.match(settings, /legacy_unverified/);
+});
+
+test('automatic and manual canon generation count only approved derived summaries', () => {
+  assert.match(read('index.js'), /loadArcSummaries\(\)\.filter\(isRecordApprovedForPropagation\)\.length/);
+  assert.match(read('settings.js'), /verified resolved arc summary/);
+  assert.match(read('ui.js'), /loadArcSummaries\(\)\.filter\(isRecordApprovedForPropagation\)\.length/);
+});
+
+test('legacy derived summaries are persisted as quarantined on chat load', () => {
+  assert.match(read('arcs.js'), /export async function migrateLegacyArcSummaries/);
+  assert.match(read('index.js'), /await migrateLegacyArcSummaries\(\)/);
+});
+
+test('editing a derived arc summary re-verifies it against saved evidence', () => {
+  assert.match(read('arcs.js'), /export async function reverifyArcSummary/);
+  assert.match(read('ui.js'), /Save & Reverify/);
+  assert.match(read('ui.js'), /await reverifyArcSummary\(target\)/);
+});
+
+test('canonical reconciliation safely rewrites deterministic aliases in existing stored prose', () => {
+  const ui = read('ui.js');
+  assert.match(ui, /const rewriteStoredNarratives/);
+  assert.match(ui, /narrative_rewrites: longtermRewrites \+ sessionRewrites/);
+  assert.match(read('profiles.js'), /for \(const field of \['character_state', 'world_state', 'relationship_matrix'\]\)/);
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [
@@ -181,6 +234,9 @@ test('integrity round: resolved arcs inherit evidence, profiles fail safely, and
   assert.match(epistemic, /\['ambiguous', 'rejected'\]\.includes\(subject\.status\)/);
   assert.doesNotMatch(prompts.slice(prompts.indexOf('export function buildSummaryPrompt'), prompts.indexOf('// ---- Short-term: progressive update')), /Next Beat/);
   assert.doesNotMatch(prompts.slice(prompts.indexOf('export function buildSummaryPrompt'), prompts.indexOf('// ---- Short-term: progressive update')), /User's Direction/);
+  const arcPrompt = prompts.slice(prompts.indexOf('export function buildArcSummaryPrompt'));
+  assert.match(arcPrompt, /Do not introduce new people/);
+  assert.match(arcPrompt, /\[CANONICAL PARTICIPANTS\]/);
 });
 
 test('operational workflow: Memorize Chat has a no-save workload preview and exports compact diagnostics', () => {
@@ -222,7 +278,7 @@ test('secondary tiers: relationship history, State Ledger, and canon use approve
   assert.match(relationships, /isGeneratedRecordApproved\(state\)/);
   assert.match(ledger, /source_message_indices: sourceMessageIndices/);
   assert.match(ledger, /Object\.entries\(ledger\)\.filter\(\(\[, fields\]\) => isGeneratedRecordApproved\(fields\)\)/);
-  assert.match(canon, /loadArcSummaries\(\)\.filter\(isGeneratedRecordApproved\)/);
+  assert.match(canon, /allArcSummaries\.filter\(isRecordApprovedForPropagation\)/);
   assert.match(canon, /isGrounded\(m\)/);
 });
 

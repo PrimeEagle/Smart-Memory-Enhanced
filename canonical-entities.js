@@ -145,6 +145,20 @@ export function canonicalizeStructuredParticipants(participants, roster) {
   return result;
 }
 
+/** Rewrites only deterministic roster aliases/variants in generated prose. */
+export function canonicalizeNarrativeNames(text, roster) {
+  const replacements = [];
+  const value = String(text ?? '');
+  const output = value.replace(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g, (candidate) => {
+    const resolution = resolveCanonicalCharacterName(candidate, roster);
+    if (!resolution.canonicalName || !['resolved', 'rejected'].includes(resolution.status)) return candidate;
+    if (normalize(candidate) === normalize(resolution.canonicalName)) return candidate;
+    replacements.push({ from: candidate, to: resolution.canonicalName, reason: resolution.reason });
+    return resolution.canonicalName;
+  });
+  return { text: output, replacements };
+}
+
 /** Builds a stable storage reference plus the readable canonical label. */
 export function buildStableEntityReference(name, roster) {
   const result = resolveCanonicalCharacterName(name, roster);

@@ -57,7 +57,7 @@ import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeStructuredParticipants } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants } from './canonical-entities.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -138,6 +138,7 @@ export function loadSceneHistory() {
  */
 export function createSceneRecord(summary, messages = [], details = {}) {
   const context = getContext();
+  const roster = buildCanonicalCharacterRoster(context);
   const sourceMessageIndices = messages
     .map((message) => Number.isInteger(message.__sme_original_index)
       ? message.__sme_original_index
@@ -145,17 +146,19 @@ export function createSceneRecord(summary, messages = [], details = {}) {
     .filter((index) => Number.isInteger(index) && index >= 0);
   const participantResolution = canonicalizeStructuredParticipants(
     details.character_participants,
-    buildCanonicalCharacterRoster(context),
+    roster,
   );
+  const narrativeResolution = canonicalizeNarrativeNames(summary, roster);
   const record = normalizeSceneRecord({
     id: generateMemoryId(),
-    summary,
+    summary: narrativeResolution.text,
     ts: Date.now(),
     source_memory_ids: [],
     source_message_indices: sourceMessageIndices,
     ...details,
     character_participants: participantResolution.names,
     identity_rejections: [...(details.identity_rejections ?? []), ...participantResolution.rejected],
+    identity_replacements: [...(details.identity_replacements ?? []), ...narrativeResolution.replacements],
   }, generateMemoryId);
   for (const rejection of record.identity_rejections ?? []) {
     recordIdentityReviewCandidate({

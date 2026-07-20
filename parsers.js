@@ -51,6 +51,7 @@ import { sanitizeStructuredModelOutput } from './record-validation.js';
 
 const MODIFIER_KEYS = new Set(['entity', 'entities', 'source', 'sources', 'source_messages', 'source_indices', 'witnessed_by', 'score', 'expiration', 'expires', 'trigger', 'triggers']);
 const ENTITY_CONTROL_WORDS = new Set([...MEMORY_TYPES, ...SESSION_TYPES, 'arc', 'resolved', 'scene', 'session', 'permanent', 'none', 'source', 'sources', 'source_messages', 'source_indices', 'score', 'expiration', 'expires', 'entity', 'entities', 'witnessed_by', 'trigger', 'triggers']);
+const COLLECTIVE_ENTITY_NAMES = new Set(['all three', 'all four', 'both of them', 'the two of them', 'the couple', 'the group', 'everyone', 'everybody', 'the others', 'the trio', 'the family', 'the roommates', 'the partners']);
 
 /** Reject parser controls and numeric source debris, never normal named entities. */
 export function isPlausibleEntityName(candidate) {
@@ -58,6 +59,7 @@ export function isPlausibleEntityName(candidate) {
   const name = raw.replace(/\/(?:character|place|object|faction|concept)\s*$/i, '').trim();
   if (!name || /^[\p{P}\p{S}\s]+$/u.test(name)) return false;
   if (ENTITY_CONTROL_WORDS.has(name.toLowerCase())) return false;
+  if (COLLECTIVE_ENTITY_NAMES.has(name.toLowerCase())) return false;
   if (/^(?:sources?|source_indices?|source_messages?|score)\s*=\s*[\d,\s-]+$/i.test(name)) return false;
   if (/^\d+$/.test(name) || /^\d+\s*-\s*\d+$/.test(name) || /^\d+(?:\s*,\s*\d+)+$/.test(name)) return false;
   return (name.match(/\d/g) ?? []).length / Math.max(name.length, 1) < 0.6;

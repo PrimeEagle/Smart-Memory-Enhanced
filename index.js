@@ -62,6 +62,7 @@ import {
   PROMPT_KEY_EPISTEMIC,
   PROMPT_KEY_STATE_LEDGER,
 } from './constants.js';
+import { isRecordApprovedForPropagation } from './record-validation.js';
 import { memory_sources, abortCurrentMemoryGeneration } from './generate.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
@@ -93,6 +94,7 @@ import {
   injectArcs,
   loadArcs,
   loadArcSummaries,
+  migrateLegacyArcSummaries,
   mergePersistentArcs,
   mergeGroupPersistentArcs,
   loadGroupPersistentArcs,
@@ -814,7 +816,8 @@ async function onCharacterMessageRendered(messageId, type) {
 
             // Snapshot arc summary count before extraction so we can detect a new
             // resolution in this pass (the count only grows when an arc closes).
-            const arcSummaryCountBefore = settings.arcs_enabled ? loadArcSummaries().length : 0;
+            const arcSummaryCountBefore = settings.arcs_enabled
+              ? loadArcSummaries().filter(isRecordApprovedForPropagation).length : 0;
 
             if (chatChanged()) throw CHAT_SWITCHED;
             if (settings.arcs_enabled && !isFreshStart()) {
@@ -872,7 +875,7 @@ async function onCharacterMessageRendered(messageId, type) {
               characterName &&
               !isFreshStart() &&
               getHardwareProfile() === 'b' &&
-              loadArcSummaries().length > arcSummaryCountBefore
+              loadArcSummaries().filter(isRecordApprovedForPropagation).length > arcSummaryCountBefore
             ) {
               await generateCanon(characterName)
                 .then(() => injectCanon(characterName))
@@ -1093,6 +1096,11 @@ async function onChatChangedImpl() {
   // Migrate chat data first - no character name needed, operates on chatMetadata.
   // Fast no-op when the container is already at the current schema version.
   await ensureChatMigrated();
+  // Legacy resolved summaries predate semantic verification. Persist their
+  // quarantine fields on first load so every later reader sees the same state.
+  await migrateLegacyArcSummaries().catch((error) => {
+    console.warn('[Smart Memory Enhanced] Could not persist legacy arc-summary migration:', error);
+  });
 
   // Remove group arc stores for groups that no longer exist. Runs once per
   // chat load; cheap enough that it does not need further throttling.
@@ -1710,7 +1718,8 @@ async function onGroupWrapperFinished({ type } = {}) {
               // Arc extraction is chat-wide - once per round after all characters.
               // Snapshot summary count first so the canon check below can detect a
               // new resolution without re-running extraction.
-              const arcSummaryCountBefore = settings.arcs_enabled ? loadArcSummaries().length : 0;
+              const arcSummaryCountBefore = settings.arcs_enabled
+                ? loadArcSummaries().filter(isRecordApprovedForPropagation).length : 0;
 
               if (settings.arcs_enabled && !isFreshStart()) {
                 const arcWindow = getStableExtractionWindow(context.chat, 100);
@@ -1763,7 +1772,7 @@ async function onGroupWrapperFinished({ type } = {}) {
                 settings.arcs_enabled &&
                 !isFreshStart() &&
                 getHardwareProfile() === 'b' &&
-                loadArcSummaries().length > arcSummaryCountBefore
+                loadArcSummaries().filter(isRecordApprovedForPropagation).length > arcSummaryCountBefore
               ) {
                 for (const characterName of roundResponders) {
                   await generateCanon(characterName)

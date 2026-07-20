@@ -79,7 +79,7 @@ import {
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
 import { flattenConsolidationProvenance, isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
-import { buildCanonicalCharacterRoster, buildStableRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildStableRelationshipPair, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
   buildLongtermConsolidationPrompt,
@@ -917,6 +917,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       } catch (err) {
         smLog(`[Smart Memory Enhanced] Relationship extraction failed: ${err.message}`);
       }
+    }
+
+    // Normalize only deterministic card/persona aliases in generated prose.
+    // Unknown names remain untouched so this cannot create or rename NPCs.
+    const narrativeRoster = buildCanonicalCharacterRoster(getContext());
+    for (const mem of finalActive) {
+      const narrative = canonicalizeNarrativeNames(mem.content, narrativeRoster);
+      mem.content = narrative.text;
+      if (narrative.replacements.length) mem.identity_replacements = narrative.replacements;
     }
 
     // Resolve entity names to ids for any new memories that carried

@@ -335,17 +335,57 @@ If nothing new and nothing resolved, output: NONE`
  * @param {string} memories - Key memories from the arc (formatted as [type] content lines).
  * @returns {string} The complete prompt string.
  */
-export function buildArcSummaryPrompt(arcContent, sceneSummaries, memories) {
+export function buildArcSummaryPrompt(arcContent, sceneSummaries, memories, canonicalRoster = '') {
   const memSection = memories ? `\nKEY MEMORIES FROM THIS ARC:\n${memories}\n` : '';
   const sceneSection = sceneSummaries ? `\nSCENE SUMMARIES:\n${sceneSummaries}\n` : '';
 
   return (
     NO_ACTION_PREAMBLE +
-    `[ARC SUMMARY - Do NOT roleplay. Write a summary paragraph only.]
+    `[RESOLVED ARC SUMMARY - Do NOT roleplay. Output factual data only.]
 
-Write a single paragraph summarising the story arc below from opening to resolution. Write in past tense, narrative style. Cover what happened, who was involved, and how it resolved. Be concise - aim for 3-5 sentences. Output only the paragraph, no labels or commentary.
+Summarize only the supplied arc and resolution evidence. Use only the canonical participant names listed below. Do not introduce new people, renamed participants, relationships, motives, backstory, time spans, locations, occupations, family history, abuse, death, injury, marriage, romance, or ownership facts. Do not generalize from story patterns, explain what the arc symbolizes, or continue the story.
 
-ARC: ${arcContent}${sceneSection}${memSection}`
+If the supplied evidence does not clearly show a resolution, output exactly: NONE
+
+Output one concise factual paragraph and nothing else.
+
+[CANONICAL PARTICIPANTS]
+${canonicalRoster || '(none supplied)'}
+
+[ARC]
+${arcContent}${sceneSection}${memSection}`
+  );
+}
+
+/** Builds the protected one-label verifier prompt for a derived arc summary. */
+export function buildArcSummaryVerificationPrompt({ canonicalParticipants = '', arc = '', scenes = '', memories = '', candidate = '' }) {
+  return (
+    NO_ACTION_PREAMBLE +
+    `[ARC SUMMARY VERIFICATION]
+
+You are validating a resolved story-arc summary against evidence. Use only the supplied evidence.
+
+Classify the candidate summary as exactly one label:
+SUPPORTED - every material claim and named participant is supported.
+AMBIGUOUS - a material claim may be plausible but is not clearly established.
+UNSUPPORTED - it introduces, changes, or misattributes people, relationships, events, motives, time spans, or outcomes.
+
+Do not infer, repair, explain, or output anything except SUPPORTED, AMBIGUOUS, or UNSUPPORTED.
+
+[CANONICAL PARTICIPANTS]
+${canonicalParticipants}
+
+[ARC]
+${arc}
+
+[LINKED SCENES]
+${scenes}
+
+[LINKED MEMORIES]
+${memories}
+
+[CANDIDATE SUMMARY]
+${candidate}`
   );
 }
 
@@ -581,6 +621,26 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 [EntityName] ([type]): [directional one-line state] [confidence: 0.X]
 (one line per entity from the KNOWN ENTITIES list; omit this section entirely if no entities are known)
 </relationship_matrix>`
+  );
+}
+
+/** Repairs formatting only; it must never add or reinterpret profile evidence. */
+export function buildProfileFormatRepairPrompt(rawOutput) {
+  return (
+    NO_ACTION_PREAMBLE +
+    `[PROFILE FORMAT REPAIR]
+
+Reformat the supplied profile output into these exact sections only:
+<character_state>...</character_state>
+<world_state>...</world_state>
+<relationship_matrix>...</relationship_matrix>
+
+Copy only claims already present in the supplied output. Do not infer, complete,
+correct, merge, or add any facts. Leave a section empty if it has no content.
+Output only the three tags.
+
+[UNFORMATTED PROFILE OUTPUT]
+${rawOutput}`
   );
 }
 

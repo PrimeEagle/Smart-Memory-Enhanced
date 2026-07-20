@@ -52,7 +52,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
-import { isGeneratedRecordApproved } from './record-validation.js';
+import { isRecordApprovedForPropagation } from './record-validation.js';
 import { isGrounded } from './grounding.js';
 
 // ---- Storage ------------------------------------------------------------
@@ -150,9 +150,10 @@ export async function generateCanon(characterName) {
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return null;
 
   const settings = extension_settings[MODULE_NAME];
-  const arcSummaries = loadArcSummaries().filter(isGeneratedRecordApproved);
+  const allArcSummaries = loadArcSummaries();
+  const arcSummaries = allArcSummaries.filter(isRecordApprovedForPropagation);
   if (arcSummaries.length === 0) {
-    smLog('[Smart Memory Enhanced] Canon generation skipped - no arc summaries available.');
+    smLog(`[Smart Memory Enhanced] Canon generation skipped - ${allArcSummaries.length} resolved summaries available, 0 approved for propagation.`);
     return null;
   }
 

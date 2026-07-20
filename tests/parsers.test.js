@@ -305,6 +305,15 @@ test('parseArcOutput: rejects parser control words as participants', () => {
   assert.deepEqual(result.add[0].character_participants, ['Paul']);
 });
 
+test('entity parser rejects collective labels while preserving numeric proper names', () => {
+  for (const value of ['All Three', 'Both Of Them', 'The Couple', 'Everyone']) {
+    assert.equal(isPlausibleEntityName(value), false, value);
+  }
+  for (const value of ['Agent 47', 'District 9', 'Unit 01']) {
+    assert.equal(isPlausibleEntityName(value), true, value);
+  }
+});
+
 test('parseArcOutput: requires arc content longer than 15 characters', () => {
   // Short content is skipped.
   assert.equal(parseArcOutput('[arc] Quest', []).add.length, 0);

@@ -54,12 +54,12 @@ import {
   extension_prompt_roles,
   saveSettingsDebounced,
 } from '../../../../script.js';
-import { generateMemoryExtract } from './generate.js';
+import { generateMemoryExtract, retryTransientMemoryOperation } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
-import { buildArcExtractionPrompt, buildArcSummaryPrompt } from './prompts.js';
+import { buildArcExtractionPrompt, buildArcSummaryPrompt, buildArcSummaryVerificationPrompt } from './prompts.js';
 import { parseArcOutput } from './parsers.js';
 import { loadSceneHistory } from './scenes.js';
 import { loadSessionMemories } from './session.js';
@@ -70,7 +70,8 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeStructuredParticipants } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants } from './canonical-entities.js';
+import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
 
@@ -254,7 +255,32 @@ export async function clearArcs() {
  */
 export function loadArcSummaries() {
   const context = getContext();
-  return context.chatMetadata?.[META_KEY]?.arcSummaries ?? [];
+  return (context.chatMetadata?.[META_KEY]?.arcSummaries ?? []).map(normalizeArcSummaryRecord);
+}
+
+/**
+ * Legacy resolved summaries were trusted solely because they inherited source
+ * indices. They are derived prose, so retain them but quarantine them until a
+ * verifier explicitly confirms semantic support.
+ */
+export function normalizeArcSummaryRecord(summary) {
+  if (!summary || typeof summary !== 'object') return summary;
+  const legacyId = `arc-summary-${summary.ts ?? 0}-${stableSummaryFingerprint(summary.arc ?? summary.summary ?? '')}`;
+  if (summary.semantic_support) return { ...summary, id: summary.id ?? legacyId };
+  return {
+    ...summary,
+    id: summary.id ?? legacyId,
+    grounding_status: 'derived',
+    validation_status: 'needs_review',
+    semantic_support: 'not_checked',
+    verification_state: 'legacy_unverified',
+  };
+}
+
+function stableSummaryFingerprint(value) {
+  let hash = 0;
+  for (const character of String(value)) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  return Math.abs(hash).toString(36);
 }
 
 /**
@@ -265,7 +291,7 @@ export async function saveArcSummaries(summaries) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].arcSummaries = summaries;
+  context.chatMetadata[META_KEY].arcSummaries = summaries.map(normalizeArcSummaryRecord);
   await saveChatMetadata(context);
 }
 
@@ -538,11 +564,19 @@ export async function resolveArcWithSummary(index, characterName = null, groupId
     if (!result) return false;
     const summaries = loadArcSummaries();
     summaries.push({
+      id: generateMemoryId(),
       summary: result.summary,
       arc: content,
       ts: Date.now(),
       source_scene_ids: result.sourceSceneTs,
       source_memory_ids: result.sourceMemoryIds,
+      source_message_indices: result.sourceMessageIndices,
+      parent_arc_id: result.parentArcId,
+      grounding_status: 'derived',
+      validation_status: result.semanticVerification?.validation_status ?? 'needs_review',
+      semantic_support: result.semanticVerification?.semantic_support ?? 'ambiguous',
+      validation_issues: result.semanticVerification?.reason ? [result.semanticVerification.reason] : [],
+      verification_state: 'provenance_attached',
     });
     await saveArcSummaries(summaries);
     return true;
@@ -613,6 +647,77 @@ export async function reopenArc(index, characterName, groupId = null) {
 
 // ---- Extraction ---------------------------------------------------------
 
+async function verifyArcSummarySemantics(candidate, evidence) {
+  const prompt = buildArcSummaryVerificationPrompt(evidence);
+  try {
+    let label = '';
+    // One retry is reserved for malformed output or a transient provider error.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await retryTransientMemoryOperation(() => generateMemoryExtract(
+        applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION),
+        { responseLength: 16 },
+      ));
+      label = String(response ?? '').trim().toUpperCase();
+      if (['SUPPORTED', 'AMBIGUOUS', 'UNSUPPORTED'].includes(label)) break;
+    }
+    if (label === 'SUPPORTED') return { semantic_support: 'supported', validation_status: 'validated', reason: null };
+    if (label === 'UNSUPPORTED') return { semantic_support: 'unsupported', validation_status: 'rejected', reason: 'Semantic verifier found unsupported material.' };
+    return { semantic_support: 'ambiguous', validation_status: 'needs_review', reason: label === 'AMBIGUOUS' ? 'Semantic verifier found ambiguous material.' : 'Semantic verifier returned no valid one-label result.' };
+  } catch (error) {
+    return { semantic_support: 'ambiguous', validation_status: 'needs_review', reason: `Semantic verifier failed: ${error.message}` };
+  }
+}
+
+/** Rechecks an edited derived summary against its stored arc evidence. */
+export async function reverifyArcSummary(summary) {
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
+  const sceneIds = new Set(summary.source_scene_ids ?? []);
+  const scenes = loadSceneHistory().filter((scene) => sceneIds.has(scene.ts));
+  const sceneText = scenes.map((scene, index) => `Scene ${index + 1}: ${scene.summary}`).join('\n');
+  const memoryIds = new Set(summary.source_memory_ids ?? []);
+  const memoryText = loadSessionMemories().filter((memory) => memoryIds.has(memory.id))
+    .map((memory) => `[${memory.type}] ${memory.content}`).join('\n');
+  const candidate = String(summary.summary ?? '').trim();
+  const evidenceText = [summary.arc ?? '', sceneText, memoryText].join('\n');
+  const deterministicVerification = preverifyArcSummary(candidate, {
+    canonicalParticipants: (roster.characters ?? []).map((entry) => entry.canonicalName),
+    structuredParticipants: summary.character_participants ?? [],
+    text: evidenceText,
+  });
+  const semanticVerification = deterministicVerification.semantic_support === 'unsupported'
+    ? { semantic_support: 'unsupported', validation_status: 'rejected', reason: deterministicVerification.reason }
+    : await verifyArcSummarySemantics(candidate, { canonicalParticipants, arc: summary.arc ?? '', scenes: sceneText, memories: memoryText, candidate });
+  summary.grounding_status = 'derived';
+  summary.validation_status = semanticVerification.validation_status;
+  summary.semantic_support = semanticVerification.semantic_support;
+  summary.validation_issues = semanticVerification.reason ? [semanticVerification.reason] : [];
+  summary.verification_state = 'reverified_after_edit';
+  return summary;
+}
+
+/** Persists the derived-summary safety fields for legacy chat data once. */
+export async function migrateLegacyArcSummaries() {
+  const context = getContext();
+  const summaries = context.chatMetadata?.[META_KEY]?.arcSummaries;
+  if (!Array.isArray(summaries) || summaries.length === 0) return 0;
+  const normalized = summaries.map(normalizeArcSummaryRecord);
+  const changed = normalized.reduce((count, item, index) => {
+    const original = summaries[index] ?? {};
+    return count + Number(
+      original.id !== item.id ||
+      original.grounding_status !== item.grounding_status ||
+      original.validation_status !== item.validation_status ||
+      original.semantic_support !== item.semantic_support ||
+      original.verification_state !== item.verification_state,
+    );
+  }, 0);
+  if (changed === 0) return 0;
+  context.chatMetadata[META_KEY].arcSummaries = normalized;
+  await saveChatMetadata(context);
+  return changed;
+}
+
 /**
  * Generates a paragraph summary for a resolved arc. Collects scene summaries
  * and memory ids that were linked to scenes during the arc for context, and
@@ -648,14 +753,33 @@ export async function generateArcSummary(resolvedArc, messages = []) {
   const resolutionMessageIndices = messages.slice(-10)
     .map((message) => Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))
     .filter((index) => Number.isInteger(index) && index >= 0);
-  const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText);
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
+  const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText, canonicalParticipants);
   const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), {
     responseLength: settings.arc_summary_response_length ?? 300,
   });
 
-  if (!response?.trim()) return null;
+  if (!response?.trim() || response.trim().toUpperCase() === 'NONE') return null;
+  const narrativeResolution = canonicalizeNarrativeNames(response.trim(), roster);
+  const candidate = narrativeResolution.text;
+  const evidence = {
+    canonicalParticipants,
+    arc: arcContent,
+    scenes: sceneSummaries,
+    memories: memoriesText,
+    candidate,
+  };
+  const deterministicVerification = preverifyArcSummary(candidate, {
+    canonicalParticipants: (roster.characters ?? []).map((entry) => entry.canonicalName),
+    structuredParticipants: resolvedArc?.character_participants ?? [],
+    text: [arcContent, sceneSummaries, memoriesText, messages.slice(-10).map((message) => message.mes ?? '').join('\n')].join('\n'),
+  });
+  const semanticVerification = deterministicVerification.semantic_support === 'unsupported'
+    ? { semantic_support: 'unsupported', validation_status: 'rejected', reason: deterministicVerification.reason }
+    : await verifyArcSummarySemantics(candidate, evidence);
   return {
-    summary: response.trim(),
+    summary: candidate,
     sourceSceneTs: sceneHistory.map((s) => s.ts),
     sourceMemoryIds: [...allMemoryIds],
     sourceMessageIndices: [...new Set([
@@ -664,6 +788,9 @@ export async function generateArcSummary(resolvedArc, messages = []) {
       ...resolutionMessageIndices,
     ])].sort((a, b) => a - b),
     parentArcId: resolvedArc?.id ?? null,
+    identity_replacements: narrativeResolution.replacements,
+    deterministicVerification,
+    semanticVerification,
   };
 }
 
@@ -786,6 +913,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
           const result = await generateArcSummary(resolved, messages);
           if (result) {
             const summaryRecord = {
+              id: generateMemoryId(),
               summary: result.summary,
               arc: resolved.content,
               source_scene_ids: result.sourceSceneTs,
@@ -795,8 +923,12 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
               derivation_type: 'resolved-arc-summary',
               parent_memory_ids: [],
               ts: Date.now(),
+              grounding_status: 'derived',
+              validation_status: result.semanticVerification?.validation_status ?? 'needs_review',
+              semantic_support: result.semanticVerification?.semantic_support ?? 'ambiguous',
+              validation_issues: result.semanticVerification?.reason ? [result.semanticVerification.reason] : [],
+              verification_state: 'provenance_attached',
             };
-            validateGeneratedRecord(summaryRecord);
             arcSummaries.push(summaryRecord);
             smLog(`[Smart Memory Enhanced] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
           }
