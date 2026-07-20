@@ -162,7 +162,7 @@
 /*
  * Usage: <span class="sm-info" data-tooltip="Explanation here.">ⓘ</span>
  *
- * The tooltip div (#sm-tooltip) is injected into <body> once by index.js
+ * The tooltip div (#sme-tooltip) is injected into <body> once by index.js
  * and positioned with position:fixed so it escapes ST's overflow:hidden
  * extensions panel. This ensures it is never clipped.
  */
@@ -183,8 +183,8 @@
   outline: none;
 }
 
-/* Global tooltip div - created once by index.js, reused for all .sm-info elements. */
-#sm-tooltip {
+/* Global tooltip div, uniquely owned by Smart Memory Enhanced. */
+#sme-tooltip {
   position: fixed;
   z-index: 99999;
   max-width: 360px;
@@ -202,7 +202,7 @@
   transition: opacity 0.15s ease;
 }
 
-#sm-tooltip.sm-tooltip-visible {
+#sme-tooltip.sm-tooltip-visible {
   opacity: 1;
 }
 
@@ -1382,7 +1382,7 @@ dialog.sme_reconcile_dialog::backdrop {
   border-color: var(--greyCAl, rgba(255, 255, 255, 0.1));
 }
 
-/* ── Memory search overlay (/sm-search) ─────────────────────────────────── */
+/* ── Memory search overlay (/sme-search) ────────────────────────────────── */
 
 #sme_search_overlay {
   border: none;
@@ -1804,8 +1804,8 @@ dialog.sme_reconcile_dialog::backdrop {
 
 /* Read-only mode: hide the "Delete messages" context menu option while
    active so message deletions cannot shift the ghosting range index. */
-body.sm-read-only #option_delete_mes,
-body.sm-read-only .mes_edit_delete {
+body.sme-read-only #option_delete_mes,
+body.sme-read-only .mes_edit_delete {
   display: none !important;
 }
 

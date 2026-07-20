@@ -28,7 +28,7 @@
  * updateTokenDisplay      - refreshes the token usage bar chart
  * setStatusMessage        - updates the status bar text in the settings panel header
  * setContinuityBadge      - updates the contradiction count badge in the header
- * showSearchResults       - renders a dismissible modal with /sm-search results
+ * showSearchResults       - renders a dismissible modal with /sme-search results
  * initTooltips            - wires up the floating tooltip on .sm-info elements
  * updateShortTermUI       - syncs the short-term summary textarea
  * updateCanonUI           - populates the canon display and status line
@@ -650,7 +650,7 @@ export function setContinuityBadge(count) {
 
 /**
  * Displays memory search results in a dismissible modal overlay.
- * Called by the /sm-search slash command.
+ * Called by the /sme-search slash command.
  * @param {string} query - The original search query.
  * @param {Array<{mem: Object, score: number}>} results - Top-K scored memories, sorted descending.
  */
@@ -705,7 +705,7 @@ export function showSearchResults(query, results) {
 }
 
 /**
- * Injects a single #sm-tooltip div into <body> and wires up hover/focus
+ * Injects a single #sme-tooltip div into <body> and wires up hover/focus
  * events on all .sm-info elements inside the settings panel.
  *
  * Using position:fixed on the tooltip div means it escapes ST's
@@ -715,9 +715,9 @@ export function initTooltips() {
   // Remove any previous tooltip element before creating a new one.
   // Guards against the settings panel being re-rendered (e.g. on extension
   // reload) which would otherwise append a second tooltip div to the body.
-  document.getElementById('sm-tooltip')?.remove();
+  document.getElementById('sme-tooltip')?.remove();
   const tooltip = document.createElement('div');
-  tooltip.id = 'sm-tooltip';
+  tooltip.id = 'sme-tooltip';
   document.body.appendChild(tooltip);
 
   const panel = document.getElementById('smart_memory_enhanced_settings');
@@ -926,7 +926,7 @@ export function updateEmbeddingNotice() {
 /** Syncs the Fresh Start checkbox state. */
 export function updateFreshStartUI(freshStart) {
   $('#sme_read_only').prop('checked', !!freshStart);
-  $('body').toggleClass('sm-read-only', !!freshStart);
+  $('body').toggleClass('sme-read-only', !!freshStart);
 }
 
 /**

@@ -5,7 +5,7 @@
 
 Smart Memory Enhanced is an experimental reliability, grounding, and configurability fork of [Smart Memory by Senjin the Dragon](https://github.com/senjinthedragon/Smart-Memory). It is independently maintained, is not affiliated with or endorsed by the original maintainer, and remains licensed under AGPL-3.0-or-later.
 
-**Current fork version: v0.8.8**
+**Current fork version: v0.8.9**
 
 Smart Memory Enhanced can run alongside the original Smart Memory extension. It uses its own settings, chat metadata, prompt slots, and UI identifiers; it does not read, copy, or modify the original extension's data.
 
@@ -221,7 +221,7 @@ Come back after a long break and not quite remember where you left off? Smart Me
 
 ### Continuity Checker
 
-A manual tool for when something feels off. Click **Check Last Response** (or use `/sm-check`) and Smart Memory asks the AI whether the last response contradicts anything in your established facts. Useful for catching drift in long stories - the AI suddenly forgetting a character detail, reversing a decision that was already made, that kind of thing.
+A manual tool for when something feels off. Click **Check Last Response** (or use `/sme-check`) and Smart Memory Enhanced asks the AI whether the last response contradicts anything in your established facts. Useful for catching drift in long stories - the AI suddenly forgetting a character detail, reversing a decision that was already made, that kind of thing.
 
 Enable **Auto-repair contradictions** to go one step further: when contradictions are found, Smart Memory generates a brief corrective note and slips it into the next AI response. The note is cleared automatically after that response - it is a one-shot nudge, not a permanent change. This costs one extra model call per check, so it is disabled by default.
 
@@ -630,11 +630,11 @@ A live token count shows how much context the current profiles are using. A **Re
 
 | Command              | Description                                                                                                                                                                                                                                                                      |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/sm-check`          | Check the last AI response for contradictions against established facts                                                                                                                                                                                                          |
-| `/sm-summarize`      | Force a short-term summary generation now                                                                                                                                                                                                                                        |
-| `/sm-extract`        | Run long-term, session, and arc extraction against the current chat now                                                                                                                                                                                                          |
-| `/sm-recap`          | Generate and show a "Previously on..." recap popup now                                                                                                                                                                                                                           |
-| `/sm-search <query>` | Search all memories by meaning and show a results popup. Optional `k=N` sets the result count (default 10, max 50); `min=N` sets a minimum match quality to filter weak results (default 0.5, range 0-1). Falls back to keyword matching when the embedding model is unavailable |
+| `/sme-check`          | Check the last AI response for contradictions against established facts                                                                                                                                                                                                          |
+| `/sme-summarize`      | Force a short-term summary generation now                                                                                                                                                                                                                                        |
+| `/sme-extract`        | Run long-term, session, and arc extraction against the current chat now                                                                                                                                                                                                          |
+| `/sme-recap`          | Generate and show a "Previously on..." recap popup now                                                                                                                                                                                                                           |
+| `/sme-search <query>` | Search all memories by meaning and show a results popup. Optional `k=N` sets the result count (default 10, max 50); `min=N` sets a minimum match quality to filter weak results (default 0.5, range 0-1). Falls back to keyword matching when the embedding model is unavailable |
 
 ---
 

@@ -29,7 +29,7 @@
  *   Story arcs    Open plot threads - promises made, tensions, mysteries.
  *   Away recap    "Previously on..." summary when returning after a long break.
  *   Continuity    Manual check: does the last response contradict known facts?
- *   /sm-search    Slash command: semantic search across all tiers, shows results popup.
+ *   /sme-search   Slash command: semantic search across all tiers, shows results popup.
  *   Graph view    Force-directed canvas visualization of entities and memories.
  *   Activity      Sticky toastr notification shown during background extraction (startActivityLoader/stopActivityLoader).
  */
@@ -2076,7 +2076,7 @@ jQuery(async function () {
 
   SlashCommandParser.addCommandObject(
     SlashCommand.fromProps({
-      name: 'sm-check',
+      name: 'sme-check',
       callback: async () => {
         const characterName = getCurrentCharacterName();
         if (!characterName) return 'No character active.';
@@ -2104,7 +2104,7 @@ jQuery(async function () {
 
   SlashCommandParser.addCommandObject(
     SlashCommand.fromProps({
-      name: 'sm-summarize',
+      name: 'sme-summarize',
       callback: async () => {
         if (compactionRunning) return 'Compaction already running.';
         compactionRunning = true;
@@ -2137,7 +2137,7 @@ jQuery(async function () {
 
   SlashCommandParser.addCommandObject(
     SlashCommand.fromProps({
-      name: 'sm-extract',
+      name: 'sme-extract',
       callback: async () => {
         if (extractionRunning) return 'Extraction already running.';
         const characterName = getCurrentCharacterName();
@@ -2181,7 +2181,7 @@ jQuery(async function () {
 
   SlashCommandParser.addCommandObject(
     SlashCommand.fromProps({
-      name: 'sm-recap',
+      name: 'sme-recap',
       callback: async () => {
         const recap = await generateRecap();
         if (!recap) {
@@ -2203,11 +2203,11 @@ jQuery(async function () {
 
   SlashCommandParser.addCommandObject(
     SlashCommand.fromProps({
-      name: 'sm-search',
+      name: 'sme-search',
       callback: async (args, query) => {
         const q = String(query || '').trim();
         if (!q) {
-          toastr.warning('Usage: /sm-search <query>', 'Smart Memory', {
+          toastr.warning('Usage: /sme-search <query>', 'Smart Memory Enhanced', {
             timeOut: 3000,
             positionClass: 'toast-bottom-right',
           });

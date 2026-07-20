@@ -21,8 +21,22 @@ export function beginCatchUpTransaction(context) {
   return activeTransaction;
 }
 
+function belongsToActiveTransaction(context) {
+  if (!activeTransaction) return false;
+  const activeContext = activeTransaction.context;
+  // getContext() returns a new wrapper object in some SillyTavern call paths
+  // (including Fresh Start's tier helpers). Those wrappers still point to the
+  // same metadata object and chat identity, so object identity alone would
+  // let an intermediate save bypass the transaction.
+  return context === activeContext || (
+    context.chatMetadata === activeContext.chatMetadata
+    && (context.chatId ?? null) === (activeContext.chatId ?? null)
+    && (context.groupId ?? null) === (activeContext.groupId ?? null)
+  );
+}
+
 export async function saveChatMetadata(context) {
-  if (activeTransaction?.context === context) {
+  if (belongsToActiveTransaction(context)) {
     activeTransaction.metadataDirty = true;
     return;
   }

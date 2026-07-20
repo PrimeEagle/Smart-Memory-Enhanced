@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.9] - 2026-07-19
+
+### Fixed
+
+- Corrected staged save detection for Fresh Start and other cleanup actions
+  when SillyTavern supplies a new context wrapper for the same active chat.
+  Intermediate cleanup saves now remain staged instead of timing out in the
+  conditional chat-save queue.
+- Completed coexistence isolation with original Smart Memory: Enhanced slash
+  commands now use `/sme-*`, and its global tooltip and read-only UI hooks have
+  unique names.
+
+### Compatibility
+
+- Use `/sme-check`, `/sme-summarize`, `/sme-extract`, `/sme-recap`, and
+  `/sme-search` for Smart Memory Enhanced. Original Smart Memory keeps the
+  `/sm-*` commands.
+
+### Tests
+
+- Added coverage for wrapper-safe transaction matching and independent slash
+  command/global UI names.
+
 ## [0.8.8] - 2026-07-19
 
 ### Fixed

@@ -57,6 +57,19 @@ test('Enhanced macros use an independent namespace beside the original extension
   assert.doesNotMatch(macros, /:\s*'smartmemory-(?!enhanced-)/);
 });
 
+test('Enhanced slash commands and global UI hooks use independent names', () => {
+  const index = read('index.js');
+  const ui = read('ui.js');
+  const css = read('style.css');
+  assert.match(index, /name: 'sme-check'/);
+  assert.match(index, /name: 'sme-search'/);
+  assert.doesNotMatch(index, /name: 'sm-/);
+  assert.match(ui, /sme-tooltip/);
+  assert.match(ui, /sme-read-only/);
+  assert.match(css, /#sme-tooltip/);
+  assert.match(css, /body\.sme-read-only/);
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [
@@ -72,7 +85,9 @@ test('catch-up metadata writers cannot bypass staged saving', () => {
     'graph-migration.js',
   ];
 
-  assert.match(transaction, /activeTransaction\?\.context === context/);
+  assert.match(transaction, /function belongsToActiveTransaction\(context\)/);
+  assert.match(transaction, /context\.chatMetadata === activeContext\.chatMetadata/);
+  assert.match(transaction, /\(context\.chatId \?\? null\) === \(activeContext\.chatId \?\? null\)/);
   assert.doesNotMatch(transaction, /\|\| activeTransaction/);
   for (const file of writerFiles) {
     const source = read(file);
