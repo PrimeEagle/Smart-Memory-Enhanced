@@ -35,6 +35,30 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(settings, /final persistence error/);
 });
 
+test('catch-up metadata writers cannot bypass staged saving', () => {
+  const transaction = read('catchup-transaction.js');
+  const writerFiles = [
+    'longterm.js',
+    'session.js',
+    'arcs.js',
+    'state-ledger.js',
+    'scenes.js',
+    'epistemic.js',
+    'profiles.js',
+    'canon.js',
+    'compaction.js',
+    'graph-migration.js',
+  ];
+
+  assert.match(transaction, /activeTransaction\?\.context === context/);
+  assert.doesNotMatch(transaction, /\|\| activeTransaction/);
+  for (const file of writerFiles) {
+    const source = read(file);
+    assert.match(source, /saveChatMetadata/);
+    assert.doesNotMatch(source, /context\.saveMetadata/);
+  }
+});
+
 test('scene archive: retention, injection, provenance, audit, and legacy settings use separate semantics', () => {
   const settings = read('settings.js');
   const scenes = read('scenes.js');

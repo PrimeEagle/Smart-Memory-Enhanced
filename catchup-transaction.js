@@ -22,7 +22,7 @@ export function beginCatchUpTransaction(context) {
 }
 
 export async function saveChatMetadata(context) {
-  if (activeTransaction?.context === context || activeTransaction) {
+  if (activeTransaction?.context === context) {
     activeTransaction.metadataDirty = true;
     return;
   }
