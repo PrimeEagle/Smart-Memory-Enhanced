@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from '../grounding.js';
+import { applyDirectProvenance, isGrounded, validateCitationSemanticSupport, validateGeneratedMemoryRecord } from '../grounding.js';
 
 test('grounding: valid citations become direct provenance with absolute message ranges', () => {
   const memories = [{ content: 'The gate is locked.', source_message_indices: [0, 2] }];
@@ -40,6 +40,20 @@ test('grounding: duplicated citations are normalized rather than creating compet
   applyDirectProvenance(memories, [{}], 0);
   assert.equal(memories[0].validation_status, 'validated');
   assert.deepEqual(memories[0].source_message_indices, [0]);
+});
+
+test('grounding: cited source with no meaningful support is quarantined', () => {
+  const memory = { content: 'The crystal is hidden beneath the bridge.', source_message_indices: [0] };
+  applyDirectProvenance([memory], [{ mes: 'Mara quietly closes the tavern door.' }], 0);
+  assert.equal(memory.validation_status, 'needs_review');
+  assert.match(memory.validation_issues.join(' '), /no meaningful term overlap/i);
+});
+
+test('grounding: overlapping cited terms remain approved without pretending to prove the claim', () => {
+  const memory = { content: 'Mara hides the crystal beneath the bridge.' };
+  const result = validateCitationSemanticSupport(memory, [{ mes: 'Mara takes the crystal toward the bridge.' }]);
+  assert.equal(result.supported, true);
+  assert.equal(memory.validation_status, undefined);
 });
 
 test('grounding: an explicitly approved quarantined memory is injectable', () => {

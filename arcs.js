@@ -69,7 +69,8 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
-import { loadCharacterEntityRegistry, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
+import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
+import { buildCanonicalCharacterRoster, canonicalizeStructuredParticipants } from './canonical-entities.js';
 
 // ---- Deduplication ------------------------------------------------------
 
@@ -172,13 +173,25 @@ async function deduplicateArcs(arcs) {
 
 // ---- Storage ------------------------------------------------------------
 
+function normalizeArcRecord(arc, context = getContext()) {
+  const participantResolution = canonicalizeStructuredParticipants(
+    arc?.character_participants,
+    buildCanonicalCharacterRoster(context),
+  );
+  return {
+    ...arc,
+    character_participants: participantResolution.names,
+    identity_rejections: [...(arc?.identity_rejections ?? []), ...participantResolution.rejected],
+  };
+}
+
 /**
  * Returns the story arc array for the current chat.
  * @returns {Array<{content: string, ts: number}>}
  */
 export function loadArcs() {
   const context = getContext();
-  return context.chatMetadata?.[META_KEY]?.storyArcs ?? [];
+  return (context.chatMetadata?.[META_KEY]?.storyArcs ?? []).map((arc) => normalizeArcRecord(arc, context));
 }
 
 /**
@@ -189,7 +202,7 @@ export async function saveArcs(arcs) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].storyArcs = arcs;
+  context.chatMetadata[META_KEY].storyArcs = arcs.map((arc) => normalizeArcRecord(arc, context));
   await saveChatMetadata(context);
 }
 
@@ -695,7 +708,16 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     if (!response || response.trim().toUpperCase() === 'NONE') return 0;
 
     // Parse against activeExisting so resolve indices map correctly to active arcs.
-    const { add: rawAdd, resolve } = parseArcOutput(response, activeExisting);
+    const { add: parsedAdd, resolve } = parseArcOutput(response, activeExisting);
+    const roster = buildCanonicalCharacterRoster(getContext());
+    const rawAdd = parsedAdd.map((arc) => {
+      const participantResolution = canonicalizeStructuredParticipants(arc.character_participants, roster);
+      return {
+        ...arc,
+        character_participants: participantResolution.names,
+        identity_rejections: participantResolution.rejected,
+      };
+    });
 
     // Filter new arc candidates against current session memories using semantic
     // similarity. Scene details and established facts that slipped past the
@@ -876,6 +898,15 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       .map((arc) => {
         const record = { ...arc, id: generateMemoryId(), source_message_indices: sourceMessageIndices, source_memory_ids: [], parent_memory_ids: [] };
         validateGeneratedRecord(record);
+        for (const rejection of record.identity_rejections ?? []) {
+          recordIdentityReviewCandidate({
+            status: 'rejected',
+            candidateName: rejection.name,
+            canonicalName: rejection.canonicalName,
+            canonicalId: rejection.canonicalId,
+            reason: `Arc participant: ${rejection.reason}`,
+          }, { memoryId: record.id, entityType: 'character' });
+        }
         return record;
       });
     const merged = [...finalActive, ...finalNew].slice(-max);

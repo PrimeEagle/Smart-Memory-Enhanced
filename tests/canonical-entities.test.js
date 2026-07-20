@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCanonicalCharacterRoster,
+  canonicalizeStructuredParticipants,
   buildIdentityReviewCandidate,
   buildStableLedgerKey,
+  buildStableEntityReference,
   buildStableRelationshipPair,
   canonicalizeRelationshipPair,
   reconcileCanonicalLedger,
@@ -71,6 +73,20 @@ test('canonical roster: a unique persona first name resolves without creating a 
   assert.equal(result.shouldCreateEntity, false);
 });
 
+test('contradictory card-like names do not receive a canonical storage ID', () => {
+  const reference = buildStableEntityReference('Paul Kawaguchi', roster);
+  assert.equal(reference.displayName, 'Paul Kawaguchi');
+  assert.equal(reference.canonicalId, null);
+  assert.equal(reference.storageId, 'name:paul kawaguchi');
+});
+
+test('structured scene and arc participants use canonical cards but retain unknown NPCs', () => {
+  const result = canonicalizeStructuredParticipants(['Paul', 'Sophie', 'Paul Kawaguchi'], roster);
+  assert.deepEqual(result.names, ['Paul Schmidt', 'Sophie']);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].name, 'Paul Kawaguchi');
+});
+
 test('entity resolver uses the active persona identity and keeps its stable scoped key', () => {
   const personaRoster = buildCanonicalCharacterRoster({
     name1: 'Kyle Holland',
@@ -110,11 +126,12 @@ test('integration: ledger variants merge without overwriting canonical fields', 
   }, roster);
   assert.deepEqual(ledger['paul schmidt|character'], { mood: 'calm', location: 'home' });
   assert.equal(ledger['paul|character'], undefined);
-  assert.equal(ledger['paul kawaguchi|character'], undefined);
+  assert.deepEqual(ledger['paul kawaguchi|character'], { mood: 'worried' });
 });
 
 test('integration: relationship pair uses canonical card names', () => {
-  assert.deepEqual(canonicalizeRelationshipPair('Paul Kawaguchi', 'Alissa', roster), ['Paul Schmidt', 'Alissa Kawaguchi']);
+  assert.deepEqual(canonicalizeRelationshipPair('Paul', 'Alissa', roster), ['Paul Schmidt', 'Alissa Kawaguchi']);
+  assert.equal(canonicalizeRelationshipPair('Paul Kawaguchi', 'Alissa', roster), null);
 });
 
 test('phase 2: review candidates retain evidence and repeated-review identity', () => {
@@ -136,5 +153,5 @@ test('phase 2: relationship and ledger keys use immutable card IDs but retain la
   const pair = buildStableRelationshipPair('Paul', 'Alissa Kawaguchi', roster);
   assert.equal(pair.key, 'card:paul→card:alissa');
   assert.equal(pair.subject.displayName, 'Paul Schmidt');
-  assert.equal(buildStableLedgerKey('Paul Kawaguchi', 'character', roster), 'card:paul|character');
+  assert.equal(buildStableLedgerKey('Paul Kawaguchi', 'character', roster), 'name:paul kawaguchi|character');
 });

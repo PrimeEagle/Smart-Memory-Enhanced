@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.11] - 2026-07-20
+
+### Fixed
+
+- Replaced loose extraction modifier handling with a keyed parser. Source
+  metadata such as `sources=0`, `source_indices`, scores, numeric ranges, and
+  bare numbers can no longer leak into entity names.
+- Added safe, idempotent cleanup for existing parser-debris entities in
+  long-term, session, and chat-local registries. Linked memory references and
+  invalid identity-review candidates are scrubbed, while legitimate names such
+  as `Unit 01` and `District 9` are retained.
+- Corrected manual scene creation and re-summarization to store the summary
+  text from structured scene output rather than the result object itself.
+- Prevented contradictory card-like identities from silently becoming
+  card-ID-backed Relationship History, State Ledger, profile, or epistemic
+  records. Unknown grounded NPCs remain supported as name-backed records.
+
+### Improved
+
+- Canonicalized structured scene and arc participants against the active
+  character-card roster and persona. Ambiguous or contradictory references are
+  excluded from durable participant links and routed to identity review.
+- Added a conservative citation-support gate for long-term and session
+  memories. A claim is quarantined only when readable cited messages share no
+  meaningful terms with it; this complements, rather than replaces, source
+  index validation.
+- Identity Review now includes scene and arc participant conflicts, suggested
+  canonical identities, and evidence-record counts.
+- Legacy scene and arc participant data is sanitized at the storage boundary
+  before injection. Parser-debris cleanup results are retained in chat metadata
+  and included in Export Diagnostics.
+
+### Tests
+
+- Added parser, canonical-identity, semantic-grounding, scene archive, review
+  workflow, and diagnostics regression coverage.
+- Full automated suite passes: 154 checks plus 48 replay-harness assertions.
+
 ## [0.8.10] - 2026-07-20
 
 ### Fixed

@@ -322,7 +322,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     for (const [key, fields] of updates) {
       const [rawName, type] = key.split('|');
       const resolution = resolveCanonicalCharacterName(rawName, roster, [...ltEntities, ...sessionEntities]);
-      if (resolution.status === 'ambiguous') {
+      if (resolution.status === 'ambiguous' || resolution.status === 'rejected') {
         smLog(`[Smart Memory Enhanced] State Ledger candidate "${rawName}" skipped: ${resolution.reason}`);
         continue;
       }

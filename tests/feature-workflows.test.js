@@ -125,6 +125,8 @@ test('scene archive: retention, injection, provenance, audit, and legacy setting
   assert.match(ui, /source_start_index/);
   assert.match(settings, /isDuplicateScene\(sceneResult\.summary\)/);
   assert.match(settings, /character_participants: sceneResult\.characterParticipants/);
+  assert.match(settings, /sceneResult\?\.summary/);
+  assert.match(scenes, /canonicalizeStructuredParticipants/);
 });
 
 test('cross-tier grounding: scenes, arcs, profiles, and epistemic entries validate before injection', () => {
@@ -169,11 +171,14 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
 test('integrity round: resolved arcs inherit evidence, profiles fail safely, and short summaries stay factual', () => {
   const arcs = read('arcs.js');
   const profiles = read('profiles.js');
+  const epistemic = read('epistemic.js');
   const prompts = read('prompts.js');
   assert.match(arcs, /derivation_type: 'resolved-arc-summary'/);
   assert.match(arcs, /parent_arc_id: result\.parentArcId/);
   assert.match(profiles, /preserving the prior profile/);
   assert.match(profiles, /evidence_ids/);
+  assert.match(profiles, /resolution\.status === 'ambiguous' \|\| resolution\.status === 'rejected'/);
+  assert.match(epistemic, /\['ambiguous', 'rejected'\]\.includes\(subject\.status\)/);
   assert.doesNotMatch(prompts.slice(prompts.indexOf('export function buildSummaryPrompt'), prompts.indexOf('// ---- Short-term: progressive update')), /Next Beat/);
   assert.doesNotMatch(prompts.slice(prompts.indexOf('export function buildSummaryPrompt'), prompts.indexOf('// ---- Short-term: progressive update')), /User's Direction/);
 });
@@ -186,6 +191,7 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /Dry run complete - no memories or entities were saved/);
   assert.match(settings, /catch_up_diagnostics/);
   assert.match(settings, /source_start_index/);
+  assert.match(settings, /parser_debris_cleanup/);
   assert.match(settings, /raw provider output/);
   assert.match(settings, /reconcileCanonicalEntities\(characterName\)/);
   assert.match(settings, /identityResolution/);
@@ -253,11 +259,17 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
 
 test('review UI: grounding and identity reviews use dialogs that clean up without closing the extensions panel', () => {
   const ui = read('ui.js');
+  const scenes = read('scenes.js');
+  const arcs = read('arcs.js');
   assert.match(ui, /sme_open_review_queue/);
   assert.match(ui, /dialog\.showModal\(\)/);
   assert.match(ui, /dialog\.addEventListener\('close', \(\) => dialog\.remove\(\)/);
   assert.match(ui, /event\.stopPropagation\(\)/);
   assert.match(ui, /Review identity candidates/);
+  assert.match(ui, /Suggested canonical identity/);
+  assert.match(ui, /Evidence records/);
+  assert.match(scenes, /recordIdentityReviewCandidate/);
+  assert.match(arcs, /recordIdentityReviewCandidate/);
 });
 
 test('per-character policies: full, chat-local, read-only, and disabled policies remain available', () => {

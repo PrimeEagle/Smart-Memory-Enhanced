@@ -2614,10 +2614,13 @@ export function bindSettingsUI(ctrl) {
       // the last 40 messages - capped to avoid overflowing the model context.
       const messages =
         ctrl.sceneMessageBuffer.length > 0 ? ctrl.sceneMessageBuffer : context.chat.slice(-40);
-      const summary = await summarizeScene(messages);
-      if (summary) {
+      const sceneResult = await summarizeScene(messages);
+      if (sceneResult?.summary) {
         const history = loadSceneHistory();
-        history.push(createSceneRecord(summary, messages, { detected_by: 'manual' }));
+        history.push(createSceneRecord(sceneResult.summary, messages, {
+          detected_by: 'manual',
+          character_participants: sceneResult.characterParticipants,
+        }));
         await saveSceneHistory(history);
         // Reset the buffer - we just archived what was in it.
         ctrl.sceneMessageBuffer = [];
@@ -2679,12 +2682,13 @@ export function bindSettingsUI(ctrl) {
           toastr.warning('This archived scene has no readable source range to summarize again.', 'Smart Memory Enhanced');
           return;
         }
-        const summary = await summarizeScene(messages);
-        if (!summary) return;
-        history[index] = createSceneRecord(summary, messages, {
+        const sceneResult = await summarizeScene(messages);
+        if (!sceneResult?.summary) return;
+        history[index] = createSceneRecord(sceneResult.summary, messages, {
           id: scene.id,
           source_memory_ids: scene.source_memory_ids ?? [],
           detected_by: 'manual',
+          character_participants: sceneResult.characterParticipants,
         });
       }
       await saveSceneHistory(history);
@@ -3303,6 +3307,7 @@ export function bindSettingsUI(ctrl) {
         persistence_failures: runResult.saveFailures,
         retried_requests: runResult.retriedRequests,
         errors: catchUpErrorCount,
+        parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};

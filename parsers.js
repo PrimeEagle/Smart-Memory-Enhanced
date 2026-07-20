@@ -49,6 +49,48 @@
 import { MEMORY_TYPES, SESSION_TYPES, generateMemoryId } from './constants.js';
 import { sanitizeStructuredModelOutput } from './record-validation.js';
 
+const MODIFIER_KEYS = new Set(['entity', 'entities', 'source', 'sources', 'source_messages', 'source_indices', 'witnessed_by', 'score', 'expiration', 'expires', 'trigger', 'triggers']);
+const ENTITY_CONTROL_WORDS = new Set([...MEMORY_TYPES, ...SESSION_TYPES, 'arc', 'resolved', 'scene', 'session', 'permanent', 'none', 'source', 'sources', 'source_messages', 'source_indices', 'score', 'expiration', 'expires', 'entity', 'entities', 'witnessed_by', 'trigger', 'triggers']);
+
+/** Reject parser controls and numeric source debris, never normal named entities. */
+export function isPlausibleEntityName(candidate) {
+  const raw = String(candidate ?? '').trim();
+  const name = raw.replace(/\/(?:character|place|object|faction|concept)\s*$/i, '').trim();
+  if (!name || /^[\p{P}\p{S}\s]+$/u.test(name)) return false;
+  if (ENTITY_CONTROL_WORDS.has(name.toLowerCase())) return false;
+  if (/^(?:sources?|source_indices?|source_messages?|score)\s*=\s*[\d,\s-]+$/i.test(name)) return false;
+  if (/^\d+$/.test(name) || /^\d+\s*-\s*\d+$/.test(name) || /^\d+(?:\s*,\s*\d+)+$/.test(name)) return false;
+  return (name.match(/\d/g) ?? []).length / Math.max(name.length, 1) < 0.6;
+}
+
+/** Parses recognized bracket modifier fields without allowing sources to bleed into entity values. */
+export function parseBracketModifiers(rawModifiers = '') {
+  const result = { score: undefined, expiration: undefined, entityNames: [], sourceIndices: [], witnessedBy: [], triggers: [], unknownModifiers: [] };
+  const positional = [];
+  for (const token of String(rawModifiers).split(':').map((part) => part.trim()).filter(Boolean)) {
+    const keyed = token.match(/^([a-z_]+)\s*=\s*(.*)$/i);
+    if (!keyed) { positional.push(token); continue; }
+    const key = keyed[1].toLowerCase();
+    const value = keyed[2].trim();
+    if (!MODIFIER_KEYS.has(key)) { result.unknownModifiers.push({ key, value }); continue; }
+    if (key === 'entity' || key === 'entities') result.entityNames.push(...value.split(',').map((name) => name.trim()).filter(isPlausibleEntityName));
+    else if (key === 'source' || key === 'sources' || key === 'source_messages' || key === 'source_indices') result.sourceIndices.push(...value.split(',').map((entry) => Number(entry.trim())).filter((entry) => Number.isInteger(entry) && entry >= 0));
+    else if (key === 'witnessed_by') result.witnessedBy.push(...value.split(',').map((name) => name.trim()).filter(isPlausibleEntityName));
+    else if (key === 'trigger' || key === 'triggers') result.triggers.push(...value.split(',').map((trigger) => trigger.trim()).filter(Boolean));
+    else if (key === 'score' && /^[123]$/.test(value)) result.score = Number(value);
+    else if ((key === 'expiration' || key === 'expires') && /^(scene|session|permanent)$/i.test(value)) result.expiration = value.toLowerCase();
+  }
+  for (const token of positional) {
+    if (result.score === undefined && /^[123]$/.test(token)) result.score = Number(token);
+    if (result.expiration === undefined && /^(scene|session|permanent)$/i.test(token)) result.expiration = token.toLowerCase();
+  }
+  result.entityNames = [...new Set(result.entityNames)];
+  result.sourceIndices = [...new Set(result.sourceIndices)];
+  result.witnessedBy = [...new Set(result.witnessedBy)];
+  result.triggers = [...new Set(result.triggers)];
+  return result;
+}
+
 // ---- Long-term extraction -----------------------------------------------
 
 /**
@@ -81,30 +123,11 @@ export function parseExtractionOutput(text) {
 
     if (!MEMORY_TYPES.includes(type) || content.length <= 5) continue;
 
-    // Extract optional score (first standalone 1/2/3 preceded by colon).
-    const importanceMatch = modifiers.match(/:\s*([123])\b/);
-    const importance = importanceMatch ? parseInt(importanceMatch[1], 10) : 2;
-
-    // Extract optional expiration keyword.
-    const expirationMatch = modifiers.match(/:\s*(scene|session|permanent)\b/i);
-    const expiration = expirationMatch ? expirationMatch[1].toLowerCase() : 'permanent';
-
-    // Extract optional entity names list. Stops at the next colon so reordering
-    // does not bleed into other fields.
-    const entityMatch = modifiers.match(/entity=([^:[\]]*)/i);
-    const rawEntityNames = entityMatch
-      ? entityMatch[1]
-          .split(',')
-          .map((n) => n.trim())
-          .filter((n) => n.length > 0)
-      : [];
-    const sourceMatch = modifiers.match(/sources=([^\]\s:]*)/i);
-    const source_message_indices = sourceMatch
-      ? sourceMatch[1]
-          .split(',')
-          .map((value) => Number(value.trim()))
-          .filter((value) => Number.isInteger(value) && value >= 0)
-      : [];
+    const parsedModifiers = parseBracketModifiers(modifiers);
+    const importance = parsedModifiers.score ?? 2;
+    const expiration = parsedModifiers.expiration ?? 'permanent';
+    const rawEntityNames = parsedModifiers.entityNames;
+    const source_message_indices = parsedModifiers.sourceIndices;
 
     // New entries start as unprocessed - they will be evaluated against the
     // consolidated base before being promoted.
@@ -167,26 +190,11 @@ export function parseSessionOutput(text) {
 
     if (!SESSION_TYPES.includes(type) || content.length <= 3) continue;
 
-    const importanceMatch = modifiers.match(/:\s*([123])\b/);
-    const importance = importanceMatch ? parseInt(importanceMatch[1], 10) : 2;
-
-    const expirationMatch = modifiers.match(/:\s*(scene|session|permanent)\b/i);
-    const expiration = expirationMatch ? expirationMatch[1].toLowerCase() : 'session';
-
-    const entityMatch = modifiers.match(/entity=([^:[\]]*)/i);
-    const rawEntityNames = entityMatch
-      ? entityMatch[1]
-          .split(',')
-          .map((n) => n.trim())
-          .filter((n) => n.length > 0)
-      : [];
-    const sourceMatch = modifiers.match(/sources=([^\]\s:]*)/i);
-    const source_message_indices = sourceMatch
-      ? sourceMatch[1]
-          .split(',')
-          .map((value) => Number(value.trim()))
-          .filter((value) => Number.isInteger(value) && value >= 0)
-      : [];
+    const parsedModifiers = parseBracketModifiers(modifiers);
+    const importance = parsedModifiers.score ?? 2;
+    const expiration = parsedModifiers.expiration ?? 'session';
+    const rawEntityNames = parsedModifiers.entityNames;
+    const source_message_indices = parsedModifiers.sourceIndices;
 
     // New entries start as unprocessed - they will be evaluated against the
     // consolidated base before being promoted.
@@ -247,7 +255,8 @@ export function parseArcOutput(text, existingArcs) {
   let match;
   while ((match = addPattern.exec(text)) !== null) {
     const participants = (match[1] ?? '').split(',').map((name) => name.trim())
-      .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name));
+      .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name))
+      .filter(isPlausibleEntityName);
     const content = match[2].trim();
     // Require a minimum length to filter obvious noise; rely on the prompt
     // to distinguish arcs from facts rather than vocabulary-based signals,
@@ -300,7 +309,8 @@ export function parseSceneSummaryOutput(text) {
   const characterParticipants = (charactersMatch?.[1] ?? '')
     .split(/[\n,]/)
     .map((name) => name.trim())
-    .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name));
+    .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name))
+    .filter(isPlausibleEntityName);
 
   return { summary, characterParticipants: [...new Set(characterParticipants)] };
 }

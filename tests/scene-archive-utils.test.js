@@ -26,3 +26,11 @@ test('scene records preserve original source indices despite filtered-message ga
   assert.equal(scene.source_end_index, 8);
   assert.equal(scene.grounding_status, 'direct');
 });
+
+test('scene normalization removes parser artifacts from legacy participants', () => {
+  const scene = normalizeSceneRecord({
+    summary: 'A scene',
+    character_participants: ['Paul', 'Sources', 'sources=0', 'Unit 01'],
+  }, () => 'scene-2');
+  assert.deepEqual(scene.character_participants, ['Paul', 'Unit 01']);
+});

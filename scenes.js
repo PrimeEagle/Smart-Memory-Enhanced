@@ -56,7 +56,8 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
-import { loadCharacterEntityRegistry, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
+import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
+import { buildCanonicalCharacterRoster, canonicalizeStructuredParticipants } from './canonical-entities.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -142,14 +143,30 @@ export function createSceneRecord(summary, messages = [], details = {}) {
       ? message.__sme_original_index
       : context.chat?.indexOf(message))
     .filter((index) => Number.isInteger(index) && index >= 0);
-  return normalizeSceneRecord({
+  const participantResolution = canonicalizeStructuredParticipants(
+    details.character_participants,
+    buildCanonicalCharacterRoster(context),
+  );
+  const record = normalizeSceneRecord({
     id: generateMemoryId(),
     summary,
     ts: Date.now(),
     source_memory_ids: [],
     source_message_indices: sourceMessageIndices,
     ...details,
+    character_participants: participantResolution.names,
+    identity_rejections: [...(details.identity_rejections ?? []), ...participantResolution.rejected],
   }, generateMemoryId);
+  for (const rejection of record.identity_rejections ?? []) {
+    recordIdentityReviewCandidate({
+      status: 'rejected',
+      candidateName: rejection.name,
+      canonicalName: rejection.canonicalName,
+      canonicalId: rejection.canonicalId,
+      reason: `Scene participant: ${rejection.reason}`,
+    }, { memoryId: record.id, entityType: 'character' });
+  }
+  return record;
 }
 
 /**
@@ -290,6 +307,7 @@ export async function processSceneBreak(
   const sceneResult = await summarizeScene(recentMessages);
   if (!sceneResult?.summary) return false;
   const { summary, characterParticipants } = sceneResult;
+  const participantResolution = canonicalizeStructuredParticipants(characterParticipants, buildCanonicalCharacterRoster(getContext()));
 
   const history = loadSceneHistory();
 
@@ -314,7 +332,8 @@ export async function processSceneBreak(
   // source_memory_ids is populated after extraction via linkMemoriesToLastScene.
   const sceneRecord = createSceneRecord(summary, recentMessages, {
     detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
-    character_participants: characterParticipants,
+    character_participants: participantResolution.names,
+    identity_rejections: participantResolution.rejected,
   });
   history.push(sceneRecord);
 

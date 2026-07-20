@@ -224,7 +224,10 @@ export async function generateProfiles(characterName, abortCheck = null, options
         const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
         if (!match) return line;
         const resolution = resolveCanonicalCharacterName(match[1].trim(), roster, entityRegistry);
-        if (resolution.status === 'ambiguous') return '';
+        // A guessed or contradictory card identity must not become durable
+        // profile state. Exact/approved aliases are canonicalized; unknown
+        // non-card entities remain readable under their supplied name.
+        if (resolution.status === 'ambiguous' || resolution.status === 'rejected') return '';
         return `${resolution.canonicalName ?? match[1].trim()} (${match[2]}): ${match[3]}`;
       })
       .filter(Boolean)

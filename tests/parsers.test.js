@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseExtractionOutput,
+  parseBracketModifiers,
+  isPlausibleEntityName,
   parseSessionOutput,
   parseArcOutput,
   parseSceneSummaryOutput,
@@ -156,6 +158,26 @@ test('parseExtractionOutput: entity field works in any bracket position', () => 
   assert.deepEqual(result[0]._raw_entity_names, ['Elara', 'Kael']);
 });
 
+test('keyed modifiers keep entity values separate from sources in any order', () => {
+  const standard = parseExtractionOutput('[fact:score=3:entity=Kyle Holland,Alissa Kawaguchi:sources=1,2,4] A supported relationship fact.')[0];
+  assert.deepEqual(standard._raw_entity_names, ['Kyle Holland', 'Alissa Kawaguchi']);
+  assert.deepEqual(standard.source_message_indices, [1, 2, 4]);
+  const reordered = parseExtractionOutput('[fact:sources=1,2,4:expiration=permanent:entity=Kyle Holland:score=3] A supported fact in reordered form.')[0];
+  assert.deepEqual(reordered._raw_entity_names, ['Kyle Holland']);
+  assert.deepEqual(reordered.source_message_indices, [1, 2, 4]);
+  assert.equal(reordered.importance, 3);
+  assert.equal(reordered.expiration, 'permanent');
+});
+
+test('modifier parser rejects source and numeric debris as entity candidates', () => {
+  const parsed = parseBracketModifiers(':entity=Kyle Holland,sources=14,14,1-4,score=3:sources=1,2');
+  assert.deepEqual(parsed.entityNames, ['Kyle Holland']);
+  assert.deepEqual(parsed.sourceIndices, [1, 2]);
+  for (const value of ['sources=14', '14', '1-4', '1,2,4', 'score=3', 'permanent', 'source_indices']) {
+    assert.equal(isPlausibleEntityName(value), false);
+  }
+});
+
 test('parseExtractionOutput: each entry gets a unique id', () => {
   const result = parseExtractionOutput(
     '[fact] The city wall is made of black stone.\n[relationship] She trusts him completely.',
@@ -276,6 +298,11 @@ test('parseArcOutput: retains explicit structured character participants', () =>
   );
   assert.equal(result.add.length, 1);
   assert.deepEqual(result.add[0].character_participants, ['Kyle Holland', 'Sophie']);
+});
+
+test('parseArcOutput: rejects parser control words as participants', () => {
+  const result = parseArcOutput('[arc:characters=Paul, Sources] The unresolved treaty remains a source of conflict.', []);
+  assert.deepEqual(result.add[0].character_participants, ['Paul']);
 });
 
 test('parseArcOutput: requires arc content longer than 15 characters', () => {
@@ -511,6 +538,11 @@ test('parseSceneSummaryOutput: parses [SCENE] and [CHARACTERS] sections', () => 
     summary: 'Kyle and Sophie agree to investigate the abandoned lighthouse before dawn.',
     characterParticipants: ['Kyle Holland', 'Sophie'],
   });
+});
+
+test('parseSceneSummaryOutput: rejects parser control words as participants', () => {
+  const result = parseSceneSummaryOutput('[SCENE] A quiet meeting ends.[/SCENE]\n[CHARACTERS] Paul, Sources[/CHARACTERS]');
+  assert.deepEqual(result.characterParticipants, ['Paul']);
 });
 
 test('parseSceneSummaryOutput: preserves legacy untagged summaries', () => {

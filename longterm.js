@@ -861,8 +861,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             }
             const subjectResult = resolveCanonicalCharacterName(rawSubject, canonicalRoster);
             const targetResult = resolveCanonicalCharacterName(rawTarget, canonicalRoster);
-            if (subjectResult.status === 'ambiguous' || targetResult.status === 'ambiguous') {
-              smLog(`[Smart Memory Enhanced] Relationship pair skipped due to ambiguous identity: ${rawSubject} -> ${rawTarget}`);
+            if (!['resolved', 'unresolved'].includes(subjectResult.status) || !['resolved', 'unresolved'].includes(targetResult.status)) {
+              smLog(`[Smart Memory Enhanced] Relationship pair skipped due to unsafe identity: ${rawSubject} -> ${rawTarget}`);
               continue;
             }
             const pair = getRelationshipHistoryPair(rawSubject, rawTarget, canonicalRoster);

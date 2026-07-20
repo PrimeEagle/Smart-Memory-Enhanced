@@ -49,6 +49,7 @@ import { saveChatMetadata } from './catchup-transaction.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
+import { isPlausibleEntityName } from './parsers.js';
 import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName, resolveEntityCandidate } from './canonical-entities.js';
 
 function getCharacterMemoryPolicy(characterName) {
@@ -72,7 +73,7 @@ function resolveApprovedIdentityAlias(name, roster) {
   };
 }
 
-function recordIdentityReviewCandidate(result, details = {}) {
+export function recordIdentityReviewCandidate(result, details = {}) {
   if (!['ambiguous', 'rejected'].includes(result.status)) return;
   const settings = extension_settings[MODULE_NAME];
   if (!settings) return;
@@ -81,6 +82,7 @@ function recordIdentityReviewCandidate(result, details = {}) {
   const existing = queue.find((item) => item.candidateKey === candidateKey && item.reason === result.reason);
   if (existing) {
     existing.occurrences = (existing.occurrences ?? 1) + 1;
+    existing.memoryIds ??= [];
     if (details.memoryId && !existing.memoryIds.includes(details.memoryId)) existing.memoryIds.push(details.memoryId);
     saveSettingsDebounced();
     return;
@@ -375,7 +377,7 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 
   const roster = buildCanonicalCharacterRoster(getContext());
   const ids = rawNames
-    .filter((n) => n && n.trim().length > 0)
+    .filter((n) => n && isPlausibleEntityName(n))
     .flatMap((n) => {
       const { name, classifiedType } = parseEntityToken(n.trim());
       const resolution = resolveApprovedIdentityAlias(name, roster) ?? resolveEntityCandidate(name, roster, [registry], {
@@ -601,6 +603,61 @@ export function deleteEntityById(entityId, registry, memories) {
     const mIdx = mem.entities.indexOf(entityId);
     if (mIdx >= 0) mem.entities.splice(mIdx, 1);
   }
+}
+
+// ---- Parser-debris sanitation ----------------------------------------------
+
+/**
+ * Returns true only for entity labels that cannot be a real entity and match
+ * the extraction parser artifacts seen in damaged historical data.  Keep this
+ * intentionally stricter than isPlausibleEntityName: names such as "Unit 01",
+ * "District 9", and "Agent 47" are legitimate and must never be removed.
+ */
+export function isParserDebrisEntityName(name) {
+  const value = String(name ?? '').trim();
+  if (!value) return true;
+  if (/^\d+$/.test(value) || /^\d+\s*[-–—]\s*\d+$/.test(value)) return true;
+  if (/^(?:sources?|source_indices?|source_messages?|score)\s*=\s*[\d,\s-]+$/i.test(value)) return true;
+  return /^(?:sources?|source_indices?|source_messages?|score|entities?)$/i.test(value);
+}
+
+/**
+ * Removes unambiguous parser debris from a registry and every linked memory.
+ * This is safe to run repeatedly: it only deletes entries that could not be a
+ * valid entity name and records exactly what it changed for diagnostics.
+ *
+ * @param {Array<Object>} registry
+ * @param {Array<Object>} memories
+ * @returns {{ changed: boolean, removed: Array<{id: string, name: string}>, scrubbedReferences: number }}
+ */
+export function sanitizeParserDebrisEntities(registry, memories = []) {
+  const report = { changed: false, removed: [], scrubbedReferences: 0 };
+  if (!Array.isArray(registry)) return report;
+
+  const removedIds = new Set();
+  for (const entity of registry) {
+    if (!isParserDebrisEntityName(entity?.name)) continue;
+    removedIds.add(entity.id);
+    report.removed.push({ id: entity.id, name: String(entity.name ?? '') });
+  }
+  if (removedIds.size === 0) return report;
+
+  registry.splice(0, registry.length, ...registry.filter((entity) => !removedIds.has(entity.id)));
+  report.changed = true;
+  for (const memory of Array.isArray(memories) ? memories : []) {
+    if (!Array.isArray(memory?.entities)) continue;
+    const kept = memory.entities.filter((id) => !removedIds.has(id));
+    report.scrubbedReferences += memory.entities.length - kept.length;
+    if (kept.length !== memory.entities.length) memory.entities = kept;
+  }
+  return report;
+}
+
+function sanitizeIdentityReviewQueue(queue) {
+  if (!Array.isArray(queue)) return 0;
+  const before = queue.length;
+  queue.splice(0, queue.length, ...queue.filter((item) => !isParserDebrisEntityName(item?.candidateName)));
+  return before - queue.length;
 }
 
 // ---- Entity merge -----------------------------------------------------------
@@ -1136,15 +1193,19 @@ export function ensureCharacterMigrated(characterName) {
   const charData = settings.characters?.[characterName];
   if (!charData) return false;
 
-  if ((charData.schema_version ?? 0) >= SCHEMA_VERSION) return false;
-
-  smLog(`[Smart Memory Enhanced] Migrating character "${characterName}" to schema v${SCHEMA_VERSION}...`);
-  const migrated = applyMigrations(charData, CHARACTER_MIGRATIONS);
+  const needsMigration = (charData.schema_version ?? 0) < SCHEMA_VERSION;
+  if (needsMigration) smLog(`[Smart Memory Enhanced] Migrating character "${characterName}" to schema v${SCHEMA_VERSION}...`);
+  const migrated = needsMigration ? applyMigrations(charData, CHARACTER_MIGRATIONS) : charData;
+  const cleanup = sanitizeParserDebrisEntities(migrated.entities, migrated.memories);
+  if (!needsMigration && !cleanup.changed) return false;
   if (!settings.characters) settings.characters = {};
   settings.characters[characterName] = migrated;
   saveSettingsDebounced();
 
-  smLog(`[Smart Memory Enhanced] Character "${characterName}" migration complete.`);
+  if (needsMigration) smLog(`[Smart Memory Enhanced] Character "${characterName}" migration complete.`);
+  if (cleanup.changed) {
+    smLog(`[Smart Memory Enhanced] Removed ${cleanup.removed.length} parser-debris character entit${cleanup.removed.length === 1 ? 'y' : 'ies'} and scrubbed ${cleanup.scrubbedReferences} memory reference(s).`);
+  }
   return true;
 }
 
@@ -1167,12 +1228,35 @@ export async function ensureChatMigrated() {
   const meta = context.chatMetadata[META_KEY];
   if (!meta) return false;
 
-  if ((meta.schema_version ?? 0) >= SCHEMA_VERSION) return false;
+  const needsMigration = (meta.schema_version ?? 0) < SCHEMA_VERSION;
+  if (needsMigration) smLog(`[Smart Memory Enhanced] Migrating chat data to schema v${SCHEMA_VERSION}...`);
+  const migrated = needsMigration ? applyMigrations(meta, CHAT_MIGRATIONS) : meta;
+  const reports = [sanitizeParserDebrisEntities(migrated.sessionEntities, migrated.sessionMemories)];
+  for (const [characterName, registry] of Object.entries(migrated.card_local_entities ?? {})) {
+    reports.push(sanitizeParserDebrisEntities(registry, migrated.card_local_memories?.[characterName] ?? []));
+  }
+  const cleanup = {
+    removed: reports.reduce((count, report) => count + report.removed.length, 0),
+    references: reports.reduce((count, report) => count + report.scrubbedReferences, 0),
+  };
+  const reviewRemoved = sanitizeIdentityReviewQueue(extension_settings[MODULE_NAME]?.identity_review_queue);
 
-  smLog(`[Smart Memory Enhanced] Migrating chat data to schema v${SCHEMA_VERSION}...`);
-  context.chatMetadata[META_KEY] = applyMigrations(meta, CHAT_MIGRATIONS);
+  if (!needsMigration && cleanup.removed === 0 && reviewRemoved === 0) return false;
+  if (cleanup.removed > 0 || reviewRemoved > 0) {
+    migrated.parser_debris_cleanup = {
+      completed_at: Date.now(),
+      removed_entities: cleanup.removed,
+      removed_review_candidates: reviewRemoved,
+      scrubbed_memory_references: cleanup.references,
+    };
+  }
+  context.chatMetadata[META_KEY] = migrated;
   await saveChatMetadata(context);
+  if (reviewRemoved > 0) saveSettingsDebounced();
 
-  smLog('[Smart Memory Enhanced] Chat data migration complete.');
+  if (needsMigration) smLog('[Smart Memory Enhanced] Chat data migration complete.');
+  if (cleanup.removed > 0 || reviewRemoved > 0) {
+    smLog(`[Smart Memory Enhanced] Parser-debris cleanup removed ${cleanup.removed + reviewRemoved} invalid candidate(s) and scrubbed ${cleanup.references} memory reference(s).`);
+  }
   return true;
 }

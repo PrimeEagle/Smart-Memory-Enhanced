@@ -1517,6 +1517,12 @@ export function updateEntityPanel(characterName) {
         const $row = $('<div class="sme_identity_review_row">');
         $row.append($('<strong>').text(item.candidateName));
         $row.append($('<div class="sm-muted">').text(`${item.reason} Seen ${item.occurrences ?? 1} time(s).`));
+        if (item.canonicalName) {
+          $row.append($('<div class="sm-muted">').text(`Suggested canonical identity: ${item.canonicalName}.`));
+        }
+        if ((item.memoryIds ?? []).length) {
+          $row.append($('<div class="sm-muted">').text(`Evidence records: ${(item.memoryIds ?? []).length}.`));
+        }
         const approve = async (canonicalName) => {
           const target = ltEntities.find((entity) => entity.name === canonicalName || entity.canonical_card_id === item.canonicalId)
             ?? sessionEntities.find((entity) => entity.name === canonicalName || entity.canonical_card_id === item.canonicalId);

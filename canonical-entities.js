@@ -109,18 +109,51 @@ export function resolveEntityCandidate(candidate, canonicalRoster, registries = 
 export function canonicalizeRelationshipPair(subject, target, roster) {
   const left = resolveCanonicalCharacterName(subject, roster);
   const right = resolveCanonicalCharacterName(target, roster);
-  if (left.status === 'ambiguous' || right.status === 'ambiguous') return null;
+  if (left.status !== 'resolved' || right.status !== 'resolved') return null;
   return [left.canonicalName ?? subject, right.canonicalName ?? target];
+}
+
+/**
+ * Canonicalizes structured scene/arc participants without inventing people.
+ * Known card and persona references receive their canonical display name;
+ * grounded unknown NPC names are retained verbatim. Ambiguous or contradictory
+ * card-like names are omitted so they cannot become durable graph references.
+ */
+export function canonicalizeStructuredParticipants(participants, roster) {
+  const result = { names: [], rejected: [] };
+  for (const rawName of Array.isArray(participants) ? participants : []) {
+    const name = String(rawName ?? '').trim();
+    if (!name) continue;
+    const resolution = resolveCanonicalCharacterName(name, roster);
+    if (resolution.status === 'resolved') {
+      result.names.push(resolution.canonicalName);
+      continue;
+    }
+    if (resolution.status === 'ambiguous' || resolution.status === 'rejected') {
+      result.rejected.push({
+        name,
+        reason: resolution.reason,
+        candidates: resolution.candidates ?? [],
+        canonicalName: resolution.canonicalName ?? null,
+        canonicalId: resolution.canonicalId ?? null,
+      });
+      continue;
+    }
+    result.names.push(name);
+  }
+  result.names = [...new Set(result.names)];
+  return result;
 }
 
 /** Builds a stable storage reference plus the readable canonical label. */
 export function buildStableEntityReference(name, roster) {
   const result = resolveCanonicalCharacterName(name, roster);
-  const displayName = result.canonicalName ?? String(name).trim();
+  const accepted = result.status === 'resolved';
+  const displayName = accepted ? result.canonicalName : String(name).trim();
   return {
     displayName,
-    canonicalId: result.canonicalId ?? null,
-    storageId: result.canonicalId ? `card:${result.canonicalId}` : `name:${normalize(displayName)}`,
+    canonicalId: accepted ? (result.canonicalId ?? null) : null,
+    storageId: accepted && result.canonicalId ? `card:${result.canonicalId}` : `name:${normalize(displayName)}`,
   };
 }
 
@@ -168,7 +201,7 @@ export function reconcileCanonicalLedger(ledger, roster) {
     const name = key.slice(0, separator);
     const type = key.slice(separator + 1);
     const resolved = resolveCanonicalCharacterName(name, roster);
-    if (!resolved.canonicalName || resolved.status === 'ambiguous') continue;
+    if (!resolved.canonicalName || resolved.status !== 'resolved') continue;
     const canonicalKey = `${normalize(resolved.canonicalName)}|${type}`;
     if (canonicalKey === key) continue;
     result[canonicalKey] = { ...fields, ...(result[canonicalKey] ?? {}) };
