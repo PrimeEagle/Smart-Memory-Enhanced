@@ -44,10 +44,19 @@ import { RECAP_PROMPT } from './prompts.js';
  */
 export async function updateLastActive() {
   const context = getContext();
+  // CHAT_CHANGED can fire during initial page setup before SillyTavern has
+  // selected a chat file. Metadata at that point is only a temporary shell;
+  // attempting to save it produces "saveChat called without chat_name" and
+  // can leave SillyTavern's conditional save queue waiting unnecessarily.
+  const groupChatId = context.groupId
+    ? context.groups?.find((group) => group.id === context.groupId)?.chat_id
+    : null;
+  if (!context.chatId && !groupChatId) return false;
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   context.chatMetadata[META_KEY].lastActive = Date.now();
   await context.saveMetadata?.();
+  return true;
 }
 
 /**

@@ -20,12 +20,12 @@
 /**
  * Macro injection: registers Smart Memory content as SillyTavern macros.
  *
- * Each memory tier exposes a {{smartmemory-*}} macro that injects its content
+ * Each memory tier exposes a {{smartmemory-enhanced-*}} macro that injects its content
  * wherever the user places the token in a character card or instruct template.
  * Inject functions update the cache on every call so macros always return
  * fresh content without requiring a separate generation pass.
  *
- * The unified macro (smartmemory-unified) is a special case: it is only active
+ * The unified macro (smartmemory-enhanced-unified) is a special case: it is only active
  * when unified injection is also on, and its content is the merged block produced
  * by injectUnified rather than a single tier. Individual tier macros are inactive
  * when unified injection is on - unified owns those tiers.
@@ -47,18 +47,18 @@ import { MODULE_NAME } from './constants.js';
  * These strings are what users place in character cards or instruct templates.
  */
 export const MACRO_NAMES = {
-  shortterm: 'smartmemory-shortterm',
-  longterm: 'smartmemory-longterm',
-  session: 'smartmemory-session',
-  scenes: 'smartmemory-scenes',
-  arcs: 'smartmemory-arcs',
-  relationships: 'smartmemory-relationships',
-  canon: 'smartmemory-canon',
-  profiles: 'smartmemory-profiles',
-  epistemic: 'smartmemory-epistemic',
-  state_ledger: 'smartmemory-stateledger',
-  triggered: 'smartmemory-triggered',
-  unified: 'smartmemory-unified',
+  shortterm: 'smartmemory-enhanced-shortterm',
+  longterm: 'smartmemory-enhanced-longterm',
+  session: 'smartmemory-enhanced-session',
+  scenes: 'smartmemory-enhanced-scenes',
+  arcs: 'smartmemory-enhanced-arcs',
+  relationships: 'smartmemory-enhanced-relationships',
+  canon: 'smartmemory-enhanced-canon',
+  profiles: 'smartmemory-enhanced-profiles',
+  epistemic: 'smartmemory-enhanced-epistemic',
+  state_ledger: 'smartmemory-enhanced-stateledger',
+  triggered: 'smartmemory-enhanced-triggered',
+  unified: 'smartmemory-enhanced-unified',
 };
 
 // Content cache keyed by macro name. Updated by inject functions so the macro
@@ -107,7 +107,7 @@ export function isMacroActive(macroName) {
   // force mode - unified owns all tier content when enabled.
   if (!isUnifiedMacro && settings?.unified_injection) return false;
   // Manual override: force macro mode for all applicable macros (including unified,
-  // so {{smartmemory-unified}} works in instruct templates without card auto-detection).
+  // so {{smartmemory-enhanced-unified}} works in instruct templates without card auto-detection).
   if (settings?.macros_enabled) return true;
   // Auto-detection: look for the {{macro-name}} token in character card fields.
   const token = `{{${macroName}}}`;
@@ -131,7 +131,7 @@ export function registerSmartMemoryMacros() {
     if (power_user?.experimental_macro_engine) {
       stMacros.register(macroName, {
         category: stMacros.category.MISC,
-        description: `Smart Memory: ${tierKey} tier content`,
+        description: `Smart Memory Enhanced: ${tierKey} tier content`,
         returns: 'Formatted memory tier content, empty string if tier is disabled or has no data',
         handler: () => contentCache.get(macroName) ?? '',
       });
@@ -139,7 +139,7 @@ export function registerSmartMemoryMacros() {
       MacrosParser.registerMacro(
         macroName,
         () => contentCache.get(macroName) ?? '',
-        `Smart Memory: ${tierKey} tier content`,
+        `Smart Memory Enhanced: ${tierKey} tier content`,
       );
     }
   }

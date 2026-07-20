@@ -39,6 +39,24 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(settings, /Clear session persistence failed/);
 });
 
+test('startup never saves recap metadata before SillyTavern has selected a chat', () => {
+  const recap = read('recap.js');
+  const updateLastActive = recap.slice(recap.indexOf('export async function updateLastActive'), recap.indexOf('/**\n * Checks whether a recap'));
+  assert.match(updateLastActive, /if \(!context\.chatId && !groupChatId\) return false/);
+  assert.ok(
+    updateLastActive.indexOf('if (!context.chatId && !groupChatId) return false')
+      < updateLastActive.indexOf('context.chatMetadata[META_KEY].lastActive'),
+    'The no-chat guard must run before metadata is mutated.',
+  );
+});
+
+test('Enhanced macros use an independent namespace beside the original extension', () => {
+  const macros = read('macros.js');
+  assert.match(macros, /shortterm: 'smartmemory-enhanced-shortterm'/);
+  assert.match(macros, /unified: 'smartmemory-enhanced-unified'/);
+  assert.doesNotMatch(macros, /:\s*'smartmemory-(?!enhanced-)/);
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [

@@ -1372,7 +1372,7 @@ export async function injectMemories(characterName, updateTelemetry = false) {
 
   // Secondary injection for contextually triggered memories, placed closer to
   // the prompt. Supports both setExtensionPrompt (depth-based) and macro mode
-  // via {{smartmemory-triggered}}. Cleared when no triggers fire.
+  // via {{smartmemory-enhanced-triggered}}. Cleared when no triggers fire.
   // Apply the same witnessed-by filter as the main block.
   if (triggered.length > 0) {
     const triggeredLines = [];

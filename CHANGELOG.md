@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.8] - 2026-07-19
+
+### Fixed
+
+- Prevented recap activity tracking from trying to save chat metadata during
+  page startup before SillyTavern has selected a chat file.
+- Moved every Smart Memory Enhanced macro into its own
+  `{{smartmemory-enhanced-*}}` namespace, so it can run alongside original
+  Smart Memory without overwriting its macro registrations.
+
+### Compatibility
+
+- Character cards and instruct templates using Enhanced's former
+  `{{smartmemory-*}}` macros must use the new `{{smartmemory-enhanced-*}}`
+  equivalents. Original Smart Memory keeps the former macro names.
+
+### Tests
+
+- Added regression coverage for startup save suppression and independent macro
+  registration.
+
 ## [0.8.7] - 2026-07-19
 
 ### Fixed

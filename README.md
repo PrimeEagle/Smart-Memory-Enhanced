@@ -5,7 +5,7 @@
 
 Smart Memory Enhanced is an experimental reliability, grounding, and configurability fork of [Smart Memory by Senjin the Dragon](https://github.com/senjinthedragon/Smart-Memory). It is independently maintained, is not affiliated with or endorsed by the original maintainer, and remains licensed under AGPL-3.0-or-later.
 
-**Current fork version: v0.8.7**
+**Current fork version: v0.8.8**
 
 Smart Memory Enhanced can run alongside the original Smart Memory extension. It uses its own settings, chat metadata, prompt slots, and UI identifiers; it does not read, copy, or modify the original extension's data.
 
@@ -714,24 +714,24 @@ Each memory tier exposes a macro token you can place anywhere in a character car
 
 | Macro                           | Tier                      |
 | ------------------------------- | ------------------------- |
-| `{{smartmemory-shortterm}}`     | Short-term summary        |
-| `{{smartmemory-longterm}}`      | Long-term memories        |
-| `{{smartmemory-triggered}}`     | Contextually triggered memories (keyword-matched subset of long-term, re-injected closer to the prompt) |
-| `{{smartmemory-session}}`       | Session memories          |
-| `{{smartmemory-scenes}}`        | Scene history             |
-| `{{smartmemory-arcs}}`          | Story arcs                |
-| `{{smartmemory-relationships}}` | Relationship history      |
-| `{{smartmemory-canon}}`         | Canon                     |
-| `{{smartmemory-profiles}}`      | Profiles                  |
-| `{{smartmemory-epistemic}}`     | Perspectives & Secrets    |
-| `{{smartmemory-stateledger}}`   | State Ledger              |
-| `{{smartmemory-unified}}`       | Unified block (see below) |
+| `{{smartmemory-enhanced-shortterm}}`     | Short-term summary        |
+| `{{smartmemory-enhanced-longterm}}`      | Long-term memories        |
+| `{{smartmemory-enhanced-triggered}}`     | Contextually triggered memories (keyword-matched subset of long-term, re-injected closer to the prompt) |
+| `{{smartmemory-enhanced-session}}`       | Session memories          |
+| `{{smartmemory-enhanced-scenes}}`        | Scene history             |
+| `{{smartmemory-enhanced-arcs}}`          | Story arcs                |
+| `{{smartmemory-enhanced-relationships}}` | Relationship history      |
+| `{{smartmemory-enhanced-canon}}`         | Canon                     |
+| `{{smartmemory-enhanced-profiles}}`      | Profiles                  |
+| `{{smartmemory-enhanced-epistemic}}`     | Perspectives & Secrets    |
+| `{{smartmemory-enhanced-stateledger}}`   | State Ledger              |
+| `{{smartmemory-enhanced-unified}}`       | Unified block (see below) |
 
 Place any token in the **Main Prompt**, **Description**, **Personality summary**, **Scenario**, or **Examples of dialogue** fields of a character card. Smart Memory detects the token automatically and activates macro mode for that tier - no settings change needed.
 
 If you place macros in an **instruct template** rather than a character card, enable **Force macro injection mode** in Configuration (advanced mode). Instruct templates cannot be scanned for auto-detection, so the override is required.
 
-The `{{smartmemory-unified}}` macro is only active when **Unified injection** is also on. It lets you control where the merged block lands in the same way individual tier macros control per-tier placement. Individual tier macros are inactive while unified injection is on - unified owns all tier content.
+The `{{smartmemory-enhanced-unified}}` macro is only active when **Unified injection** is also on. It lets you control where the merged block lands in the same way individual tier macros control per-tier placement. Individual tier macros are inactive while unified injection is on - unified owns all tier content.
 
 ### Developer Settings
 
@@ -740,7 +740,7 @@ The `{{smartmemory-unified}}` macro is only active when **Unified injection** is
 | Verbose logging     | Off     | Print detailed progress to the browser console for extraction, consolidation, and scene detection. Errors are always logged regardless                                                                           |
 | Injection refresh period | 1 | Minimum AI messages between long-term and session slot updates. 1 = refresh every message (default). Raise this if you are on a cloud API and want to preserve prompt cache hits between extraction passes - recent events are still visible in chat history during the gap. Note: character and world profiles re-inject every extraction pass regardless of this setting, so enabling profiles alongside a high refresh period will still invalidate the top of the prompt on each pass. Available in advanced mode |
 | Unified injection   | Off     | Merges all memory tiers into a single block ordered from most stable (canon, long-term) to most immediate (session, arcs). Disables per-tier depth and position settings while active. Available in advanced mode |
-| Force macro injection mode | Off | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). When unified injection is on, activates `{{smartmemory-unified}}` for instruct templates - individual tier macros remain inactive. Leave off for card macros - auto-detection handles them |
+| Force macro injection mode | Off | Forces macro injection for all tiers. Use when macros are in instruct templates (cannot be auto-detected from card fields). When unified injection is on, activates `{{smartmemory-enhanced-unified}}` for instruct templates - individual tier macros remain inactive. Leave off for card macros - auto-detection handles them |
 
 ---
 
