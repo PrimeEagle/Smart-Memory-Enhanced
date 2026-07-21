@@ -237,6 +237,17 @@ test('relationship reconciliation requires stable canonical participants and pre
   }
 });
 
+test('session extraction repairs citation-only omissions once and never persists uncited candidates', () => {
+  const session = read('session.js');
+  const prompts = read('prompts.js');
+  const settings = read('settings.js');
+  assert.match(prompts, /Every output item MUST include one or more source message indices/);
+  assert.match(session, /SESSION CITATION REPAIR/);
+  assert.match(session, /Do not add, remove, reword, or combine memories/);
+  assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
+  assert.match(settings, /sessionExtraction: \{ emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 \}/);
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [
@@ -301,7 +312,7 @@ test('integrity round: primary provenance is prepared before verification and co
   const session = read('session.js');
   const validation = read('record-validation.js');
   assert.match(longterm, /applyDirectProvenance\(parsed, recentMessages, provenanceWindowStart/);
-  assert.match(session, /applyDirectProvenance\(parsedCandidates, recentMessages, provenanceWindowStart/);
+  assert.match(session, /applyDirectProvenance\(citedCandidates, recentMessages, provenanceWindowStart/);
   assert.match(validation, /prepareRecordForValidation/);
   assert.match(validation, /flattenConsolidationProvenance/);
   assert.match(validation, /disposable extraction candidates/);

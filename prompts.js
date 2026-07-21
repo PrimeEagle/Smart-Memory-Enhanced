@@ -213,7 +213,7 @@ If the memory involves specific NAMED entities, append :entity=Name/type pairs i
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
-The supplied conversation messages are numbered from 0 upward. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
+The supplied conversation messages are numbered from 0 upward. Every output item MUST include one or more source message indices from that numbered excerpt. Do not emit an item without supporting source indices. Use only indices shown in the source excerpt. The source field is mandatory: write :sources=1,2 inside every bracket. If no message supports a claim, omit it.
 
 One item per line, exact format:
 [scene:2:scene:sources=0] <ENTITY_A> is at <LOCATION> during the current scene.
