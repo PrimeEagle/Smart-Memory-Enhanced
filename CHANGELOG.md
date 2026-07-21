@@ -15,11 +15,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added named diagnostic fixture families for leakage/hallucination, entity
   relevance, character-policy isolation, provenance, provider/save failures,
   and search behavior.
+- Added deterministic arc-resolution classification before a story arc can be
+  removed or summarized, including explicit resolved, still-open, abandoned,
+  superseded, and insufficient-evidence outcomes.
+- Added broader final reconciliation across card-local entity stores,
+  Relationship History, State Ledger, profiles, epistemic records, scenes,
+  arcs, and review-queue decisions.
+
+### Fixed
+
+- Prevented generated arc summaries from entering the resolved history when
+  evidence indicates the underlying arc remains open or is otherwise not
+  eligible for resolution.
+- Preserved approved profile fields when a newly generated profile field is
+  stale, unsupported, or conflicts with later evidence; strengthened local
+  model parsing for wrapped, partial, and Markdown-formatted output.
+- Canonicalized persona aliases, synthetic parenthetical identity labels, and
+  duplicate relationship pairs without promoting unsupported name variants.
+- Reconciled duplicate relationship history records by retaining their merged
+  evidence and latest applicable state rather than silently discarding one.
+
+### Improved
+
+- Strengthened protected prompts for scenes, arcs, profiles, relationships,
+  epistemic knowledge, and State Ledger extraction with canonical roster
+  context and stricter grounding requirements.
+- Expanded catch-up diagnostics with arc-resolution totals, profile rejection
+  counts, and final-reconciliation outcomes.
+- Improved identity-review metadata so repeated decisions are deduplicated
+  while retaining their linked source evidence.
 
 ### Tests
 
 - Added fixture-backed checks for the diagnostic contracts and included them
   in the standard unit-test command.
+- Added regression coverage for arc-resolution gates, profile preservation,
+  canonical identity reconciliation, relationship-pair merging, parser
+  recovery, and the live prompt inspector.
 
 ## [0.8.13] - 2026-07-20
 
