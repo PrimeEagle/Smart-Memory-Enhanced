@@ -2920,6 +2920,7 @@ export function bindSettingsUI(ctrl) {
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
+      arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: { emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 },
       profiles: { sections_parsed: 0, stale_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0 },
       finalReconciliation: { persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0 },
@@ -3035,7 +3036,7 @@ export function bindSettingsUI(ctrl) {
         }
         if (settings.arcs_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting arcs)`);
-          await extractArcs(chunk, characterName, null, { arcResolutionStats: runResult.arcResolution }).catch((err) => {
+          await extractArcs(chunk, characterName, null, { arcResolutionStats: runResult.arcResolution, arcPipeline: runResult.arcPipeline }).catch((err) => {
             recordCatchUpError('arc extraction error (chunk)', err, 'arcs');
           });
         }
@@ -3371,6 +3372,7 @@ export function bindSettingsUI(ctrl) {
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries()),
         arcResolution: runResult.arcResolution,
+        arcPipeline: runResult.arcPipeline,
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,

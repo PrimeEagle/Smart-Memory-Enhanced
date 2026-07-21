@@ -135,7 +135,7 @@ test('arc resolution is classified before a summary can be generated or an arc r
   const prompts = read('prompts.js');
   assert.match(arcs, /export async function classifyArcResolution/);
   assert.match(arcs, /if \(decision\.status !== 'resolved'\)/);
-  assert.match(arcs, /if \(decision\.status === 'resolved'\) resolvedArcObjects\.push/);
+  assert.match(arcs, /if \(decision\.status === 'resolved'\) \{[\s\S]*resolvedArcObjects\.push/);
   assert.match(prompts, /\[ARC RESOLUTION CLASSIFIER\]/);
   assert.match(prompts, /INSUFFICIENT_EVIDENCE/);
 });
@@ -246,6 +246,17 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
   assert.match(settings, /sessionExtraction: \{ emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 \}/);
+});
+
+test('resolved arc classifications receive one traceable terminal summary outcome', () => {
+  const arcs = read('arcs.js');
+  const settings = read('settings.js');
+  assert.match(arcs, /traceArcTerminal/);
+  for (const status of ['generator_none', 'preverification_rejected', 'verification_ambiguous', 'verification_unsupported', 'provider_error', 'persisted']) {
+    assert.match(arcs, new RegExp(`'${status}'`));
+  }
+  assert.match(settings, /arcPipeline: \{ classifiedResolved: 0/);
+  assert.match(settings, /arcPipeline: runResult\.arcPipeline/);
 });
 
 test('catch-up metadata writers cannot bypass staged saving', () => {
