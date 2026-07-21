@@ -210,6 +210,15 @@ test('canonical reconciliation safely rewrites deterministic aliases in existing
   assert.match(ui, /synthetic_review_names_removed/);
 });
 
+test('profile relationship lines require an exact descriptor from the established pair history', () => {
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  assert.match(profiles, /const exactStatus = pair\?\.descriptors\.some/);
+  assert.match(profiles, /relationship_matrix: ''/);
+  assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
+  assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');

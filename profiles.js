@@ -189,25 +189,39 @@ export function omitStaleCurrentProfileLines(parsed, currentEvidence = '') {
   return { profiles, dropped };
 }
 
-/** Keeps relationship-matrix entries only when the established history supports that pair. */
+/**
+ * Keeps relationship-matrix entries only when the established history supports
+ * both the pair and at least one exact current descriptor. A relationship pair
+ * is not evidence for a stronger or different status.
+ */
 export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}) {
   const profiles = { ...parsed };
   const pairs = Object.values(relationshipHistory ?? {})
-    .map((state) => [String(state?.subject_name ?? '').toLowerCase(), String(state?.target_name ?? '').toLowerCase()])
-    .filter(([subject, target]) => subject && target);
-  if (!pairs.length) return { profiles, rejected: [] };
+    .map((state) => ({
+      subject: String(state?.subject_name ?? '').toLowerCase(),
+      target: String(state?.target_name ?? '').toLowerCase(),
+      descriptors: (state?.descriptors ?? []).map((descriptor) => String(typeof descriptor === 'string' ? descriptor : descriptor?.word ?? '').trim().toLowerCase()).filter(Boolean),
+    }))
+    .filter((pair) => pair.subject && pair.target && pair.descriptors.length);
+  if (!pairs.length) return { profiles: { ...profiles, relationship_matrix: '' }, rejected: String(profiles.relationship_matrix ?? '').trim() ? String(profiles.relationship_matrix).split('\n').filter(Boolean) : [] };
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').filter((line) => {
-    const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:/);
+    const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:\s*(.+)$/);
     if (!match) return true;
     const entity = match[1].trim().toLowerCase();
-    const known = pairs.some(([subject, target]) => (subject === self && target === entity) || (target === self && subject === entity));
-    if (known) return true;
+    const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
+    const pair = pairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
+    if (pair && exactStatus) return true;
     rejected.push(line);
     return false;
   }).join('\n');
   return { profiles, rejected };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ---- Generation ---------------------------------------------------------
@@ -248,6 +262,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
   // Pass entity registry names for the relationship matrix. Only character and
   // place entities are useful here - concepts and objects clutter the output.
   const entityRegistry = loadCharacterEntityRegistry(characterName);
+  const relationshipHistory = loadRelationshipHistory(characterName);
   const entities = entityRegistry
     .filter((e) => e.type === 'character' || e.type === 'place')
     .map((e) => ({ name: e.name, type: e.type }));
@@ -258,6 +273,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     sessText,
     entities,
     formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+    relationshipHistory,
   );
 
   try {
@@ -341,7 +357,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     ].join('\n');
     const temporalCheck = omitStaleCurrentProfileLines(parsed, currentEvidence);
     parsed = temporalCheck.profiles;
-    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, loadRelationshipHistory(characterName));
+    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory);
     parsed = relationshipCheck.profiles;
     if (fieldGrounding.rejected.length) {
       smLog(`[Smart Memory Enhanced] Omitted unsupported profile fields: ${fieldGrounding.rejected.join(', ')}.`);

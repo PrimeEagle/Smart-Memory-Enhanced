@@ -624,6 +624,7 @@ export function buildProfileGenerationPrompt(
   sessionMemories,
   entities = [],
   canonicalRoster = '',
+  relationshipHistory = {},
 ) {
   const ltSection = longtermMemories
     ? `LONG-TERM MEMORIES:\n${longtermMemories}\n\n`
@@ -639,12 +640,22 @@ export function buildProfileGenerationPrompt(
       : '';
 
   const charLabel = characterName || 'the character';
+  const relationshipEvidence = Object.values(relationshipHistory ?? {})
+    .map((state) => {
+      const subject = String(state?.subject_name ?? '').trim();
+      const target = String(state?.target_name ?? '').trim();
+      const descriptors = (state?.descriptors ?? []).map((entry) => typeof entry === 'string' ? entry : entry?.word).filter(Boolean);
+      return subject && target && descriptors.length ? `${subject} -> ${target}: ${descriptors.join(', ')}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+  const relationshipSection = relationshipEvidence ? `RELATIONSHIP HISTORY (authoritative current descriptors):\n${relationshipEvidence}\n\n` : '';
 
   return (
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
+${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
@@ -665,6 +676,7 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 <relationship_matrix>
 [EntityName] ([type]): [directional one-line state] [confidence: 0.X]
 (one line per entity from the KNOWN ENTITIES list; omit this section entirely if no entities are known)
+For each relationship line, use at least one exact descriptor from RELATIONSHIP HISTORY for that same pair. Do not upgrade, reinterpret, or substitute a status (for example, do not turn "trust" into "romantic" or "family"). If that pair has no listed descriptor, omit the line.
 </relationship_matrix>`
   );
 }
