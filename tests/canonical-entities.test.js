@@ -4,6 +4,7 @@ import {
   buildCanonicalCharacterRoster,
   buildCanonicalRoster,
   canonicalizeNarrativeNames,
+  resolveCanonicalCharacterName,
   deduplicateIdentityDecisions,
   normalizeSyntheticIdentityQualifier,
   sanitizeSyntheticIdentityLabels,
@@ -17,7 +18,6 @@ import {
   reconcileCanonicalLedger,
   remapEntityIdInMemories,
   resolveEntityCandidate,
-  resolveCanonicalCharacterName,
 } from '../canonical-entities.js';
 
 const roster = buildCanonicalCharacterRoster({
@@ -97,6 +97,9 @@ test('canonical roster rewrites a former persona label before prompt constructio
   });
   const rewritten = canonicalizeNarrativeNames('Adam Lawson discussed the plan.', personaRoster);
   assert.equal(rewritten.text, 'Kyle Holland discussed the plan.');
+  const resolution = resolveCanonicalCharacterName('Adam Lawson', personaRoster);
+  assert.equal(resolution.canonicalId, 'persona:kyle holland');
+  assert.equal(resolution.reason, 'Historical active persona name.');
 });
 
 test('identity decision metadata deduplicates while retaining evidence', () => {

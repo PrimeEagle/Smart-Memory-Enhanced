@@ -210,6 +210,14 @@ test('canonical reconciliation safely rewrites deterministic aliases in existing
   assert.match(ui, /synthetic_review_names_removed/);
 });
 
+test('historical persona names remain durable aliases of the active persona identity', () => {
+  const graph = read('graph-migration.js');
+  const canonical = read('canonical-entities.js');
+  assert.match(graph, /historical_persona_names/);
+  assert.match(graph, /rosterEntry\?\.source === 'user-persona'/);
+  assert.match(canonical, /Historical active persona name/);
+});
+
 test('profile relationship lines require an exact descriptor from the established pair history', () => {
   const profiles = read('profiles.js');
   const prompts = read('prompts.js');

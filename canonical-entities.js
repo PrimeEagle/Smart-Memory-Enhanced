@@ -144,7 +144,9 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
   const exact = characters.find((entry) => normalize(entry.canonicalName) === candidateNorm);
   if (exact) return resolved(candidate, exact, 'Exact canonical character-card name.');
   const aliasMatches = characters.filter((entry) => entry.aliases.some((alias) => normalize(alias) === candidateNorm));
-  if (aliasMatches.length === 1) return resolved(candidate, aliasMatches[0], 'Approved character-card alias.');
+  if (aliasMatches.length === 1) return resolved(candidate, aliasMatches[0], aliasMatches[0].source === 'user-persona'
+    ? 'Historical active persona name.'
+    : 'Approved character-card alias.');
   if (aliasMatches.length > 1) return ambiguous(candidate, aliasMatches, 'Alias matches multiple canonical characters.');
   const first = words(candidate)[0];
   const firstMatches = characters.filter((entry) => words(entry.canonicalName)[0] === first);

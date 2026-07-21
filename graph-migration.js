@@ -397,7 +397,14 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
       if (entity && resolution.canonicalId) {
         entity.canonical_card_id = resolution.canonicalId;
         entity.type = 'character';
-        entity.source = (roster.characters ?? []).find((entry) => entry.id === resolution.canonicalId)?.source ?? 'character-card';
+        const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === resolution.canonicalId);
+        entity.source = rosterEntry?.source ?? 'character-card';
+        // A prior persona name is a valid historical reference, not a rejected
+        // identity. Retain it as a durable alias on the current persona entity.
+        if (rosterEntry?.source === 'user-persona' && name.toLowerCase() !== resolvedName.toLowerCase()) {
+          entity.aliases = [...new Set([...(entity.aliases ?? []), name])];
+          entity.historical_persona_names = [...new Set([...(entity.historical_persona_names ?? []), name])];
+        }
         if (resolution.status === 'rejected') {
           entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), name])];
         }
@@ -434,7 +441,13 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     if (!target) {
       if (entity.name !== result.canonicalName) {
         const oldName = entity.name;
-        entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
+        const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
+        if (rosterEntry?.source === 'user-persona') {
+          entity.aliases = [...new Set([...(entity.aliases ?? []), entity.name])];
+          entity.historical_persona_names = [...new Set([...(entity.historical_persona_names ?? []), entity.name])];
+        } else {
+          entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
+        }
         entity.name = result.canonicalName;
         entity.canonical_card_id = result.canonicalId;
         entity.type = 'character';
@@ -447,7 +460,13 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
     target.canonical_card_id = result.canonicalId;
     target.type = 'character';
-    target.rejected_aliases = [...new Set([...(target.rejected_aliases ?? []), ...(entity.rejected_aliases ?? []), entity.name])];
+    const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
+    if (rosterEntry?.source === 'user-persona') {
+      target.aliases = [...new Set([...(target.aliases ?? []), ...(entity.aliases ?? []), entity.name])];
+      target.historical_persona_names = [...new Set([...(target.historical_persona_names ?? []), ...(entity.historical_persona_names ?? []), entity.name])];
+    } else {
+      target.rejected_aliases = [...new Set([...(target.rejected_aliases ?? []), ...(entity.rejected_aliases ?? []), entity.name])];
+    }
     for (const memory of memories) {
       if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
       memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
