@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCanonicalCharacterRoster,
+  buildCanonicalRoster,
   canonicalizeNarrativeNames,
   deduplicateIdentityDecisions,
   normalizeSyntheticIdentityQualifier,
@@ -74,6 +75,16 @@ test('canonical roster: a unique persona first name resolves without creating a 
   assert.equal(result.status, 'resolved');
   assert.equal(result.canonicalName, 'Kyle Holland');
   assert.equal(result.shouldCreateEntity, false);
+});
+
+test('canonical roster: explicit active persona scope survives contexts without name1', () => {
+  const scopedRoster = buildCanonicalRoster({ characters: [] }, {
+    activePersona: { id: 'persona-kyle', name: 'Kyle Holland', aliases: ['Kyle'] },
+  });
+  assert.equal(scopedRoster.characters[0].canonical_id, 'persona:persona-kyle');
+  assert.equal(scopedRoster.characters[0].source_type, 'persona');
+  assert.equal(resolveCanonicalCharacterName('Kyle', scopedRoster).canonicalName, 'Kyle Holland');
+  assert.equal(resolveCanonicalCharacterName('Kyle Holland', scopedRoster).canonicalName, 'Kyle Holland');
 });
 
 test('canonical roster rewrites a former persona label before prompt construction', () => {

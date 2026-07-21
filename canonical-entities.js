@@ -22,10 +22,15 @@ export function normalizeSyntheticIdentityQualifier(candidate, existingEntities 
   return { normalized_name: original, qualifier_removed: false };
 }
 
-export function buildCanonicalCharacterRoster(context, options = {}) {
+/**
+ * Builds the authoritative identity roster for one active chat scope. Entries
+ * retain the legacy camelCase fields for existing callers and expose the
+ * canonical schema used by reconciliation and diagnostics.
+ */
+export function buildCanonicalRoster(context, scope = {}) {
   const group = context?.groupId ? context.groups?.find((entry) => String(entry.id) === String(context.groupId)) : null;
   const activeAvatars = new Set(group?.members ?? []);
-  const activeNames = new Set(options.activeNames?.map(normalize) ?? []);
+  const activeNames = new Set(scope.activeNames?.map(normalize) ?? []);
   const characters = (context?.characters ?? [])
     .filter((card) => {
       if (activeNames.size) return activeNames.has(normalize(card.name));
@@ -39,20 +44,25 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
       return {
         id: card.id ?? card.avatar ?? null,
         canonicalName,
+        canonical_id: String(card.id ?? card.avatar ?? `card:${normalize(canonicalName)}`),
+        canonical_name: canonicalName,
+        entity_type: 'character',
         aliases,
         descriptionExcerpt: String(card.description ?? '').trim().slice(0, 240),
         source: 'character-card',
+        source_type: 'character-card',
       };
     })
     .filter((entry) => entry.canonicalName);
   // The active user persona participates in the chat but is not represented
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
-  const personaName = String(options.personaName ?? context?.name1 ?? context?.userName ?? '').trim();
-  const personaRecord = options.persona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
+  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && String(message?.name ?? '').trim())?.name;
+  const personaName = String(scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.name1 ?? context?.userName ?? chatPersonaName ?? '').trim();
+  const personaRecord = scope.persona ?? scope.activePersona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
   const personaId = personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
   const personaAliases = [
-    ...(Array.isArray(options.personaAliases) ? options.personaAliases : []),
+    ...(Array.isArray(scope.personaAliases) ? scope.personaAliases : []),
     ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
     ...(Array.isArray(personaRecord?.previous_names) ? personaRecord.previous_names : []),
     personaRecord?.alias,
@@ -62,12 +72,42 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
     characters.push({
       id: `persona:${personaId}`,
       canonicalName: personaName,
+      canonical_id: `persona:${personaId}`,
+      canonical_name: personaName,
+      entity_type: 'character',
       aliases: [...new Set(personaAliases)],
       descriptionExcerpt: '',
       source: 'user-persona',
+      source_type: 'persona',
     });
   }
+  // Chat-local approved character entities are useful as roster context in a
+  // group chat but must never override a card or persona identity.
+  if (scope.includeChatLocalApproved) {
+    const meta = context?.chatMetadata?.smartMemoryEnhanced ?? {};
+    const entries = Object.values(meta.card_local_entities ?? {}).flat();
+    for (const entity of entries) {
+      if (entity?.type !== 'character' || !entity?.name || entity?.validation_status === 'needs_review') continue;
+      if (characters.some((entry) => normalize(entry.canonicalName) === normalize(entity.name))) continue;
+      characters.push({
+        id: entity.id ?? `chat-local:${normalize(entity.name)}`,
+        canonicalName: entity.name,
+        canonical_id: entity.id ?? `chat-local:${normalize(entity.name)}`,
+        canonical_name: entity.name,
+        entity_type: 'character',
+        aliases: [...new Set(entity.aliases ?? [])],
+        descriptionExcerpt: '',
+        source: 'chat-local-approved',
+        source_type: 'chat-local-approved',
+      });
+    }
+  }
   return { characters };
+}
+
+/** Backward-compatible name for callers that only need character entries. */
+export function buildCanonicalCharacterRoster(context, options = {}) {
+  return buildCanonicalRoster(context, options);
 }
 
 export function formatCanonicalRosterForPrompt(roster) {

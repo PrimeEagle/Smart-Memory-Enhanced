@@ -1535,7 +1535,9 @@ export async function reconcileCanonicalEntities(characterName) {
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
   const sessionMemories = loadSessionMemories();
-  const roster = buildCanonicalCharacterRoster(getContext());
+  // Final reconciliation needs the active persona plus approved chat-local
+  // characters in the same authoritative roster used for every store.
+  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
   const rewriteStoredNarratives = (memories) => memories.reduce((count, memory) => {
     if (typeof memory.content !== 'string') return count;
     const narrative = canonicalizeNarrativeNames(memory.content, roster);

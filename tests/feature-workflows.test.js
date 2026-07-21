@@ -210,6 +210,15 @@ test('canonical reconciliation safely rewrites deterministic aliases in existing
   assert.match(ui, /synthetic_review_names_removed/);
 });
 
+test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
+  const ui = read('ui.js');
+  const canonical = read('canonical-entities.js');
+  assert.match(ui, /buildCanonicalCharacterRoster\(getContext\(\), \{ includeChatLocalApproved: true \}\)/);
+  assert.match(canonical, /export function buildCanonicalRoster/);
+  assert.match(canonical, /scope\.activePersona/);
+  assert.match(canonical, /source_type: 'persona'/);
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [
