@@ -2922,7 +2922,7 @@ export function bindSettingsUI(ctrl) {
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: { emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 },
-      profiles: { sections_parsed: 0, stale_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0 },
+      profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0 },
       finalReconciliation: { persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0 },
     };
     let currentChunkFailed = false;
@@ -3290,6 +3290,7 @@ export function bindSettingsUI(ctrl) {
           if (profiles) {
             runResult.profiles.sections_parsed++;
             runResult.profiles.stale_fields_dropped += profiles.stale_field_rejections?.length ?? 0;
+            runResult.profiles.speculative_fields_dropped += profiles.speculative_field_rejections?.length ?? 0;
             runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
             runResult.profiles.prior_fields_preserved += profiles.preserved_prior_fields?.length ?? 0;
           }

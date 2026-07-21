@@ -220,6 +220,22 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   return { profiles, rejected };
 }
 
+/** Drops present-state profile lines framed as speculation rather than evidence. */
+export function omitSpeculativeProfileLines(parsed) {
+  const profiles = { ...parsed };
+  const speculative = /\b(?:perhaps|possibly|probably|likely|apparently|presumably|rumou?red|seems?|appears?|might|may\s+(?:be|have|still|not)|could\s+be)\b/i;
+  const dropped = [];
+  for (const field of ['character_state', 'world_state']) {
+    const lines = String(profiles[field] ?? '').split('\n');
+    profiles[field] = lines.filter((line) => {
+      if (!speculative.test(line)) return true;
+      dropped.push({ field, line });
+      return false;
+    }).join('\n').trim();
+  }
+  return { profiles, dropped };
+}
+
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -357,6 +373,8 @@ export async function generateProfiles(characterName, abortCheck = null, options
     ].join('\n');
     const temporalCheck = omitStaleCurrentProfileLines(parsed, currentEvidence);
     parsed = temporalCheck.profiles;
+    const speculationCheck = omitSpeculativeProfileLines(parsed);
+    parsed = speculationCheck.profiles;
     const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory);
     parsed = relationshipCheck.profiles;
     if (fieldGrounding.rejected.length) {
@@ -377,6 +395,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
       field_grounding_rejections: fieldGrounding.rejected,
       preserved_prior_fields: preservedPriorFields,
       stale_field_rejections: temporalCheck.dropped.map((entry) => entry.field),
+      speculative_field_rejections: speculationCheck.dropped.map((entry) => entry.field),
       relationship_field_rejections: relationshipCheck.rejected.length,
     };
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });

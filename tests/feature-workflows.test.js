@@ -219,6 +219,16 @@ test('profile relationship lines require an exact descriptor from the establishe
   assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
 });
 
+test('profile current-state speculation is omitted instead of being stored as fact', () => {
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  const settings = read('settings.js');
+  assert.match(profiles, /export function omitSpeculativeProfileLines/);
+  assert.match(profiles, /speculative_field_rejections/);
+  assert.match(prompts, /Never phrase a current-state claim as speculation/);
+  assert.match(settings, /speculative_fields_dropped/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');

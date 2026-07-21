@@ -655,7 +655,7 @@ export function buildProfileGenerationPrompt(
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
+${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing. Never phrase a current-state claim as speculation (for example, "likely", "perhaps", "seems", "might", or "could be"); omit it instead.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
