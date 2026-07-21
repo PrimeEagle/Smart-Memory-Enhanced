@@ -6,6 +6,7 @@ import {
   canonicalizeNarrativeNames,
   deduplicateIdentityDecisions,
   normalizeSyntheticIdentityQualifier,
+  sanitizeSyntheticIdentityLabels,
   canonicalizeStructuredParticipants,
   validateArcParticipants,
   buildIdentityReviewCandidate,
@@ -134,6 +135,15 @@ test('structured scene and arc participants use canonical cards but retain unkno
   assert.deepEqual(result.names, ['Paul Schmidt', 'Sophie']);
   assert.equal(result.rejected.length, 1);
   assert.equal(result.rejected[0].name, 'Paul Kawaguchi');
+});
+
+test('synthetic parenthetical labels are removed from generated arc prose only when known synthetic', () => {
+  const roster = buildCanonicalCharacterRoster({
+    characters: [{ id: 'sophie', name: 'Sophie', description: '' }, { id: 'alissa', name: 'Alissa Kawaguchi', description: '' }],
+  });
+  const result = sanitizeSyntheticIdentityLabels('Sophie (Alissa Kawaguchi) still needs to answer the letter. Unit 01 (Prototype) remains offline.', roster);
+  assert.equal(result.text, 'Sophie still needs to answer the letter. Unit 01 (Prototype) remains offline.');
+  assert.deepEqual(result.removals, [{ from: 'Sophie (Alissa Kawaguchi)', to: 'Sophie', qualifier_type: 'known_entity_context' }]);
 });
 
 test('arc participants require support in the arc content or source evidence', () => {

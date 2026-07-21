@@ -15,7 +15,7 @@ export function normalizeSyntheticIdentityQualifier(candidate, existingEntities 
   if (/\b(?:prototype|incarnation|mark|model)\b/i.test(qualifier) || /\d/.test(base)) {
     return { normalized_name: original, qualifier_removed: false };
   }
-  const knownQualifier = existingEntities.some((entry) => normalize(entry?.name) === normalize(qualifier));
+  const knownQualifier = existingEntities.some((entry) => normalize(entry?.name ?? entry?.canonicalName) === normalize(qualifier));
   if (/^(?:speaker|subject|mentioned by .+|context)$/i.test(qualifier) || knownQualifier || /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/.test(qualifier)) {
     return { normalized_name: base, qualifier_removed: true, qualifier_type: knownQualifier ? 'known_entity_context' : 'synthetic_disambiguator' };
   }
@@ -103,6 +103,23 @@ export function buildCanonicalRoster(context, scope = {}) {
     }
   }
   return { characters };
+}
+
+/**
+ * Removes model-created identity disambiguators from generated prose without
+ * treating ordinary parentheticals as disposable. Only qualifiers already
+ * recognized as synthetic by normalizeSyntheticIdentityQualifier are removed.
+ */
+export function sanitizeSyntheticIdentityLabels(text, roster = { characters: [] }, existingEntities = []) {
+  const known = [...(roster?.characters ?? []), ...(existingEntities ?? [])];
+  const removals = [];
+  const output = String(text ?? '').replace(/\b([A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3})\s*\(([^()\n]{1,80})\)/g, (full) => {
+    const normalized = normalizeSyntheticIdentityQualifier(full, known);
+    if (!normalized.qualifier_removed) return full;
+    removals.push({ from: full, to: normalized.normalized_name, qualifier_type: normalized.qualifier_type ?? 'synthetic_disambiguator' });
+    return normalized.normalized_name;
+  });
+  return { text: output, removals };
 }
 
 /** Backward-compatible name for callers that only need character entries. */

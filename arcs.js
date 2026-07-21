@@ -70,7 +70,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, validateArcParticipants } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, sanitizeSyntheticIdentityLabels, validateArcParticipants } from './canonical-entities.js';
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
@@ -175,12 +175,16 @@ async function deduplicateArcs(arcs) {
 // ---- Storage ------------------------------------------------------------
 
 function normalizeArcRecord(arc, context = getContext()) {
+  const roster = buildCanonicalCharacterRoster(context);
+  const sanitized = sanitizeSyntheticIdentityLabels(arc?.content, roster);
   const participantResolution = canonicalizeStructuredParticipants(
     arc?.character_participants,
-    buildCanonicalCharacterRoster(context),
+    roster,
   );
   return {
     ...arc,
+    content: sanitized.text,
+    synthetic_identity_labels_removed: [...(arc?.synthetic_identity_labels_removed ?? []), ...sanitized.removals],
     character_participants: participantResolution.names,
     identity_rejections: deduplicateIdentityDecisions([...(arc?.identity_rejections ?? []), ...participantResolution.rejected], 'arc'),
   };
@@ -892,12 +896,15 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const { add: parsedAdd, resolve } = parseArcOutput(response, activeExisting);
     const roster = buildCanonicalCharacterRoster(getContext());
     const rawAdd = parsedAdd.map((arc) => {
+      const sanitized = sanitizeSyntheticIdentityLabels(arc.content, roster);
       const participantResolution = validateArcParticipants(arc.character_participants, roster, {
-        content: arc.content,
+        content: sanitized.text,
         evidenceText: rawChatHistory,
       });
       return {
         ...arc,
+        content: sanitized.text,
+        synthetic_identity_labels_removed: sanitized.removals,
         character_participants: participantResolution.names,
         identity_rejections: participantResolution.rejected,
       };
