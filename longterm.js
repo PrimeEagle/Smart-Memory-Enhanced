@@ -408,12 +408,13 @@ export function getRelationshipHistoryPairDisplay(key, state = {}) {
   return { subject, target };
 }
 
-export function reconcileRelationshipHistoryCanonicalNames(characterName) {
-  const history = loadRelationshipHistory(characterName);
-  const roster = buildCanonicalCharacterRoster(getContext());
+export function reconcileRelationshipHistoryMap(history, roster = buildCanonicalCharacterRoster(getContext())) {
   const reconciled = {};
   let changed = false;
-  for (const [key, state] of Object.entries(history)) {
+  let merged = 0;
+  // Process oldest first so a conflicting descriptor magnitude from the most
+  // recent grounded update wins deterministically during pair coalescence.
+  for (const [key, state] of Object.entries(history).sort(([, left], [, right]) => (left?.updatedAt ?? 0) - (right?.updatedAt ?? 0))) {
     const { subject, target } = getRelationshipHistoryPairDisplay(key, state);
     if (!subject || !target) { reconciled[key] = state; continue; }
     const pair = getRelationshipHistoryPair(subject, target, roster);
@@ -424,11 +425,27 @@ export function reconcileRelationshipHistoryCanonicalNames(characterName) {
       subject_canonical_card_id: pair.subject.cardId,
       target_canonical_card_id: pair.target.cardId,
     };
-    reconciled[pair.key] = reconciled[pair.key] ?? canonicalState;
+    const prior = reconciled[pair.key];
+    if (prior) merged++;
+    reconciled[pair.key] = prior
+      ? {
+        ...prior,
+        ...canonicalState,
+        descriptors: [...new Map([...(prior.descriptors ?? []), ...(canonicalState.descriptors ?? [])].map((item) => [item.word, item])).values()],
+        source_message_indices: [...new Set([...(prior.source_message_indices ?? []), ...(canonicalState.source_message_indices ?? [])])].sort((a, b) => a - b),
+        last_update_source_indices: [...new Set([...(prior.last_update_source_indices ?? []), ...(canonicalState.last_update_source_indices ?? [])])].sort((a, b) => a - b),
+        updatedAt: Math.max(prior.updatedAt ?? 0, canonicalState.updatedAt ?? 0),
+      }
+      : canonicalState;
     changed ||= pair.key !== key || JSON.stringify(canonicalState) !== JSON.stringify(state);
   }
-  if (changed) saveRelationshipHistory(characterName, reconciled);
-  return changed;
+  return { history: reconciled, changed, merged };
+}
+
+export function reconcileRelationshipHistoryCanonicalNames(characterName) {
+  const result = reconcileRelationshipHistoryMap(loadRelationshipHistory(characterName));
+  if (result.changed) saveRelationshipHistory(characterName, result.history);
+  return result.changed;
 }
 
 /**

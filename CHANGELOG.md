@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.14] - 2026-07-21
+
+### Added
+
+- Prompt Studio now includes **Inspect Live Prompt**, a read-only diagnostic
+  view of the effective prompt assembled from the current chat, stored
+  memories, active roster, selected character, and scoped prompt preset.
+- Added named diagnostic fixture families for leakage/hallucination, entity
+  relevance, character-policy isolation, provenance, provider/save failures,
+  and search behavior.
+
+### Tests
+
+- Added fixture-backed checks for the diagnostic contracts and included them
+  in the standard unit-test command.
+
 ## [0.8.13] - 2026-07-20
 
 ### Fixed

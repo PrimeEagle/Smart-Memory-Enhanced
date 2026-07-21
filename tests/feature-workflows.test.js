@@ -85,9 +85,9 @@ test('catch-up reports unparseable profile output and Enhanced owns its console 
 test('profile recovery repairs formatting once without replacing source evidence', () => {
   const profiles = read('profiles.js');
   const prompts = read('prompts.js');
-  assert.match(profiles, /let parsed = parseProfileOutput\(response\)/);
+  assert.match(profiles, /let parsed = parseProfileOutput\(response, \{ requireAll: true \}\)/);
   assert.match(profiles, /buildProfileFormatRepairPrompt\(response\)/);
-  assert.match(profiles, /parseProfileOutput\(repaired\)/);
+  assert.match(profiles, /parseProfileOutput\(repaired, \{ requireAll: true \}\)/);
   assert.match(profiles, /canonicalizeNarrativeNames\(parsed\[field\], roster\)/);
   assert.match(prompts, /\[PROFILE FORMAT REPAIR\]/);
   assert.match(prompts, /Copy only claims already present/);
@@ -108,13 +108,80 @@ test('generated prose rewrites only deterministic card or persona aliases before
 test('catch-up diagnostics report derived arc-summary verification outcomes', () => {
   const settings = read('settings.js');
   assert.match(settings, /arc_summary_verification: summarizeArcSummaryVerification\(loadArcSummaries\(\)\)/);
+  assert.match(settings, /arcResolution: runResult\.arcResolution/);
+  assert.match(settings, /identityResolutionDetails/);
+  assert.match(settings, /preverification: \{\}/);
   assert.match(settings, /legacy_unverified/);
+});
+
+test('final catch-up reconciliation runs inside the staged transaction and quarantines non-resolved summaries', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /async function runFinalIntegrityReconciliation/);
+  assert.match(settings, /resolution_reclassified/);
+  assert.match(settings, /await runFinalIntegrityReconciliation\(characterName\)/);
+  assert.match(settings, /finalReconciliation: runResult\.finalReconciliation/);
+  assert.match(settings, /profiles: runResult\.profiles/);
+  assert.match(settings, /prior_fields_preserved/);
 });
 
 test('automatic and manual canon generation count only approved derived summaries', () => {
   assert.match(read('index.js'), /loadArcSummaries\(\)\.filter\(isRecordApprovedForPropagation\)\.length/);
   assert.match(read('settings.js'), /verified resolved arc summary/);
   assert.match(read('ui.js'), /loadArcSummaries\(\)\.filter\(isRecordApprovedForPropagation\)\.length/);
+});
+
+test('arc resolution is classified before a summary can be generated or an arc removed', () => {
+  const arcs = read('arcs.js');
+  const prompts = read('prompts.js');
+  assert.match(arcs, /export async function classifyArcResolution/);
+  assert.match(arcs, /if \(decision\.status !== 'resolved'\)/);
+  assert.match(arcs, /if \(decision\.status === 'resolved'\) resolvedArcObjects\.push/);
+  assert.match(prompts, /\[ARC RESOLUTION CLASSIFIER\]/);
+  assert.match(prompts, /INSUFFICIENT_EVIDENCE/);
+});
+
+test('resolved arc summaries use only classifier-linked evidence', () => {
+  const arcs = read('arcs.js');
+  assert.match(arcs, /const decisionSources = new Set\(resolvedArc\?\.resolution_decision/);
+  assert.match(arcs, /filter\(\(scene\) => \(scene\.source_message_indices/);
+  assert.match(arcs, /resolution_decision: \{/);
+});
+
+test('arc prompts canonicalize deterministic aliases before model generation', () => {
+  const arcs = read('arcs.js');
+  assert.match(arcs, /const chatHistory = canonicalizeNarrativeNames\(rawChatHistory/);
+  assert.match(arcs, /const evidence = canonicalizeNarrativeNames\(rawEvidence, roster\)\.text/);
+});
+
+test('protected prompts prohibit aliases, synthetic identities, and premature arc resolution', () => {
+  const prompts = read('prompts.js');
+  assert.match(prompts, /partial progress, emotional reaction, or new information alone never resolves an arc/);
+  assert.match(prompts, /old persona names, inferred surnames, collective labels, or parenthetical identity labels/);
+  assert.match(prompts, /short-name and full-name variant as separate people/);
+  assert.match(prompts, /parenthetical disambiguated names/);
+  assert.match(prompts, /export function buildSceneSummaryPrompt/);
+  assert.match(read('scenes.js'), /buildSceneSummaryPrompt\(sceneText\.slice/);
+});
+
+test('profiles keep only current, evidence-supported fields', () => {
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  assert.match(profiles, /export function retainGroundedProfileFields/);
+  assert.match(profiles, /validateCitationSemanticSupport/);
+  assert.match(profiles, /field_grounding_rejections/);
+  assert.match(profiles, /omitStaleCurrentProfileLines/);
+  assert.match(profiles, /retainKnownProfileRelationships/);
+  assert.match(profiles, /preserved_prior_fields/);
+  assert.match(prompts, /when two facts conflict, use the later active fact/);
+});
+
+test('relationship reconciliation merges duplicate canonical pair evidence instead of keeping the first pair only', () => {
+  const longterm = read('longterm.js');
+  assert.match(longterm, /source_message_indices: \[\.\.\.new Set/);
+  assert.match(longterm, /updatedAt: Math\.max/);
+  assert.match(longterm, /Object\.entries\(history\)\.sort/);
+  assert.match(longterm, /export function reconcileRelationshipHistoryMap/);
+  assert.match(read('ui.js'), /localRelationshipPairsMerged/);
 });
 
 test('legacy derived summaries are persisted as quarantined on chat load', () => {
@@ -126,6 +193,7 @@ test('editing a derived arc summary re-verifies it against saved evidence', () =
   assert.match(read('arcs.js'), /export async function reverifyArcSummary/);
   assert.match(read('ui.js'), /Save & Reverify/);
   assert.match(read('ui.js'), /await reverifyArcSummary\(target\)/);
+  assert.match(read('ui.js'), /Reverify All/);
 });
 
 test('canonical reconciliation safely rewrites deterministic aliases in existing stored prose', () => {
@@ -133,6 +201,13 @@ test('canonical reconciliation safely rewrites deterministic aliases in existing
   assert.match(ui, /const rewriteStoredNarratives/);
   assert.match(ui, /narrative_rewrites: longtermRewrites \+ sessionRewrites/);
   assert.match(read('profiles.js'), /for \(const field of \['character_state', 'world_state', 'relationship_matrix'\]\)/);
+  assert.match(ui, /for \(const \[localName, localRegistry\] of Object\.entries\(meta\.card_local_entities/);
+  assert.match(ui, /card_local_reports: localReports/);
+  assert.match(ui, /Object\.keys\(meta\.profiles \?\? \{\}\)/);
+  assert.match(ui, /profiles_reconciled: profilesReconciled/);
+  assert.match(ui, /relationship_stores_reconciled/);
+  assert.match(ui, /epistemic_stores_reconciled/);
+  assert.match(ui, /synthetic_review_names_removed/);
 });
 
 test('catch-up metadata writers cannot bypass staged saving', () => {
@@ -348,6 +423,18 @@ test('Prompt Studio assignment labels stay beside their matching dropdowns and i
   assert.match(settings, /#sme_prompt_character_profile_label'\)\.text\(characterName \? `Character: \$\{characterName\}`/);
   const css = read('style.css');
   assert.match(css, /\.sme_prompt_assignment_row \{[\s\S]*grid-template-columns/);
+});
+
+test('Prompt Studio offers a read-only live inspector built from current evidence and the scoped effective prompt', () => {
+  const html = read('settings.html');
+  const settings = read('settings.js');
+  const promptConfig = read('prompt-config.js');
+  assert.match(html, /sme_prompt_inspect_live/);
+  assert.match(settings, /getLivePromptInspection/);
+  assert.match(settings, /LIVE PROMPT INSPECTOR/);
+  assert.match(promptConfig, /export function getLivePromptInspection/);
+  assert.match(promptConfig, /applyPromptOverride\(prompt, task, activeCharacter\)/);
+  assert.match(promptConfig, /buildCanonicalCharacterRoster\(context\)/);
 });
 
 test('lower navigation sections have distinct theme-neutral header icons', () => {

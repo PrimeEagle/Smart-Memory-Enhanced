@@ -3,6 +3,25 @@
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const words = (value) => normalize(value).split(' ').filter(Boolean);
 
+/** Removes model-created parenthetical disambiguators without touching known titles. */
+export function normalizeSyntheticIdentityQualifier(candidate, existingEntities = []) {
+  const original = String(candidate ?? '').trim();
+  const match = original.match(/^(.+?)\s*\(([^)]+)\)$/);
+  if (!match) return { normalized_name: original, qualifier_removed: false };
+  const base = match[1].trim();
+  const qualifier = match[2].trim();
+  // Numeric/unit titles are often genuine identities, while speaker/subject
+  // labels and a second known person's name are model disambiguators.
+  if (/\b(?:prototype|incarnation|mark|model)\b/i.test(qualifier) || /\d/.test(base)) {
+    return { normalized_name: original, qualifier_removed: false };
+  }
+  const knownQualifier = existingEntities.some((entry) => normalize(entry?.name) === normalize(qualifier));
+  if (/^(?:speaker|subject|mentioned by .+|context)$/i.test(qualifier) || knownQualifier || /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/.test(qualifier)) {
+    return { normalized_name: base, qualifier_removed: true, qualifier_type: knownQualifier ? 'known_entity_context' : 'synthetic_disambiguator' };
+  }
+  return { normalized_name: original, qualifier_removed: false };
+}
+
 export function buildCanonicalCharacterRoster(context, options = {}) {
   const group = context?.groupId ? context.groups?.find((entry) => String(entry.id) === String(context.groupId)) : null;
   const activeAvatars = new Set(group?.members ?? []);
@@ -32,11 +51,18 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
   const personaName = String(options.personaName ?? context?.name1 ?? context?.userName ?? '').trim();
   const personaRecord = options.persona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
   const personaId = personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
+  const personaAliases = [
+    ...(Array.isArray(options.personaAliases) ? options.personaAliases : []),
+    ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
+    ...(Array.isArray(personaRecord?.previous_names) ? personaRecord.previous_names : []),
+    personaRecord?.alias,
+    words(personaName)[0],
+  ].map((alias) => String(alias ?? '').trim()).filter(Boolean);
   if (personaName && !characters.some((entry) => normalize(entry.canonicalName) === normalize(personaName))) {
     characters.push({
       id: `persona:${personaId}`,
       canonicalName: personaName,
-      aliases: [words(personaName)[0]].filter(Boolean),
+      aliases: [...new Set(personaAliases)],
       descriptionExcerpt: '',
       source: 'user-persona',
     });
@@ -53,7 +79,8 @@ export function formatCanonicalRosterForPrompt(roster) {
 }
 
 export function resolveCanonicalCharacterName(candidateName, roster, existingEntities = []) {
-  const candidate = String(candidateName ?? '').trim();
+  const qualifier = normalizeSyntheticIdentityQualifier(candidateName, [...(roster?.characters ?? []), ...existingEntities]);
+  const candidate = qualifier.normalized_name;
   const candidateNorm = normalize(candidate);
   if (!candidateNorm) return { status: 'unresolved', candidateName: candidate, reason: 'Empty name.', shouldCreateEntity: false, shouldAddAlias: false };
   const characters = roster?.characters ?? [];
@@ -70,7 +97,9 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
     if (words(candidate).length > 1 && normalize(match.canonicalName) !== candidateNorm) {
       return { ...resolved(candidate, match, 'Unique first-name match; unsupported surname rejected.'), status: 'rejected', shouldAddAlias: false };
     }
-    return resolved(candidate, match, 'Unique first-name match.');
+    return resolved(candidate, match, match.source === 'user-persona'
+      ? 'Unique active persona first-name match.'
+      : 'Unique first-name match.');
   }
   const existing = existingEntities.find((entry) => normalize(entry.name) === candidateNorm || (entry.aliases ?? []).some((alias) => normalize(alias) === candidateNorm));
   if (existing) return { status: 'resolved', candidateName: candidate, canonicalName: existing.name, canonicalId: existing.canonical_card_id ?? null, reason: 'Existing approved entity alias.', shouldCreateEntity: false, shouldAddAlias: false };
@@ -157,6 +186,31 @@ export function canonicalizeNarrativeNames(text, roster) {
     return resolution.canonicalName;
   });
   return { text: output, replacements };
+}
+
+/** Coalesces repeated identity decisions while retaining their evidence. */
+export function deduplicateIdentityDecisions(decisions = [], recordScope = '') {
+  const merged = new Map();
+  for (const decision of decisions.filter(Boolean)) {
+    const source = String(decision.from ?? decision.candidateName ?? decision.name ?? '').trim();
+    const target = String(decision.to ?? decision.canonicalName ?? '').trim();
+    const type = String(decision.reason ?? decision.reason_code ?? decision.status ?? '').trim();
+    const key = `${normalize(source)}|${normalize(target)}|${normalize(type)}|${normalize(recordScope)}`;
+    const prior = merged.get(key);
+    if (!prior) {
+      merged.set(key, {
+        ...decision,
+        source_record_ids: [...new Set((decision.source_record_ids ?? decision.memoryIds ?? []).filter(Boolean))],
+        source_message_indices: [...new Set((decision.source_message_indices ?? []).filter(Number.isInteger))].sort((a, b) => a - b),
+        occurrences: decision.occurrences ?? 1,
+      });
+      continue;
+    }
+    prior.source_record_ids = [...new Set([...(prior.source_record_ids ?? []), ...(decision.source_record_ids ?? decision.memoryIds ?? [])].filter(Boolean))];
+    prior.source_message_indices = [...new Set([...(prior.source_message_indices ?? []), ...(decision.source_message_indices ?? [])].filter(Number.isInteger))].sort((a, b) => a - b);
+    prior.occurrences = (prior.occurrences ?? 1) + (decision.occurrences ?? 1);
+  }
+  return [...merged.values()];
 }
 
 /** Builds a stable storage reference plus the readable canonical label. */

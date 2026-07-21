@@ -307,7 +307,7 @@ export function parseSceneSummaryOutput(text) {
 
   const sceneMatch = text.match(/\[SCENE\]([\s\S]*?)\[\/SCENE\]/i);
   const charactersMatch = text.match(/\[CHARACTERS\]([\s\S]*?)\[\/CHARACTERS\]/i);
-  const summary = (sceneMatch?.[1] ?? text).trim();
+  const summary = stripOuterGeneratedWrapper(sceneMatch?.[1] ?? text);
   const characterParticipants = (charactersMatch?.[1] ?? '')
     .split(/[\n,]/)
     .map((name) => name.trim())
@@ -394,23 +394,38 @@ export function formatSummary(raw) {
 
   // Primary format: [SUMMARY]...[/SUMMARY] (non-HTML, avoids triggering HTML output).
   const bracketFull = result.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i);
-  if (bracketFull) return stripHtmlTags(bracketFull[1].trim());
+  if (bracketFull) return stripOuterGeneratedWrapper(stripHtmlTags(bracketFull[1].trim()));
 
   const bracketPartial = result.match(/\[SUMMARY\]([\s\S]*)/i);
-  if (bracketPartial) return stripHtmlTags(bracketPartial[1].trim());
+  if (bracketPartial) return stripOuterGeneratedWrapper(stripHtmlTags(bracketPartial[1].trim()));
 
   // Fallback: <summary>...</summary> for summaries stored before this change.
   const fullMatch = result.match(/<summary>([\s\S]*?)<\/summary>/i);
-  if (fullMatch) return stripHtmlTags(fullMatch[1].trim());
+  if (fullMatch) return stripOuterGeneratedWrapper(stripHtmlTags(fullMatch[1].trim()));
 
   const partialMatch = result.match(/<summary>([\s\S]*)/i);
-  if (partialMatch) return stripHtmlTags(partialMatch[1].trim());
+  if (partialMatch) return stripOuterGeneratedWrapper(stripHtmlTags(partialMatch[1].trim()));
 
   // Last resort: strip any preamble before the first numbered section.
   const numberedStart = result.search(/^1\./m);
-  if (numberedStart > 0) return stripHtmlTags(result.slice(numberedStart).trim());
+  if (numberedStart > 0) return stripOuterGeneratedWrapper(stripHtmlTags(result.slice(numberedStart).trim()));
 
-  return stripHtmlTags(result);
+  return stripOuterGeneratedWrapper(stripHtmlTags(result));
+}
+
+/** Removes one complete outer presentation wrapper while preserving inner prose. */
+export function stripOuterGeneratedWrapper(value) {
+  let text = String(value ?? '').trim();
+  const fence = text.match(/^```[^\n]*\n([\s\S]*?)\n?```$/);
+  if (fence) text = fence[1].trim();
+  const lines = text.split('\n');
+  if (lines.length && lines.every((line) => /^\s*>\s?/.test(line))) {
+    text = lines.map((line) => line.replace(/^\s*>\s?/, '')).join('\n').trim();
+  }
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith('“') && text.endsWith('”'))) {
+    text = text.slice(1, -1).trim();
+  }
+  return text;
 }
 
 /**
@@ -444,9 +459,11 @@ function stripHtmlTags(text) {
  * sections as empty strings - a partial profile is better than no profile.
  *
  * @param {string} response - Raw model output from buildProfileGenerationPrompt.
+ * @param {{requireAll?: boolean}} [options] - Strict generation paths require
+ * all ordered sections; legacy readers may still accept useful partial data.
  * @returns {{character_state: string, world_state: string, relationship_matrix: string}|null}
  */
-export function parseProfileOutput(response) {
+export function parseProfileOutput(response, options = {}) {
   if (!response) return null;
   const text = String(response).replace(/```(?:xml|markdown|text)?\s*/gi, '').trim();
   const sectionNames = {
@@ -455,28 +472,46 @@ export function parseProfileOutput(response) {
     relationship_matrix: 'relationship[ _-]*(?:matrix|relationships?)',
   };
 
-  /**
-   * Extracts an XML-like section or a clearly labelled Markdown/plain heading.
-   * @param {keyof sectionNames} key
-   * @returns {string|null}
-   */
-  function extractSection(key) {
-    const label = sectionNames[key];
-    const allLabels = Object.values(sectionNames).join('|');
-    const tagged = text.match(new RegExp(`<${label}\\s*>([\\s\\S]*?)(?:<\\/${label}\\s*>|$)`, 'i'));
-    if (tagged?.[1].trim()) return tagged[1].trim();
-    const heading = new RegExp(`(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\[\\s*)?(${label})(?:\\s*\\])?\\s*:?\\s*(?:\\n|$)`, 'i');
-    const match = heading.exec(text);
-    if (!match) return null;
-    const afterHeading = text.slice(match.index + match[0].length);
-    const nextHeading = afterHeading.search(new RegExp(`\\n\\s*(?:#{1,6}\\s*)?(?:\\[\\s*)?(?:${allLabels})(?:\\s*\\])?\\s*:?(?:\\s*\\n|\\s*$)`, 'i'));
-    const value = (nextHeading < 0 ? afterHeading : afterHeading.slice(0, nextHeading)).trim();
-    return value || null;
+  const keyForLabel = (label) => Object.entries(sectionNames)
+    .find(([, pattern]) => new RegExp(`^${pattern}$`, 'i').test(label))?.[0] ?? null;
+  const lines = text.split('\n');
+  const headings = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].trim();
+    // Closing XML tags only terminate the current section; the next opening
+    // heading supplies the actual slice boundary.
+    if (/^<\//.test(line)) continue;
+    const xml = line.match(/^<\s*([^>]+?)\s*>\s*$/i);
+    const plain = line
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/^\[\s*|\s*\]\s*:??\s*$/g, '')
+      .replace(/^\*{1,2}\s*|\s*\*{1,2}\s*:??\s*$/g, '')
+      .replace(/:\s*$/, '')
+      .trim();
+    const key = keyForLabel(xml?.[1] ?? plain);
+    if (key) headings.push({ key, index });
   }
 
-  const character_state = extractSection('character_state');
-  const world_state = extractSection('world_state');
-  const relationship_matrix = extractSection('relationship_matrix');
+  if (new Set(headings.map((heading) => heading.key)).size !== headings.length) return null;
+  const expectedOrder = ['character_state', 'world_state', 'relationship_matrix'];
+  const order = headings.map((heading) => expectedOrder.indexOf(heading.key));
+  if (order.some((position, index) => index > 0 && position <= order[index - 1])) return null;
+  if (options.requireAll && headings.length !== expectedOrder.length) return null;
+
+  const values = Object.fromEntries(expectedOrder.map((key) => [key, '']));
+  for (let position = 0; position < headings.length; position++) {
+    const heading = headings[position];
+    const end = headings[position + 1]?.index ?? lines.length;
+    const value = stripOuterGeneratedWrapper(lines.slice(heading.index + 1, end)
+      .filter((line) => !new RegExp(`^\\s*<\\/\s*${sectionNames[heading.key]}\\s*>\\s*$`, 'i').test(line))
+      .join('\n')
+      .replace(/^\s*\*{1,2}|\*{1,2}\s*$/g, '')
+      .trim());
+    if (options.requireAll && !value) return null;
+    values[heading.key] = value;
+  }
+
+  const { character_state, world_state, relationship_matrix } = values;
 
   // All three missing = unusable response.
   if (!character_state && !world_state && !relationship_matrix) return null;

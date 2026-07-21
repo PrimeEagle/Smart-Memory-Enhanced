@@ -263,7 +263,7 @@ Answer YES or NO only. Nothing else.`;
 
 export const SCENE_SUMMARY_PROMPT =
   NO_ACTION_PREAMBLE +
-  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list only the named CHARACTERS who actively participated. Do not list places, objects, organizations, or concepts.
+  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list only the named CHARACTERS who actively participated. Do not list places, objects, organizations, or concepts. Use participant names exactly as supplied in the scene. Do not use old persona names, inferred surnames, collective labels, or parenthetical identity labels.
 
 Output exactly:
 [SCENE]
@@ -275,6 +275,11 @@ Name One, Name Two
 
 SCENE:
 {{scene_text}}`;
+
+/** Adds the authoritative participant roster to a scene-summary request. */
+export function buildSceneSummaryPrompt(sceneText, canonicalRoster = '') {
+  return `${canonicalRoster}${SCENE_SUMMARY_PROMPT.replace('{{scene_text}}', String(sceneText ?? ''))}`;
+}
 
 // ---- Story arcs ---------------------------------------------------------
 
@@ -320,6 +325,8 @@ Examples (abstract only; never copy these details):
 Only output [arc] for threads that are NEW in this conversation - do not re-output existing arcs.
 Only mark [resolved] if the conversation directly closes the arc - a promise kept, a mystery answered, a conflict ended. A related revelation is NOT a resolution. If new information makes an existing arc more urgent or complicated, it stays open.
 
+Discussion, delay, partial progress, emotional reaction, or new information alone never resolves an arc. Use canonical participant names exactly and do not use obsolete persona aliases.
+
 If nothing new and nothing resolved, output: NONE`
   );
 }
@@ -343,7 +350,7 @@ export function buildArcSummaryPrompt(arcContent, sceneSummaries, memories, cano
     NO_ACTION_PREAMBLE +
     `[RESOLVED ARC SUMMARY - Do NOT roleplay. Output factual data only.]
 
-Summarize only the supplied arc and resolution evidence. Use only the canonical participant names listed below. Do not introduce new people, renamed participants, relationships, motives, backstory, time spans, locations, occupations, family history, abuse, death, injury, marriage, romance, or ownership facts. Do not generalize from story patterns, explain what the arc symbolizes, or continue the story.
+Write one concise factual paragraph explaining how this specific arc was resolved. Use only the supplied evidence and canonical participant names. Do not introduce new people, old aliases, renamed participants, relationships, motives, backstory, time spans, locations, occupations, family history, abuse, death, injury, marriage, romance, ownership, or betrayal facts. Do not generalize from story patterns, explain what the arc symbolizes, or continue the story. Do not infer a failure or negation from missing evidence.
 
 If the supplied evidence does not clearly show a resolution, output exactly: NONE
 
@@ -355,6 +362,41 @@ ${canonicalRoster || '(none supplied)'}
 [ARC]
 ${arcContent}${sceneSection}${memSection}`
   );
+}
+
+/** Protected classifier used before any arc can enter the resolved-summary path. */
+export function buildArcResolutionClassifierPrompt({ canonicalParticipants = '', arc = '', history = '', evidence = '', scenes = '' }) {
+  return NO_ACTION_PREAMBLE + `[ARC RESOLUTION CLASSIFIER]
+
+Determine the current status of one story arc using only the supplied evidence.
+Output exactly one label:
+RESOLVED
+STILL_OPEN
+ABANDONED
+SUPERSEDED
+INSUFFICIENT_EVIDENCE
+
+RESOLVED requires an explicit outcome for the central question, conflict,
+promise, obligation, or goal. STILL_OPEN means it remains active despite
+discussion, delay, partial progress, emotion, or new information. ABANDONED
+requires explicit evidence that it was not pursued or became irrelevant.
+SUPERSEDED requires a clearly replacing arc. Do not infer, summarize, or
+explain. Silence is not resolution, abandonment, or failure.
+
+[CANONICAL PARTICIPANTS]
+${canonicalParticipants || '(none supplied)'}
+
+[ARC]
+${arc}
+
+[ARC HISTORY]
+${history || '(none supplied)'}
+
+[RECENT RESOLUTION EVIDENCE]
+${evidence || '(none supplied)'}
+
+[LINKED SCENES]
+${scenes || '(none supplied)'}`;
 }
 
 /** Builds the protected one-label verifier prompt for a derived arc summary. */
@@ -599,7 +641,7 @@ export function buildProfileGenerationPrompt(
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
+${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
@@ -868,6 +910,7 @@ export function buildRelationshipDeltaPrompt(sceneText, currentState, characterC
     `- high = deep or persistent; medium = notable; low = mild or fleeting\n` +
     `- Use magnitude to express intensity, not hedge words: nervous(low) not slightly nervous(medium)\n` +
     `- Capture ALL named characters with observable relationships - NPCs and characters without cards count\n` +
+    `- Use the supplied full canonical name for a participant. Never output a short-name and full-name variant as separate people.\n` +
     `- Include named animals and non-human characters if they have a meaningful relationship with someone\n` +
     `- Both sides must be named characters. Never use rooms, homes, places, objects, activities, organizations, or concepts.\n` +
     `- Do not include unnamed extras or background crowd members\n` +
@@ -941,7 +984,7 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
     `- Do NOT turn ordinary, universally witnessed actions into [knows] entries\n` +
     `- Prefer fewer high-value entries: normally 3-6 total per character per scene\n` +
     `- Prioritize hiding, believes, suspects, unaware, and meaningful changes in knowledge over routine knows\n` +
-    `- Use the character's name exactly as it appears in the scene\n` +
+    `- Use the supplied canonical character name when available. Do not create parenthetical disambiguated names such as "Sophie (Alissa Kawaguchi)"; put context in the entry content instead.\n` +
     `- Each line covers one character and one fact\n` +
     `- Do not output the same fact twice for the same character\n\n` +
     `- WITNESS RULE: use [knows] for witnessing only when it creates an asymmetric\n` +

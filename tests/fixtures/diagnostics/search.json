@@ -1,0 +1,7 @@
+{
+  "name": "search",
+  "expectedContracts": [
+    "search uses the Smart Memory Enhanced slash command",
+    "search results retain source and provenance metadata"
+  ]
+}

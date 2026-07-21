@@ -59,8 +59,8 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
-import { buildArcExtractionPrompt, buildArcSummaryPrompt, buildArcSummaryVerificationPrompt } from './prompts.js';
-import { parseArcOutput } from './parsers.js';
+import { buildArcExtractionPrompt, buildArcResolutionClassifierPrompt, buildArcSummaryPrompt, buildArcSummaryVerificationPrompt } from './prompts.js';
+import { parseArcOutput, stripOuterGeneratedWrapper } from './parsers.js';
 import { loadSceneHistory } from './scenes.js';
 import { loadSessionMemories } from './session.js';
 import { smLog } from './logging.js';
@@ -70,7 +70,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions } from './canonical-entities.js';
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
@@ -182,7 +182,7 @@ function normalizeArcRecord(arc, context = getContext()) {
   return {
     ...arc,
     character_participants: participantResolution.names,
-    identity_rejections: [...(arc?.identity_rejections ?? []), ...participantResolution.rejected],
+    identity_rejections: deduplicateIdentityDecisions([...(arc?.identity_rejections ?? []), ...participantResolution.rejected], 'arc'),
   };
 }
 
@@ -557,10 +557,15 @@ export async function resolveArcWithSummary(index, characterName = null, groupId
   if (!arc) return false;
 
   const content = arc.content;
+  const decision = await classifyArcResolution(arc, getContext().chat ?? []);
+  if (decision.status !== 'resolved') {
+    smLog(`[Smart Memory Enhanced] Kept arc active: ${decision.status} (${decision.reason_code}).`);
+    return false;
+  }
   await resolveArc(index, characterName, groupId);
 
   try {
-    const result = await generateArcSummary(content);
+    const result = await generateArcSummary({ ...arc, resolution_decision: decision }, getContext().chat ?? []);
     if (!result) return false;
     const summaries = loadArcSummaries();
     summaries.push({
@@ -576,7 +581,14 @@ export async function resolveArcWithSummary(index, characterName = null, groupId
       validation_status: result.semanticVerification?.validation_status ?? 'needs_review',
       semantic_support: result.semanticVerification?.semantic_support ?? 'ambiguous',
       validation_issues: result.semanticVerification?.reason ? [result.semanticVerification.reason] : [],
+      deterministic_rejection_reason: result.deterministicVerification?.reason_code ?? null,
       verification_state: 'provenance_attached',
+      resolution_decision: {
+        status: decision.status,
+        confidence: decision.confidence,
+        source_message_indices: decision.source_message_indices,
+        reason_code: decision.reason_code,
+      },
     });
     await saveArcSummaries(summaries);
     return true;
@@ -668,6 +680,32 @@ async function verifyArcSummarySemantics(candidate, evidence) {
   }
 }
 
+/** Classifies an arc before it may be removed from the active store. */
+export async function classifyArcResolution(arc, messages = []) {
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
+  const indexed = messages.map((message) => ({ message, index: Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message) }));
+  const sourceSet = new Set(arc?.source_message_indices ?? []);
+  const relevant = indexed.filter(({ index }) => sourceSet.has(index));
+  const selected = relevant.length ? relevant : indexed.slice(-6);
+  const sourceMessageIndices = selected.map(({ index }) => index).filter(Number.isInteger);
+  const rawEvidence = selected.map(({ message, index }) => `Message ${index}: ${message.name ?? 'Unknown'}: ${message.mes ?? ''}`).join('\n');
+  const evidence = canonicalizeNarrativeNames(rawEvidence, roster).text;
+  const scenes = loadSceneHistory().filter((scene) => (scene.source_message_indices ?? []).some((index) => sourceMessageIndices.includes(index))).slice(-2);
+  const sceneText = canonicalizeNarrativeNames(scenes.map((scene, index) => `Scene ${index + 1}: ${scene.summary}`).join('\n'), roster).text;
+  const prompt = buildArcResolutionClassifierPrompt({ canonicalParticipants, arc: arc?.content ?? '', history: arc?.history ?? '', evidence, scenes: sceneText });
+  let label = 'INSUFFICIENT_EVIDENCE';
+  try {
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), { responseLength: 12 });
+    const candidate = String(response ?? '').trim().toUpperCase();
+    if (['RESOLVED', 'STILL_OPEN', 'ABANDONED', 'SUPERSEDED', 'INSUFFICIENT_EVIDENCE'].includes(candidate)) label = candidate;
+  } catch (error) {
+    smLog(`[Smart Memory Enhanced] Arc resolution classification failed: ${error.message}`);
+  }
+  const status = label.toLowerCase();
+  return { status, confidence: label === 'INSUFFICIENT_EVIDENCE' ? 'low' : 'medium', source_message_indices: sourceMessageIndices, reason_code: label === 'INSUFFICIENT_EVIDENCE' ? 'classifier_insufficient_or_malformed' : `classifier_${status}`, evidence, sceneText };
+}
+
 /** Rechecks an edited derived summary against its stored arc evidence. */
 export async function reverifyArcSummary(summary) {
   const roster = buildCanonicalCharacterRoster(getContext());
@@ -734,12 +772,13 @@ export async function migrateLegacyArcSummaries() {
 export async function generateArcSummary(resolvedArc, messages = []) {
   const settings = extension_settings[MODULE_NAME];
   const arcContent = resolvedArc?.content ?? '';
+  const decisionSources = new Set(resolvedArc?.resolution_decision?.source_message_indices ?? []);
 
-  // Use only the most recent scenes as context. The arc being summarized was
-  // active and resolved in the recent portion of the chat; attributing it to
-  // scenes from much earlier in the chat inflates source provenance and adds
-  // noise to canon generation.
-  const sceneHistory = loadSceneHistory().slice(-5);
+  // Use only scenes directly linked to the classifier's evidence. This avoids
+  // turning a broad run of historical scenes into fake support for resolution.
+  const sceneHistory = loadSceneHistory()
+    .filter((scene) => (scene.source_message_indices ?? []).some((index) => decisionSources.has(index)))
+    .slice(-2);
   const sceneSummaries = sceneHistory.map((s, i) => `Scene ${i + 1}: ${s.summary}`).join('\n');
 
   // Gather source_memory_ids from these scenes (deduplicated).
@@ -750,9 +789,11 @@ export async function generateArcSummary(resolvedArc, messages = []) {
     .slice(0, 20); // cap to keep prompt cost manageable on local hardware
   const memoriesText = linkedMemories.map((m) => `[${m.type}] ${m.content}`).join('\n');
 
-  const resolutionMessageIndices = messages.slice(-10)
+  const resolutionMessageIndices = (decisionSources.size
+    ? [...decisionSources]
+    : messages.slice(-6)
     .map((message) => Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))
-    .filter((index) => Number.isInteger(index) && index >= 0);
+    .filter((index) => Number.isInteger(index) && index >= 0));
   const roster = buildCanonicalCharacterRoster(getContext());
   const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
   const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText, canonicalParticipants);
@@ -761,7 +802,7 @@ export async function generateArcSummary(resolvedArc, messages = []) {
   });
 
   if (!response?.trim() || response.trim().toUpperCase() === 'NONE') return null;
-  const narrativeResolution = canonicalizeNarrativeNames(response.trim(), roster);
+  const narrativeResolution = canonicalizeNarrativeNames(stripOuterGeneratedWrapper(response), roster);
   const candidate = narrativeResolution.text;
   const evidence = {
     canonicalParticipants,
@@ -773,7 +814,7 @@ export async function generateArcSummary(resolvedArc, messages = []) {
   const deterministicVerification = preverifyArcSummary(candidate, {
     canonicalParticipants: (roster.characters ?? []).map((entry) => entry.canonicalName),
     structuredParticipants: resolvedArc?.character_participants ?? [],
-    text: [arcContent, sceneSummaries, memoriesText, messages.slice(-10).map((message) => message.mes ?? '').join('\n')].join('\n'),
+    text: [arcContent, sceneSummaries, memoriesText, messages.filter((message) => resolutionMessageIndices.includes(Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))).map((message) => message.mes ?? '').join('\n')].join('\n'),
   });
   const semanticVerification = deterministicVerification.semantic_support === 'unsupported'
     ? { semantic_support: 'unsupported', validation_status: 'rejected', reason: deterministicVerification.reason }
@@ -788,7 +829,7 @@ export async function generateArcSummary(resolvedArc, messages = []) {
       ...resolutionMessageIndices,
     ])].sort((a, b) => a - b),
     parentArcId: resolvedArc?.id ?? null,
-    identity_replacements: narrativeResolution.replacements,
+    identity_replacements: deduplicateIdentityDecisions(narrativeResolution.replacements, 'arc-summary'),
     deterministicVerification,
     semanticVerification,
   };
@@ -812,18 +853,19 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
   if (!settings.arcs_enabled) return 0;
 
   try {
-    const chatHistory = messages
+    const rawChatHistory = messages
       .filter((m) => m.mes && !m.is_system)
       .map((m) => `${m.name}: ${m.mes}`)
       .join('\n\n');
 
-    if (!chatHistory.trim()) return 0;
+    if (!rawChatHistory.trim()) return 0;
 
     const existing = loadArcs();
     // Only show active arcs to the model - resolved arcs are closed threads and
     // should be invisible to extraction to prevent duplicate resolutions.
     const activeExisting = existing.filter((a) => !a.resolved);
     const existingText = activeExisting.map((a) => `[arc] ${a.content}`).join('\n');
+    const chatHistory = canonicalizeNarrativeNames(rawChatHistory, buildCanonicalCharacterRoster(getContext())).text;
 
     const response = await generateMemoryExtract(
       applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText), PROMPT_TASKS.ARC_EXTRACTION, characterName),
@@ -902,7 +944,13 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // Storing content rather than indices means subsequent loadArcs() re-fetches
     // after async summarization can match by content instead of stale positions -
     // safe against concurrent UI edits (delete, add) during the model call window.
-    const resolvedArcObjects = resolve.map((i) => activeExisting[i]).filter(Boolean);
+    const resolvedArcObjects = [];
+    for (const candidate of resolve.map((i) => activeExisting[i]).filter(Boolean)) {
+      const decision = await classifyArcResolution(candidate, messages);
+      if (options.arcResolutionStats) options.arcResolutionStats[decision.status] = (options.arcResolutionStats[decision.status] ?? 0) + 1;
+      if (decision.status === 'resolved') resolvedArcObjects.push({ ...candidate, resolution_decision: decision });
+      else smLog(`[Smart Memory Enhanced] Arc remains active: ${candidate.content.slice(0, 60)} (${decision.reason_code}).`);
+    }
 
     // Generate arc summaries for each resolved arc before removing them.
     // Sequential calls - Ollama serializes anyway and parallel calls risk OOM.
@@ -927,7 +975,14 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
               validation_status: result.semanticVerification?.validation_status ?? 'needs_review',
               semantic_support: result.semanticVerification?.semantic_support ?? 'ambiguous',
               validation_issues: result.semanticVerification?.reason ? [result.semanticVerification.reason] : [],
+              deterministic_rejection_reason: result.deterministicVerification?.reason_code ?? null,
               verification_state: 'provenance_attached',
+              resolution_decision: {
+                status: resolved.resolution_decision.status,
+                confidence: resolved.resolution_decision.confidence,
+                source_message_indices: resolved.resolution_decision.source_message_indices,
+                reason_code: resolved.resolution_decision.reason_code,
+              },
             };
             arcSummaries.push(summaryRecord);
             smLog(`[Smart Memory Enhanced] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
