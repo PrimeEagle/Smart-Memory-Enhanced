@@ -2922,8 +2922,9 @@ export function bindSettingsUI(ctrl) {
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: { emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 },
-      profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0 },
+      profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0 },
       finalReconciliation: { persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0 },
+      quality: { status: 'clean', reasons: [] },
     };
     let currentChunkFailed = false;
     let finalTransaction = null;
@@ -3293,6 +3294,7 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.speculative_fields_dropped += profiles.speculative_field_rejections?.length ?? 0;
             runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
             runResult.profiles.prior_fields_preserved += profiles.preserved_prior_fields?.length ?? 0;
+            runResult.profiles.relationship_conflicts_dropped += profiles.relationship_field_rejections ?? 0;
           }
         }
         // If the selected character wasn't in the group (edge case), inject
@@ -3345,6 +3347,32 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.relationship_pairs_merged = (reconciliation.relationship_pairs_merged ?? 0) + reconciliation.merged.filter((entry) => entry.reason_code === 'canonical_duplicate_merge').length;
       runResult.finalReconciliation.synthetic_parentheticals_removed = reconciliation.matched.filter((entry) => /synthetic|parenthetical/i.test(entry.match ?? '')).length + (reconciliation.synthetic_review_names_removed ?? 0);
       runResult.finalReconciliation.identity_decision_duplicates_removed = reconciliation.identity_decision_duplicates_removed ?? 0;
+      const qualityReasons = [];
+      const sessionFailureRatio = runResult.sessionExtraction.emitted > 0
+        ? runResult.sessionExtraction.missingProvenance / runResult.sessionExtraction.emitted
+        : 0;
+      if (sessionFailureRatio > 0.5) qualityReasons.push({
+        code: 'session_provenance_quarantine_majority',
+        tier: 'session',
+        message: `${runResult.sessionExtraction.validated} validated, ${runResult.sessionExtraction.missingProvenance} quarantined for missing citations.`,
+      });
+      if (runResult.arcPipeline.classifiedResolved >= 2 && runResult.arcPipeline.persisted === 0) qualityReasons.push({
+        code: 'resolved_arcs_without_persisted_summaries',
+        tier: 'arcs',
+        message: `${runResult.arcPipeline.classifiedResolved} arcs resolved but no summaries persisted.`,
+      });
+      if (runResult.profiles.relationship_conflicts_dropped > 0) qualityReasons.push({
+        code: 'profile_relationship_conflicts_dropped',
+        tier: 'profiles',
+        message: `${runResult.profiles.relationship_conflicts_dropped} conflicting relationship profile field${runResult.profiles.relationship_conflicts_dropped === 1 ? '' : 's'} dropped.`,
+      });
+      const identityFailures = (runResult.identityResolutionDetails?.unmatched?.length ?? 0) + (runResult.identityResolutionDetails?.needs_review?.length ?? 0);
+      if (identityFailures >= 5) qualityReasons.push({
+        code: 'identity_reconciliation_failure_volume',
+        tier: 'identity',
+        message: `${identityFailures} identity reconciliation candidates need review.`,
+      });
+      runResult.quality = { status: qualityReasons.length ? 'degraded' : 'clean', reasons: qualityReasons };
       maybeInjectUnified();
       updateTokenDisplay();
       saveSettingsDebounced();
@@ -3362,6 +3390,7 @@ export function bindSettingsUI(ctrl) {
         version: 1,
         created_at: Date.now(),
         status: projectedStatus,
+        operational_status: projectedStatus,
         chunks: runResult.chunks,
         sceneDetection: runResult.sceneDetection ?? null,
         tiers: runResult.extractionFailuresByTier,
@@ -3377,6 +3406,7 @@ export function bindSettingsUI(ctrl) {
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,
+        quality: runResult.quality,
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
@@ -3414,9 +3444,13 @@ export function bindSettingsUI(ctrl) {
         const sceneSummary = sceneAudit
           ? ` Scenes: ${sceneAudit.candidates} detected, ${sceneAudit.generated} generated, ${sceneAudit.duplicates} duplicates, ${sceneAudit.failed} failed, ${sceneAudit.retained} archived, ${sceneAudit.injected} injected.`
           : '';
-        setStatusMessage(`Catch-up complete.${sceneSummary}`);
-        toastr.success(`Full catch-up extraction finished.${sceneSummary}`, 'Smart Memory Enhanced', {
-          timeOut: 4000,
+        const qualityDetail = runResult.quality.status === 'degraded'
+          ? ` Data quality degraded: ${runResult.quality.reasons.map((reason) => reason.message).join(' ')}`
+          : '';
+        setStatusMessage(`Catch-up complete.${qualityDetail}${sceneSummary}`);
+        const notifier = runResult.quality.status === 'degraded' ? toastr.warning : toastr.success;
+        notifier(`Full catch-up extraction finished.${qualityDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
+          timeOut: runResult.quality.status === 'degraded' ? 8000 : 4000,
           positionClass: 'toast-bottom-right',
         });
       }

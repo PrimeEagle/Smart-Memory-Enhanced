@@ -237,6 +237,15 @@ test('profile current-state speculation is omitted instead of being stored as fa
   assert.match(settings, /speculative_fields_dropped/);
 });
 
+test('run completion distinguishes operational success from tier-quality degradation', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /quality: \{ status: 'clean', reasons: \[\] \}/);
+  assert.match(settings, /session_provenance_quarantine_majority/);
+  assert.match(settings, /resolved_arcs_without_persisted_summaries/);
+  assert.match(settings, /quality: runResult\.quality/);
+  assert.match(settings, /Data quality degraded:/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
