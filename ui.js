@@ -111,6 +111,7 @@ import {
   renameEntityById,
   deleteEntityById,
   mergeEntitiesById,
+  mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
 import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger } from './canonical-entities.js';
@@ -1568,6 +1569,40 @@ export async function reconcileCanonicalEntities(characterName) {
     meta.card_local_relationships[localName] = relationshipResult.history;
     localRelationshipPairsMerged += relationshipResult.merged;
   }
+  // A canonical name may have been repaired independently in card-local and
+  // session stores. Collapse those surviving stable-ID variants now, before
+  // any relationship or structured-store reconciliation consumes them.
+  const allReports = [ltReport, sessionReport, ...localReports];
+  let crossStoreEntityMerges = 0;
+  let crossStoreReferencesRedirected = 0;
+  for (const report of allReports) {
+    for (const merge of report.merged ?? []) {
+      if (!merge.sourceId || !merge.targetId) continue;
+      const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, getContext());
+      if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
+    }
+  }
+  const registryGroups = [ltEntities, sessionEntities, ...Object.values(meta.card_local_entities ?? {})].filter(Array.isArray);
+  const canonicalGroups = new Map();
+  for (const entity of registryGroups.flat()) {
+    const key = entity?.canonical_card_id || String(entity?.name ?? '').trim().toLowerCase();
+    if (!key || !entity?.id) continue;
+    (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
+  }
+  for (const entities of canonicalGroups.values()) {
+    if (entities.length < 2) continue;
+    // Prefer the session record as the chat-wide canonical target, then the
+    // first full-name/card-backed record. This preserves the most broadly
+    // shared graph identity without altering narrative text.
+    const target = entities.find((entity) => sessionEntities.includes(entity))
+      ?? entities.find((entity) => entity.canonical_card_id)
+      ?? entities[0];
+    for (const source of entities) {
+      if (source.id === target.id) continue;
+      const result = mergeCanonicalEntityAcrossStores(source.id, target.id, getContext());
+      if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
+    }
+  }
 
   const rewriteNarrativeRecords = (records, keys) => records.reduce((count, record) => {
     for (const key of keys) {
@@ -1605,7 +1640,7 @@ export async function reconcileCanonicalEntities(characterName) {
     saveCharacterMemories(characterName, longtermMemories);
     saveSettingsDebounced();
   }
-  if (sessionReport.changed || sessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites > 0) {
+  if (sessionReport.changed || sessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites > 0 || crossStoreEntityMerges > 0) {
     await saveSessionEntityRegistry(sessionEntities);
     await saveSessionMemories(sessionMemories);
   }
@@ -1635,6 +1670,8 @@ export async function reconcileCanonicalEntities(characterName) {
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
     card_local_reports: localReports,
+    cross_store_entity_merges: crossStoreEntityMerges,
+    cross_store_references_redirected: crossStoreReferencesRedirected,
     relationship_pairs_merged: localRelationshipPairsMerged,
     state_ledger_keys_reconciled: ledgerRewrites,
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,

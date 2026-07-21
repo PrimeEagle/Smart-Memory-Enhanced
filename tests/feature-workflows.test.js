@@ -219,6 +219,15 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(canonical, /source_type: 'persona'/);
 });
 
+test('final reconciliation uses one cross-store entity merge operation before structured-store repair', () => {
+  const graph = read('graph-migration.js');
+  const ui = read('ui.js');
+  assert.match(graph, /export function mergeCanonicalEntityAcrossStores/);
+  assert.match(graph, /card_local_entities/);
+  assert.match(graph, /card_local_memories/);
+  assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
+});
+
 test('catch-up metadata writers cannot bypass staged saving', () => {
   const transaction = read('catchup-transaction.js');
   const writerFiles = [

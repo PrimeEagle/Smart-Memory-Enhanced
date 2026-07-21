@@ -453,7 +453,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
     }
     registry.splice(registry.indexOf(entity), 1);
-    report.merged.push({ name: entity.name, canonicalName: target.name, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
+    report.merged.push({ name: entity.name, canonicalName: target.name, sourceId: entity.id, targetId: target.id, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
     report.changed = true;
   }
   return report;
@@ -786,6 +786,67 @@ export function mergeEntitiesById(
       1,
     );
   }
+}
+
+/**
+ * Redirects one deterministic entity identity through every active storage
+ * container. Unlike the legacy two-store helper, this covers persistent,
+ * session, and card-local registries in one operation before callers save the
+ * staged metadata. Narrative text is deliberately not rewritten here; only
+ * structured identity references are redirected.
+ */
+export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = getContext()) {
+  if (!sourceId || !targetId || sourceId === targetId) return { merged: false, referencesRedirected: 0 };
+  const meta = context.chatMetadata?.[META_KEY] ?? {};
+  const characterStores = Object.values(extension_settings[MODULE_NAME]?.characters ?? {});
+  const registries = [
+    meta.sessionEntities ?? [],
+    ...Object.values(meta.card_local_entities ?? {}),
+    ...characterStores.map((store) => store?.entities ?? []),
+  ].filter(Array.isArray);
+  const memoryStores = [
+    meta.sessionMemories ?? [],
+    ...Object.values(meta.card_local_memories ?? {}),
+    ...characterStores.map((store) => store?.memories ?? []),
+  ].filter(Array.isArray);
+  const target = registries.flat().find((entity) => entity?.id === targetId);
+  if (!target) return { merged: false, referencesRedirected: 0 };
+  const sources = registries.flat().filter((entity) => entity?.id === sourceId);
+  if (!sources.length) return { merged: false, referencesRedirected: 0 };
+  if (!Array.isArray(target.aliases)) target.aliases = [];
+  for (const source of sources) {
+    for (const alias of [source.name, ...(source.aliases ?? [])].filter(Boolean)) {
+      if (String(alias).toLowerCase() !== String(target.name).toLowerCase() && !target.aliases.some((entry) => String(entry).toLowerCase() === String(alias).toLowerCase())) target.aliases.push(alias);
+    }
+    target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(source.memory_ids ?? [])])];
+    target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(source.source_record_ids ?? [])])];
+    target.last_seen = Math.max(target.last_seen ?? 0, source.last_seen ?? 0);
+  }
+  let referencesRedirected = 0;
+  for (const memories of memoryStores) {
+    for (const memory of memories) {
+      if (!Array.isArray(memory?.entities) || !memory.entities.includes(sourceId)) continue;
+      memory.entities = [...new Set(memory.entities.map((id) => id === sourceId ? targetId : id))];
+      referencesRedirected++;
+    }
+  }
+  const redirectStructuredIds = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { value.forEach(redirectStructuredIds); return; }
+    for (const [key, entry] of Object.entries(value)) {
+      if (Array.isArray(entry) && /(?:entity|participant).*ids?$/i.test(key)) {
+        const next = [...new Set(entry.map((id) => id === sourceId ? targetId : id))];
+        if (next.some((id, index) => id !== entry[index])) { value[key] = next; referencesRedirected++; }
+      } else if (typeof entry === 'string' && /(?:entity|participant|subject|target)_id$/i.test(key) && entry === sourceId) {
+        value[key] = targetId; referencesRedirected++;
+      } else if (entry && typeof entry === 'object') redirectStructuredIds(entry);
+    }
+  };
+  for (const key of ['sceneHistory', 'storyArcs', 'arcSummaries', 'profiles', 'epistemic_knowledge', 'state_ledger']) redirectStructuredIds(meta[key]);
+  for (const registry of registries) {
+    for (let index = registry.length - 1; index >= 0; index--) if (registry[index]?.id === sourceId) registry.splice(index, 1);
+  }
+  return { merged: true, referencesRedirected };
 }
 
 /**
