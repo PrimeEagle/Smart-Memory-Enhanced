@@ -7,6 +7,7 @@ import {
   deduplicateIdentityDecisions,
   normalizeSyntheticIdentityQualifier,
   canonicalizeStructuredParticipants,
+  validateArcParticipants,
   buildIdentityReviewCandidate,
   buildStableLedgerKey,
   buildStableEntityReference,
@@ -133,6 +134,17 @@ test('structured scene and arc participants use canonical cards but retain unkno
   assert.deepEqual(result.names, ['Paul Schmidt', 'Sophie']);
   assert.equal(result.rejected.length, 1);
   assert.equal(result.rejected[0].name, 'Paul Kawaguchi');
+});
+
+test('arc participants require support in the arc content or source evidence', () => {
+  const result = validateArcParticipants(['Paul', 'Sophie'], roster, {
+    content: 'Paul must decide whether to expose the forged treaty.',
+    evidenceText: 'Paul discussed the risk with the council.',
+  });
+  assert.deepEqual(result.names, ['Paul Schmidt']);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].name, 'Sophie');
+  assert.match(result.rejected[0].reason, /not named/i);
 });
 
 test('entity resolver uses the active persona identity and keeps its stable scoped key', () => {

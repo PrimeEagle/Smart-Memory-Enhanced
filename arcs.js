@@ -70,7 +70,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, validateArcParticipants } from './canonical-entities.js';
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
@@ -892,7 +892,10 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const { add: parsedAdd, resolve } = parseArcOutput(response, activeExisting);
     const roster = buildCanonicalCharacterRoster(getContext());
     const rawAdd = parsedAdd.map((arc) => {
-      const participantResolution = canonicalizeStructuredParticipants(arc.character_participants, roster);
+      const participantResolution = validateArcParticipants(arc.character_participants, roster, {
+        content: arc.content,
+        evidenceText: rawChatHistory,
+      });
       return {
         ...arc,
         character_participants: participantResolution.names,

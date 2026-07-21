@@ -214,6 +214,38 @@ export function canonicalizeStructuredParticipants(participants, roster) {
   return result;
 }
 
+/**
+ * Retains structured arc participants only when the arc itself or its supplied
+ * source evidence names that person. Roster membership establishes identity;
+ * it does not establish involvement in a particular story thread.
+ */
+export function validateArcParticipants(participants, roster, { content = '', evidenceText = '' } = {}) {
+  const canonical = canonicalizeStructuredParticipants(participants, roster);
+  const supported = [];
+  const rejected = [...canonical.rejected];
+  const evidence = `${content}\n${evidenceText}`;
+  for (const name of canonical.names) {
+    const entry = (roster?.characters ?? []).find((candidate) => normalize(candidate.canonicalName) === normalize(name));
+    const references = [...new Set([name, ...(entry?.aliases ?? [])].map((reference) => String(reference ?? '').trim()).filter(Boolean))];
+    const mentioned = references.some((reference) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(reference)}(?=$|[^\\p{L}])`, 'iu').test(evidence));
+    if (mentioned) {
+      supported.push(name);
+    } else {
+      rejected.push({
+        name,
+        reason: 'Participant is not named in the arc content or supplied source evidence.',
+        canonicalName: entry?.canonicalName ?? name,
+        canonicalId: entry?.canonical_id ?? null,
+      });
+    }
+  }
+  return { names: [...new Set(supported)], rejected };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Rewrites only deterministic roster aliases/variants in generated prose. */
 export function canonicalizeNarrativeNames(text, roster) {
   const replacements = [];
