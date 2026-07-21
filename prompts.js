@@ -305,6 +305,8 @@ Extract the most significant open story threads from the conversation: unresolve
 
 An arc is something still in motion across the story - a question not yet answered, a goal not yet reached, a conflict still active. Do NOT output facts about things that already happened and are over.
 
+Before outputting [arc], apply this gate: could this entry still change what happens next? If the answer is no, it is a completed event or established fact, not an arc. A past event is allowed only when it directly leaves a named question, goal, promise, conflict, threat, or mystery still open.
+
 These are NOT arcs - do not output them:
 - Tactical details or logistical information ("the south gate is unguarded after midnight")
 - Single-scene contingencies that may or may not become relevant
@@ -320,6 +322,7 @@ Examples (abstract only; never copy these details):
   [arc] The identity of whoever burned the granary is still unknown.
   [resolved] The missing heir was found alive in the northern keep.
   NOT an arc: "Kira was captured by the guards." - this is a fact, not an open thread.
+  NOT an arc: "Kira escaped the guards and returned home." - this is a completed event, not an open thread.
   NOT an arc: "The back door is unlocked." - this is a tactical detail, not a story thread.
 
 Only output [arc] for threads that are NEW in this conversation - do not re-output existing arcs.

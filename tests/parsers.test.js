@@ -292,6 +292,18 @@ test('parseArcOutput: parses [arc] lines', () => {
   assert.equal(typeof result.add[0].ts, 'number');
 });
 
+test('parseArcOutput: rejects completed events that do not leave an open thread', () => {
+  const result = parseArcOutput('[arc] Kira escaped the guards and returned home safely.', []);
+  assert.deepEqual(result.add, []);
+  assert.deepEqual(result.rejected, [{ content: 'Kira escaped the guards and returned home safely.', reason_code: 'completed_event_not_open_thread' }]);
+});
+
+test('parseArcOutput: retains past-event setup when it explicitly leaves a thread open', () => {
+  const result = parseArcOutput('[arc] Kira returned home, but who arranged the ambush remains unknown?', []);
+  assert.equal(result.add.length, 1);
+  assert.deepEqual(result.rejected, []);
+});
+
 test('parseArcOutput: retains explicit structured character participants', () => {
   const result = parseArcOutput(
     '[arc:characters=Kyle Holland, Sophie, invalid name] Kyle and Sophie agree to investigate the lighthouse.',
