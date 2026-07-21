@@ -1,0 +1,9 @@
+{
+  "name": "policy-isolation",
+  "expectedContracts": [
+    "Full persists reusable card memories",
+    "Chat-local stores memories in chat metadata",
+    "Read-only blocks writes",
+    "Disabled blocks extraction and injection"
+  ]
+}

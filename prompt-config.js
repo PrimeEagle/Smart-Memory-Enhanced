@@ -14,6 +14,7 @@ import {
   RECAP_PROMPT,
   buildSessionExtractionPrompt,
   buildSceneDetectPrompt,
+  buildSceneSummaryPrompt,
   SCENE_SUMMARY_PROMPT,
   buildArcExtractionPrompt,
   buildArcSummaryPrompt,
@@ -25,6 +26,7 @@ import {
   buildEpistemicExtractionPrompt,
   buildStateCardPrompt,
 } from './prompts.js';
+import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 import { createTaskMap, resolveProfileAssignment } from './prompt-profile-utils.js';
 
 export const PROMPT_TASKS = Object.freeze({
@@ -240,6 +242,109 @@ export function getDefaultPromptPreview(task) {
     default:
       return '';
   }
+}
+
+function formatLiveChat(context, limit = 18000) {
+  const messages = Array.isArray(context?.chat) ? context.chat : [];
+  const lines = messages.map((message, index) => {
+    const name = message?.name ?? (message?.is_user ? context?.name1 : context?.name2) ?? 'Unknown';
+    const text = String(message?.mes ?? message?.text ?? '').trim();
+    return `[${index}] ${name}: ${text}`;
+  }).filter((line) => !line.endsWith(':'));
+  return lines.join('\n').slice(-limit) || '(No chat messages are currently loaded.)';
+}
+
+function formatLiveMemories(memories) {
+  return (Array.isArray(memories) ? memories : [])
+    .filter((memory) => !memory?.superseded_by)
+    .map((memory) => `[${memory?.type ?? 'memory'}] ${memory?.content ?? memory?.text ?? ''}`)
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * Builds the effective prompt against the currently loaded chat state. This is
+ * deliberately a read-only diagnostic: it uses the same prompt builders and
+ * scoped override path as generation, without calling a provider or writing
+ * chat metadata. The exact extraction window may differ while a catch-up run
+ * is in progress, so callers should present this as a live inspection of the
+ * next task rather than a historical record of an already-sent request.
+ */
+export function getLivePromptInspection(task, characterName = null) {
+  const context = getContext();
+  const meta = context?.chatMetadata?.[META_KEY] ?? {};
+  const activeCharacter = characterName || context?.name2 || '';
+  const chat = formatLiveChat(context);
+  const roster = formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(context));
+  const characterSettings = extension_settings[MODULE_NAME]?.characters?.[activeCharacter] ?? {};
+  const longterm = formatLiveMemories(characterSettings.memory_policy === 'chat_local'
+    ? meta.card_local_memories?.[activeCharacter]
+    : characterSettings.memories);
+  const session = formatLiveMemories(meta.sessionMemories);
+  const allMemories = [longterm, session].filter(Boolean).join('\n');
+  const scenes = Array.isArray(meta.sceneHistory) ? meta.sceneHistory : [];
+  const latestScene = scenes.at(-1);
+  const sceneText = latestScene?.summary ?? chat;
+  const arcs = Array.isArray(meta.storyArcs) ? meta.storyArcs : [];
+  const arcSummaries = Array.isArray(meta.arcSummaries) ? meta.arcSummaries : [];
+  const profiles = meta.profiles?.[activeCharacter] ?? null;
+  const registry = characterSettings.memory_policy === 'chat_local'
+    ? meta.card_local_entities?.[activeCharacter] ?? []
+    : characterSettings.entities ?? [];
+  const relationships = meta.card_local_relationships?.[activeCharacter] ?? meta.relationship_history ?? {};
+  const relationshipState = Object.entries(relationships).map(([pair, value]) => `${pair}: ${(value?.descriptors ?? value ?? []).join?.(', ') ?? String(value)}`).join('\n');
+  const epistemic = meta.epistemic_knowledge ?? [];
+  const stateLedger = meta.state_ledger ?? {};
+  let prompt = '';
+
+  switch (task) {
+    case PROMPT_TASKS.LONGTERM_EXTRACTION:
+      prompt = buildExtractionPrompt(chat, longterm, activeCharacter, roster);
+      break;
+    case PROMPT_TASKS.SESSION_EXTRACTION:
+      prompt = buildSessionExtractionPrompt(chat, session, longterm, roster);
+      break;
+    case PROMPT_TASKS.SCENE_SUMMARY:
+      prompt = `${buildSceneDetectPrompt(chat.split('\n').at(-1) ?? '', chat.split('\n').at(-2) ?? '')}\n\n--- Scene summary ---\n\n${buildSceneSummaryPrompt(sceneText, roster)}`;
+      break;
+    case PROMPT_TASKS.ARC_EXTRACTION:
+      prompt = buildArcExtractionPrompt(chat, arcs.map((arc) => arc?.content ?? arc?.summary ?? String(arc)).join('\n'));
+      break;
+    case PROMPT_TASKS.CANON:
+      prompt = buildCanonSummaryPrompt(activeCharacter, arcSummaries.map((summary) => summary?.summary ?? summary?.content ?? String(summary)), longterm);
+      break;
+    case PROMPT_TASKS.PROFILES:
+      prompt = buildProfileGenerationPrompt(activeCharacter, longterm, session, registry, roster);
+      break;
+    case PROMPT_TASKS.RELATIONSHIPS:
+      prompt = buildRelationshipDeltaPrompt(sceneText, relationshipState, context?.characters?.find((card) => card.name === activeCharacter)?.description ?? '', roster);
+      break;
+    case PROMPT_TASKS.EPISTEMIC:
+      prompt = buildEpistemicExtractionPrompt(sceneText, registry.map((entry) => entry?.name).filter(Boolean), epistemic, roster);
+      break;
+    case PROMPT_TASKS.STATE_LEDGER:
+      prompt = buildStateCardPrompt(sceneText, registry, roster);
+      break;
+    case PROMPT_TASKS.COMPACTION:
+      prompt = buildSummaryPrompt(allMemories);
+      break;
+    case PROMPT_TASKS.RECAP:
+      prompt = RECAP_PROMPT;
+      break;
+    case PROMPT_TASKS.CONTINUITY:
+      prompt = buildContinuityPrompt(meta.summary ?? allMemories, chat.split('\n').at(-1) ?? '');
+      break;
+    default:
+      throw new Error('Unknown prompt task.');
+  }
+
+  return {
+    prompt: applyPromptOverride(prompt, task, activeCharacter),
+    characterName: activeCharacter,
+    profileId: resolvePromptProfileId(activeCharacter),
+    note: 'Live inspection uses the current loaded chat, stored memories, roster, and scoped override. A running catch-up job may use a smaller chunk of this same data.',
+    evidence: { chatMessages: Array.isArray(context?.chat) ? context.chat.length : 0, longterm: longterm ? longterm.split('\n').length : 0, session: session ? session.split('\n').length : 0, scenes: scenes.length, arcs: arcs.length, profiles: profiles ? 1 : 0, stateLedgerEntities: Object.keys(stateLedger).length },
+  };
 }
 
 export function listPromptPresets() {

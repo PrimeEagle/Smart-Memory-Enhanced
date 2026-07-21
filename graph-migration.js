@@ -420,14 +420,17 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       source_message_indices: entity.source_message_indices ?? [],
     });
     if (result.status === 'ambiguous') {
-      report.skipped.push({ name: entity.name, reason: result.reason });
+      report.skipped.push({ name: entity.name, reason: result.reason, reason_code: 'ambiguous_multiple_candidates' });
       continue;
     }
     if (!result.canonicalName || !result.canonicalId) {
-      report.unmatched.push({ name: entity.name, reason: result.reason });
+      report.unmatched.push({ name: entity.name, reason: result.reason, reason_code: 'unmatched_no_candidate' });
       continue;
     }
-    const target = registry.find((entry) => entry.id !== entity.id && entry.name.toLowerCase() === result.canonicalName.toLowerCase());
+    const target = registry.find((entry) => entry.id !== entity.id && (
+      entry.canonical_card_id === result.canonicalId ||
+      entry.name.toLowerCase() === result.canonicalName.toLowerCase()
+    ));
     if (!target) {
       if (entity.name !== result.canonicalName) {
         const oldName = entity.name;
@@ -436,19 +439,21 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         entity.canonical_card_id = result.canonicalId;
         entity.type = 'character';
         entity.source = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId)?.source ?? 'character-card';
-        report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason });
+        report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason, reason_code: result.reason.includes('persona') ? 'active_persona_match' : 'unique_first_name_match' });
         report.changed = true;
       }
       continue;
     }
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
+    target.canonical_card_id = result.canonicalId;
+    target.type = 'character';
     target.rejected_aliases = [...new Set([...(target.rejected_aliases ?? []), ...(entity.rejected_aliases ?? []), entity.name])];
     for (const memory of memories) {
       if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
       memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
     }
     registry.splice(registry.indexOf(entity), 1);
-    report.merged.push({ name: entity.name, canonicalName: target.name, match: result.reason });
+    report.merged.push({ name: entity.name, canonicalName: target.name, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
     report.changed = true;
   }
   return report;

@@ -1,0 +1,8 @@
+{
+  "name": "provider-save-failure",
+  "expectedContracts": [
+    "provider failures are retried when transient",
+    "metadata persistence is staged before commit",
+    "failed persistence rolls the transaction back"
+  ]
+}

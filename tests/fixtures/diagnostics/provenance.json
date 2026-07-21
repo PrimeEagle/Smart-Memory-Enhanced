@@ -1,0 +1,5 @@
+{
+  "name": "provenance",
+  "input": "[fact:2:permanent:sources=3,5] Alissa explicitly accepted Kyle's apology.",
+  "expectedSources": [3, 5]
+}

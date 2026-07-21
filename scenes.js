@@ -47,7 +47,7 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
-import { buildSceneDetectPrompt, SCENE_SUMMARY_PROMPT } from './prompts.js';
+import { buildSceneDetectPrompt, buildSceneSummaryPrompt } from './prompts.js';
 import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
@@ -57,7 +57,7 @@ import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -157,8 +157,8 @@ export function createSceneRecord(summary, messages = [], details = {}) {
     source_message_indices: sourceMessageIndices,
     ...details,
     character_participants: participantResolution.names,
-    identity_rejections: [...(details.identity_rejections ?? []), ...participantResolution.rejected],
-    identity_replacements: [...(details.identity_replacements ?? []), ...narrativeResolution.replacements],
+    identity_rejections: deduplicateIdentityDecisions([...(details.identity_rejections ?? []), ...participantResolution.rejected], 'scene'),
+    identity_replacements: deduplicateIdentityDecisions([...(details.identity_replacements ?? []), ...narrativeResolution.replacements], 'scene'),
   }, generateMemoryId);
   for (const rejection of record.identity_rejections ?? []) {
     recordIdentityReviewCandidate({
@@ -248,7 +248,8 @@ export async function summarizeScene(sceneMessages) {
     if (!sceneText.trim()) return null;
 
     // Truncate to 2000 chars to keep the prompt cost reasonable on local hardware.
-    const prompt = SCENE_SUMMARY_PROMPT.replace('{{scene_text}}', sceneText.slice(0, 2000));
+    const roster = buildCanonicalCharacterRoster(getContext());
+    const prompt = buildSceneSummaryPrompt(sceneText.slice(0, 2000), formatCanonicalRosterForPrompt(roster));
 
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.SCENE_SUMMARY), {
       responseLength: settings.scene_summary_length ?? 200,

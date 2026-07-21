@@ -113,7 +113,7 @@ import {
   detectSceneBreakAI,
   detectSceneBreakHeuristic,
 } from './scenes.js';
-import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries } from './arcs.js';
+import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries, saveArcSummaries } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import {
@@ -129,6 +129,7 @@ import {
   deletePromptProfile,
   renamePromptProfile,
   getDefaultPromptPreview,
+  getLivePromptInspection,
   getPromptOverride,
   setPromptOverride,
   resetPromptOverride,
@@ -158,6 +159,32 @@ async function runStagedChatCleanup(context, mutate) {
     rollbackCatchUpTransaction(transaction);
     throw error;
   }
+}
+
+/**
+ * Final transaction-bound integrity gate. It runs after all catch-up tiers,
+ * before diagnostics and the one final chat save, so a failure rolls the full
+ * final phase back rather than committing a partly reconciled graph.
+ */
+async function runFinalIntegrityReconciliation(characterName) {
+  const reconciliation = await reconcileCanonicalEntities(characterName);
+  const summaries = loadArcSummaries();
+  let quarantinedSummaries = 0;
+  for (const summary of summaries) {
+    const status = summary?.resolution_decision?.status;
+    if (!status || status === 'resolved') continue;
+    summary.grounding_status = 'derived';
+    summary.validation_status = 'needs_review';
+    summary.semantic_support = 'unsupported';
+    summary.verification_state = 'resolution_reclassified';
+    summary.validation_issues = [...new Set([...(summary.validation_issues ?? []), `Arc resolution is ${status}, not resolved.`])];
+    quarantinedSummaries++;
+  }
+  if (quarantinedSummaries) await saveArcSummaries(summaries);
+  return {
+    ...reconciliation,
+    quarantined_arc_summaries: quarantinedSummaries,
+  };
 }
 import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
@@ -1098,6 +1125,16 @@ export function bindSettingsUI(ctrl) {
     const effective = promptPresetDraft[task] ?? '';
     const source = effective ? `EFFECTIVE ADDITIONAL INSTRUCTIONS:\n${effective}\n\n` : '';
     callGenericPopup(`${source}PROTECTED BUILT-IN PROMPT:\n${getDefaultPromptPreview(task)}`, POPUP_TYPE.DISPLAY);
+  });
+  $('#sme_prompt_inspect_live').on('click', function () {
+    try {
+      const task = $promptTask.val();
+      const inspection = getLivePromptInspection(task, promptStudioCharacter());
+      const heading = `LIVE PROMPT INSPECTOR\nTask: ${PROMPT_TASK_LABELS[task]}\nCharacter: ${inspection.characterName || '(none)'}\nPrompt preset: ${inspection.profileId}\nEvidence: ${inspection.evidence.chatMessages} chat messages, ${inspection.evidence.longterm} long-term memories, ${inspection.evidence.session} session memories, ${inspection.evidence.scenes} scenes, ${inspection.evidence.arcs} arcs\n\n${inspection.note}\n\n--- EFFECTIVE PROMPT SENT TO THE PROVIDER ---\n\n`;
+      callGenericPopup(heading + inspection.prompt, POPUP_TYPE.DISPLAY);
+    } catch (error) {
+      toastr.error(error.message || 'Could not build the live prompt inspection.', 'Smart Memory Enhanced');
+    }
   });
   $('#sme_prompt_preset_export').on('click', function () {
     try {
@@ -2882,6 +2919,9 @@ export function bindSettingsUI(ctrl) {
       saveFailures: 0,
       status: 'completed',
       chunks: [],
+      arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
+      profiles: { sections_parsed: 0, stale_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0 },
+      finalReconciliation: { persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0 },
     };
     let currentChunkFailed = false;
     let finalTransaction = null;
@@ -2994,7 +3034,7 @@ export function bindSettingsUI(ctrl) {
         }
         if (settings.arcs_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting arcs)`);
-          await extractArcs(chunk, characterName).catch((err) => {
+          await extractArcs(chunk, characterName, null, { arcResolutionStats: runResult.arcResolution }).catch((err) => {
             recordCatchUpError('arc extraction error (chunk)', err, 'arcs');
           });
         }
@@ -3245,6 +3285,12 @@ export function bindSettingsUI(ctrl) {
             injectProfiles(name);
             updateProfilesUI(profiles);
           }
+          if (profiles) {
+            runResult.profiles.sections_parsed++;
+            runResult.profiles.stale_fields_dropped += profiles.stale_field_rejections?.length ?? 0;
+            runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
+            runResult.profiles.prior_fields_preserved += profiles.preserved_prior_fields?.length ?? 0;
+          }
         }
         // If the selected character wasn't in the group (edge case), inject
         // whatever profiles exist for them anyway.
@@ -3277,13 +3323,25 @@ export function bindSettingsUI(ctrl) {
       updateProfilesUI(loadProfiles(characterName));
       // Catch-up can surface first-name variants that only become resolvable
       // after the full roster and extracted evidence are available.
-      const reconciliation = await reconcileCanonicalEntities(characterName);
+      const reconciliation = await runFinalIntegrityReconciliation(characterName);
       runResult.identityResolution = {
         matched: reconciliation.matched.length,
         merged: reconciliation.merged.length,
         needs_review: reconciliation.skipped.length,
         unmatched: reconciliation.unmatched.length,
+        quarantined_arc_summaries: reconciliation.quarantined_arc_summaries,
       };
+      runResult.identityResolutionDetails = {
+        matched: reconciliation.matched.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'matched', target: canonicalName, reason_code })),
+        merged: reconciliation.merged.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'merged', target: canonicalName, reason_code })),
+        needs_review: reconciliation.skipped.map(({ name, reason, reason_code }) => ({ candidate: name, decision: 'needs_review', reason, reason_code })),
+        unmatched: reconciliation.unmatched.map(({ name, reason, reason_code }) => ({ candidate: name, decision: 'unmatched', reason, reason_code })),
+      };
+      runResult.finalReconciliation.persona_aliases_merged = reconciliation.merged.filter((entry) => entry.reason_code === 'unique_active_persona_first_name').length;
+      runResult.finalReconciliation.card_local_entities_merged = reconciliation.card_local_reports?.reduce((count, report) => count + report.merged.length, 0) ?? 0;
+      runResult.finalReconciliation.relationship_pairs_merged = (reconciliation.relationship_pairs_merged ?? 0) + reconciliation.merged.filter((entry) => entry.reason_code === 'canonical_duplicate_merge').length;
+      runResult.finalReconciliation.synthetic_parentheticals_removed = reconciliation.matched.filter((entry) => /synthetic|parenthetical/i.test(entry.match ?? '')).length + (reconciliation.synthetic_review_names_removed ?? 0);
+      runResult.finalReconciliation.identity_decision_duplicates_removed = reconciliation.identity_decision_duplicates_removed ?? 0;
       maybeInjectUnified();
       updateTokenDisplay();
       saveSettingsDebounced();
@@ -3305,11 +3363,15 @@ export function bindSettingsUI(ctrl) {
         sceneDetection: runResult.sceneDetection ?? null,
         tiers: runResult.extractionFailuresByTier,
         identityResolution: runResult.identityResolution ?? null,
+        identityResolutionDetails: runResult.identityResolutionDetails ?? null,
         persistence_failures: runResult.saveFailures,
         retried_requests: runResult.retriedRequests,
         errors: catchUpErrorCount,
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries()),
+        arcResolution: runResult.arcResolution,
+        profiles: runResult.profiles,
+        finalReconciliation: runResult.finalReconciliation,
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
@@ -4006,12 +4068,15 @@ export function bindSettingsUI(ctrl) {
 }
 
 function summarizeArcSummaryVerification(summaries = []) {
-  const result = { total: summaries.length, supported: 0, pending_review: 0, rejected: 0, legacy_unverified: 0 };
+  const result = { total: summaries.length, supported: 0, pending_review: 0, rejected: 0, legacy_unverified: 0, preverification: {} };
   for (const summary of summaries) {
     if (summary.validation_status === 'approved' || summary.semantic_support === 'supported' || summary.semantic_support === 'user_approved') result.supported++;
     else if (summary.validation_status === 'rejected' || summary.semantic_support === 'unsupported') result.rejected++;
     else result.pending_review++;
     if (summary.verification_state === 'legacy_unverified') result.legacy_unverified++;
+    if (summary.deterministic_rejection_reason) {
+      result.preverification[summary.deterministic_rejection_reason] = (result.preverification[summary.deterministic_rejection_reason] ?? 0) + 1;
+    }
   }
   return result;
 }

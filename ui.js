@@ -76,11 +76,12 @@ import {
   saveRelationshipHistory,
   injectRelationshipHistory,
   reconcileRelationshipHistoryCanonicalNames,
+  reconcileRelationshipHistoryMap,
   getRelationshipHistoryPairDisplay,
   remapRelationshipHistoryEntity,
 } from './longterm.js';
 import { loadSessionMemories, saveSessionMemories, injectSessionMemories } from './session.js';
-import { loadSceneHistory } from './scenes.js';
+import { loadSceneHistory, saveSceneHistory } from './scenes.js';
 import {
   loadArcs,
   saveArcs,
@@ -91,6 +92,7 @@ import {
   demoteArc,
   reopenArc,
   loadArcSummaries,
+  saveArcSummaries,
   reverifyArcSummary,
   loadPersistentArcs,
   savePersistentArcs,
@@ -111,7 +113,7 @@ import {
   mergeEntitiesById,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -139,6 +141,8 @@ import {
   injectStateLedger,
   STATE_CARD_FIELDS,
   STATE_CARD_TYPES,
+  loadStateLedger,
+  saveStateLedger,
 } from './state-ledger.js';
 
 // ---- Local helpers (not exported) ----------------------------------------
@@ -1329,6 +1333,22 @@ export function updateArcsUI() {
       $('<button class="menu_button">Review Resolved Summaries</button>').on('click', (event) => {
         event.preventDefault(); event.stopPropagation(); showArcSummaryReviewDialog(pendingSummaries[0].id);
       }),
+      $('<button class="menu_button">Reverify All</button>').on('click', async (event) => {
+        event.preventDefault(); event.stopPropagation();
+        const current = loadArcSummaries();
+        const pending = current.filter(needsArcSummaryReview);
+        let checked = 0;
+        for (const summary of pending) {
+          try {
+            await reverifyArcSummary(summary);
+            checked++;
+          } catch (error) {
+            console.warn('[Smart Memory Enhanced] Could not reverify a resolved arc summary:', error);
+          }
+        }
+        if (checked) await saveArcSummaries(current);
+        updateArcsUI();
+      }),
     );
     $resolvedList.prepend($notice);
     $resolvedSection.toggle(true);
@@ -1528,26 +1548,98 @@ export async function reconcileCanonicalEntities(characterName) {
   const sessionRewrites = rewriteStoredNarratives(sessionMemories);
   const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
   const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
+  // Chat-local card stores are independent of the selected card. Reconcile all
+  // of them so a unique active persona alias such as Kyle -> Kyle Holland does
+  // not survive in an off-screen group member's local registry.
+  const meta = getContext().chatMetadata?.[META_KEY] ?? {};
+  const localReports = [];
+  let localRewrites = 0;
+  let localRelationshipPairsMerged = 0;
+  for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
+    const localMemories = meta.card_local_memories?.[localName] ?? [];
+    localRewrites += rewriteStoredNarratives(localMemories);
+    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, getContext(), localMemories));
+  }
+  for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
+    const relationshipResult = reconcileRelationshipHistoryMap(history, roster);
+    if (!relationshipResult.changed) continue;
+    meta.card_local_relationships[localName] = relationshipResult.history;
+    localRelationshipPairsMerged += relationshipResult.merged;
+  }
+
+  const rewriteNarrativeRecords = (records, keys) => records.reduce((count, record) => {
+    for (const key of keys) {
+      if (typeof record?.[key] !== 'string') continue;
+      const narrative = canonicalizeNarrativeNames(record[key], roster);
+      if (!narrative.replacements.length) continue;
+      record[key] = narrative.text;
+      record.identity_replacements = narrative.replacements;
+      count += narrative.replacements.length;
+    }
+    return count;
+  }, 0);
+  const scenes = loadSceneHistory();
+  const arcs = loadArcs();
+  const summaries = loadArcSummaries();
+  const ledger = loadStateLedger();
+  const reconciledLedger = reconcileCanonicalLedger(ledger, roster);
+  const ledgerRewrites = JSON.stringify(ledger) === JSON.stringify(reconciledLedger) ? 0 : 1;
+  const reviewQueue = getSettings().identity_review_queue ?? [];
+  let syntheticReviewNamesRemoved = 0;
+  const normalizedReviewQueue = reviewQueue.map((item) => {
+    const normalized = normalizeSyntheticIdentityQualifier(item?.candidateName, roster.characters ?? []);
+    if (!normalized.qualifier_removed) return item;
+    syntheticReviewNamesRemoved++;
+    return { ...item, candidateName: normalized.normalized_name, candidateKey: normalized.normalized_name.toLowerCase(), qualifier_type: normalized.qualifier_type };
+  });
+  const dedupedReviewQueue = deduplicateIdentityDecisions(normalizedReviewQueue, 'identity-review');
+  const reviewDecisionDuplicatesRemoved = reviewQueue.length - dedupedReviewQueue.length;
+  if (reviewDecisionDuplicatesRemoved || syntheticReviewNamesRemoved) getSettings().identity_review_queue = dedupedReviewQueue;
+  const sceneRewrites = rewriteNarrativeRecords(scenes, ['summary']);
+  const arcRewrites = rewriteNarrativeRecords(arcs, ['content']);
+  const summaryRewrites = rewriteNarrativeRecords(summaries, ['summary', 'arc']);
   if (ltReport.changed || longtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
     saveSettingsDebounced();
   }
-  if (sessionReport.changed || sessionRewrites > 0) {
+  if (sessionReport.changed || sessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites > 0) {
     await saveSessionEntityRegistry(sessionEntities);
     await saveSessionMemories(sessionMemories);
   }
-  if (characterName) {
-    reconcileRelationshipHistoryCanonicalNames(characterName);
-    reconcileEpistemicCanonicalNames(characterName);
-    await reconcileProfileCanonicalNames(characterName);
+  if (sceneRewrites) await saveSceneHistory(scenes);
+  if (arcRewrites) await saveArcs(arcs);
+  if (summaryRewrites) await saveArcSummaries(summaries);
+  if (ledgerRewrites) await saveStateLedger(reconciledLedger);
+  const rosterCharacterNames = (roster.characters ?? [])
+    .filter((entry) => entry.source === 'character-card')
+    .map((entry) => entry.canonicalName);
+  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
+  let relationshipStoresReconciled = 0;
+  let epistemicStoresReconciled = 0;
+  for (const storeName of structuredStoreNames) {
+    if (reconcileRelationshipHistoryCanonicalNames(storeName)) relationshipStoresReconciled++;
+    if (reconcileEpistemicCanonicalNames(storeName)) epistemicStoresReconciled++;
+  }
+  const profileNames = [...new Set([...structuredStoreNames, ...Object.keys(meta.profiles ?? {})].filter(Boolean))];
+  let profilesReconciled = 0;
+  for (const profileName of profileNames) {
+    if (await reconcileProfileCanonicalNames(profileName)) profilesReconciled++;
   }
   return {
-    matched: [...ltReport.matched, ...sessionReport.matched],
-    merged: [...ltReport.merged, ...sessionReport.merged],
-    skipped: [...ltReport.skipped, ...sessionReport.skipped],
-    unmatched: [...ltReport.unmatched, ...sessionReport.unmatched],
-    narrative_rewrites: longtermRewrites + sessionRewrites,
+    matched: [...ltReport.matched, ...sessionReport.matched, ...localReports.flatMap((report) => report.matched)],
+    merged: [...ltReport.merged, ...sessionReport.merged, ...localReports.flatMap((report) => report.merged)],
+    skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
+    unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
+    narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
+    card_local_reports: localReports,
+    relationship_pairs_merged: localRelationshipPairsMerged,
+    state_ledger_keys_reconciled: ledgerRewrites,
+    identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
+    synthetic_review_names_removed: syntheticReviewNamesRemoved,
+    profiles_reconciled: profilesReconciled,
+    relationship_stores_reconciled: relationshipStoresReconciled,
+    epistemic_stores_reconciled: epistemicStoresReconciled,
   };
 }
 

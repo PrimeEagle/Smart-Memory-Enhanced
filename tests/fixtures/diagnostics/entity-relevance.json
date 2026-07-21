@@ -1,0 +1,9 @@
+{
+  "name": "entity-relevance",
+  "roster": {
+    "name1": "Aaron Holland",
+    "characters": [{ "id": "alissa", "name": "Alissa Kawaguchi", "description": "" }]
+  },
+  "candidate": "Alissa",
+  "expectedCanonicalName": "Alissa Kawaguchi"
+}

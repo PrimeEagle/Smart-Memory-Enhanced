@@ -11,6 +11,7 @@ import {
   formatSummary,
   detectSceneBreakHeuristic,
   parseProfileOutput,
+  stripOuterGeneratedWrapper,
   parseRelationshipDeltaResponse,
   parseEpistemicResponse,
   parseEpistemicRetireIndices,
@@ -549,6 +550,12 @@ test('parseSceneSummaryOutput: parses [SCENE] and [CHARACTERS] sections', () => 
   });
 });
 
+test('generated summary wrapper cleanup removes only a complete outer wrapper', () => {
+  assert.equal(stripOuterGeneratedWrapper('"Paul apologized to Kyle."'), 'Paul apologized to Kyle.');
+  assert.equal(stripOuterGeneratedWrapper('> Paul apologized to Kyle.'), 'Paul apologized to Kyle.');
+  assert.equal(stripOuterGeneratedWrapper('Paul said "I am sorry."'), 'Paul said "I am sorry."');
+});
+
 test('parseSceneSummaryOutput: rejects parser control words as participants', () => {
   const result = parseSceneSummaryOutput('[SCENE] A quiet meeting ends.[/SCENE]\n[CHARACTERS] Paul, Sources[/CHARACTERS]');
   assert.deepEqual(result.characterParticipants, ['Paul']);
@@ -658,6 +665,39 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
 test('parseProfileOutput: accepts an unclosed but recognisable profile tag', () => {
   const result = parseProfileOutput('<character-state>\nGoals: leave safely');
   assert.equal(result.character_state, 'Goals: leave safely');
+});
+
+test('parseProfileOutput: an unclosed section does not consume later profile sections', () => {
+  const result = parseProfileOutput(`<character_state>
+Goals: leave safely
+<world_state>
+Location: the station
+</world_state>
+<relationship_matrix>
+Alex (character): trusted [confidence: 0.8]
+</relationship_matrix>`);
+  assert.equal(result.character_state, 'Goals: leave safely');
+  assert.equal(result.world_state, 'Location: the station');
+  assert.equal(result.relationship_matrix, 'Alex (character): trusted [confidence: 0.8]');
+});
+
+test('parseProfileOutput: slices Markdown-wrapped headings without overlap', () => {
+  const result = parseProfileOutput(`**CHARACTER STATE**:
+Goals: protect the treaty
+
+[WORLD STATE]:
+Location: hospital
+
+## RELATIONSHIP MATRIX
+Alex (character): trusted`, { requireAll: true });
+  assert.equal(result.character_state, 'Goals: protect the treaty');
+  assert.equal(result.world_state, 'Location: hospital');
+  assert.equal(result.relationship_matrix, 'Alex (character): trusted');
+});
+
+test('parseProfileOutput: strict mode rejects duplicate or incomplete profile sections', () => {
+  assert.equal(parseProfileOutput(`<character_state>\nGoals: leave\n<world_state>\nLocation: station\n<world_state>\nLocation: elsewhere`, { requireAll: true }), null);
+  assert.equal(parseProfileOutput(`<character_state>\nGoals: leave\n<world_state>\nLocation: station`, { requireAll: true }), null);
 });
 
 test('parseRelationshipDeltaResponse: strips Markdown numbering before strict pair parsing', () => {

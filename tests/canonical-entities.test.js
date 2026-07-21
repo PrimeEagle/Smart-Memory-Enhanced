@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   buildCanonicalCharacterRoster,
   canonicalizeNarrativeNames,
+  deduplicateIdentityDecisions,
+  normalizeSyntheticIdentityQualifier,
   canonicalizeStructuredParticipants,
   buildIdentityReviewCandidate,
   buildStableLedgerKey,
@@ -72,6 +74,31 @@ test('canonical roster: a unique persona first name resolves without creating a 
   assert.equal(result.status, 'resolved');
   assert.equal(result.canonicalName, 'Kyle Holland');
   assert.equal(result.shouldCreateEntity, false);
+});
+
+test('canonical roster rewrites a former persona label before prompt construction', () => {
+  const personaRoster = buildCanonicalCharacterRoster({
+    name1: 'Kyle Holland',
+    persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
+    characters: [],
+  });
+  const rewritten = canonicalizeNarrativeNames('Adam Lawson discussed the plan.', personaRoster);
+  assert.equal(rewritten.text, 'Kyle Holland discussed the plan.');
+});
+
+test('identity decision metadata deduplicates while retaining evidence', () => {
+  const decisions = deduplicateIdentityDecisions([
+    { from: 'Alissa', to: 'Alissa Kawaguchi', reason: 'Approved character-card alias.', source_message_indices: [4] },
+    { from: 'Alissa', to: 'Alissa Kawaguchi', reason: 'Approved character-card alias.', source_message_indices: [8] },
+  ], 'profile');
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(decisions[0].source_message_indices, [4, 8]);
+  assert.equal(decisions[0].occurrences, 2);
+});
+
+test('synthetic parenthetical identity labels normalize while legitimate numeric titles remain', () => {
+  assert.equal(normalizeSyntheticIdentityQualifier('Sophie (Alissa Kawaguchi)', [{ name: 'Alissa Kawaguchi' }]).normalized_name, 'Sophie');
+  assert.equal(normalizeSyntheticIdentityQualifier('Unit 01 (Prototype)', []).normalized_name, 'Unit 01 (Prototype)');
 });
 
 test('canonical roster: generated prose uses deterministic card-name replacements only', () => {

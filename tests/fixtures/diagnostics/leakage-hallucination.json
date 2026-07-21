@@ -1,0 +1,10 @@
+{
+  "name": "leakage-hallucination",
+  "evidence": {
+    "canonicalParticipants": ["Kyle Holland", "Alissa Kawaguchi"],
+    "structuredParticipants": ["Kyle Holland", "Alissa Kawaguchi"],
+    "text": "Kyle Holland and Alissa Kawaguchi agree to discuss their boundaries later."
+  },
+  "candidate": "Kyle Holland and Dr. Voss resolve their conflict.",
+  "expectedReason": "unknown_name"
+}

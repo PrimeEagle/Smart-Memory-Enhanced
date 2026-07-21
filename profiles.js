@@ -49,17 +49,20 @@ import { saveChatMetadata } from './catchup-transaction.js';
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
-import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
+import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories, loadRelationshipHistory, formatMemoriesForPrompt } from './longterm.js';
 import { loadSessionMemories } from './session.js';
+import { loadSceneHistory } from './scenes.js';
+import { loadStateLedger } from './state-ledger.js';
 import { loadCharacterEntityRegistry } from './graph-migration.js';
 import { buildProfileFormatRepairPrompt, buildProfileGenerationPrompt } from './prompts.js';
 import { parseProfileOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
+import { validateCitationSemanticSupport } from './grounding.js';
 
 // Default staleness threshold: 30 minutes. Profiles generated within this
 // window are considered current and will not be regenerated on chat load.
@@ -113,7 +116,7 @@ export async function reconcileProfileCanonicalNames(characterName) {
   }).join('\n');
   next.relationship_matrix = matrix;
   if (next.character_state === profiles.character_state && next.world_state === profiles.world_state && next.relationship_matrix === profiles.relationship_matrix) return false;
-  next.identity_replacements = replacements;
+  next.identity_replacements = deduplicateIdentityDecisions(replacements, 'profile');
   await saveProfiles(next, characterName);
   return true;
 }
@@ -146,6 +149,65 @@ export function areProfilesStale(thresholdMs = DEFAULT_STALE_THRESHOLD_MS, chara
   const profiles = loadProfiles(characterName);
   if (!profiles) return true;
   return Date.now() - (profiles.generated_at ?? 0) > thresholdMs;
+}
+
+/** Drops only profile fields that have no lexical support in approved current memories. */
+export function retainGroundedProfileFields(parsed, sourceMemories = []) {
+  const profiles = { ...parsed };
+  const sourceMessages = sourceMemories.map((memory) => ({ mes: memory?.content ?? '' }));
+  const rejected = [];
+  for (const field of ['character_state', 'world_state', 'relationship_matrix']) {
+    const content = String(profiles[field] ?? '').trim();
+    if (!content) continue;
+    const support = validateCitationSemanticSupport({ content }, sourceMessages);
+    if (support.checked && !support.supported) {
+      profiles[field] = '';
+      rejected.push(field);
+    }
+  }
+  return { profiles, rejected };
+}
+
+/** Removes immediate-state lines contradicted by the newest scene or State Ledger evidence. */
+export function omitStaleCurrentProfileLines(parsed, currentEvidence = '') {
+  const profiles = { ...parsed };
+  const evidenceWords = new Set((String(currentEvidence).toLowerCase().match(/[a-z0-9']+/g) ?? []).filter((word) => word.length >= 4));
+  if (!evidenceWords.size) return { profiles, dropped: [] };
+  const currentLabels = /^(?:location|emotional posture|active fears|goals|threats|unresolved)\s*:/i;
+  const dropped = [];
+  for (const field of ['character_state', 'world_state']) {
+    const lines = String(profiles[field] ?? '').split('\n');
+    const kept = lines.filter((line) => {
+      if (!currentLabels.test(line)) return true;
+      const terms = (line.toLowerCase().match(/[a-z0-9']+/g) ?? []).filter((word) => word.length >= 4 && !/^(?:location|emotional|posture|active|fears|goals|threats|unresolved|identified)$/.test(word));
+      if (!terms.length || terms.some((term) => evidenceWords.has(term))) return true;
+      dropped.push({ field, line });
+      return false;
+    });
+    profiles[field] = kept.join('\n').trim();
+  }
+  return { profiles, dropped };
+}
+
+/** Keeps relationship-matrix entries only when the established history supports that pair. */
+export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}) {
+  const profiles = { ...parsed };
+  const pairs = Object.values(relationshipHistory ?? {})
+    .map((state) => [String(state?.subject_name ?? '').toLowerCase(), String(state?.target_name ?? '').toLowerCase()])
+    .filter(([subject, target]) => subject && target);
+  if (!pairs.length) return { profiles, rejected: [] };
+  const self = String(characterName ?? '').toLowerCase();
+  const rejected = [];
+  profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').filter((line) => {
+    const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:/);
+    if (!match) return true;
+    const entity = match[1].trim().toLowerCase();
+    const known = pairs.some(([subject, target]) => (subject === self && target === entity) || (target === self && subject === entity));
+    if (known) return true;
+    rejected.push(line);
+    return false;
+  }).join('\n');
+  return { profiles, rejected };
 }
 
 // ---- Generation ---------------------------------------------------------
@@ -207,7 +269,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
 
     if (!response) return null;
 
-    let parsed = parseProfileOutput(response);
+    let parsed = parseProfileOutput(response, { requireAll: true });
     // Local models sometimes retain usable facts but miss the parser contract.
     // A single formatting-only repair preserves that evidence without allowing a
     // second model call to invent a replacement profile.
@@ -216,7 +278,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
         applyPromptOverride(buildProfileFormatRepairPrompt(response), PROMPT_TASKS.PROFILES, characterName),
         { responseLength: settings.profiles_response_length ?? 600 },
       );
-      parsed = parseProfileOutput(repaired);
+      parsed = parseProfileOutput(repaired, { requireAll: true });
       if (parsed) smLog('[Smart Memory Enhanced] Recovered profile output with a format-only repair.');
     }
     if (!parsed) {
@@ -259,13 +321,47 @@ export async function generateProfiles(characterName, abortCheck = null, options
       .filter(Boolean)
       .join('\n');
 
+    // The prompt receives only active records (superseded records were
+    // excluded above), so the latest supported fact can replace older state.
+    // A field that introduces unrelated terms is omitted instead of silently
+    // becoming current profile truth.
+    const fieldGrounding = retainGroundedProfileFields(parsed, [...longtermMemories, ...sessionMemories]);
+    parsed = fieldGrounding.profiles;
+    const priorProfiles = loadProfiles(characterName);
+    const preservedPriorFields = [];
+    for (const field of fieldGrounding.rejected) {
+      const prior = String(priorProfiles?.[field] ?? '').trim();
+      if (!prior) continue;
+      parsed[field] = prior;
+      preservedPriorFields.push(field);
+    }
+    const currentEvidence = [
+      ...loadSceneHistory().slice(-2).map((scene) => scene.summary),
+      ...Object.values(loadStateLedger()).map((card) => JSON.stringify(card ?? {})),
+    ].join('\n');
+    const temporalCheck = omitStaleCurrentProfileLines(parsed, currentEvidence);
+    parsed = temporalCheck.profiles;
+    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, loadRelationshipHistory(characterName));
+    parsed = relationshipCheck.profiles;
+    if (fieldGrounding.rejected.length) {
+      smLog(`[Smart Memory Enhanced] Omitted unsupported profile fields: ${fieldGrounding.rejected.join(', ')}.`);
+    }
+    if (!profileFields.some((field) => String(parsed[field] ?? '').trim())) {
+      smLog('[Smart Memory Enhanced] Profile generation had no grounded fields; preserving the prior profile.');
+      return loadProfiles(characterName);
+    }
+
     const profiles = {
       ...parsed,
       generated_at: Date.now(),
       parent_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
       source_memory_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
       evidence_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
-      identity_replacements: identityReplacements,
+      identity_replacements: deduplicateIdentityDecisions(identityReplacements, 'profile'),
+      field_grounding_rejections: fieldGrounding.rejected,
+      preserved_prior_fields: preservedPriorFields,
+      stale_field_rejections: temporalCheck.dropped.map((entry) => entry.field),
+      relationship_field_rejections: relationshipCheck.rejected.length,
     };
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
     if (!isGeneratedRecordApproved(profiles)) {

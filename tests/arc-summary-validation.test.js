@@ -21,5 +21,11 @@ test('arc summary pre-verification accepts supported paraphrase for semantic rev
 
 test('arc summary pre-verification flags unsupported high-risk detail', () => {
   const result = preverifyArcSummary('Kyle Holland and Paul Schmidt reconcile as roommates.', evidence);
-  assert.equal(result.semantic_support, 'ambiguous');
+  assert.equal(result.semantic_support, 'unsupported');
+  assert.equal(result.reason_code, 'high_risk_claim');
+});
+
+test('arc summary pre-verification rejects unresolved restatements and unsupported negation', () => {
+  assert.equal(preverifyArcSummary('Alissa Kawaguchi remains unresolved about the plan.', evidence).reason_code, 'unresolved_restatement');
+  assert.equal(preverifyArcSummary('Kyle Holland failed to keep the promise.', evidence).reason_code, 'unsupported_negation');
 });
