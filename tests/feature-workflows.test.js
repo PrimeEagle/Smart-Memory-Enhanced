@@ -177,7 +177,7 @@ test('profiles keep only current, evidence-supported fields', () => {
 
 test('relationship reconciliation merges duplicate canonical pair evidence instead of keeping the first pair only', () => {
   const longterm = read('longterm.js');
-  assert.match(longterm, /source_message_indices: \[\.\.\.new Set/);
+  assert.match(longterm, /source_message_indices: mergeList/);
   assert.match(longterm, /updatedAt: Math\.max/);
   assert.match(longterm, /Object\.entries\(history\)\.sort/);
   assert.match(longterm, /export function reconcileRelationshipHistoryMap/);
@@ -226,6 +226,15 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
+});
+
+test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {
+  const longterm = read('longterm.js');
+  assert.match(longterm, /canonicalizeRelationshipPair\(subject, target, roster\)/);
+  assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
+  for (const field of ['source_record_ids', 'parent_memory_ids', 'evidence_ranges', 'manual_edits', 'validation_issues']) {
+    assert.match(longterm, new RegExp(`${field}: mergeList`));
+  }
 });
 
 test('catch-up metadata writers cannot bypass staged saving', () => {

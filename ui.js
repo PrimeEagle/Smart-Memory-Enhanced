@@ -1651,7 +1651,10 @@ export async function reconcileCanonicalEntities(characterName) {
   const rosterCharacterNames = (roster.characters ?? [])
     .filter((entry) => entry.source === 'character-card')
     .map((entry) => entry.canonicalName);
-  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
+  const persistentRelationshipStores = Object.entries(extension_settings[MODULE_NAME]?.characters ?? {})
+    .filter(([, store]) => store?.relationship_history)
+    .map(([name]) => name);
+  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames, ...persistentRelationshipStores].filter(Boolean))];
   let relationshipStoresReconciled = 0;
   let epistemicStoresReconciled = 0;
   for (const storeName of structuredStoreNames) {
