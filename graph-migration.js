@@ -74,7 +74,7 @@ function resolveApprovedIdentityAlias(name, roster) {
 }
 
 export function recordIdentityReviewCandidate(result, details = {}) {
-  if (!['ambiguous', 'rejected'].includes(result.status)) return;
+  if (!['ambiguous', 'rejected', 'unresolved'].includes(result.status)) return;
   const settings = extension_settings[MODULE_NAME];
   if (!settings) return;
   const queue = (settings.identity_review_queue ??= []);
@@ -419,7 +419,7 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 /** Safely merges existing registry variants that unambiguously map to a card character. */
 export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = []) {
   const roster = buildCanonicalCharacterRoster(context);
-  const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
+  const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [] };
   for (const entity of [...registry]) {
     if (!['character', 'unknown'].includes(entity.type)) continue;
     const result = resolveEntityCandidate(entity.name, roster, [registry.filter((entry) => entry.id !== entity.id)], {
@@ -428,10 +428,22 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     });
     if (result.status === 'ambiguous') {
       report.skipped.push({ name: entity.name, reason: result.reason, reason_code: 'ambiguous_multiple_candidates' });
+      report.outcomes.push({ candidate: entity.name, terminal_outcome: 'ambiguous_review', reason: result.reason });
       continue;
     }
     if (!result.canonicalName || !result.canonicalId) {
-      report.unmatched.push({ name: entity.name, reason: result.reason, reason_code: 'unmatched_no_candidate' });
+      if (result.promotion?.allowed) {
+        report.outcomes.push({ candidate: entity.name, terminal_outcome: 'grounded_unknown_preserved', reason: result.promotion.creation_reason });
+        continue;
+      }
+      const reviewResult = { ...result, status: 'unresolved', reason: result.reason ?? 'No deterministic canonical identity candidate.' };
+      recordIdentityReviewCandidate(reviewResult, {
+        entityType: entity.type,
+        memoryId: entity.memory_ids?.[0] ?? entity.source_record_ids?.[0],
+        source_message_indices: entity.source_message_indices ?? [],
+      });
+      report.skipped.push({ name: entity.name, reason: reviewResult.reason, reason_code: 'unmatched_review' });
+      report.outcomes.push({ candidate: entity.name, terminal_outcome: 'unmatched_review', reason: reviewResult.reason });
       continue;
     }
     const target = registry.find((entry) => entry.id !== entity.id && (
@@ -456,6 +468,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         entity.type = 'character';
         entity.source = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId)?.source ?? 'character-card';
         report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason, reason_code: result.reason.includes('persona') ? 'active_persona_match' : 'unique_first_name_match' });
+        report.outcomes.push({ candidate: oldName, canonicalName: result.canonicalName, terminal_outcome: result.reason.includes('alias') || result.reason.includes('persona') ? 'deterministic_alias_match' : 'canonical_exact_match', reason: result.reason });
         report.changed = true;
       }
       continue;
@@ -476,6 +489,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     }
     registry.splice(registry.indexOf(entity), 1);
     report.merged.push({ name: entity.name, canonicalName: target.name, sourceId: entity.id, targetId: target.id, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
+    report.outcomes.push({ candidate: entity.name, canonicalName: target.name, terminal_outcome: 'merged', reason: result.reason });
     report.changed = true;
   }
   return report;

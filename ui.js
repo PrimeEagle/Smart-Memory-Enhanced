@@ -1695,6 +1695,7 @@ export async function reconcileCanonicalEntities(characterName) {
     merged: [...ltReport.merged, ...sessionReport.merged, ...localReports.flatMap((report) => report.merged)],
     skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
+    identity_outcomes: [...(ltReport.outcomes ?? []), ...(sessionReport.outcomes ?? []), ...localReports.flatMap((report) => report.outcomes ?? [])],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
     participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
     persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,

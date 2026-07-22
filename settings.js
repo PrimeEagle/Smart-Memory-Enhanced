@@ -3362,6 +3362,7 @@ export function bindSettingsUI(ctrl) {
         merged: reconciliation.merged.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'merged', target: canonicalName, reason_code })),
         needs_review: reconciliation.skipped.map(({ name, reason, reason_code }) => ({ candidate: name, decision: 'needs_review', reason, reason_code })),
         unmatched: reconciliation.unmatched.map(({ name, reason, reason_code }) => ({ candidate: name, decision: 'unmatched', reason, reason_code })),
+        terminal_outcomes: reconciliation.identity_outcomes ?? [],
       };
       runResult.finalReconciliation.persona_aliases_merged = reconciliation.merged.filter((entry) => entry.reason_code === 'unique_active_persona_first_name').length;
       runResult.finalReconciliation.card_local_entities_merged = reconciliation.card_local_reports?.reduce((count, report) => count + report.merged.length, 0) ?? 0;
