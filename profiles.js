@@ -194,16 +194,37 @@ export function omitStaleCurrentProfileLines(parsed, currentEvidence = '') {
  * both the pair and at least one exact current descriptor. A relationship pair
  * is not evidence for a stronger or different status.
  */
-export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}) {
+function extractCardRelationshipFacts(roster = []) {
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|friend|roommate';
+  const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const facts = [];
+  for (const entry of roster ?? []) {
+    const description = String(entry?.descriptionExcerpt ?? '');
+    for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
+      const subject = resolve(match[1]);
+      const target = resolve(match[3]);
+      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), descriptors: [match[2].toLowerCase()] });
+    }
+    for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\s+is\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
+      const subject = resolve(match[3]);
+      const target = resolve(match[1]);
+      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), descriptors: [match[2].toLowerCase()] });
+    }
+  }
+  return facts;
+}
+
+export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = []) {
   const profiles = { ...parsed };
-  const pairs = Object.values(relationshipHistory ?? {})
+  const historyPairs = Object.values(relationshipHistory ?? {})
     .map((state) => ({
       subject: String(state?.subject_name ?? '').toLowerCase(),
       target: String(state?.target_name ?? '').toLowerCase(),
       descriptors: (state?.descriptors ?? []).map((descriptor) => String(typeof descriptor === 'string' ? descriptor : descriptor?.word ?? '').trim().toLowerCase()).filter(Boolean),
     }))
     .filter((pair) => pair.subject && pair.target && pair.descriptors.length);
-  if (!pairs.length) return { profiles: { ...profiles, relationship_matrix: '' }, rejected: String(profiles.relationship_matrix ?? '').trim() ? String(profiles.relationship_matrix).split('\n').filter(Boolean) : [] };
+  const cardPairs = extractCardRelationshipFacts(roster);
+  if (!historyPairs.length && !cardPairs.length) return { profiles: { ...profiles, relationship_matrix: '' }, rejected: String(profiles.relationship_matrix ?? '').trim() ? String(profiles.relationship_matrix).split('\n').filter(Boolean) : [] };
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').filter((line) => {
@@ -211,7 +232,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     if (!match) return true;
     const entity = match[1].trim().toLowerCase();
     const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
-    const pair = pairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const pair = cardPair ?? historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
     if (pair && exactStatus) return true;
     rejected.push(line);
@@ -283,12 +305,13 @@ export async function generateProfiles(characterName, abortCheck = null, options
     .filter((e) => e.type === 'character' || e.type === 'place')
     .map((e) => ({ name: e.name, type: e.type }));
 
+  const roster = buildCanonicalCharacterRoster(getContext());
   const prompt = buildProfileGenerationPrompt(
     characterName,
     ltText,
     sessText,
     entities,
-    formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+    formatCanonicalRosterForPrompt(roster),
     relationshipHistory,
   );
 
@@ -331,7 +354,6 @@ export async function generateProfiles(characterName, abortCheck = null, options
       return loadProfiles(characterName);
     }
 
-    const roster = buildCanonicalCharacterRoster(getContext());
     const identityReplacements = [];
     for (const field of ['character_state', 'world_state', 'relationship_matrix']) {
       const narrative = canonicalizeNarrativeNames(parsed[field], roster);
@@ -375,7 +397,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     parsed = temporalCheck.profiles;
     const speculationCheck = omitSpeculativeProfileLines(parsed);
     parsed = speculationCheck.profiles;
-    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory);
+    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster);
     parsed = relationshipCheck.profiles;
     if (fieldGrounding.rejected.length) {
       smLog(`[Smart Memory Enhanced] Omitted unsupported profile fields: ${fieldGrounding.rejected.join(', ')}.`);
