@@ -68,12 +68,14 @@ test('v0.8.14 regression fixture covers persona, provenance, arcs, relationships
   });
   assert.equal(resolveCanonicalCharacterName(data.persona.short_name, roster).canonicalName, data.persona.canonical_name);
   assert.equal(resolveCanonicalCharacterName(data.persona.historical_name, roster).canonicalName, data.persona.canonical_name);
+  assert.equal(resolveCanonicalCharacterName(data.persona.historical_short_name, roster).canonicalName, data.persona.canonical_name);
   assert.deepEqual(parseSessionOutput(data.session.input)[0].source_message_indices, data.session.expected_sources);
   assert.deepEqual(parseSessionOutput(data.session.alternate_input)[0].source_message_indices, data.session.expected_sources);
   assert.equal(parseArcOutput(data.arc.completed_confession, []).add.length, 0);
   assert.deepEqual(validateArcParticipants(data.arc.participant_output, roster, { content: data.arc.content }).names, data.arc.expected_participants);
   assert.deepEqual(canonicalizeRelationshipPair(data.relationship.subject, data.relationship.target, roster), data.relationship.expected);
   assert.deepEqual(canonicalizeRelationshipPair(data.relationship.reverse_subject, data.relationship.reverse_target, roster), data.relationship.reverse_expected);
+  assert.equal(canonicalizeRelationshipPair(data.relationship.unsupported_variant_subject, data.relationship.target, roster), null);
   const historical = resolveCanonicalCharacterName(data.historical_participant.display_name_at_time, roster);
   assert.deepEqual({ entity_id: historical.canonicalId, canonical_name: historical.canonicalName, display_name_at_time: data.historical_participant.display_name_at_time }, data.historical_participant);
 

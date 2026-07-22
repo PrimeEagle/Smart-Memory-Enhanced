@@ -7,6 +7,7 @@
     },
     "short_name": "Kyle",
     "historical_name": "Adam Lawson",
+    "historical_short_name": "Adam",
     "canonical_name": "Kyle Holland"
   },
   "session": {
@@ -26,7 +27,8 @@
     "expected": ["Kyle Holland", "Alissa Kawaguchi"],
     "reverse_subject": "Alissa Kawaguchi",
     "reverse_target": "Kyle",
-    "reverse_expected": ["Alissa Kawaguchi", "Kyle Holland"]
+    "reverse_expected": ["Alissa Kawaguchi", "Kyle Holland"],
+    "unsupported_variant_subject": "Paul Kawaguchi"
   },
   "historical_participant": {
     "display_name_at_time": "Adam Lawson",
