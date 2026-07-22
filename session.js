@@ -111,20 +111,27 @@ import { reportTierTrimStats } from './trim-stats.js';
  */
 async function verifySessionCandidates(candidates, existing) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
-    return { verified: [], superseded: new Map(), confirmed: new Set() };
+    return { verified: [], superseded: new Map(), confirmed: new Set(), dispositions: { malformed_candidate: 0, duplicate_same_pass: 0, duplicate_existing: 0 } };
   }
 
   const seen = new Set();
+  const dispositions = { malformed_candidate: 0, duplicate_same_pass: 0, duplicate_existing: 0 };
   const filtered = candidates.filter((mem) => {
     const text = String(mem.content || '').trim();
-    if (text.length < 5 || text.length > 240) return false;
+    if (text.length < 5 || text.length > 240) {
+      dispositions.malformed_candidate++;
+      return false;
+    }
     const key = `${mem.type}|${text.toLowerCase()}`;
-    if (seen.has(key)) return false;
+    if (seen.has(key)) {
+      dispositions.duplicate_same_pass++;
+      return false;
+    }
     seen.add(key);
     return true;
   });
 
-  if (filtered.length === 0) return { verified: [], superseded: new Map(), confirmed: new Set() };
+  if (filtered.length === 0) return { verified: [], superseded: new Map(), confirmed: new Set(), dispositions };
 
   const { passed, superseded, confirmed } = await batchVerify(filtered, existing);
   const verified = filtered.filter((m) =>
@@ -134,7 +141,8 @@ async function verifySessionCandidates(candidates, existing) {
         .trim(),
     ),
   );
-  return { verified, superseded, confirmed };
+  dispositions.duplicate_existing = Math.max(0, filtered.length - verified.length);
+  return { verified, superseded, confirmed, dispositions };
 }
 
 // ---- Storage (chatMetadata) ---------------------------------------------
@@ -389,6 +397,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             allowed.has(`${candidate.type}|${candidate.content}`) && (candidate.source_message_indices ?? []).length > 0,
           );
           if (repaired.length) {
+            for (const candidate of repaired) candidate.__sme_citation_repair = true;
             parsedCandidates.splice(0, parsedCandidates.length, ...repaired);
             repairRecovered = repaired.length;
           }
@@ -417,15 +426,21 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       verified: incoming,
       superseded: supersessionMap,
       confirmed: confirmedIds,
+      dispositions: verificationDispositions,
     } = await verifySessionCandidates(citedCandidates, existing);
     if (sessionDiagnostics) {
       sessionDiagnostics.validated = (sessionDiagnostics.validated ?? 0) + incoming.length;
-      const rejectedByValidation = Math.max(0, citedCandidates.length - incoming.length);
+      // `batchVerify` classifies malformed syntax and duplicates. It does not
+      // make a semantic-support rejection, so do not mislabel those terminal
+      // outcomes as one (or count the same candidate twice).
+      const rejectedByValidation = 0;
       sessionDiagnostics.rejectedByValidation = (sessionDiagnostics.rejectedByValidation ?? 0) + rejectedByValidation;
-      sessionDiagnostics.repairSemanticallyUnsupported = (sessionDiagnostics.repairSemanticallyUnsupported ?? 0) + Math.min(repairRecovered, rejectedByValidation);
       recordDisposition('semantic_support_rejected', rejectedByValidation);
+      recordDisposition('malformed_candidate', verificationDispositions.malformed_candidate);
+      recordDisposition('duplicate_same_pass', verificationDispositions.duplicate_same_pass);
+      recordDisposition('duplicate_existing', verificationDispositions.duplicate_existing);
     }
-    const acceptedAfterRepair = Math.min(repairRecovered, incoming.length);
+    const acceptedAfterRepair = incoming.filter((candidate) => candidate.__sme_citation_repair).length;
     if (sessionDiagnostics) sessionDiagnostics.repairAccepted = (sessionDiagnostics.repairAccepted ?? 0) + acceptedAfterRepair;
     recordDisposition('accepted_after_citation_repair', acceptedAfterRepair);
     recordDisposition('accepted_validated', Math.max(0, incoming.length - acceptedAfterRepair));
@@ -435,7 +450,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // to the passage that prompted the extraction.
     const context = getContext();
     const chatLen = context.chat?.length ?? 1;
-    for (const memory of incoming) validateGeneratedMemoryRecord(memory, existing);
+    for (const memory of incoming) {
+      delete memory.__sme_citation_repair;
+      validateGeneratedMemoryRecord(memory, existing);
+    }
     if (options.dryRun) {
       return {
         dryRun: true,
