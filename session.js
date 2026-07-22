@@ -375,6 +375,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const parsedCandidates = parseSessionOutput(response);
     const initiallyParsedCount = parsedCandidates.length;
     parsedCandidateCount = initiallyParsedCount;
+    // A non-empty provider response that yields no structured records is not
+    // the same as an intentional NONE. Keep the catch-up running, but expose
+    // it as a parser-quality failure instead of reporting a clean empty pass.
+    if (initiallyParsedCount === 0) {
+      if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
+      smLog('[Smart Memory Enhanced] Session extraction returned no parseable structured records.');
+      return 0;
+    }
     if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;
     // When the provider produced otherwise parseable session records but
     // omitted every citation, ask once for the *same records only* with their

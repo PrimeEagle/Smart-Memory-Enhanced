@@ -2939,6 +2939,7 @@ export function bindSettingsUI(ctrl) {
         rejectedByValidation: 0,
         providerFailures: 0,
         providerReturnedNone: 0,
+        malformedOutput: 0,
         terminalDispositions: {
           accepted_validated: 0,
           accepted_after_citation_repair: 0,
@@ -3428,6 +3429,11 @@ export function bindSettingsUI(ctrl) {
         code: 'session_provenance_quarantine_majority',
         tier: 'session',
         message: `${runResult.sessionExtraction.validated} validated, ${runResult.sessionExtraction.missingProvenance} quarantined for missing citations.`,
+      });
+      if (runResult.sessionExtraction.malformedOutput > 0) qualityReasons.push({
+        code: 'session_malformed_provider_output',
+        tier: 'session',
+        message: `${runResult.sessionExtraction.malformedOutput} session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} contained no parseable structured records.`,
       });
       if (runResult.arcPipeline.classifiedResolved >= 2 && runResult.arcPipeline.persisted === 0) qualityReasons.push({
         code: 'resolved_arcs_without_persisted_summaries',
