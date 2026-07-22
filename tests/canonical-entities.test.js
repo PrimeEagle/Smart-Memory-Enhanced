@@ -101,6 +101,9 @@ test('canonical roster rewrites a former persona label before prompt constructio
   });
   const rewritten = canonicalizeNarrativeNames('Adam Lawson discussed the plan.', personaRoster);
   assert.equal(rewritten.text, 'Kyle Holland discussed the plan.');
+  const preservedForScene = canonicalizeNarrativeNames('Adam Lawson discussed the plan.', personaRoster, { preserveHistoricalPersonaNames: true });
+  assert.equal(preservedForScene.text, 'Adam Lawson discussed the plan.');
+  assert.deepEqual(preservedForScene.replacements, []);
   const resolution = resolveCanonicalCharacterName('Adam Lawson', personaRoster);
   assert.equal(resolution.canonicalId, 'persona:kyle holland');
   assert.equal(resolution.reason, 'Historical active persona name.');

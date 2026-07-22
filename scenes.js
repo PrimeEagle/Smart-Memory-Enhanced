@@ -154,7 +154,7 @@ export function createSceneRecord(summary, messages = [], details = {}) {
   const narrativeParticipants = findCanonicalParticipantsInText(summary, roster);
   const participantReferences = [...participantResolution.references, ...narrativeParticipants.references]
     .filter((reference, index, entries) => entries.findIndex((candidate) => candidate.entity_id === reference.entity_id && candidate.display_name_at_time === reference.display_name_at_time) === index);
-  const narrativeResolution = canonicalizeNarrativeNames(summary, roster);
+  const narrativeResolution = canonicalizeNarrativeNames(summary, roster, { preserveHistoricalPersonaNames: true });
   const record = normalizeSceneRecord({
     id: generateMemoryId(),
     summary: narrativeResolution.text,

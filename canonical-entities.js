@@ -351,13 +351,17 @@ function escapeRegExp(value) {
 }
 
 /** Rewrites only deterministic roster aliases/variants in generated prose. */
-export function canonicalizeNarrativeNames(text, roster) {
+export function canonicalizeNarrativeNames(text, roster, { preserveHistoricalPersonaNames = false } = {}) {
   const replacements = [];
   const value = String(text ?? '');
   const output = value.replace(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g, (candidate) => {
     const resolution = resolveCanonicalCharacterName(candidate, roster);
     if (!resolution.canonicalName || !['resolved', 'rejected'].includes(resolution.status)) return candidate;
     if (normalize(candidate) === normalize(resolution.canonicalName)) return candidate;
+    // Scene archives retain source-era persona wording for historical context,
+    // while their participant references continue to carry the current stable
+    // persona ID. Other generated prose remains normalized by default.
+    if (preserveHistoricalPersonaNames && resolution.reason === 'Historical active persona name.') return candidate;
     replacements.push({ from: candidate, to: resolution.canonicalName, reason: resolution.reason });
     return resolution.canonicalName;
   });
