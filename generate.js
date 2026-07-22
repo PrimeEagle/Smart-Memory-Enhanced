@@ -277,6 +277,7 @@ async function generateWithConnectionProfile(
   prompt,
   priorMessages = [],
   maxTokens = getGenerationBudget(),
+  diagnosticContext = {},
 ) {
   const profileId = getConnectionProfileId();
   if (!profileId)
@@ -304,12 +305,21 @@ async function generateWithConnectionProfile(
     const requestDiagnostics = {
       provider: 'connection_profile',
       profile_id: String(profileId),
+      task: diagnosticContext.task ?? 'unspecified',
+      endpoint_category: 'connection-manager-chat-completion',
+      request_mode: priorMessages.length ? 'contextual-extraction' : 'standalone-extraction',
       http_status: Number(error?.status) || (/bad request/i.test(String(error?.message ?? '')) ? 400 : null),
       message_count: messages.length,
+      message_roles: messages.map((message) => String(message?.role ?? 'unknown')),
+      role_sequence_valid: !messages.some((message, index) => index > 0 && message?.role === messages[index - 1]?.role && message?.role !== 'system'),
+      message_normalization_applied: true,
       requested_output_tokens: limit ?? null,
       estimated_input_tokens: estimatedInputTokens,
       configured_context_tokens: contextLimit,
       estimated_total_tokens: estimatedInputTokens + (limit ?? 0),
+      prompt_character_count: String(prompt ?? '').length,
+      prompt_fingerprint: safePromptFingerprint(prompt),
+      structured_output_expected: /\[[A-Z_]+(?:[\]:])|structured (?:data|output)/i.test(String(prompt ?? '')),
       likely_cause: estimatedInputTokens + (limit ?? 0) > contextLimit
         ? 'estimated_context_overflow'
         : 'provider_rejected_request',
@@ -317,6 +327,16 @@ async function generateWithConnectionProfile(
     if (error && typeof error === 'object') error.sme_request_diagnostics = requestDiagnostics;
     throw error;
   }
+}
+
+/** A stable, non-reversible prompt marker for correlating repeated 400s. */
+function safePromptFingerprint(prompt) {
+  let hash = 2166136261;
+  for (const character of String(prompt ?? '')) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16)}`;
 }
 
 /**
@@ -521,7 +541,7 @@ async function generateOpenAICompat(
  * @param {number} [options.responseLength=600] - Max tokens to generate
  * @returns {Promise<string>} The raw model response
  */
-export async function generateMemoryExtract(prompt, { responseLength = 600 } = {}) {
+export async function generateMemoryExtract(prompt, { responseLength = 600, task = null } = {}) {
   return queueMemoryRequest(() =>
     retryTransientMemoryOperation(async () => {
       const source = getSource();
@@ -532,7 +552,7 @@ export async function generateMemoryExtract(prompt, { responseLength = 600 } = {
   } else if (source === memory_sources.openai_compatible) {
     raw = await generateOpenAICompat(prompt, []);
   } else if (source === memory_sources.connection_profile) {
-    raw = await generateWithConnectionProfile(prompt, [], responseLength);
+    raw = await generateWithConnectionProfile(prompt, [], responseLength, { task });
   } else if (source === memory_sources.webllm) {
     if (!isWebLlmSupported()) {
       console.warn(

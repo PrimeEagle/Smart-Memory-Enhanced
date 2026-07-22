@@ -250,6 +250,9 @@ test('profile validation accepts a roster object and provider failures retain sa
   assert.match(profiles, /rosterEntries\(roster\)/);
   assert.match(profiles, /getCanonicalRosterPeople/);
   assert.match(generate, /sme_request_diagnostics/);
+  for (const field of ['endpoint_category', 'message_roles', 'role_sequence_valid', 'prompt_fingerprint', 'structured_output_expected']) {
+    assert.match(generate, new RegExp(field));
+  }
   assert.match(generate, /estimated_input_tokens/);
   assert.match(generate, /likely_cause/);
   assert.match(settings, /providerFailures/);
@@ -328,11 +331,14 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
   assert.match(settings, /sessionExtraction: \{/);
-  for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'quarantined_missing_citation', 'rejected_semantically_unsupported', 'provider_failure', 'provider_returned_none']) {
+  for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'missing_provenance', 'semantic_support_rejected', 'provider_or_parser_error', 'provider_returned_none']) {
     assert.match(settings, new RegExp(disposition));
     assert.match(session, new RegExp(`recordDisposition\\('${disposition}'`));
   }
   assert.match(session, /rejectedByValidation/);
+  for (const repairField of ['repairEligible', 'repairProviderError', 'repairReturnedNone', 'repairMalformed', 'repairStillInvalid', 'repairSemanticallyUnsupported', 'repairAccepted']) {
+    assert.match(settings, new RegExp(repairField));
+  }
 });
 
 test('resolved arc classifications receive one traceable terminal summary outcome', () => {

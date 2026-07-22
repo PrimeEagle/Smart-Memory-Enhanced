@@ -671,7 +671,7 @@ async function verifyArcSummarySemantics(candidate, evidence) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await retryTransientMemoryOperation(() => generateMemoryExtract(
         applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION),
-        { responseLength: 16 },
+        { responseLength: 16, task: 'arc-summary-semantic-verification' },
       ));
       label = String(response ?? '').trim().toUpperCase();
       if (['SUPPORTED', 'AMBIGUOUS', 'UNSUPPORTED'].includes(label)) break;
@@ -700,7 +700,7 @@ export async function classifyArcResolution(arc, messages = []) {
   const prompt = buildArcResolutionClassifierPrompt({ canonicalParticipants, arc: arc?.content ?? '', history: arc?.history ?? '', evidence, scenes: sceneText });
   let label = 'INSUFFICIENT_EVIDENCE';
   try {
-    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), { responseLength: 12 });
+    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), { responseLength: 12, task: 'arc-resolution-classification' });
     const candidate = String(response ?? '').trim().toUpperCase();
     if (['RESOLVED', 'STILL_OPEN', 'ABANDONED', 'SUPERSEDED', 'INSUFFICIENT_EVIDENCE'].includes(candidate)) label = candidate;
   } catch (error) {
@@ -803,6 +803,7 @@ export async function generateArcSummary(resolvedArc, messages = []) {
   const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText, canonicalParticipants);
   const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), {
     responseLength: settings.arc_summary_response_length ?? 300,
+    task: 'arc-resolution-summary',
   });
 
   if (!response?.trim() || response.trim().toUpperCase() === 'NONE') return null;
@@ -887,7 +888,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 
     const response = await generateMemoryExtract(
       applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))), PROMPT_TASKS.ARC_EXTRACTION, characterName),
-      { responseLength: settings.arcs_response_length ?? 400 },
+      { responseLength: settings.arcs_response_length ?? 400, task: 'initial-arc-extraction' },
     );
 
     smLog('[Smart Memory Enhanced] Arc extraction response:', response);
@@ -902,11 +903,14 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     }
 
     // Parse against activeExisting so resolve indices map correctly to active arcs.
-    const { add: parsedAdd, resolve } = parseArcOutput(response, activeExisting);
+    const { add: parsedAdd, resolve, rejected: parserRejected } = parseArcOutput(response, activeExisting);
     if (arcExtraction) {
       arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
       arcExtraction.parsedCandidates = (arcExtraction.parsedCandidates ?? 0) + parsedAdd.length;
       arcExtraction.acceptedOpenThreads = (arcExtraction.acceptedOpenThreads ?? 0) + parsedAdd.length;
+      arcExtraction.rejectedCompletedEvents = (arcExtraction.rejectedCompletedEvents ?? 0) + parserRejected.filter((item) => item.reason_code === 'completed_event_not_open_thread').length;
+      const taggedArcLines = (response.match(/^\s*\[arc(?:\s*:\s*characters=[^\]]+)?\]/gim) ?? []).length;
+      arcExtraction.rejectedMalformed = (arcExtraction.rejectedMalformed ?? 0) + Math.max(0, taggedArcLines - parsedAdd.length - parserRejected.length);
       arcExtraction.terminalOutcome = 'parsed';
     }
     const roster = buildCanonicalCharacterRoster(getContext());
@@ -965,6 +969,8 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
           }
           return true;
         });
+
+        if (arcExtraction) arcExtraction.rejectedSceneDetails = (arcExtraction.rejectedSceneDetails ?? 0) + (rawAdd.length - add.length);
 
         smLog(
           `[Smart Memory Enhanced] Arc session-filter: ${rawAdd.length} candidates -> ${add.length} kept`,
