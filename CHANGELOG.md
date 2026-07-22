@@ -37,6 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for canonical roster use, source citations, structured scene participants,
   and future-facing arcs.
 
+### Migration and integrity
+
+- Flattened deterministic historical-persona alias chains directly onto the
+  active persona identity without rewriting archived narrative prose.
+- Rebuilt existing Relationship History keys after redirects, preserving
+  descriptor removals, timestamps, approval/review state, manual changes,
+  source ranges, and migration metadata instead of selecting one duplicate.
+- Added final pre-commit integrity scans for stale entity references in
+  long-term, session, card-local, scene, arc, State Ledger, and Perspectives
+  & Secrets storage. Safe deterministic repairs occur before commit; uncertain
+  records remain available for review.
+
+### Diagnostics and failure behavior
+
+- Provider HTTP 400 failures are now non-retryable, task-scoped failures with
+  sanitized request metadata; they do not masquerade as transient retry work.
+- Initial arc extraction now reports whether it was attempted, returned none,
+  produced malformed output, failed at the provider, or yielded candidates
+  later rejected as completed events, background facts, relationship states,
+  scene details, or malformed threads.
+- Session extraction accounts for parsed records through explicit terminal
+  dispositions, including same-pass/existing duplicates and malformed provider
+  output, so quality totals cannot silently omit candidates.
+
 ### Tests
 
 - Added regression coverage for historical persona short names, competing
