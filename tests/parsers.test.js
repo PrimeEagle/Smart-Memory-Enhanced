@@ -304,6 +304,20 @@ test('parseArcOutput: retains past-event setup when it explicitly leaves a threa
   assert.deepEqual(result.rejected, []);
 });
 
+test('parseArcOutput: rejects static relationships, background facts, and scene details', () => {
+  const result = parseArcOutput([
+    '[arc] Sophie is Kyle Holland\'s ex-girlfriend.',
+    '[arc] Paul Schmidt is a blacksmith in the town.',
+    '[arc] Alissa and Kyle are at the tavern.',
+  ].join('\n'), []);
+  assert.deepEqual(result.add, []);
+  assert.deepEqual(result.rejected.map((entry) => entry.reason_code), [
+    'static_relationship_state',
+    'background_fact_not_open_thread',
+    'scene_detail_not_open_thread',
+  ]);
+});
+
 test('parseArcOutput: retains explicit structured character participants', () => {
   const result = parseArcOutput(
     '[arc:characters=Kyle Holland, Sophie, invalid name] Kyle and Sophie agree to investigate the lighthouse.',

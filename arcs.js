@@ -909,6 +909,9 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       arcExtraction.parsedCandidates = (arcExtraction.parsedCandidates ?? 0) + parsedAdd.length;
       arcExtraction.acceptedOpenThreads = (arcExtraction.acceptedOpenThreads ?? 0) + parsedAdd.length;
       arcExtraction.rejectedCompletedEvents = (arcExtraction.rejectedCompletedEvents ?? 0) + parserRejected.filter((item) => item.reason_code === 'completed_event_not_open_thread').length;
+      arcExtraction.rejectedBackgroundFacts = (arcExtraction.rejectedBackgroundFacts ?? 0) + parserRejected.filter((item) => item.reason_code === 'background_fact_not_open_thread').length;
+      arcExtraction.rejectedRelationshipStates = (arcExtraction.rejectedRelationshipStates ?? 0) + parserRejected.filter((item) => item.reason_code === 'static_relationship_state').length;
+      arcExtraction.rejectedSceneDetails = (arcExtraction.rejectedSceneDetails ?? 0) + parserRejected.filter((item) => item.reason_code === 'scene_detail_not_open_thread').length;
       const taggedArcLines = (response.match(/^\s*\[arc(?:\s*:\s*characters=[^\]]+)?\]/gim) ?? []).length;
       arcExtraction.rejectedMalformed = (arcExtraction.rejectedMalformed ?? 0) + Math.max(0, taggedArcLines - parsedAdd.length - parserRejected.length);
       arcExtraction.terminalOutcome = 'parsed';

@@ -246,19 +246,31 @@ export function parseSessionOutput(text) {
  * @returns {{add: Array, resolve: number[], rejected: Array}} Arcs to add, reject, and indices to resolve.
  */
 export function isOpenArcCandidate(value) {
+  return classifyArcCandidate(value).accepted;
+}
+
+/** Returns a conservative semantic gate for new arc candidates. */
+export function classifyArcCandidate(value) {
   const content = String(value ?? '').trim();
-  if (!content) return false;
+  if (!content) return { accepted: false, reason_code: 'malformed_arc_candidate' };
   const normalized = content.toLowerCase();
   // An explicit unresolved/forward-looking signal is enough to retain a
   // candidate even when it mentions a past event as the setup for the thread.
   const openThread = /\b(?:unresolved|unknown|myster(?:y|ies)|question|whether|whoever|missing|still\s+(?:needs?|must|awaits?|remains?|has\s+to)|must\b|needs?\s+to|trying\s+to|search(?:ing)?\s+for|investigat(?:e|ing)|goal|plan(?:s|ning)?|promise[ds]?\s+to|threat(?:ens?|ened)?\s+to|conflict|tension|quest|prevent|stop|avoid|decide\s+whether)\b/i;
-  if (openThread.test(normalized)) return true;
+  if (openThread.test(normalized)) return { accepted: true };
 
   // Completed events and settled facts belong in session/long-term memory, not
   // an active-arc store. Keep this deliberately narrow: a candidate without
   // an open-thread signal is rejected only when it plainly describes closure.
   const completedEvent = /\b(?:was|were|has|have|had|is|are)\s+(?:finally\s+)?(?:completed|resolved|concluded|settled|finished|defeated|destroyed|found|returned|rescued|revealed|confessed|married|died|ended|over)\b|\b(?:completed|resolved|concluded|settled|finished|defeated|destroyed|found|returned|rescued|revealed|confessed|married|died|ended)\s+(?:the|his|her|their|a|an)\b|\b(?:escaped|returned|arrived|won)\b/i;
-  return !completedEvent.test(normalized);
+  if (completedEvent.test(normalized)) return { accepted: false, reason_code: 'completed_event_not_open_thread' };
+  const staticRelationship = /\b(?:is|are|was|were)\s+(?:(?:an?\s+)?(?:ex[- ]?(?:boyfriend|girlfriend|husband|wife|partner)|boyfriend|girlfriend|husband|wife|married|in love|friends|allies)|.{0,60}['’]s\s+(?:ex[- ]?(?:boyfriend|girlfriend|husband|wife|partner)|boyfriend|girlfriend|husband|wife|partner))\b/i;
+  if (staticRelationship.test(normalized)) return { accepted: false, reason_code: 'static_relationship_state' };
+  const backgroundFact = /\b(?:is|are|was|were)\s+(?:a|an|the)\s+(?:blacksmith|merchant|guard|noble|wizard|vampire|doctor|teacher)\b/i;
+  if (backgroundFact.test(normalized)) return { accepted: false, reason_code: 'background_fact_not_open_thread' };
+  const sceneDetail = /\b(?:is|are|was|were)\s+(?:at|in|inside|near|beside)\s+(?:the\s+)?(?:room|inn|tavern|forest|street|castle|bedroom)\b/i;
+  if (sceneDetail.test(normalized)) return { accepted: false, reason_code: 'scene_detail_not_open_thread' };
+  return { accepted: true };
 }
 
 export function parseArcOutput(text, existingArcs) {
@@ -278,8 +290,9 @@ export function parseArcOutput(text, existingArcs) {
       .filter(isPlausibleEntityName);
     const content = match[2].trim();
     if (content.length <= 15) continue;
-    if (!isOpenArcCandidate(content)) {
-      rejected.push({ content, reason_code: 'completed_event_not_open_thread' });
+    const classification = classifyArcCandidate(content);
+    if (!classification.accepted) {
+      rejected.push({ content, reason_code: classification.reason_code });
       continue;
     }
     toAdd.push({ content, ts: Date.now(), character_participants: [...new Set(participants)] });
