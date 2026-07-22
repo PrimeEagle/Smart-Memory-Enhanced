@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.16] - 2026-07-22
+
+### Fixed
+
+- Completed active-persona identity reconciliation at every matching boundary.
+  Deterministic current, case-variant, short-name, and historical-persona
+  aliases now resolve to the stable persona identity without creating a fake
+  character-card ID.
+- Rebuilt Relationship History only after canonical identity redirects are
+  available. Duplicate directional pairs now merge their descriptors, approval
+  state, manual edits, normalized evidence, and historical display labels.
+- Prevented scene narrative text from becoming independent durable
+  relationship evidence, so an unsupported scene label cannot overwrite an
+  established relationship fact.
+- Added stable canonical identity links to Perspectives & Secrets subjects and
+  targets, including immediate merge repair and final stale-reference audits.
+- Hardened State Ledger reconciliation so canonical labels and stable identity
+  links remain synchronized and idempotent after a rename or merge.
+
+### Improved
+
+- Added terminal reconciliation outcomes for identity candidates, exhaustive
+  session-candidate disposition accounting, malformed-output diagnostics, and
+  separated initial arc-extraction request diagnostics from resolved-arc work.
+- Preserved historical persona names in scene prose and structured provenance
+  while retaining the current canonical identity for graph links.
+- Bound broad Relationship History provenance into compact representative
+  evidence while retaining latest updates and manual-edit audit data.
+- Expanded privacy-safe provider diagnostics and protected extraction prompts
+  for canonical roster use, source citations, structured scene participants,
+  and future-facing arcs.
+
+### Tests
+
+- Added regression coverage for historical persona short names, competing
+  short-name ambiguity, relationship-pair rebuilding, State Ledger idempotence,
+  malformed session output, arc candidate rejection, and stable epistemic
+  identity links.
+- The complete test command passes: 217 automated tests and 48 regression
+  harness assertions.
+
 ## [0.8.15] - 2026-07-21
 
 ### Fixed
