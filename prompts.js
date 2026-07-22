@@ -209,7 +209,7 @@ EXPIRATION CLASS (choose one):
 - permanent  - should persist as a durable memory
 
 ENTITY TAGGING (optional but encouraged):
-If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use exact names from the conversation only. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
+If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use the canonical roster label when one is supplied; a historical source-used name may remain in the memory text only when grounded. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
@@ -263,7 +263,7 @@ Answer YES or NO only. Nothing else.`;
 
 export const SCENE_SUMMARY_PROMPT =
   NO_ACTION_PREAMBLE +
-  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list only the named CHARACTERS who actively participated. Do not list places, objects, organizations, or concepts. Use participant names exactly as supplied in the scene. Do not use old persona names, inferred surnames, collective labels, or parenthetical identity labels.
+  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list only the named CHARACTERS who actively participated. Do not list places, objects, organizations, or concepts. The structured participant list MUST use canonical roster identities; a historical source-used name may remain only in the narrative summary. Do not invent relationship labels or infer completed relationship facts from ambiguous wording. Do not use old persona names, inferred surnames, collective labels, or parenthetical identity labels in the structured list.
 
 Output exactly:
 [SCENE]
@@ -313,6 +313,7 @@ These are NOT arcs - do not output them:
 - Single-scene contingencies that may or may not become relevant
 - Consequences or sub-threads of the same arc - group them into one entry
 - Facts about events that already occurred, even dramatic ones
+- Completed confessions, completed decisions, static relationship states, background facts, scene descriptions, or already-resolved disputes
 
 Output format - one entry per line, two tags allowed:
   [arc:characters=Name One,Name Two] <new unresolved thread from this conversation, not already listed above>
@@ -656,7 +657,7 @@ export function buildProfileGenerationPrompt(
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing. Never phrase a current-state claim as speculation (for example, "likely", "perhaps", "seems", "might", or "could be"); omit it instead.
+${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing; directly supported unknown values may be written as "unknown". Never phrase a current-state claim as speculation (for example, "likely", "perhaps", "seems", "might", or "could be"); omit it instead.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
