@@ -69,17 +69,23 @@ test('v0.8.14 regression fixture covers persona, provenance, arcs, relationships
   assert.equal(resolveCanonicalCharacterName(data.persona.short_name, roster).canonicalName, data.persona.canonical_name);
   assert.equal(resolveCanonicalCharacterName(data.persona.historical_name, roster).canonicalName, data.persona.canonical_name);
   assert.deepEqual(parseSessionOutput(data.session.input)[0].source_message_indices, data.session.expected_sources);
+  assert.deepEqual(parseSessionOutput(data.session.alternate_input)[0].source_message_indices, data.session.expected_sources);
   assert.equal(parseArcOutput(data.arc.completed_confession, []).add.length, 0);
   assert.deepEqual(validateArcParticipants(data.arc.participant_output, roster, { content: data.arc.content }).names, data.arc.expected_participants);
   assert.deepEqual(canonicalizeRelationshipPair(data.relationship.subject, data.relationship.target, roster), data.relationship.expected);
+  assert.deepEqual(canonicalizeRelationshipPair(data.relationship.reverse_subject, data.relationship.reverse_target, roster), data.relationship.reverse_expected);
+  const historical = resolveCanonicalCharacterName(data.historical_participant.display_name_at_time, roster);
+  assert.deepEqual({ entity_id: historical.canonicalId, canonical_name: historical.canonicalName, display_name_at_time: data.historical_participant.display_name_at_time }, data.historical_participant);
 
   const graph = source('graph-migration.js');
   const arcs = source('arcs.js');
   const profiles = source('profiles.js');
   const settings = source('settings.js');
-  assert.equal(data.expected_contracts.length, 4);
+  assert.equal(data.expected_contracts.length, 6);
   assert.match(graph, /mergeCanonicalEntityAcrossStores/);
   assert.match(arcs, /terminal_status/);
   assert.match(profiles, /exactStatus/);
   assert.match(settings, /quality: runResult\.quality/);
+  assert.match(settings, new RegExp(data.quality.expected_reason));
+  assert.match(settings, /participantListsRewritten/);
 });

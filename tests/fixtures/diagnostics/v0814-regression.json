@@ -11,6 +11,7 @@
   },
   "session": {
     "input": "[development:sources=12,13] Kyle and Alissa set a boundary.",
+    "alternate_input": "[development:source_indices=12,13] Kyle and Alissa set a boundary.",
     "expected_sources": [12, 13]
   },
   "arc": {
@@ -22,12 +23,26 @@
   "relationship": {
     "subject": "Kyle",
     "target": "Alissa Kawaguchi",
-    "expected": ["Kyle Holland", "Alissa Kawaguchi"]
+    "expected": ["Kyle Holland", "Alissa Kawaguchi"],
+    "reverse_subject": "Alissa Kawaguchi",
+    "reverse_target": "Kyle",
+    "reverse_expected": ["Alissa Kawaguchi", "Kyle Holland"]
+  },
+  "historical_participant": {
+    "display_name_at_time": "Adam Lawson",
+    "canonical_name": "Kyle Holland",
+    "entity_id": "persona:kyle holland"
+  },
+  "quality": {
+    "expected_status": "degraded",
+    "expected_reason": "session_provenance_quarantine_majority"
   },
   "expected_contracts": [
     "cross-store merge",
     "arc terminal status",
     "quality degradation",
-    "exact profile relationship status"
+    "exact profile relationship status",
+    "historical participant identity",
+    "final staged save ordering"
   ]
 }

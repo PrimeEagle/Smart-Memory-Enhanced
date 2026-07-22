@@ -257,8 +257,10 @@ test('final catch-up stage order builds scenes before one complete arc pass and 
   const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
   const profileStage = settings.indexOf('await generateProfiles(name, null, { throwOnFailure: true })');
   const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
+  const stagedCommit = settings.indexOf('commitCatchUpTransaction(finalTransaction)');
   assert.ok(sceneStage >= 0 && sceneStage < arcStage);
   assert.ok(arcStage < profileStage && profileStage < reconcileStage);
+  assert.ok(reconcileStage < stagedCommit);
   assert.doesNotMatch(settings, /await extractArcs\(chunk, characterName/);
 });
 
