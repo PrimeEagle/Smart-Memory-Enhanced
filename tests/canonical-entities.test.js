@@ -274,3 +274,16 @@ test('active persona uses SillyTavern name2 and roster helpers accept object, ma
   assert.equal(getCanonicalRosterPeople({ characters: new Map(personaRoster.characters.map((entry) => [entry.canonical_id, entry])) }).length, 2);
   assert.equal(getCanonicalRosterPeople(personaRoster.characters).length, 2);
 });
+
+test('active persona short name is not guessed when a competing Kyle exists', () => {
+  const competingRoster = buildCanonicalCharacterRoster({
+    name2: 'Kyle Holland',
+    persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
+    characters: [{ id: 'other-kyle', name: 'Kyle Renner' }],
+  });
+  const ambiguous = resolveCanonicalCharacterName('Kyle', competingRoster);
+  assert.equal(ambiguous.status, 'ambiguous');
+  assert.equal(ambiguous.canonicalId, undefined);
+  assert.ok(ambiguous.candidates.includes('Kyle Holland'));
+  assert.ok(ambiguous.candidates.includes('Kyle Renner'));
+});
