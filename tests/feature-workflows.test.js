@@ -184,6 +184,8 @@ test('relationship reconciliation merges duplicate canonical pair evidence inste
   assert.match(longterm, /updatedAt: Math\.max/);
   assert.match(longterm, /Object\.entries\(history\)\.sort/);
   assert.match(longterm, /export function reconcileRelationshipHistoryMap/);
+  assert.match(longterm, /const historicalDisplayNames = \[subject, target\]/);
+  assert.match(longterm, /historical_display_names: mergeList\(state\.historical_display_names, historicalDisplayNames\)/);
   assert.match(read('ui.js'), /localRelationshipPairsMerged/);
 });
 

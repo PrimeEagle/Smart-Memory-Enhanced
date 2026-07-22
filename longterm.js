@@ -470,12 +470,16 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
       continue;
     }
     const pair = getRelationshipHistoryPair(participants[0], participants[1], roster);
+    const historicalDisplayNames = [subject, target].filter((name, index) =>
+      String(name).trim().toLowerCase() !== String(index === 0 ? pair.subject.displayName : pair.target.displayName).trim().toLowerCase(),
+    );
     const canonicalState = {
       ...state,
       subject_name: pair.subject.displayName,
       target_name: pair.target.displayName,
       subject_canonical_card_id: pair.subject.cardId,
       target_canonical_card_id: pair.target.cardId,
+      historical_display_names: mergeList(state.historical_display_names, historicalDisplayNames),
     };
     const prior = reconciled[pair.key];
     if (prior) merged++;
