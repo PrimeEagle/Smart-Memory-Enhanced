@@ -461,6 +461,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(epistemic, /subject_canonical_card_id/);
   assert.match(epistemic, /target_canonical_card_id/);
   assert.match(epistemic, /subject_display_name_at_time/);
+  assert.match(epistemic, /const resolvedTarget = resolveCanonicalCharacterName\(targetName, roster\)/);
   assert.match(longterm, /Relationship History is independently grounded evidence/);
   assert.match(longterm, /reconcileCanonicalEntityRegistry\(entityRegistry, getContext\(\), finalActive\)/);
   assert.ok(

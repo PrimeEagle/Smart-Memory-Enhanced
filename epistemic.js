@@ -239,14 +239,30 @@ export function reconcileEpistemicCanonicalNames(characterName) {
 export function remapEpistemicEntity(characterName, sourceName, targetName) {
   const entries = loadEpistemicKnowledge(characterName);
   const source = String(sourceName).trim().toLowerCase();
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const resolvedTarget = resolveCanonicalCharacterName(targetName, roster);
+  const canonicalTarget = resolvedTarget.status === 'resolved' && resolvedTarget.canonicalName
+    ? resolvedTarget.canonicalName
+    : targetName;
+  const canonicalTargetId = resolvedTarget.status === 'resolved'
+    ? resolvedTarget.canonicalId ?? null
+    : null;
   let changed = false;
   for (const entry of entries) {
     if (String(entry.subject ?? '').trim().toLowerCase() === source) {
-      entry.subject = targetName;
+      if (String(entry.subject).trim().toLowerCase() !== String(canonicalTarget).trim().toLowerCase()) {
+        entry.subject_display_name_at_time ??= entry.subject;
+      }
+      entry.subject = canonicalTarget;
+      entry.subject_canonical_card_id = canonicalTargetId;
       changed = true;
     }
     if (String(entry.target ?? '').trim().toLowerCase() === source) {
-      entry.target = targetName;
+      if (String(entry.target).trim().toLowerCase() !== String(canonicalTarget).trim().toLowerCase()) {
+        entry.target_display_name_at_time ??= entry.target;
+      }
+      entry.target = canonicalTarget;
+      entry.target_canonical_card_id = canonicalTargetId;
       changed = true;
     }
   }
