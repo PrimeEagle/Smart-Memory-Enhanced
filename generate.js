@@ -289,9 +289,34 @@ async function generateWithConnectionProfile(
   // prompt string internally using the profile's instruct template.
   const messages = normalizeConnectionProfileMessages(priorMessages, prompt);
   const limit = maxTokens > 0 ? maxTokens : undefined;
-  const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
-  // result is ExtractedData with a `.content` field containing the response text.
-  return result?.content ?? '';
+  try {
+    const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
+    // result is ExtractedData with a `.content` field containing the response text.
+    return result?.content ?? '';
+  } catch (error) {
+    // Connection profiles hide their serialized request behind SillyTavern's
+    // request service. Keep a small, content-free footprint on the error so
+    // an HTTP 400 can be diagnosed from exported catch-up diagnostics without
+    // leaking chat text or a full prompt into the browser console.
+    const estimatedInputTokens = messages.reduce((total, message) => total + estimateTokens(message.content), 0);
+    const profileContextLimit = extension_settings[MODULE_NAME]?.connection_profile_context_sizes?.[profileId];
+    const contextLimit = Number(profileContextLimit) > 0 ? Number(profileContextLimit) : getMaxContextSize(maxTokens);
+    const requestDiagnostics = {
+      provider: 'connection_profile',
+      profile_id: String(profileId),
+      http_status: Number(error?.status) || (/bad request/i.test(String(error?.message ?? '')) ? 400 : null),
+      message_count: messages.length,
+      requested_output_tokens: limit ?? null,
+      estimated_input_tokens: estimatedInputTokens,
+      configured_context_tokens: contextLimit,
+      estimated_total_tokens: estimatedInputTokens + (limit ?? 0),
+      likely_cause: estimatedInputTokens + (limit ?? 0) > contextLimit
+        ? 'estimated_context_overflow'
+        : 'provider_rejected_request',
+    };
+    if (error && typeof error === 'object') error.sme_request_diagnostics = requestDiagnostics;
+    throw error;
+  }
 }
 
 /**

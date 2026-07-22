@@ -242,6 +242,18 @@ test('profile current-state speculation is omitted instead of being stored as fa
   assert.match(settings, /speculative_fields_dropped/);
 });
 
+test('profile validation accepts a roster object and provider failures retain safe request diagnostics', () => {
+  const profiles = read('profiles.js');
+  const generate = read('generate.js');
+  const settings = read('settings.js');
+  assert.match(profiles, /function rosterEntries\(roster\)/);
+  assert.match(profiles, /rosterEntries\(roster\)/);
+  assert.match(generate, /sme_request_diagnostics/);
+  assert.match(generate, /estimated_input_tokens/);
+  assert.match(generate, /likely_cause/);
+  assert.match(settings, /providerFailures/);
+});
+
 test('run completion distinguishes operational success from tier-quality degradation', () => {
   const settings = read('settings.js');
   assert.match(settings, /quality: \{ status: 'clean', reasons: \[\] \}/);

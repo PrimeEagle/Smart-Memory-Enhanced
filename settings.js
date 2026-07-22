@@ -2917,6 +2917,7 @@ export function bindSettingsUI(ctrl) {
       retriedRequests: 0,
       extractionFailuresByTier: {},
       saveFailures: 0,
+      providerFailures: [],
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
@@ -2934,6 +2935,13 @@ export function bindSettingsUI(ctrl) {
       currentChunkFailed = true;
       if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
       if (isSave) runResult.saveFailures++;
+      if (err?.sme_request_diagnostics) {
+        runResult.providerFailures.push({
+          label,
+          tier,
+          ...err.sme_request_diagnostics,
+        });
+      }
       console.error(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
     };
     const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
