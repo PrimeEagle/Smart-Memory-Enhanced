@@ -1675,9 +1675,14 @@ export async function reconcileCanonicalEntities(characterName) {
     .map(([name]) => name);
   const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames, ...persistentRelationshipStores].filter(Boolean))];
   let relationshipStoresReconciled = 0;
+  let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
   for (const storeName of structuredStoreNames) {
-    if (reconcileRelationshipHistoryCanonicalNames(storeName)) relationshipStoresReconciled++;
+    const relationshipResult = reconcileRelationshipHistoryCanonicalNames(storeName);
+    if (relationshipResult.changed) {
+      relationshipStoresReconciled++;
+      persistentRelationshipPairsMerged += relationshipResult.merged ?? 0;
+    }
     if (reconcileEpistemicCanonicalNames(storeName)) epistemicStoresReconciled++;
   }
   const profileNames = [...new Set([...structuredStoreNames, ...Object.keys(meta.profiles ?? {})].filter(Boolean))];
@@ -1696,7 +1701,7 @@ export async function reconcileCanonicalEntities(characterName) {
     card_local_reports: localReports,
     cross_store_entity_merges: crossStoreEntityMerges,
     cross_store_references_redirected: crossStoreReferencesRedirected,
-    relationship_pairs_merged: localRelationshipPairsMerged,
+    relationship_pairs_merged: localRelationshipPairsMerged + persistentRelationshipPairsMerged,
     state_ledger_keys_reconciled: ledgerRewrites,
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
     synthetic_review_names_removed: syntheticReviewNamesRemoved,

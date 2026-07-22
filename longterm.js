@@ -441,6 +441,7 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
     };
     const prior = reconciled[pair.key];
     if (prior) merged++;
+    const manualApproved = Boolean(prior?.manual_approved || prior?.manualApproved || canonicalState?.manual_approved || canonicalState?.manualApproved);
     reconciled[pair.key] = prior
       ? {
         ...prior,
@@ -452,6 +453,14 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
         parent_memory_ids: mergeList(prior.parent_memory_ids, canonicalState.parent_memory_ids),
         evidence_ranges: mergeList(prior.evidence_ranges, canonicalState.evidence_ranges),
         manual_edits: mergeList(prior.manual_edits, canonicalState.manual_edits),
+        manual_approval_state: manualApproved ? (prior.manual_approval_state ?? canonicalState.manual_approval_state ?? 'approved') : (canonicalState.manual_approval_state ?? prior.manual_approval_state),
+        manual_approved: manualApproved,
+        descriptor_removals: mergeList(prior.descriptor_removals, canonicalState.descriptor_removals),
+        superseded_descriptors: mergeList(prior.superseded_descriptors, canonicalState.superseded_descriptors),
+        provenance: mergeList(prior.provenance, canonicalState.provenance),
+        historical_display_names: mergeList(prior.historical_display_names, canonicalState.historical_display_names),
+        source_chat_ids: mergeList(prior.source_chat_ids, canonicalState.source_chat_ids),
+        migration_metadata: mergeList(prior.migration_metadata, canonicalState.migration_metadata),
         validation_issues: mergeList(prior.validation_issues, canonicalState.validation_issues),
         updatedAt: Math.max(prior.updatedAt ?? 0, canonicalState.updatedAt ?? 0),
       }
@@ -464,7 +473,7 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
 export function reconcileRelationshipHistoryCanonicalNames(characterName) {
   const result = reconcileRelationshipHistoryMap(loadRelationshipHistory(characterName));
   if (result.changed) saveRelationshipHistory(characterName, result.history);
-  return result.changed;
+  return result;
 }
 
 /**

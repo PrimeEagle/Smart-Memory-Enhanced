@@ -306,7 +306,11 @@ test('final reconciliation canonicalizes scene and arc participant lists while r
 
 test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {
   const longterm = read('longterm.js');
+  const ui = read('ui.js');
   assert.match(longterm, /canonicalizeRelationshipPair\(subject, target, roster\)/);
+  assert.match(longterm, /manual_approval_state/);
+  assert.match(longterm, /descriptor_removals/);
+  assert.match(ui, /persistentRelationshipPairsMerged/);
   assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
   for (const field of ['source_record_ids', 'parent_memory_ids', 'evidence_ranges', 'manual_edits', 'validation_issues']) {
     assert.match(longterm, new RegExp(`${field}: mergeList`));
