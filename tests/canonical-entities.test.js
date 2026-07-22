@@ -207,11 +207,16 @@ test('integration: registry candidates collapse to the canonical card identity',
 
 test('integration: ledger variants merge without overwriting canonical fields', () => {
   const ledger = reconcileCanonicalLedger({
-    'paul|character': { mood: 'concerned', location: 'home' },
+    'paul|character': { mood: 'concerned', location: 'home', _canonical_card_id: 'legacy-paul' },
     'paul kawaguchi|character': { mood: 'worried' },
-    'paul schmidt|character': { mood: 'calm' },
+    'paul schmidt|character': { mood: 'calm', _canonical_card_id: 'stale-card-id' },
   }, roster);
-  assert.deepEqual(ledger['paul schmidt|character'], { mood: 'calm', location: 'home' });
+  assert.deepEqual(ledger['paul schmidt|character'], {
+    mood: 'calm',
+    location: 'home',
+    _name: 'Paul Schmidt',
+    _canonical_card_id: 'paul',
+  });
   assert.equal(ledger['paul|character'], undefined);
   assert.deepEqual(ledger['paul kawaguchi|character'], { mood: 'worried' });
 });

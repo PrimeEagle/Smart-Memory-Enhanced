@@ -433,8 +433,33 @@ export function reconcileCanonicalLedger(ledger, roster) {
     const resolved = resolveCanonicalCharacterName(name, roster);
     if (!resolved.canonicalName || resolved.status !== 'resolved') continue;
     const canonicalKey = `${normalize(resolved.canonicalName)}|${type}`;
-    if (canonicalKey === key) continue;
-    result[canonicalKey] = { ...fields, ...(result[canonicalKey] ?? {}) };
+    // A stable ledger key alone is not sufficient: an old card identifier can
+    // survive an earlier rename or merge and later be injected as a dangling
+    // structured reference.  The resolver gives us the safe, authoritative
+    // card link, so keep the label and ID synchronized even when the key was
+    // already canonical.
+    const canonicalFields = {
+      ...fields,
+      _name: resolved.canonicalName,
+      _canonical_card_id: resolved.canonicalId,
+    };
+    if (canonicalKey === key) {
+      // Earlier alias rows may already have contributed non-conflicting
+      // fields to this canonical key during this pass.
+      result[key] = {
+        ...canonicalFields,
+        ...(result[key] ?? {}),
+        _name: resolved.canonicalName,
+        _canonical_card_id: resolved.canonicalId,
+      };
+      continue;
+    }
+    result[canonicalKey] = {
+      ...canonicalFields,
+      ...(result[canonicalKey] ?? {}),
+      _name: resolved.canonicalName,
+      _canonical_card_id: resolved.canonicalId,
+    };
     delete result[key];
   }
   return result;
