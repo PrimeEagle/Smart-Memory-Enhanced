@@ -422,8 +422,12 @@ export async function generateProfiles(characterName, abortCheck = null, options
     const groundedRelationshipRecords = [
       ...longtermMemories,
       ...sessionMemories,
-      ...loadSceneHistory().slice(-2),
     ];
+    // Scene summaries are generated narrative derivatives. They can preserve
+    // source-era wording (including historical aliases), but are never an
+    // authority for durable relationship labels such as spouse or ex-spouse.
+    // Only directly grounded memory records, card facts, and Relationship
+    // History may validate the profile relationship matrix.
     const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster, groundedRelationshipRecords);
     parsed = relationshipCheck.profiles;
     if (relationshipCheck.rejected.length) {

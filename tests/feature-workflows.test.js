@@ -231,6 +231,8 @@ test('profile relationship lines require an exact descriptor from the establishe
   assert.match(profiles, /const pair = cardPair \?\? historyPair \?\? groundedPair/);
   assert.match(profiles, /priorRelationshipCheck/);
   assert.match(profiles, /relationship_matrix: ''/);
+  assert.match(profiles, /never an\s+\/\/ authority for durable relationship labels/);
+  assert.doesNotMatch(profiles, /groundedRelationshipRecords = \[\s*\.\.\.longtermMemories,\s*\.\.\.sessionMemories,\s*\.\.\.loadSceneHistory/);
   assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
   assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
 });
