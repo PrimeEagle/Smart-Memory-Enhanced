@@ -296,12 +296,16 @@ test('final reconciliation builds a persona-aware roster that includes approved 
 test('final reconciliation uses one cross-store entity merge operation before structured-store repair', () => {
   const graph = read('graph-migration.js');
   const ui = read('ui.js');
+  const settings = read('settings.js');
   assert.match(graph, /export function mergeCanonicalEntityAcrossStores/);
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
+  assert.match(ui, /state-ledger/);
+  assert.match(ui, /_canonical_card_id/);
+  assert.match(settings, /finalReconciliation\.integrity_audit/);
 });
 
 test('final reconciliation canonicalizes scene and arc participant lists while retaining historical display names', () => {

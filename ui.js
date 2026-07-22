@@ -1711,8 +1711,19 @@ export async function reconcileCanonicalEntities(characterName) {
   for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) auditReferences(records, `card-local:${localName}`);
   auditReferences(scenes, 'scenes', 'participant_references');
   auditReferences(arcs, 'arcs', 'participant_references');
+  // State Ledger cards use a single canonical card link rather than the
+  // memory-style `entities` list.  Check it separately so the audit covers
+  // every structured store without treating free-form state-card text as an
+  // identity reference.
+  for (const [ledgerKey, fields] of Object.entries(reconciledLedger ?? {})) {
+    const entityId = fields?._canonical_card_id;
+    if (entityId && !knownEntityIds.has(entityId)) {
+      staleEntityReferences.push({ store: 'state-ledger', record_id: ledgerKey, entity_id: entityId });
+    }
+  }
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
+    checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger'],
     duplicate_canonical_entities: [...canonicalGroups.values()].filter((entries) => entries.length > 1).map((entries) => entries.map((entity) => entity.id)),
     identity_review_items: dedupedReviewQueue.length,
     status: staleEntityReferences.length ? 'degraded' : 'clean',
