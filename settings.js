@@ -2921,6 +2921,7 @@ export function bindSettingsUI(ctrl) {
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
+      arcExtraction: { attempted: 0, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, participantRepairs: 0, participantReviewItems: 0, terminalOutcome: null },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: { emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 },
       profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
@@ -3266,6 +3267,7 @@ export function bindSettingsUI(ctrl) {
           await extractArcs(allMessages, characterName, null, {
             arcResolutionStats: runResult.arcResolution,
             arcPipeline: runResult.arcPipeline,
+            arcExtraction: runResult.arcExtraction,
           }).catch((err) => {
             recordCatchUpError('arc extraction error (final)', err, 'arcs');
           });

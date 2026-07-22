@@ -337,6 +337,9 @@ test('resolved arc classifications receive one traceable terminal summary outcom
   }
   assert.match(settings, /arcPipeline: \{ classifiedResolved: 0/);
   assert.match(settings, /arcPipeline: runResult\.arcPipeline/);
+  assert.match(settings, /arcExtraction: \{ attempted: 0/);
+  assert.match(arcs, /arcExtraction\.providerError/);
+  assert.match(arcs, /malformed_request/);
 });
 
 test('catch-up metadata writers cannot bypass staged saving', () => {

@@ -856,6 +856,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
   const settings = extension_settings[MODULE_NAME];
   if (!settings.arcs_enabled) return 0;
   const arcPipeline = options.arcPipeline;
+  const arcExtraction = options.arcExtraction;
   const traceArcTerminal = (arc, terminal_status, reason_code) => {
     if (!arcPipeline) return;
     const counter = {
@@ -869,6 +870,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
   };
 
   try {
+    if (arcExtraction) arcExtraction.attempted = (arcExtraction.attempted ?? 0) + 1;
     const rawChatHistory = messages
       .filter((m) => m.mes && !m.is_system)
       .map((m) => `${m.name}: ${m.mes}`)
@@ -890,10 +892,23 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 
     smLog('[Smart Memory Enhanced] Arc extraction response:', response);
 
-    if (!response || response.trim().toUpperCase() === 'NONE') return 0;
+    if (!response || response.trim().toUpperCase() === 'NONE') {
+      if (arcExtraction) {
+        arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
+        arcExtraction.returnedNone = (arcExtraction.returnedNone ?? 0) + 1;
+        arcExtraction.terminalOutcome = 'returned_none';
+      }
+      return 0;
+    }
 
     // Parse against activeExisting so resolve indices map correctly to active arcs.
     const { add: parsedAdd, resolve } = parseArcOutput(response, activeExisting);
+    if (arcExtraction) {
+      arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
+      arcExtraction.parsedCandidates = (arcExtraction.parsedCandidates ?? 0) + parsedAdd.length;
+      arcExtraction.acceptedOpenThreads = (arcExtraction.acceptedOpenThreads ?? 0) + parsedAdd.length;
+      arcExtraction.terminalOutcome = 'parsed';
+    }
     const roster = buildCanonicalCharacterRoster(getContext());
     const rawAdd = parsedAdd.map((arc) => {
       const sanitized = sanitizeSyntheticIdentityLabels(arc.content, roster);
@@ -910,6 +925,10 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         participant_additions: participantResolution.added,
       };
     });
+    if (arcExtraction) {
+      arcExtraction.participantRepairs = (arcExtraction.participantRepairs ?? 0) + rawAdd.reduce((count, arc) => count + (arc.participant_additions?.length ?? 0), 0);
+      arcExtraction.participantReviewItems = (arcExtraction.participantReviewItems ?? 0) + rawAdd.reduce((count, arc) => count + (arc.identity_rejections?.length ?? 0), 0);
+    }
 
     // Filter new arc candidates against current session memories using semantic
     // similarity. Scene details and established facts that slipped past the
@@ -1164,6 +1183,12 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     }
     return dedupedAdd.length;
   } catch (err) {
+    if (arcExtraction) {
+      const status = Number(err?.sme_request_diagnostics?.http_status ?? err?.status);
+      arcExtraction.providerError = (arcExtraction.providerError ?? 0) + 1;
+      if (status === 400) arcExtraction.malformedRequest = (arcExtraction.malformedRequest ?? 0) + 1;
+      arcExtraction.terminalOutcome = status === 400 ? 'malformed_request' : 'provider_error';
+    }
     console.error('[Smart Memory Enhanced] Arc extraction failed:', err);
     throw err;
   }
