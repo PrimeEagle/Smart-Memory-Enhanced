@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.15] - 2026-07-21
+
+### Fixed
+
+- Restored active-persona inclusion throughout canonical roster construction
+  and final reconciliation, so deterministic short-name and historical-persona
+  aliases resolve to one durable identity.
+- Reconciled canonical entities across persistent, session, and card-local
+  stores, including structured scene and arc participant references.
+- Canonicalized duplicate Relationship History pairs only after both sides have
+  stable identities, preserving the combined evidence and directional history.
+- Hardened session provenance repair: source indices remain mandatory, support
+  all accepted source-field forms, and are reflected in tier-quality reporting.
+- Prevented completed events and unsupported participants from entering active
+  story arcs; generated parenthetical identity labels are cleaned before
+  durable storage.
+- Strengthened profile relationship validation with the hierarchy of explicit
+  card/persona facts, approved history, and grounded recent evidence. Conflicts
+  retain the prior approved relationship matrix when available.
+- Dropped speculative current-state wording, including "implied" claims.
+
+### Improved
+
+- Added complete traceable terminal diagnostics for every classified resolved
+  arc, clearer degradation reporting, final reconciliation totals, and
+  historical participant display-name references.
+- Enforced final catch-up ordering so reconciliation completes before the
+  staged transaction commits.
+
+### Tests
+
+- Expanded the v0.8.14 regression fixture to cover alternate citation syntax,
+  bidirectional relationship canonicalization, historical persona identity
+  references, diagnostics, and staged-save ordering.
+- The complete test command passes: 211 automated tests and 48 regression
+  harness assertions.
+
 ## [0.8.14] - 2026-07-21
 
 ### Added
