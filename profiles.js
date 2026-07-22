@@ -214,7 +214,22 @@ function extractCardRelationshipFacts(roster = []) {
   return facts;
 }
 
-export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = []) {
+function extractGroundedRelationshipFacts(records = [], roster = []) {
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|friend|roommate';
+  const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const facts = [];
+  for (const record of records) {
+    const text = String(record?.content ?? record?.summary ?? '');
+    for (const match of text.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
+      const subject = resolve(match[1]);
+      const target = resolve(match[3]);
+      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), descriptors: [match[2].toLowerCase()] });
+    }
+  }
+  return facts;
+}
+
+export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = [], groundedRecords = []) {
   const profiles = { ...parsed };
   const historyPairs = Object.values(relationshipHistory ?? {})
     .map((state) => ({
@@ -224,7 +239,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     }))
     .filter((pair) => pair.subject && pair.target && pair.descriptors.length);
   const cardPairs = extractCardRelationshipFacts(roster);
-  if (!historyPairs.length && !cardPairs.length) return { profiles: { ...profiles, relationship_matrix: '' }, rejected: String(profiles.relationship_matrix ?? '').trim() ? String(profiles.relationship_matrix).split('\n').filter(Boolean) : [] };
+  const groundedPairs = extractGroundedRelationshipFacts(groundedRecords, roster);
+  if (!historyPairs.length && !cardPairs.length && !groundedPairs.length) return { profiles: { ...profiles, relationship_matrix: '' }, rejected: String(profiles.relationship_matrix ?? '').trim() ? String(profiles.relationship_matrix).split('\n').filter(Boolean) : [] };
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').filter((line) => {
@@ -233,7 +249,9 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const entity = match[1].trim().toLowerCase();
     const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
     const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
-    const pair = cardPair ?? historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const pair = cardPair ?? historyPair ?? groundedPair;
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
     if (pair && exactStatus) return true;
     rejected.push(line);
@@ -397,8 +415,21 @@ export async function generateProfiles(characterName, abortCheck = null, options
     parsed = temporalCheck.profiles;
     const speculationCheck = omitSpeculativeProfileLines(parsed);
     parsed = speculationCheck.profiles;
-    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster);
+    const groundedRelationshipRecords = [
+      ...longtermMemories,
+      ...sessionMemories,
+      ...loadSceneHistory().slice(-2),
+    ];
+    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster, groundedRelationshipRecords);
     parsed = relationshipCheck.profiles;
+    if (relationshipCheck.rejected.length) {
+      const priorRelationshipCheck = retainKnownProfileRelationships(priorProfiles ?? {}, characterName, relationshipHistory, roster, groundedRelationshipRecords);
+      const priorMatrix = String(priorRelationshipCheck.profiles.relationship_matrix ?? '').trim();
+      if (priorMatrix) {
+        parsed.relationship_matrix = priorMatrix;
+        if (!preservedPriorFields.includes('relationship_matrix')) preservedPriorFields.push('relationship_matrix');
+      }
+    }
     if (fieldGrounding.rejected.length) {
       smLog(`[Smart Memory Enhanced] Omitted unsupported profile fields: ${fieldGrounding.rejected.join(', ')}.`);
     }

@@ -223,7 +223,9 @@ test('profile relationship lines require an exact descriptor from the establishe
   const prompts = read('prompts.js');
   assert.match(profiles, /const exactStatus = pair\?\.descriptors\.some/);
   assert.match(profiles, /extractCardRelationshipFacts/);
-  assert.match(profiles, /const pair = cardPair \?\? historyPairs/);
+  assert.match(profiles, /extractGroundedRelationshipFacts/);
+  assert.match(profiles, /const pair = cardPair \?\? historyPair \?\? groundedPair/);
+  assert.match(profiles, /priorRelationshipCheck/);
   assert.match(profiles, /relationship_matrix: ''/);
   assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
   assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
