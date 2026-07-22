@@ -15,17 +15,22 @@ export function normalizeSyntheticIdentityQualifier(candidate, existingEntities 
   if (/\b(?:prototype|incarnation|mark|model)\b/i.test(qualifier) || /\d/.test(base)) {
     return { normalized_name: original, qualifier_removed: false };
   }
-  const knownQualifier = existingEntities.some((entry) => normalize(entry?.name) === normalize(qualifier));
+  const knownQualifier = existingEntities.some((entry) => normalize(entry?.name ?? entry?.canonicalName) === normalize(qualifier));
   if (/^(?:speaker|subject|mentioned by .+|context)$/i.test(qualifier) || knownQualifier || /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/.test(qualifier)) {
     return { normalized_name: base, qualifier_removed: true, qualifier_type: knownQualifier ? 'known_entity_context' : 'synthetic_disambiguator' };
   }
   return { normalized_name: original, qualifier_removed: false };
 }
 
-export function buildCanonicalCharacterRoster(context, options = {}) {
+/**
+ * Builds the authoritative identity roster for one active chat scope. Entries
+ * retain the legacy camelCase fields for existing callers and expose the
+ * canonical schema used by reconciliation and diagnostics.
+ */
+export function buildCanonicalRoster(context, scope = {}) {
   const group = context?.groupId ? context.groups?.find((entry) => String(entry.id) === String(context.groupId)) : null;
   const activeAvatars = new Set(group?.members ?? []);
-  const activeNames = new Set(options.activeNames?.map(normalize) ?? []);
+  const activeNames = new Set(scope.activeNames?.map(normalize) ?? []);
   const characters = (context?.characters ?? [])
     .filter((card) => {
       if (activeNames.size) return activeNames.has(normalize(card.name));
@@ -39,20 +44,25 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
       return {
         id: card.id ?? card.avatar ?? null,
         canonicalName,
+        canonical_id: String(card.id ?? card.avatar ?? `card:${normalize(canonicalName)}`),
+        canonical_name: canonicalName,
+        entity_type: 'character',
         aliases,
         descriptionExcerpt: String(card.description ?? '').trim().slice(0, 240),
         source: 'character-card',
+        source_type: 'character-card',
       };
     })
     .filter((entry) => entry.canonicalName);
   // The active user persona participates in the chat but is not represented
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
-  const personaName = String(options.personaName ?? context?.name1 ?? context?.userName ?? '').trim();
-  const personaRecord = options.persona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
+  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && String(message?.name ?? '').trim())?.name;
+  const personaName = String(scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.name1 ?? context?.userName ?? chatPersonaName ?? '').trim();
+  const personaRecord = scope.persona ?? scope.activePersona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
   const personaId = personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
   const personaAliases = [
-    ...(Array.isArray(options.personaAliases) ? options.personaAliases : []),
+    ...(Array.isArray(scope.personaAliases) ? scope.personaAliases : []),
     ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
     ...(Array.isArray(personaRecord?.previous_names) ? personaRecord.previous_names : []),
     personaRecord?.alias,
@@ -62,12 +72,59 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
     characters.push({
       id: `persona:${personaId}`,
       canonicalName: personaName,
+      canonical_id: `persona:${personaId}`,
+      canonical_name: personaName,
+      entity_type: 'character',
       aliases: [...new Set(personaAliases)],
       descriptionExcerpt: '',
       source: 'user-persona',
+      source_type: 'persona',
     });
   }
+  // Chat-local approved character entities are useful as roster context in a
+  // group chat but must never override a card or persona identity.
+  if (scope.includeChatLocalApproved) {
+    const meta = context?.chatMetadata?.smartMemoryEnhanced ?? {};
+    const entries = Object.values(meta.card_local_entities ?? {}).flat();
+    for (const entity of entries) {
+      if (entity?.type !== 'character' || !entity?.name || entity?.validation_status === 'needs_review') continue;
+      if (characters.some((entry) => normalize(entry.canonicalName) === normalize(entity.name))) continue;
+      characters.push({
+        id: entity.id ?? `chat-local:${normalize(entity.name)}`,
+        canonicalName: entity.name,
+        canonical_id: entity.id ?? `chat-local:${normalize(entity.name)}`,
+        canonical_name: entity.name,
+        entity_type: 'character',
+        aliases: [...new Set(entity.aliases ?? [])],
+        descriptionExcerpt: '',
+        source: 'chat-local-approved',
+        source_type: 'chat-local-approved',
+      });
+    }
+  }
   return { characters };
+}
+
+/**
+ * Removes model-created identity disambiguators from generated prose without
+ * treating ordinary parentheticals as disposable. Only qualifiers already
+ * recognized as synthetic by normalizeSyntheticIdentityQualifier are removed.
+ */
+export function sanitizeSyntheticIdentityLabels(text, roster = { characters: [] }, existingEntities = []) {
+  const known = [...(roster?.characters ?? []), ...(existingEntities ?? [])];
+  const removals = [];
+  const output = String(text ?? '').replace(/\b([A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3})\s*\(([^()\n]{1,80})\)/g, (full) => {
+    const normalized = normalizeSyntheticIdentityQualifier(full, known);
+    if (!normalized.qualifier_removed) return full;
+    removals.push({ from: full, to: normalized.normalized_name, qualifier_type: normalized.qualifier_type ?? 'synthetic_disambiguator' });
+    return normalized.normalized_name;
+  });
+  return { text: output, removals };
+}
+
+/** Backward-compatible name for callers that only need character entries. */
+export function buildCanonicalCharacterRoster(context, options = {}) {
+  return buildCanonicalRoster(context, options);
 }
 
 export function formatCanonicalRosterForPrompt(roster) {
@@ -87,7 +144,9 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
   const exact = characters.find((entry) => normalize(entry.canonicalName) === candidateNorm);
   if (exact) return resolved(candidate, exact, 'Exact canonical character-card name.');
   const aliasMatches = characters.filter((entry) => entry.aliases.some((alias) => normalize(alias) === candidateNorm));
-  if (aliasMatches.length === 1) return resolved(candidate, aliasMatches[0], 'Approved character-card alias.');
+  if (aliasMatches.length === 1) return resolved(candidate, aliasMatches[0], aliasMatches[0].source === 'user-persona'
+    ? 'Historical active persona name.'
+    : 'Approved character-card alias.');
   if (aliasMatches.length > 1) return ambiguous(candidate, aliasMatches, 'Alias matches multiple canonical characters.');
   const first = words(candidate)[0];
   const firstMatches = characters.filter((entry) => words(entry.canonicalName)[0] === first);
@@ -172,6 +231,49 @@ export function canonicalizeStructuredParticipants(participants, roster) {
   }
   result.names = [...new Set(result.names)];
   return result;
+}
+
+/**
+ * Retains structured arc participants only when the arc itself or its supplied
+ * source evidence names that person. Roster membership establishes identity;
+ * it does not establish involvement in a particular story thread.
+ */
+export function validateArcParticipants(participants, roster, { content = '', evidenceText = '' } = {}) {
+  const canonical = canonicalizeStructuredParticipants(participants, roster);
+  const supported = [];
+  const added = [];
+  const rejected = [...canonical.rejected];
+  const evidence = `${content}\n${evidenceText}`;
+  for (const name of canonical.names) {
+    const entry = (roster?.characters ?? []).find((candidate) => normalize(candidate.canonicalName) === normalize(name));
+    const references = [...new Set([name, ...(entry?.aliases ?? [])].map((reference) => String(reference ?? '').trim()).filter(Boolean))];
+    const mentioned = references.some((reference) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(reference)}(?=$|[^\\p{L}])`, 'iu').test(evidence));
+    if (mentioned) {
+      supported.push(name);
+    } else {
+      rejected.push({
+        name,
+        reason: 'Participant is not named in the arc content or supplied source evidence.',
+        canonicalName: entry?.canonicalName ?? name,
+        canonicalId: entry?.canonical_id ?? null,
+      });
+    }
+  }
+  // Structured output can omit a clearly named card/persona participant. The
+  // arc text itself is the authority for additions; broad source evidence is
+  // intentionally not used here, because it can mention unrelated speakers.
+  for (const entry of roster?.characters ?? []) {
+    const references = [...new Set([entry.canonicalName, ...(entry.aliases ?? [])].map((reference) => String(reference ?? '').trim()).filter(Boolean))];
+    if (!references.some((reference) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(reference)}(?=$|[^\\p{L}])`, 'iu').test(String(content)))) continue;
+    if (supported.includes(entry.canonicalName)) continue;
+    supported.push(entry.canonicalName);
+    added.push({ name: entry.canonicalName, reason: 'Named directly in arc content.' });
+  }
+  return { names: [...new Set(supported)], rejected, added };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Rewrites only deterministic roster aliases/variants in generated prose. */

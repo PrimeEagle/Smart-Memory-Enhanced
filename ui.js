@@ -111,9 +111,10 @@ import {
   renameEntityById,
   deleteEntityById,
   mergeEntitiesById,
+  mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -1535,7 +1536,9 @@ export async function reconcileCanonicalEntities(characterName) {
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
   const sessionMemories = loadSessionMemories();
-  const roster = buildCanonicalCharacterRoster(getContext());
+  // Final reconciliation needs the active persona plus approved chat-local
+  // characters in the same authoritative roster used for every store.
+  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
   const rewriteStoredNarratives = (memories) => memories.reduce((count, memory) => {
     if (typeof memory.content !== 'string') return count;
     const narrative = canonicalizeNarrativeNames(memory.content, roster);
@@ -1565,6 +1568,40 @@ export async function reconcileCanonicalEntities(characterName) {
     if (!relationshipResult.changed) continue;
     meta.card_local_relationships[localName] = relationshipResult.history;
     localRelationshipPairsMerged += relationshipResult.merged;
+  }
+  // A canonical name may have been repaired independently in card-local and
+  // session stores. Collapse those surviving stable-ID variants now, before
+  // any relationship or structured-store reconciliation consumes them.
+  const allReports = [ltReport, sessionReport, ...localReports];
+  let crossStoreEntityMerges = 0;
+  let crossStoreReferencesRedirected = 0;
+  for (const report of allReports) {
+    for (const merge of report.merged ?? []) {
+      if (!merge.sourceId || !merge.targetId) continue;
+      const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, getContext());
+      if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
+    }
+  }
+  const registryGroups = [ltEntities, sessionEntities, ...Object.values(meta.card_local_entities ?? {})].filter(Array.isArray);
+  const canonicalGroups = new Map();
+  for (const entity of registryGroups.flat()) {
+    const key = entity?.canonical_card_id || String(entity?.name ?? '').trim().toLowerCase();
+    if (!key || !entity?.id) continue;
+    (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
+  }
+  for (const entities of canonicalGroups.values()) {
+    if (entities.length < 2) continue;
+    // Prefer the session record as the chat-wide canonical target, then the
+    // first full-name/card-backed record. This preserves the most broadly
+    // shared graph identity without altering narrative text.
+    const target = entities.find((entity) => sessionEntities.includes(entity))
+      ?? entities.find((entity) => entity.canonical_card_id)
+      ?? entities[0];
+    for (const source of entities) {
+      if (source.id === target.id) continue;
+      const result = mergeCanonicalEntityAcrossStores(source.id, target.id, getContext());
+      if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
+    }
   }
 
   const rewriteNarrativeRecords = (records, keys) => records.reduce((count, record) => {
@@ -1598,23 +1635,45 @@ export async function reconcileCanonicalEntities(characterName) {
   const sceneRewrites = rewriteNarrativeRecords(scenes, ['summary']);
   const arcRewrites = rewriteNarrativeRecords(arcs, ['content']);
   const summaryRewrites = rewriteNarrativeRecords(summaries, ['summary', 'arc']);
+  const rewriteParticipantLists = (records) => records.reduce((count, record) => {
+    const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
+    if (!original.length) return count;
+    const canonical = canonicalizeStructuredParticipants(original, roster);
+    const references = original.flatMap((displayName) => {
+      const resolution = resolveCanonicalCharacterName(displayName, roster);
+      return resolution.status === 'resolved' && resolution.canonicalId
+        ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim() }]
+        : [];
+    });
+    const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);
+    const referencesChanged = references.length > 0 && JSON.stringify(record.participant_references ?? []) !== JSON.stringify(references);
+    if (!changed && !referencesChanged) return count;
+    record.character_participants = canonical.names;
+    if (references.length) record.participant_references = references;
+    return count + 1;
+  }, 0);
+  const sceneParticipantRewrites = rewriteParticipantLists(scenes);
+  const arcParticipantRewrites = rewriteParticipantLists(arcs);
   if (ltReport.changed || longtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
     saveSettingsDebounced();
   }
-  if (sessionReport.changed || sessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites > 0) {
+  if (sessionReport.changed || sessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites > 0 || crossStoreEntityMerges > 0) {
     await saveSessionEntityRegistry(sessionEntities);
     await saveSessionMemories(sessionMemories);
   }
-  if (sceneRewrites) await saveSceneHistory(scenes);
-  if (arcRewrites) await saveArcs(arcs);
+  if (sceneRewrites || sceneParticipantRewrites) await saveSceneHistory(scenes);
+  if (arcRewrites || arcParticipantRewrites) await saveArcs(arcs);
   if (summaryRewrites) await saveArcSummaries(summaries);
   if (ledgerRewrites) await saveStateLedger(reconciledLedger);
   const rosterCharacterNames = (roster.characters ?? [])
     .filter((entry) => entry.source === 'character-card')
     .map((entry) => entry.canonicalName);
-  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
+  const persistentRelationshipStores = Object.entries(extension_settings[MODULE_NAME]?.characters ?? {})
+    .filter(([, store]) => store?.relationship_history)
+    .map(([name]) => name);
+  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames, ...persistentRelationshipStores].filter(Boolean))];
   let relationshipStoresReconciled = 0;
   let epistemicStoresReconciled = 0;
   for (const storeName of structuredStoreNames) {
@@ -1632,7 +1691,11 @@ export async function reconcileCanonicalEntities(characterName) {
     skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
+    participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
+    persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,
     card_local_reports: localReports,
+    cross_store_entity_merges: crossStoreEntityMerges,
+    cross_store_references_redirected: crossStoreReferencesRedirected,
     relationship_pairs_merged: localRelationshipPairsMerged,
     state_ledger_keys_reconciled: ledgerRewrites,
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,

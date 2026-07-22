@@ -397,7 +397,14 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
       if (entity && resolution.canonicalId) {
         entity.canonical_card_id = resolution.canonicalId;
         entity.type = 'character';
-        entity.source = (roster.characters ?? []).find((entry) => entry.id === resolution.canonicalId)?.source ?? 'character-card';
+        const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === resolution.canonicalId);
+        entity.source = rosterEntry?.source ?? 'character-card';
+        // A prior persona name is a valid historical reference, not a rejected
+        // identity. Retain it as a durable alias on the current persona entity.
+        if (rosterEntry?.source === 'user-persona' && name.toLowerCase() !== resolvedName.toLowerCase()) {
+          entity.aliases = [...new Set([...(entity.aliases ?? []), name])];
+          entity.historical_persona_names = [...new Set([...(entity.historical_persona_names ?? []), name])];
+        }
         if (resolution.status === 'rejected') {
           entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), name])];
         }
@@ -434,7 +441,13 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     if (!target) {
       if (entity.name !== result.canonicalName) {
         const oldName = entity.name;
-        entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
+        const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
+        if (rosterEntry?.source === 'user-persona') {
+          entity.aliases = [...new Set([...(entity.aliases ?? []), entity.name])];
+          entity.historical_persona_names = [...new Set([...(entity.historical_persona_names ?? []), entity.name])];
+        } else {
+          entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
+        }
         entity.name = result.canonicalName;
         entity.canonical_card_id = result.canonicalId;
         entity.type = 'character';
@@ -447,13 +460,19 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
     target.canonical_card_id = result.canonicalId;
     target.type = 'character';
-    target.rejected_aliases = [...new Set([...(target.rejected_aliases ?? []), ...(entity.rejected_aliases ?? []), entity.name])];
+    const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
+    if (rosterEntry?.source === 'user-persona') {
+      target.aliases = [...new Set([...(target.aliases ?? []), ...(entity.aliases ?? []), entity.name])];
+      target.historical_persona_names = [...new Set([...(target.historical_persona_names ?? []), ...(entity.historical_persona_names ?? []), entity.name])];
+    } else {
+      target.rejected_aliases = [...new Set([...(target.rejected_aliases ?? []), ...(entity.rejected_aliases ?? []), entity.name])];
+    }
     for (const memory of memories) {
       if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
       memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
     }
     registry.splice(registry.indexOf(entity), 1);
-    report.merged.push({ name: entity.name, canonicalName: target.name, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
+    report.merged.push({ name: entity.name, canonicalName: target.name, sourceId: entity.id, targetId: target.id, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
     report.changed = true;
   }
   return report;
@@ -786,6 +805,67 @@ export function mergeEntitiesById(
       1,
     );
   }
+}
+
+/**
+ * Redirects one deterministic entity identity through every active storage
+ * container. Unlike the legacy two-store helper, this covers persistent,
+ * session, and card-local registries in one operation before callers save the
+ * staged metadata. Narrative text is deliberately not rewritten here; only
+ * structured identity references are redirected.
+ */
+export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = getContext()) {
+  if (!sourceId || !targetId || sourceId === targetId) return { merged: false, referencesRedirected: 0 };
+  const meta = context.chatMetadata?.[META_KEY] ?? {};
+  const characterStores = Object.values(extension_settings[MODULE_NAME]?.characters ?? {});
+  const registries = [
+    meta.sessionEntities ?? [],
+    ...Object.values(meta.card_local_entities ?? {}),
+    ...characterStores.map((store) => store?.entities ?? []),
+  ].filter(Array.isArray);
+  const memoryStores = [
+    meta.sessionMemories ?? [],
+    ...Object.values(meta.card_local_memories ?? {}),
+    ...characterStores.map((store) => store?.memories ?? []),
+  ].filter(Array.isArray);
+  const target = registries.flat().find((entity) => entity?.id === targetId);
+  if (!target) return { merged: false, referencesRedirected: 0 };
+  const sources = registries.flat().filter((entity) => entity?.id === sourceId);
+  if (!sources.length) return { merged: false, referencesRedirected: 0 };
+  if (!Array.isArray(target.aliases)) target.aliases = [];
+  for (const source of sources) {
+    for (const alias of [source.name, ...(source.aliases ?? [])].filter(Boolean)) {
+      if (String(alias).toLowerCase() !== String(target.name).toLowerCase() && !target.aliases.some((entry) => String(entry).toLowerCase() === String(alias).toLowerCase())) target.aliases.push(alias);
+    }
+    target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(source.memory_ids ?? [])])];
+    target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(source.source_record_ids ?? [])])];
+    target.last_seen = Math.max(target.last_seen ?? 0, source.last_seen ?? 0);
+  }
+  let referencesRedirected = 0;
+  for (const memories of memoryStores) {
+    for (const memory of memories) {
+      if (!Array.isArray(memory?.entities) || !memory.entities.includes(sourceId)) continue;
+      memory.entities = [...new Set(memory.entities.map((id) => id === sourceId ? targetId : id))];
+      referencesRedirected++;
+    }
+  }
+  const redirectStructuredIds = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { value.forEach(redirectStructuredIds); return; }
+    for (const [key, entry] of Object.entries(value)) {
+      if (Array.isArray(entry) && /(?:entity|participant).*ids?$/i.test(key)) {
+        const next = [...new Set(entry.map((id) => id === sourceId ? targetId : id))];
+        if (next.some((id, index) => id !== entry[index])) { value[key] = next; referencesRedirected++; }
+      } else if (typeof entry === 'string' && /(?:entity|participant|subject|target)_id$/i.test(key) && entry === sourceId) {
+        value[key] = targetId; referencesRedirected++;
+      } else if (entry && typeof entry === 'object') redirectStructuredIds(entry);
+    }
+  };
+  for (const key of ['sceneHistory', 'storyArcs', 'arcSummaries', 'profiles', 'epistemic_knowledge', 'state_ledger']) redirectStructuredIds(meta[key]);
+  for (const registry of registries) {
+    for (let index = registry.length - 1; index >= 0; index--) if (registry[index]?.id === sourceId) registry.splice(index, 1);
+  }
+  return { merged: true, referencesRedirected };
 }
 
 /**

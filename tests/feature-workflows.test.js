@@ -135,7 +135,7 @@ test('arc resolution is classified before a summary can be generated or an arc r
   const prompts = read('prompts.js');
   assert.match(arcs, /export async function classifyArcResolution/);
   assert.match(arcs, /if \(decision\.status !== 'resolved'\)/);
-  assert.match(arcs, /if \(decision\.status === 'resolved'\) resolvedArcObjects\.push/);
+  assert.match(arcs, /if \(decision\.status === 'resolved'\) \{[\s\S]*resolvedArcObjects\.push/);
   assert.match(prompts, /\[ARC RESOLUTION CLASSIFIER\]/);
   assert.match(prompts, /INSUFFICIENT_EVIDENCE/);
 });
@@ -177,7 +177,7 @@ test('profiles keep only current, evidence-supported fields', () => {
 
 test('relationship reconciliation merges duplicate canonical pair evidence instead of keeping the first pair only', () => {
   const longterm = read('longterm.js');
-  assert.match(longterm, /source_message_indices: \[\.\.\.new Set/);
+  assert.match(longterm, /source_message_indices: mergeList/);
   assert.match(longterm, /updatedAt: Math\.max/);
   assert.match(longterm, /Object\.entries\(history\)\.sort/);
   assert.match(longterm, /export function reconcileRelationshipHistoryMap/);
@@ -208,6 +208,119 @@ test('canonical reconciliation safely rewrites deterministic aliases in existing
   assert.match(ui, /relationship_stores_reconciled/);
   assert.match(ui, /epistemic_stores_reconciled/);
   assert.match(ui, /synthetic_review_names_removed/);
+});
+
+test('historical persona names remain durable aliases of the active persona identity', () => {
+  const graph = read('graph-migration.js');
+  const canonical = read('canonical-entities.js');
+  assert.match(graph, /historical_persona_names/);
+  assert.match(graph, /rosterEntry\?\.source === 'user-persona'/);
+  assert.match(canonical, /Historical active persona name/);
+});
+
+test('profile relationship lines require an exact descriptor from the established pair history', () => {
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  assert.match(profiles, /const exactStatus = pair\?\.descriptors\.some/);
+  assert.match(profiles, /extractCardRelationshipFacts/);
+  assert.match(profiles, /extractGroundedRelationshipFacts/);
+  assert.match(profiles, /const pair = cardPair \?\? historyPair \?\? groundedPair/);
+  assert.match(profiles, /priorRelationshipCheck/);
+  assert.match(profiles, /relationship_matrix: ''/);
+  assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
+  assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
+});
+
+test('profile current-state speculation is omitted instead of being stored as fact', () => {
+  const profiles = read('profiles.js');
+  const prompts = read('prompts.js');
+  const settings = read('settings.js');
+  assert.match(profiles, /export function omitSpeculativeProfileLines/);
+  assert.match(profiles, /speculative_field_rejections/);
+  assert.match(profiles, /rumou\?red\|implied\|seems/);
+  assert.match(prompts, /Never phrase a current-state claim as speculation/);
+  assert.match(settings, /speculative_fields_dropped/);
+});
+
+test('run completion distinguishes operational success from tier-quality degradation', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /quality: \{ status: 'clean', reasons: \[\] \}/);
+  assert.match(settings, /session_provenance_quarantine_majority/);
+  assert.match(settings, /resolved_arcs_without_persisted_summaries/);
+  assert.match(settings, /quality: runResult\.quality/);
+  assert.match(settings, /Data quality degraded:/);
+});
+
+test('final catch-up stage order builds scenes before one complete arc pass and reconciliation', () => {
+  const settings = read('settings.js');
+  const sceneStage = settings.indexOf("setStatusMessage('Detecting scene breaks...')");
+  const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
+  const profileStage = settings.indexOf('await generateProfiles(name, null, { throwOnFailure: true })');
+  const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
+  const stagedCommit = settings.indexOf('commitCatchUpTransaction(finalTransaction)');
+  assert.ok(sceneStage >= 0 && sceneStage < arcStage);
+  assert.ok(arcStage < profileStage && profileStage < reconcileStage);
+  assert.ok(reconcileStage < stagedCommit);
+  assert.doesNotMatch(settings, /await extractArcs\(chunk, characterName/);
+});
+
+test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
+  const ui = read('ui.js');
+  const canonical = read('canonical-entities.js');
+  assert.match(ui, /buildCanonicalCharacterRoster\(getContext\(\), \{ includeChatLocalApproved: true \}\)/);
+  assert.match(canonical, /export function buildCanonicalRoster/);
+  assert.match(canonical, /scope\.activePersona/);
+  assert.match(canonical, /source_type: 'persona'/);
+});
+
+test('final reconciliation uses one cross-store entity merge operation before structured-store repair', () => {
+  const graph = read('graph-migration.js');
+  const ui = read('ui.js');
+  assert.match(graph, /export function mergeCanonicalEntityAcrossStores/);
+  assert.match(graph, /card_local_entities/);
+  assert.match(graph, /card_local_memories/);
+  assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
+});
+
+test('final reconciliation canonicalizes scene and arc participant lists while retaining historical display names', () => {
+  const ui = read('ui.js');
+  const settings = read('settings.js');
+  assert.match(ui, /const rewriteParticipantLists/);
+  assert.match(ui, /display_name_at_time/);
+  assert.match(ui, /participant_lists_rewritten/);
+  assert.match(settings, /participantListsRewritten/);
+  assert.match(settings, /personaRosterSize/);
+});
+
+test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {
+  const longterm = read('longterm.js');
+  assert.match(longterm, /canonicalizeRelationshipPair\(subject, target, roster\)/);
+  assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
+  for (const field of ['source_record_ids', 'parent_memory_ids', 'evidence_ranges', 'manual_edits', 'validation_issues']) {
+    assert.match(longterm, new RegExp(`${field}: mergeList`));
+  }
+});
+
+test('session extraction repairs citation-only omissions once and never persists uncited candidates', () => {
+  const session = read('session.js');
+  const prompts = read('prompts.js');
+  const settings = read('settings.js');
+  assert.match(prompts, /Every output item MUST include one or more source message indices/);
+  assert.match(session, /SESSION CITATION REPAIR/);
+  assert.match(session, /Do not add, remove, reword, or combine memories/);
+  assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
+  assert.match(settings, /sessionExtraction: \{ emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 \}/);
+});
+
+test('resolved arc classifications receive one traceable terminal summary outcome', () => {
+  const arcs = read('arcs.js');
+  const settings = read('settings.js');
+  assert.match(arcs, /traceArcTerminal/);
+  for (const status of ['generator_none', 'preverification_rejected', 'verification_ambiguous', 'verification_unsupported', 'provider_error', 'persisted']) {
+    assert.match(arcs, new RegExp(`'${status}'`));
+  }
+  assert.match(settings, /arcPipeline: \{ classifiedResolved: 0/);
+  assert.match(settings, /arcPipeline: runResult\.arcPipeline/);
 });
 
 test('catch-up metadata writers cannot bypass staged saving', () => {
@@ -274,7 +387,7 @@ test('integrity round: primary provenance is prepared before verification and co
   const session = read('session.js');
   const validation = read('record-validation.js');
   assert.match(longterm, /applyDirectProvenance\(parsed, recentMessages, provenanceWindowStart/);
-  assert.match(session, /applyDirectProvenance\(parsedCandidates, recentMessages, provenanceWindowStart/);
+  assert.match(session, /applyDirectProvenance\(citedCandidates, recentMessages, provenanceWindowStart/);
   assert.match(validation, /prepareRecordForValidation/);
   assert.match(validation, /flattenConsolidationProvenance/);
   assert.match(validation, /disposable extraction candidates/);
@@ -435,6 +548,20 @@ test('Prompt Studio offers a read-only live inspector built from current evidenc
   assert.match(promptConfig, /export function getLivePromptInspection/);
   assert.match(promptConfig, /applyPromptOverride\(prompt, task, activeCharacter\)/);
   assert.match(promptConfig, /buildCanonicalCharacterRoster\(context\)/);
+});
+
+test('live prompt inspection preserves protected Session, Arc, and Profile contracts after scoped composition', () => {
+  const promptConfig = read('prompt-config.js');
+  const prompts = read('prompts.js');
+  const arcs = read('arcs.js');
+  assert.match(promptConfig, /buildSessionExtractionPrompt\(chat, session, longterm, roster\)/);
+  assert.match(promptConfig, /buildArcExtractionPrompt\(chat, arcs\.map[\s\S]*roster\)/);
+  assert.match(promptConfig, /buildProfileGenerationPrompt\(activeCharacter, longterm, session, registry, roster, relationships\)/);
+  assert.match(promptConfig, /return \{\s+prompt: applyPromptOverride/);
+  assert.match(prompts, /Every output item MUST include one or more source message indices/);
+  assert.match(prompts, /An arc must state what remains unresolved, pending, unknown, promised, required, or undecided/);
+  assert.match(prompts, /Never phrase a current-state claim as speculation/);
+  assert.match(arcs, /buildArcExtractionPrompt\(chatHistory, existingText, formatCanonicalRosterForPrompt/);
 });
 
 test('lower navigation sections have distinct theme-neutral header icons', () => {

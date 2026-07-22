@@ -353,13 +353,43 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       ? recentMessages.map((message) => message.__sme_original_index)
       : null;
     const parsedCandidates = parseSessionOutput(response);
-    applyDirectProvenance(parsedCandidates, recentMessages, provenanceWindowStart, provenanceOriginalIndices);
+    const sessionDiagnostics = options.sessionDiagnostics;
+    if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;
+    // When the provider produced otherwise parseable session records but
+    // omitted every citation, ask once for the *same records only* with their
+    // source indices. Do not rerun extraction or persist uncited candidates.
+    let repairRecovered = 0;
+    if (parsedCandidates.length > 0 && parsedCandidates.every((candidate) => !(candidate.source_message_indices ?? []).length)) {
+      if (sessionDiagnostics) sessionDiagnostics.repairAttempts = (sessionDiagnostics.repairAttempts ?? 0) + 1;
+      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return the SAME items only: preserve each type, importance, expiration, entity tags, and factual content. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${response}\n\nOutput only corrected bracketed memory lines.`;
+      const repairedResponse = await generateMemoryExtract(applyPromptOverride(repairPrompt, PROMPT_TASKS.SESSION_EXTRACTION, characterName), {
+        responseLength: settings.session_response_length ?? 500,
+      });
+      const allowed = new Set(parsedCandidates.map((candidate) => `${candidate.type}|${candidate.content}`));
+      const repaired = parseSessionOutput(repairedResponse).filter((candidate) =>
+        allowed.has(`${candidate.type}|${candidate.content}`) && (candidate.source_message_indices ?? []).length > 0,
+      );
+      if (repaired.length) {
+        parsedCandidates.splice(0, parsedCandidates.length, ...repaired);
+        repairRecovered = repaired.length;
+      }
+    }
+    const missingProvenance = parsedCandidates.filter((candidate) => !(candidate.source_message_indices ?? []).length).length;
+    if (sessionDiagnostics) {
+      sessionDiagnostics.missingProvenance = (sessionDiagnostics.missingProvenance ?? 0) + missingProvenance;
+      sessionDiagnostics.repairRecovered = (sessionDiagnostics.repairRecovered ?? 0) + repairRecovered;
+    }
+    // Uncited candidates are intentionally not stored. The repair pass above
+    // is their only chance to supply the already-required evidence.
+    const citedCandidates = parsedCandidates.filter((candidate) => (candidate.source_message_indices ?? []).length > 0);
+    applyDirectProvenance(citedCandidates, recentMessages, provenanceWindowStart, provenanceOriginalIndices);
 
     const {
       verified: incoming,
       superseded: supersessionMap,
       confirmed: confirmedIds,
-    } = await verifySessionCandidates(parsedCandidates, existing);
+    } = await verifySessionCandidates(citedCandidates, existing);
+    if (sessionDiagnostics) sessionDiagnostics.validated = (sessionDiagnostics.validated ?? 0) + incoming.length;
     if (incoming.length === 0) return 0;
 
     // Tag each new memory with the source message range so users can jump back

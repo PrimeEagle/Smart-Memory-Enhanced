@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCanonicalCharacterRoster,
+  buildCanonicalRoster,
   canonicalizeNarrativeNames,
+  resolveCanonicalCharacterName,
   deduplicateIdentityDecisions,
   normalizeSyntheticIdentityQualifier,
+  sanitizeSyntheticIdentityLabels,
   canonicalizeStructuredParticipants,
+  validateArcParticipants,
   buildIdentityReviewCandidate,
   buildStableLedgerKey,
   buildStableEntityReference,
@@ -14,7 +18,6 @@ import {
   reconcileCanonicalLedger,
   remapEntityIdInMemories,
   resolveEntityCandidate,
-  resolveCanonicalCharacterName,
 } from '../canonical-entities.js';
 
 const roster = buildCanonicalCharacterRoster({
@@ -76,6 +79,16 @@ test('canonical roster: a unique persona first name resolves without creating a 
   assert.equal(result.shouldCreateEntity, false);
 });
 
+test('canonical roster: explicit active persona scope survives contexts without name1', () => {
+  const scopedRoster = buildCanonicalRoster({ characters: [] }, {
+    activePersona: { id: 'persona-kyle', name: 'Kyle Holland', aliases: ['Kyle'] },
+  });
+  assert.equal(scopedRoster.characters[0].canonical_id, 'persona:persona-kyle');
+  assert.equal(scopedRoster.characters[0].source_type, 'persona');
+  assert.equal(resolveCanonicalCharacterName('Kyle', scopedRoster).canonicalName, 'Kyle Holland');
+  assert.equal(resolveCanonicalCharacterName('Kyle Holland', scopedRoster).canonicalName, 'Kyle Holland');
+});
+
 test('canonical roster rewrites a former persona label before prompt construction', () => {
   const personaRoster = buildCanonicalCharacterRoster({
     name1: 'Kyle Holland',
@@ -84,6 +97,9 @@ test('canonical roster rewrites a former persona label before prompt constructio
   });
   const rewritten = canonicalizeNarrativeNames('Adam Lawson discussed the plan.', personaRoster);
   assert.equal(rewritten.text, 'Kyle Holland discussed the plan.');
+  const resolution = resolveCanonicalCharacterName('Adam Lawson', personaRoster);
+  assert.equal(resolution.canonicalId, 'persona:kyle holland');
+  assert.equal(resolution.reason, 'Historical active persona name.');
 });
 
 test('identity decision metadata deduplicates while retaining evidence', () => {
@@ -122,6 +138,36 @@ test('structured scene and arc participants use canonical cards but retain unkno
   assert.deepEqual(result.names, ['Paul Schmidt', 'Sophie']);
   assert.equal(result.rejected.length, 1);
   assert.equal(result.rejected[0].name, 'Paul Kawaguchi');
+});
+
+test('synthetic parenthetical labels are removed from generated arc prose only when known synthetic', () => {
+  const roster = buildCanonicalCharacterRoster({
+    characters: [{ id: 'sophie', name: 'Sophie', description: '' }, { id: 'alissa', name: 'Alissa Kawaguchi', description: '' }],
+  });
+  const result = sanitizeSyntheticIdentityLabels('Sophie (Alissa Kawaguchi) still needs to answer the letter. Unit 01 (Prototype) remains offline.', roster);
+  assert.equal(result.text, 'Sophie still needs to answer the letter. Unit 01 (Prototype) remains offline.');
+  assert.deepEqual(result.removals, [{ from: 'Sophie (Alissa Kawaguchi)', to: 'Sophie', qualifier_type: 'known_entity_context' }]);
+});
+
+test('arc participants require support in the arc content or source evidence', () => {
+  const result = validateArcParticipants(['Paul', 'Sophie'], roster, {
+    content: 'Paul must decide whether to expose the forged treaty.',
+    evidenceText: 'Paul discussed the risk with the council.',
+  });
+  assert.deepEqual(result.names, ['Paul Schmidt']);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].name, 'Sophie');
+  assert.match(result.rejected[0].reason, /not named/i);
+});
+
+test('arc participants add canonical people explicitly named in arc content', () => {
+  const result = validateArcParticipants(['Alissa Kawaguchi'], roster, {
+    content: 'Kyle Holland and Paul Schmidt need to discuss long-term travel rules.',
+    evidenceText: '',
+  });
+  assert.deepEqual(result.names, ['Paul Schmidt']);
+  assert.deepEqual(result.added, [{ name: 'Paul Schmidt', reason: 'Named directly in arc content.' }]);
+  assert.equal(result.rejected[0].name, 'Alissa Kawaguchi');
 });
 
 test('entity resolver uses the active persona identity and keeps its stable scoped key', () => {

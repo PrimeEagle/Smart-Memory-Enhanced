@@ -243,13 +243,30 @@ export function parseSessionOutput(text) {
  *
  * @param {string} text - Raw model response.
  * @param {Array} existingArcs - The current arc list (used for resolution matching).
- * @returns {{add: Array, resolve: number[]}} Arcs to add and indices to remove.
+ * @returns {{add: Array, resolve: number[], rejected: Array}} Arcs to add, reject, and indices to resolve.
  */
+export function isOpenArcCandidate(value) {
+  const content = String(value ?? '').trim();
+  if (!content) return false;
+  const normalized = content.toLowerCase();
+  // An explicit unresolved/forward-looking signal is enough to retain a
+  // candidate even when it mentions a past event as the setup for the thread.
+  const openThread = /\b(?:unresolved|unknown|myster(?:y|ies)|question|whether|whoever|missing|still\s+(?:needs?|must|awaits?|remains?|has\s+to)|must\b|needs?\s+to|trying\s+to|search(?:ing)?\s+for|investigat(?:e|ing)|goal|plan(?:s|ning)?|promise[ds]?\s+to|threat(?:ens?|ened)?\s+to|conflict|tension|quest|prevent|stop|avoid|decide\s+whether)\b/i;
+  if (openThread.test(normalized)) return true;
+
+  // Completed events and settled facts belong in session/long-term memory, not
+  // an active-arc store. Keep this deliberately narrow: a candidate without
+  // an open-thread signal is rejected only when it plainly describes closure.
+  const completedEvent = /\b(?:was|were|has|have|had|is|are)\s+(?:finally\s+)?(?:completed|resolved|concluded|settled|finished|defeated|destroyed|found|returned|rescued|revealed|confessed|married|died|ended|over)\b|\b(?:completed|resolved|concluded|settled|finished|defeated|destroyed|found|returned|rescued|revealed|confessed|married|died|ended)\s+(?:the|his|her|their|a|an)\b|\b(?:escaped|returned|arrived|won)\b/i;
+  return !completedEvent.test(normalized);
+}
+
 export function parseArcOutput(text, existingArcs) {
-  if (!text || text.trim().toUpperCase() === 'NONE') return { add: [], resolve: [] };
+  if (!text || text.trim().toUpperCase() === 'NONE') return { add: [], resolve: [], rejected: [] };
 
   const toAdd = [];
   const toResolve = [];
+  const rejected = [];
 
   const addPattern = /^\[arc(?:\s*:\s*characters=([^\]]+))?\]\s+(.+)$/gim;
   const resolvedPattern = /^\[resolved\]\s+(.+)$/gim;
@@ -260,10 +277,12 @@ export function parseArcOutput(text, existingArcs) {
       .filter((name) => /^[A-Z][A-Za-z]*(?:[ -][A-Z][A-Za-z]*){0,3}$/.test(name))
       .filter(isPlausibleEntityName);
     const content = match[2].trim();
-    // Require a minimum length to filter obvious noise; rely on the prompt
-    // to distinguish arcs from facts rather than vocabulary-based signals,
-    // which reject valid arcs from models that phrase threads as noun phrases.
-    if (content.length > 15) toAdd.push({ content, ts: Date.now(), character_participants: [...new Set(participants)] });
+    if (content.length <= 15) continue;
+    if (!isOpenArcCandidate(content)) {
+      rejected.push({ content, reason_code: 'completed_event_not_open_thread' });
+      continue;
+    }
+    toAdd.push({ content, ts: Date.now(), character_participants: [...new Set(participants)] });
   }
 
   while ((match = resolvedPattern.exec(text)) !== null) {
@@ -289,7 +308,7 @@ export function parseArcOutput(text, existingArcs) {
   }
 
   // Deduplicate resolved indices in case multiple [resolved] lines matched the same arc.
-  return { add: toAdd, resolve: [...new Set(toResolve)] };
+  return { add: toAdd, resolve: [...new Set(toResolve)], rejected };
 }
 
 // ---- Structured scene summary parser -----------------------------------

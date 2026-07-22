@@ -79,7 +79,7 @@ import {
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
 import { flattenConsolidationProvenance, isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
-import { buildCanonicalCharacterRoster, buildStableRelationshipPair, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildStableRelationshipPair, canonicalizeNarrativeNames, canonicalizeRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
   buildLongtermConsolidationPrompt,
@@ -412,12 +412,26 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
   const reconciled = {};
   let changed = false;
   let merged = 0;
+  let unresolved = 0;
+  const mergeList = (left, right) => [...new Set([...(left ?? []), ...(right ?? [])].filter(Boolean))];
+  const normalizedDescriptors = (descriptors, fallbackMagnitude = 'medium') => (descriptors ?? []).map((item) =>
+    typeof item === 'string' ? { word: item, magnitude: fallbackMagnitude } : item,
+  ).filter((item) => item?.word);
   // Process oldest first so a conflicting descriptor magnitude from the most
   // recent grounded update wins deterministically during pair coalescence.
   for (const [key, state] of Object.entries(history).sort(([, left], [, right]) => (left?.updatedAt ?? 0) - (right?.updatedAt ?? 0))) {
     const { subject, target } = getRelationshipHistoryPairDisplay(key, state);
     if (!subject || !target) { reconciled[key] = state; continue; }
-    const pair = getRelationshipHistoryPair(subject, target, roster);
+    // A relationship key is valid only when both directions resolve to a
+    // stable character/persona identity. Preserve an unresolvable legacy
+    // record for review rather than silently assigning it a name-based key.
+    const participants = canonicalizeRelationshipPair(subject, target, roster);
+    if (!participants) {
+      reconciled[key] = { ...state, validation_status: state.validation_status ?? 'needs_review', validation_issues: mergeList(state.validation_issues, ['Relationship participants could not be resolved to stable canonical identities.']) };
+      unresolved++;
+      continue;
+    }
+    const pair = getRelationshipHistoryPair(participants[0], participants[1], roster);
     const canonicalState = {
       ...state,
       subject_name: pair.subject.displayName,
@@ -431,15 +445,20 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
       ? {
         ...prior,
         ...canonicalState,
-        descriptors: [...new Map([...(prior.descriptors ?? []), ...(canonicalState.descriptors ?? [])].map((item) => [item.word, item])).values()],
-        source_message_indices: [...new Set([...(prior.source_message_indices ?? []), ...(canonicalState.source_message_indices ?? [])])].sort((a, b) => a - b),
-        last_update_source_indices: [...new Set([...(prior.last_update_source_indices ?? []), ...(canonicalState.last_update_source_indices ?? [])])].sort((a, b) => a - b),
+        descriptors: [...new Map([...normalizedDescriptors(prior.descriptors), ...normalizedDescriptors(canonicalState.descriptors)].map((item) => [item.word, item])).values()],
+        source_message_indices: mergeList(prior.source_message_indices, canonicalState.source_message_indices).filter(Number.isInteger).sort((a, b) => a - b),
+        last_update_source_indices: mergeList(prior.last_update_source_indices, canonicalState.last_update_source_indices).filter(Number.isInteger).sort((a, b) => a - b),
+        source_record_ids: mergeList(prior.source_record_ids, canonicalState.source_record_ids),
+        parent_memory_ids: mergeList(prior.parent_memory_ids, canonicalState.parent_memory_ids),
+        evidence_ranges: mergeList(prior.evidence_ranges, canonicalState.evidence_ranges),
+        manual_edits: mergeList(prior.manual_edits, canonicalState.manual_edits),
+        validation_issues: mergeList(prior.validation_issues, canonicalState.validation_issues),
         updatedAt: Math.max(prior.updatedAt ?? 0, canonicalState.updatedAt ?? 0),
       }
       : canonicalState;
     changed ||= pair.key !== key || JSON.stringify(canonicalState) !== JSON.stringify(state);
   }
-  return { history: reconciled, changed, merged };
+  return { history: reconciled, changed, merged, unresolved };
 }
 
 export function reconcileRelationshipHistoryCanonicalNames(characterName) {

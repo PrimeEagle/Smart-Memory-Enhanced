@@ -70,7 +70,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, sanitizeSyntheticIdentityLabels, validateArcParticipants } from './canonical-entities.js';
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
@@ -175,12 +175,16 @@ async function deduplicateArcs(arcs) {
 // ---- Storage ------------------------------------------------------------
 
 function normalizeArcRecord(arc, context = getContext()) {
+  const roster = buildCanonicalCharacterRoster(context);
+  const sanitized = sanitizeSyntheticIdentityLabels(arc?.content, roster);
   const participantResolution = canonicalizeStructuredParticipants(
     arc?.character_participants,
-    buildCanonicalCharacterRoster(context),
+    roster,
   );
   return {
     ...arc,
+    content: sanitized.text,
+    synthetic_identity_labels_removed: [...(arc?.synthetic_identity_labels_removed ?? []), ...sanitized.removals],
     character_participants: participantResolution.names,
     identity_rejections: deduplicateIdentityDecisions([...(arc?.identity_rejections ?? []), ...participantResolution.rejected], 'arc'),
   };
@@ -851,6 +855,18 @@ export async function generateArcSummary(resolvedArc, messages = []) {
 export async function extractArcs(messages, characterName = null, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.arcs_enabled) return 0;
+  const arcPipeline = options.arcPipeline;
+  const traceArcTerminal = (arc, terminal_status, reason_code) => {
+    if (!arcPipeline) return;
+    const counter = {
+      persisted: 'persisted', generator_none: 'generatorNone', generator_malformed: 'generatorMalformed',
+      preverification_rejected: 'preverificationRejected', verification_ambiguous: 'verifiedAmbiguous',
+      verification_unsupported: 'verifiedUnsupported', provider_error: 'providerError',
+    }[terminal_status];
+    if (counter) arcPipeline[counter] = (arcPipeline[counter] ?? 0) + 1;
+    if (terminal_status === 'persisted') arcPipeline.verifiedSupported = (arcPipeline.verifiedSupported ?? 0) + 1;
+    (arcPipeline.records ??= []).push({ arc_id: arc?.id ?? null, terminal_status, reason_code });
+  };
 
   try {
     const rawChatHistory = messages
@@ -868,7 +884,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const chatHistory = canonicalizeNarrativeNames(rawChatHistory, buildCanonicalCharacterRoster(getContext())).text;
 
     const response = await generateMemoryExtract(
-      applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText), PROMPT_TASKS.ARC_EXTRACTION, characterName),
+      applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))), PROMPT_TASKS.ARC_EXTRACTION, characterName),
       { responseLength: settings.arcs_response_length ?? 400 },
     );
 
@@ -880,11 +896,18 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const { add: parsedAdd, resolve } = parseArcOutput(response, activeExisting);
     const roster = buildCanonicalCharacterRoster(getContext());
     const rawAdd = parsedAdd.map((arc) => {
-      const participantResolution = canonicalizeStructuredParticipants(arc.character_participants, roster);
+      const sanitized = sanitizeSyntheticIdentityLabels(arc.content, roster);
+      const participantResolution = validateArcParticipants(arc.character_participants, roster, {
+        content: sanitized.text,
+        evidenceText: rawChatHistory,
+      });
       return {
         ...arc,
+        content: sanitized.text,
+        synthetic_identity_labels_removed: sanitized.removals,
         character_participants: participantResolution.names,
         identity_rejections: participantResolution.rejected,
+        participant_additions: participantResolution.added,
       };
     });
 
@@ -948,7 +971,10 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     for (const candidate of resolve.map((i) => activeExisting[i]).filter(Boolean)) {
       const decision = await classifyArcResolution(candidate, messages);
       if (options.arcResolutionStats) options.arcResolutionStats[decision.status] = (options.arcResolutionStats[decision.status] ?? 0) + 1;
-      if (decision.status === 'resolved') resolvedArcObjects.push({ ...candidate, resolution_decision: decision });
+      if (decision.status === 'resolved') {
+        if (arcPipeline) arcPipeline.classifiedResolved = (arcPipeline.classifiedResolved ?? 0) + 1;
+        resolvedArcObjects.push({ ...candidate, resolution_decision: decision });
+      }
       else smLog(`[Smart Memory Enhanced] Arc remains active: ${candidate.content.slice(0, 60)} (${decision.reason_code}).`);
     }
 
@@ -958,8 +984,27 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       const arcSummaries = loadArcSummaries();
       for (const resolved of resolvedArcObjects) {
         try {
+          if (arcPipeline) arcPipeline.generationAttempted = (arcPipeline.generationAttempted ?? 0) + 1;
           const result = await generateArcSummary(resolved, messages);
-          if (result) {
+          if (!result) {
+            traceArcTerminal(resolved, 'generator_none', 'summary_generator_returned_none');
+          } else {
+            let terminalStatus = 'persisted';
+            let terminalReason = 'summary_persisted';
+            if (result.deterministicVerification?.semantic_support === 'unsupported') {
+              terminalStatus = 'preverification_rejected';
+              terminalReason = result.deterministicVerification.reason_code ?? 'deterministic_preverification_rejected';
+            } else if (result.semanticVerification?.semantic_support === 'unsupported') {
+              terminalStatus = 'verification_unsupported';
+              terminalReason = 'semantic_verification_unsupported';
+            } else if (result.semanticVerification?.semantic_support !== 'supported') {
+              terminalStatus = 'verification_ambiguous';
+              terminalReason = 'semantic_verification_ambiguous';
+            }
+
+            // Store every generated record, including rejected and ambiguous ones,
+            // so the review workflow retains the evidence rather than silently
+            // discarding it. Injection remains restricted to approved records.
             const summaryRecord = {
               id: generateMemoryId(),
               summary: result.summary,
@@ -977,6 +1022,8 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
               validation_issues: result.semanticVerification?.reason ? [result.semanticVerification.reason] : [],
               deterministic_rejection_reason: result.deterministicVerification?.reason_code ?? null,
               verification_state: 'provenance_attached',
+              arc_pipeline_terminal_status: terminalStatus,
+              arc_pipeline_reason_code: terminalReason,
               resolution_decision: {
                 status: resolved.resolution_decision.status,
                 confidence: resolved.resolution_decision.confidence,
@@ -985,10 +1032,12 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
               },
             };
             arcSummaries.push(summaryRecord);
+            traceArcTerminal(resolved, terminalStatus, terminalReason);
             smLog(`[Smart Memory Enhanced] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
           }
         } catch (err) {
           console.error('[Smart Memory Enhanced] Arc summary generation failed:', err);
+          traceArcTerminal(resolved, 'provider_error', 'summary_provider_error');
           // Non-fatal - arc is still resolved even if summarization fails.
         }
       }

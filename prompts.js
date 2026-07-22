@@ -213,7 +213,7 @@ If the memory involves specific NAMED entities, append :entity=Name/type pairs i
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
-The supplied conversation messages are numbered from 0 upward. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
+The supplied conversation messages are numbered from 0 upward. Every output item MUST include one or more source message indices from that numbered excerpt. Do not emit an item without supporting source indices. Use only indices shown in the source excerpt. The source field is mandatory: write :sources=1,2 inside every bracket. If no message supports a claim, omit it.
 
 One item per line, exact format:
 [scene:2:scene:sources=0] <ENTITY_A> is at <LOCATION> during the current scene.
@@ -289,7 +289,7 @@ export function buildSceneSummaryPrompt(sceneText, canonicalRoster = '') {
  * @param {string} existingArcs - Already-tracked arcs as [arc] lines (may be empty).
  * @returns {string} The complete prompt string.
  */
-export function buildArcExtractionPrompt(chatHistory, existingArcs) {
+export function buildArcExtractionPrompt(chatHistory, existingArcs, canonicalRoster = '') {
   const existingSection = existingArcs
     ? `EXISTING OPEN ARCS (read-only context - do not copy, annotate, or re-output these):\n${existingArcs}\n\n`
     : '';
@@ -298,12 +298,15 @@ export function buildArcExtractionPrompt(chatHistory, existingArcs) {
     NO_ACTION_PREAMBLE +
     `[STORY ARC EXTRACTION - Do NOT roleplay. Output structured data only.]
 
-${existingSection}CONVERSATION:\n${chatHistory}
+${canonicalRoster}${existingSection}CONVERSATION:\n${chatHistory}
 
 ---
 Extract the most significant open story threads from the conversation: unresolved conflicts, unfulfilled promises, active character goals, open mysteries, and tensions that have not yet played out. Aim for the 3-5 threads that matter most to the story - do not list every detail that has not resolved.
 
 An arc is something still in motion across the story - a question not yet answered, a goal not yet reached, a conflict still active. Do NOT output facts about things that already happened and are over.
+An arc must state what remains unresolved, pending, unknown, promised, required, or undecided. Use canonical participant names only; never use synthetic parenthetical identity labels.
+
+Before outputting [arc], apply this gate: could this entry still change what happens next? If the answer is no, it is a completed event or established fact, not an arc. A past event is allowed only when it directly leaves a named question, goal, promise, conflict, threat, or mystery still open.
 
 These are NOT arcs - do not output them:
 - Tactical details or logistical information ("the south gate is unguarded after midnight")
@@ -320,6 +323,7 @@ Examples (abstract only; never copy these details):
   [arc] The identity of whoever burned the granary is still unknown.
   [resolved] The missing heir was found alive in the northern keep.
   NOT an arc: "Kira was captured by the guards." - this is a fact, not an open thread.
+  NOT an arc: "Kira escaped the guards and returned home." - this is a completed event, not an open thread.
   NOT an arc: "The back door is unlocked." - this is a tactical detail, not a story thread.
 
 Only output [arc] for threads that are NEW in this conversation - do not re-output existing arcs.
@@ -621,6 +625,7 @@ export function buildProfileGenerationPrompt(
   sessionMemories,
   entities = [],
   canonicalRoster = '',
+  relationshipHistory = {},
 ) {
   const ltSection = longtermMemories
     ? `LONG-TERM MEMORIES:\n${longtermMemories}\n\n`
@@ -636,12 +641,22 @@ export function buildProfileGenerationPrompt(
       : '';
 
   const charLabel = characterName || 'the character';
+  const relationshipEvidence = Object.values(relationshipHistory ?? {})
+    .map((state) => {
+      const subject = String(state?.subject_name ?? '').trim();
+      const target = String(state?.target_name ?? '').trim();
+      const descriptors = (state?.descriptors ?? []).map((entry) => typeof entry === 'string' ? entry : entry?.word).filter(Boolean);
+      return subject && target && descriptors.length ? `${subject} -> ${target}: ${descriptors.join(', ')}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+  const relationshipSection = relationshipEvidence ? `RELATIONSHIP HISTORY (authoritative current descriptors):\n${relationshipEvidence}\n\n` : '';
 
   return (
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing.
+${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing. Never phrase a current-state claim as speculation (for example, "likely", "perhaps", "seems", "might", or "could be"); omit it instead.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 
@@ -662,6 +677,7 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 <relationship_matrix>
 [EntityName] ([type]): [directional one-line state] [confidence: 0.X]
 (one line per entity from the KNOWN ENTITIES list; omit this section entirely if no entities are known)
+For each relationship line, use at least one exact descriptor from RELATIONSHIP HISTORY for that same pair. Do not upgrade, reinterpret, or substitute a status (for example, do not turn "trust" into "romantic" or "family"). If that pair has no listed descriptor, omit the line.
 </relationship_matrix>`
   );
 }
