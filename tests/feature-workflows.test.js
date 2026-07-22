@@ -319,6 +319,9 @@ test('relationship reconciliation requires stable canonical participants and pre
   assert.match(ui, /persistentRelationshipPairsMerged/);
   assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
   assert.match(longterm, /compactRelationshipProvenance/);
+  for (const field of ['supporting_source_indices', 'supporting_source_ranges', 'latest_update_indices', 'latest_update_range', 'historical_evidence_count', 'historical_evidence_digest']) {
+    assert.match(longterm, new RegExp(field));
+  }
   for (const field of ['source_record_ids', 'parent_memory_ids', 'evidence_ranges', 'manual_edits', 'validation_issues']) {
     assert.match(longterm, new RegExp(`${field}: mergeList`));
   }

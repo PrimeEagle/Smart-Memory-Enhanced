@@ -418,10 +418,24 @@ export function compactRelationshipProvenance(state = {}) {
     if (sortNumeric) unique.sort((left, right) => left - right);
     return unique.length > limit ? unique.slice(-limit) : unique;
   };
+  const allSupportingIndices = [...new Set((state.supporting_source_indices ?? state.source_message_indices ?? []).filter(Number.isInteger))].sort((left, right) => left - right);
+  const supportingSourceIndices = compact(allSupportingIndices, 96, true);
+  const historicalEvidenceCount = Number(state.historical_evidence_count ?? 0) + Math.max(0, allSupportingIndices.length - supportingSourceIndices.length);
+  const latestUpdateIndices = compact(state.latest_update_indices ?? state.last_update_source_indices, 24, true);
   return {
     ...state,
-    source_message_indices: compact(state.source_message_indices, 96, true),
-    last_update_source_indices: compact(state.last_update_source_indices, 24, true),
+    // New explicit fields are the compact relationship-audit contract. Keep
+    // the legacy names synchronized for compatibility with existing records.
+    supporting_source_indices: supportingSourceIndices,
+    supporting_source_ranges: compact(state.supporting_source_ranges ?? state.evidence_ranges, 48),
+    latest_update_indices: latestUpdateIndices,
+    latest_update_range: compact(state.latest_update_range ?? latestUpdateIndices, 24, true),
+    historical_evidence_count: historicalEvidenceCount,
+    historical_evidence_digest: historicalEvidenceCount
+      ? `Omitted ${historicalEvidenceCount} older repeated evidence index${historicalEvidenceCount === 1 ? '' : 'es'}; representative recent evidence retained.`
+      : null,
+    source_message_indices: supportingSourceIndices,
+    last_update_source_indices: latestUpdateIndices,
     source_record_ids: compact(state.source_record_ids, 80),
     parent_memory_ids: compact(state.parent_memory_ids, 80),
     evidence_ranges: compact(state.evidence_ranges, 48),
