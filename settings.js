@@ -3426,6 +3426,11 @@ export function bindSettingsUI(ctrl) {
         tier: 'identity',
         message: `${identityFailures} identity reconciliation candidates need review.`,
       });
+      if ((reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) > 0) qualityReasons.push({
+        code: 'cross_store_stale_entity_references',
+        tier: 'identity',
+        message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
+      });
       runResult.quality = { status: qualityReasons.length ? 'degraded' : 'clean', reasons: qualityReasons };
       maybeInjectUnified();
       updateTokenDisplay();

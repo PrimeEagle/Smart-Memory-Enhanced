@@ -1690,6 +1690,33 @@ export async function reconcileCanonicalEntities(characterName) {
   for (const profileName of profileNames) {
     if (await reconcileProfileCanonicalNames(profileName)) profilesReconciled++;
   }
+  // Final read-only integrity audit. Reconciliation has already applied every
+  // safe redirect above; this catches a dangling reference before the staged
+  // transaction commits, without deleting uncertain user data.
+  const knownEntityIds = new Set([
+    ...registryGroups.flat().map((entity) => entity?.id),
+    ...(roster.characters ?? []).map((entry) => entry?.id),
+  ].filter(Boolean));
+  const staleEntityReferences = [];
+  const auditReferences = (records, store, field = 'entities') => {
+    for (const record of records ?? []) {
+      for (const id of record?.[field] ?? []) {
+        const entityId = typeof id === 'string' ? id : id?.entity_id;
+        if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
+      }
+    }
+  };
+  auditReferences(longtermMemories, 'longterm');
+  auditReferences(sessionMemories, 'session');
+  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) auditReferences(records, `card-local:${localName}`);
+  auditReferences(scenes, 'scenes', 'participant_references');
+  auditReferences(arcs, 'arcs', 'participant_references');
+  const integrityAudit = {
+    stale_entity_references: staleEntityReferences,
+    duplicate_canonical_entities: [...canonicalGroups.values()].filter((entries) => entries.length > 1).map((entries) => entries.map((entity) => entity.id)),
+    identity_review_items: dedupedReviewQueue.length,
+    status: staleEntityReferences.length ? 'degraded' : 'clean',
+  };
   return {
     matched: [...ltReport.matched, ...sessionReport.matched, ...localReports.flatMap((report) => report.matched)],
     merged: [...ltReport.merged, ...sessionReport.merged, ...localReports.flatMap((report) => report.merged)],
@@ -1709,6 +1736,7 @@ export async function reconcileCanonicalEntities(characterName) {
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
+    integrity_audit: integrityAudit,
   };
 }
 
