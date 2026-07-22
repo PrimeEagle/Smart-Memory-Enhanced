@@ -2922,8 +2922,8 @@ export function bindSettingsUI(ctrl) {
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: { emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 },
-      profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0 },
-      finalReconciliation: { persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0 },
+      profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      finalReconciliation: { persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       quality: { status: 'clean', reasons: [] },
     };
     let currentChunkFailed = false;
@@ -3303,6 +3303,9 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
             runResult.profiles.prior_fields_preserved += profiles.preserved_prior_fields?.length ?? 0;
             runResult.profiles.relationship_conflicts_dropped += profiles.relationship_field_rejections ?? 0;
+            runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
+            runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
+            runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
           }
         }
         // If the selected character wasn't in the group (edge case), inject
@@ -3355,6 +3358,14 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.relationship_pairs_merged = (reconciliation.relationship_pairs_merged ?? 0) + reconciliation.merged.filter((entry) => entry.reason_code === 'canonical_duplicate_merge').length;
       runResult.finalReconciliation.synthetic_parentheticals_removed = reconciliation.matched.filter((entry) => /synthetic|parenthetical/i.test(entry.match ?? '')).length + (reconciliation.synthetic_review_names_removed ?? 0);
       runResult.finalReconciliation.identity_decision_duplicates_removed = reconciliation.identity_decision_duplicates_removed ?? 0;
+      runResult.finalReconciliation.persona_roster_size = reconciliation.persona_roster_size ?? 0;
+      runResult.finalReconciliation.participant_lists_rewritten = reconciliation.participant_lists_rewritten ?? 0;
+      runResult.finalReconciliation.personaRosterSize = runResult.finalReconciliation.persona_roster_size;
+      runResult.finalReconciliation.personaAliasesMerged = runResult.finalReconciliation.persona_aliases_merged;
+      runResult.finalReconciliation.cardLocalEntitiesMerged = runResult.finalReconciliation.card_local_entities_merged;
+      runResult.finalReconciliation.relationshipPairsMerged = runResult.finalReconciliation.relationship_pairs_merged;
+      runResult.finalReconciliation.participantListsRewritten = runResult.finalReconciliation.participant_lists_rewritten;
+      runResult.finalReconciliation.syntheticParentheticalsRemoved = runResult.finalReconciliation.synthetic_parentheticals_removed;
       const qualityReasons = [];
       const sessionFailureRatio = runResult.sessionExtraction.emitted > 0
         ? runResult.sessionExtraction.missingProvenance / runResult.sessionExtraction.emitted

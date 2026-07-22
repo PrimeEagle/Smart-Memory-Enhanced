@@ -114,7 +114,7 @@ import {
   mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -1635,6 +1635,25 @@ export async function reconcileCanonicalEntities(characterName) {
   const sceneRewrites = rewriteNarrativeRecords(scenes, ['summary']);
   const arcRewrites = rewriteNarrativeRecords(arcs, ['content']);
   const summaryRewrites = rewriteNarrativeRecords(summaries, ['summary', 'arc']);
+  const rewriteParticipantLists = (records) => records.reduce((count, record) => {
+    const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
+    if (!original.length) return count;
+    const canonical = canonicalizeStructuredParticipants(original, roster);
+    const references = original.flatMap((displayName) => {
+      const resolution = resolveCanonicalCharacterName(displayName, roster);
+      return resolution.status === 'resolved' && resolution.canonicalId
+        ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim() }]
+        : [];
+    });
+    const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);
+    const referencesChanged = references.length > 0 && JSON.stringify(record.participant_references ?? []) !== JSON.stringify(references);
+    if (!changed && !referencesChanged) return count;
+    record.character_participants = canonical.names;
+    if (references.length) record.participant_references = references;
+    return count + 1;
+  }, 0);
+  const sceneParticipantRewrites = rewriteParticipantLists(scenes);
+  const arcParticipantRewrites = rewriteParticipantLists(arcs);
   if (ltReport.changed || longtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
@@ -1644,8 +1663,8 @@ export async function reconcileCanonicalEntities(characterName) {
     await saveSessionEntityRegistry(sessionEntities);
     await saveSessionMemories(sessionMemories);
   }
-  if (sceneRewrites) await saveSceneHistory(scenes);
-  if (arcRewrites) await saveArcs(arcs);
+  if (sceneRewrites || sceneParticipantRewrites) await saveSceneHistory(scenes);
+  if (arcRewrites || arcParticipantRewrites) await saveArcs(arcs);
   if (summaryRewrites) await saveArcSummaries(summaries);
   if (ledgerRewrites) await saveStateLedger(reconciledLedger);
   const rosterCharacterNames = (roster.characters ?? [])
@@ -1672,6 +1691,8 @@ export async function reconcileCanonicalEntities(characterName) {
     skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
+    participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
+    persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,
     card_local_reports: localReports,
     cross_store_entity_merges: crossStoreEntityMerges,
     cross_store_references_redirected: crossStoreReferencesRedirected,

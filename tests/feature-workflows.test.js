@@ -275,6 +275,16 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
 });
 
+test('final reconciliation canonicalizes scene and arc participant lists while retaining historical display names', () => {
+  const ui = read('ui.js');
+  const settings = read('settings.js');
+  assert.match(ui, /const rewriteParticipantLists/);
+  assert.match(ui, /display_name_at_time/);
+  assert.match(ui, /participant_lists_rewritten/);
+  assert.match(settings, /participantListsRewritten/);
+  assert.match(settings, /personaRosterSize/);
+});
+
 test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {
   const longterm = read('longterm.js');
   assert.match(longterm, /canonicalizeRelationshipPair\(subject, target, roster\)/);
