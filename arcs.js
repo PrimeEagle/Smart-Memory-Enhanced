@@ -907,6 +907,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         synthetic_identity_labels_removed: sanitized.removals,
         character_participants: participantResolution.names,
         identity_rejections: participantResolution.rejected,
+        participant_additions: participantResolution.added,
       };
     });
 

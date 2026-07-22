@@ -160,6 +160,16 @@ test('arc participants require support in the arc content or source evidence', (
   assert.match(result.rejected[0].reason, /not named/i);
 });
 
+test('arc participants add canonical people explicitly named in arc content', () => {
+  const result = validateArcParticipants(['Alissa Kawaguchi'], roster, {
+    content: 'Kyle Holland and Paul Schmidt need to discuss long-term travel rules.',
+    evidenceText: '',
+  });
+  assert.deepEqual(result.names, ['Paul Schmidt']);
+  assert.deepEqual(result.added, [{ name: 'Paul Schmidt', reason: 'Named directly in arc content.' }]);
+  assert.equal(result.rejected[0].name, 'Alissa Kawaguchi');
+});
+
 test('entity resolver uses the active persona identity and keeps its stable scoped key', () => {
   const personaRoster = buildCanonicalCharacterRoster({
     name1: 'Kyle Holland',

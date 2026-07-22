@@ -1,0 +1,33 @@
+{
+  "persona": {
+    "context": {
+      "name1": "Kyle Holland",
+      "persona": { "name": "Kyle Holland", "previous_names": ["Adam Lawson"] },
+      "characters": []
+    },
+    "short_name": "Kyle",
+    "historical_name": "Adam Lawson",
+    "canonical_name": "Kyle Holland"
+  },
+  "session": {
+    "input": "[development:sources=12,13] Kyle and Alissa set a boundary.",
+    "expected_sources": [12, 13]
+  },
+  "arc": {
+    "completed_confession": "[arc] Alissa confessed her feelings for Kyle after fifteen years.",
+    "participant_output": ["Alissa Kawaguchi", "Kyle Holland"],
+    "content": "Kyle Holland and Paul Schmidt need to discuss long-term travel rules.",
+    "expected_participants": ["Kyle Holland", "Paul Schmidt"]
+  },
+  "relationship": {
+    "subject": "Kyle",
+    "target": "Alissa Kawaguchi",
+    "expected": ["Kyle Holland", "Alissa Kawaguchi"]
+  },
+  "expected_contracts": [
+    "cross-store merge",
+    "arc terminal status",
+    "quality degradation",
+    "exact profile relationship status"
+  ]
+}

@@ -241,6 +241,7 @@ export function canonicalizeStructuredParticipants(participants, roster) {
 export function validateArcParticipants(participants, roster, { content = '', evidenceText = '' } = {}) {
   const canonical = canonicalizeStructuredParticipants(participants, roster);
   const supported = [];
+  const added = [];
   const rejected = [...canonical.rejected];
   const evidence = `${content}\n${evidenceText}`;
   for (const name of canonical.names) {
@@ -258,7 +259,17 @@ export function validateArcParticipants(participants, roster, { content = '', ev
       });
     }
   }
-  return { names: [...new Set(supported)], rejected };
+  // Structured output can omit a clearly named card/persona participant. The
+  // arc text itself is the authority for additions; broad source evidence is
+  // intentionally not used here, because it can mention unrelated speakers.
+  for (const entry of roster?.characters ?? []) {
+    const references = [...new Set([entry.canonicalName, ...(entry.aliases ?? [])].map((reference) => String(reference ?? '').trim()).filter(Boolean))];
+    if (!references.some((reference) => new RegExp(`(^|[^\\p{L}])${escapeRegExp(reference)}(?=$|[^\\p{L}])`, 'iu').test(String(content)))) continue;
+    if (supported.includes(entry.canonicalName)) continue;
+    supported.push(entry.canonicalName);
+    added.push({ name: entry.canonicalName, reason: 'Named directly in arc content.' });
+  }
+  return { names: [...new Set(supported)], rejected, added };
 }
 
 function escapeRegExp(value) {
