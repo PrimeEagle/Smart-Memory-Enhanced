@@ -439,7 +439,10 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       entry.name.toLowerCase() === result.canonicalName.toLowerCase()
     ));
     if (!target) {
-      if (entity.name !== result.canonicalName) {
+      // Even an entity already named "Kyle Holland" must receive the stable
+      // persona/card identity. Otherwise a later short alias cannot find it
+      // as the merge target and survives as a separate durable entity.
+      if (entity.name !== result.canonicalName || entity.canonical_card_id !== result.canonicalId) {
         const oldName = entity.name;
         const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
         if (rosterEntry?.source === 'user-persona') {

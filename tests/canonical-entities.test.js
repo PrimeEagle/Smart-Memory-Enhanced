@@ -15,6 +15,9 @@ import {
   buildStableEntityReference,
   buildStableRelationshipPair,
   canonicalizeRelationshipPair,
+  getCanonicalCardEntries,
+  getCanonicalPersonaEntries,
+  getCanonicalRosterPeople,
   reconcileCanonicalLedger,
   remapEntityIdInMemories,
   resolveEntityCandidate,
@@ -237,4 +240,20 @@ test('phase 2: relationship and ledger keys use immutable card IDs but retain la
   assert.equal(pair.key, 'card:paul→card:alissa');
   assert.equal(pair.subject.displayName, 'Paul Schmidt');
   assert.equal(buildStableLedgerKey('Paul Kawaguchi', 'character', roster), 'name:paul kawaguchi|character');
+});
+
+test('active persona uses SillyTavern name2 and roster helpers accept object, map, and legacy array shapes', () => {
+  const personaRoster = buildCanonicalRoster({
+    name1: 'Alissa Kawaguchi',
+    name2: 'Kyle Holland',
+    persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
+    characters: [{ id: 'alissa', name: 'Alissa Kawaguchi', description: '' }],
+  });
+  assert.equal(resolveCanonicalCharacterName('Kyle', personaRoster).canonicalName, 'Kyle Holland');
+  assert.equal(resolveCanonicalCharacterName('kyle', personaRoster).canonicalId, 'persona:kyle holland');
+  assert.equal(resolveCanonicalCharacterName('Adam Lawson', personaRoster).canonicalName, 'Kyle Holland');
+  assert.equal(getCanonicalPersonaEntries(personaRoster).length, 1);
+  assert.equal(getCanonicalCardEntries(personaRoster).length, 1);
+  assert.equal(getCanonicalRosterPeople({ characters: new Map(personaRoster.characters.map((entry) => [entry.canonical_id, entry])) }).length, 2);
+  assert.equal(getCanonicalRosterPeople(personaRoster.characters).length, 2);
 });

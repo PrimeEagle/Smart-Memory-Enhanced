@@ -3,6 +3,24 @@
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const words = (value) => normalize(value).split(' ').filter(Boolean);
 
+/** Normalizes supported roster shapes before identity helpers inspect them. */
+export function getCanonicalRosterPeople(roster) {
+  if (Array.isArray(roster)) return roster;
+  if (Array.isArray(roster?.characters)) return roster.characters;
+  if (roster?.characters instanceof Map) return [...roster.characters.values()];
+  if (roster?.people instanceof Map) return [...roster.people.values()];
+  if (Array.isArray(roster?.people)) return roster.people;
+  return [];
+}
+
+export function getCanonicalPersonaEntries(roster) {
+  return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'user-persona' || entry?.source_type === 'persona');
+}
+
+export function getCanonicalCardEntries(roster) {
+  return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'character-card' || entry?.source_type === 'character-card');
+}
+
 /** Removes model-created parenthetical disambiguators without touching known titles. */
 export function normalizeSyntheticIdentityQualifier(candidate, existingEntities = []) {
   const original = String(candidate ?? '').trim();
@@ -58,7 +76,10 @@ export function buildCanonicalRoster(context, scope = {}) {
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
   const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && String(message?.name ?? '').trim())?.name;
-  const personaName = String(scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.name1 ?? context?.userName ?? chatPersonaName ?? '').trim();
+  // SillyTavern's name1 is normally the active character while name2 is the
+  // user/persona. Prefer explicit persona state, userName/name2, and actual
+  // user messages before using name1 as a legacy fallback.
+  const personaName = String(scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.persona?.name ?? context?.userName ?? context?.name2 ?? chatPersonaName ?? context?.name1 ?? '').trim();
   const personaRecord = scope.persona ?? scope.activePersona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
   const personaId = personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
   const personaAliases = [
@@ -128,19 +149,21 @@ export function buildCanonicalCharacterRoster(context, options = {}) {
 }
 
 export function formatCanonicalRosterForPrompt(roster) {
-  if (!roster?.characters?.length) return '';
-  const lines = roster.characters.map((entry) =>
+  const people = getCanonicalRosterPeople(roster);
+  if (!people.length) return '';
+  const lines = people.map((entry) =>
     `- ${entry.canonicalName}${entry.aliases.length ? ` (known references: ${entry.aliases.join(', ')})` : ''}`,
   );
   return `CANONICAL PARTICIPANTS (authoritative):\n${lines.join('\n')}\n\nUse canonical names. Do not infer surnames, married names, or aliases.\n\n`;
 }
 
 export function resolveCanonicalCharacterName(candidateName, roster, existingEntities = []) {
-  const qualifier = normalizeSyntheticIdentityQualifier(candidateName, [...(roster?.characters ?? []), ...existingEntities]);
+  const people = getCanonicalRosterPeople(roster);
+  const qualifier = normalizeSyntheticIdentityQualifier(candidateName, [...people, ...existingEntities]);
   const candidate = qualifier.normalized_name;
   const candidateNorm = normalize(candidate);
   if (!candidateNorm) return { status: 'unresolved', candidateName: candidate, reason: 'Empty name.', shouldCreateEntity: false, shouldAddAlias: false };
-  const characters = roster?.characters ?? [];
+  const characters = people;
   const exact = characters.find((entry) => normalize(entry.canonicalName) === candidateNorm);
   if (exact) return resolved(candidate, exact, 'Exact canonical character-card name.');
   const aliasMatches = characters.filter((entry) => entry.aliases.some((alias) => normalize(alias) === candidateNorm));
