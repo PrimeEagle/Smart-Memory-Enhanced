@@ -219,6 +219,7 @@ test('historical persona names remain durable aliases of the active persona iden
   assert.match(graph, /historical_persona_names/);
   assert.match(graph, /rosterEntry\?\.source === 'user-persona'/);
   assert.match(canonical, /Historical active persona name/);
+  assert.match(graph, /flattened_to_active_persona/);
 });
 
 test('profile relationship lines require an exact descriptor from the established pair history', () => {

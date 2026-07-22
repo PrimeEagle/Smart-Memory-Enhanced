@@ -856,8 +856,23 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
   if (!sources.length) return { merged: false, referencesRedirected: 0 };
   if (!Array.isArray(target.aliases)) target.aliases = [];
   for (const source of sources) {
-    for (const alias of [source.name, ...(source.aliases ?? [])].filter(Boolean)) {
+    const sourceAliases = [source.name, ...(source.aliases ?? []), ...(source.historical_persona_names ?? [])].filter(Boolean);
+    for (const alias of sourceAliases) {
       if (String(alias).toLowerCase() !== String(target.name).toLowerCase() && !target.aliases.some((entry) => String(entry).toLowerCase() === String(alias).toLowerCase())) target.aliases.push(alias);
+    }
+    // Flatten an old persona-alias chain (for example Adam -> Adam Lawson)
+    // directly onto the stable active persona record. This affects only
+    // structured identity metadata; archived narrative text is untouched.
+    if (String(target.canonical_card_id ?? '').startsWith('persona:')) {
+      target.historical_persona_names = [...new Set([
+        ...(target.historical_persona_names ?? []),
+        ...sourceAliases.filter((alias) => String(alias).toLowerCase() !== String(target.name).toLowerCase()),
+      ])];
+      target.alias_migration = {
+        status: 'flattened_to_active_persona',
+        canonical_entity_id: target.canonical_card_id,
+        completed_at: Date.now(),
+      };
     }
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(source.memory_ids ?? [])])];
     target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(source.source_record_ids ?? [])])];
