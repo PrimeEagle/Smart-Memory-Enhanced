@@ -219,6 +219,10 @@ test('integration: ledger variants merge without overwriting canonical fields', 
   });
   assert.equal(ledger['paul|character'], undefined);
   assert.deepEqual(ledger['paul kawaguchi|character'], { mood: 'worried' });
+  // Reconciliation may run at the end of every catch-up pass.  Once the
+  // deterministic repair has completed, running it again must be a no-op so
+  // it cannot create ongoing metadata churn or unnecessary chat saves.
+  assert.deepEqual(reconcileCanonicalLedger(ledger, roster), ledger);
 });
 
 test('integration: relationship pair uses canonical card names', () => {
