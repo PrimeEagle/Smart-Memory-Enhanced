@@ -352,7 +352,7 @@ function safePromptFingerprint(prompt) {
 function sanitizeProviderError(error) {
   const raw = String(error?.body ?? error?.response?.data ?? error?.message ?? 'Provider request failed');
   return raw
-    .replace(/(?:bearer|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/(bearer|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
     .replace(/https?:\/\/[^\s"']+/gi, '[url redacted]')
     .replace(/\s+/g, ' ')
     .slice(0, 500);
