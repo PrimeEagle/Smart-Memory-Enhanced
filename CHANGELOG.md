@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and final reconciliation, so deterministic short-name and historical-persona
   aliases resolve to one durable identity.
 - Reconciled canonical entities across persistent, session, and card-local
-  stores, including structured scene and arc participant references.
+  stores, redirecting memory, scene/arc participant, epistemic, State Ledger,
+  profile, and relationship references without requiring Fresh Start.
 - Canonicalized duplicate Relationship History pairs only after both sides have
   stable identities, preserving the combined evidence and directional history.
 - Hardened session provenance repair: source indices remain mandatory, support
@@ -25,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   card/persona facts, approved history, and grounded recent evidence. Conflicts
   retain the prior approved relationship matrix when available.
 - Dropped speculative current-state wording, including "implied" claims.
+- Kept unsupported, ambiguous, rejected, and manually approved records
+  reviewable rather than discarding them during canonical repair.
 
 ### Improved
 
@@ -33,12 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   historical participant display-name references.
 - Enforced final catch-up ordering so reconciliation completes before the
   staged transaction commits.
+- Preserved former persona names as historical display metadata while using the
+  stable current persona identity for graph links, retrieval, and storage.
+- Protected composed Session, Arc, and Profile prompts against scoped preset
+  overrides that could remove mandatory source, open-thread, roster, format,
+  relationship-status, or anti-speculation rules.
 
 ### Tests
 
 - Expanded the v0.8.14 regression fixture to cover alternate citation syntax,
   bidirectional relationship canonicalization, historical persona identity
   references, diagnostics, and staged-save ordering.
+- Added coverage for persona aliases, card-local merges, relationship-pair
+  merging, session citation repair, arc pipeline terminal outcomes, grounded
+  participants, synthetic identities, profile conflict preservation, and
+  quality degradation.
 - The complete test command passes: 211 automated tests and 48 regression
   harness assertions.
 
