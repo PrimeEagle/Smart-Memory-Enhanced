@@ -3035,12 +3035,6 @@ export function bindSettingsUI(ctrl) {
             recordCatchUpError('session consolidation error (chunk)', err, 'session');
           });
         }
-        if (settings.arcs_enabled && !isFreshStart()) {
-          setStatusMessage(`Catching up... (${i}/${total} messages - extracting arcs)`);
-          await extractArcs(chunk, characterName, null, { arcResolutionStats: runResult.arcResolution, arcPipeline: runResult.arcPipeline }).catch((err) => {
-            recordCatchUpError('arc extraction error (chunk)', err, 'arcs');
-          });
-        }
         if (isStateLedgerEnabled() && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - updating state ledger)`);
           await runStateCardExtraction(characterName, chunk).catch((err) => {
@@ -3120,6 +3114,26 @@ export function bindSettingsUI(ctrl) {
       finalTransaction = beginCatchUpTransaction(catchUpContext);
 
       if (!ctrl.catchUpCancelled) {
+        // Complete the evidence tiers before scenes and arcs. This gives later
+        // stages a stable, consolidated store and avoids creating a new arc
+        // after the final identity-reconciliation phase has already begun.
+        if (settings.longterm_enabled && settings.consolidation_enabled) {
+          for (const name of catchUpCharacterNames) {
+            setStatusMessage(`Consolidating long-term memories for ${name}...`);
+            await consolidateMemories(name, true).catch((err) => {
+              recordCatchUpError('final long-term consolidation error', err);
+            });
+          }
+          updateTokenDisplay();
+        }
+        if (settings.session_enabled) {
+          setStatusMessage('Consolidating session memories...');
+          await consolidateSessionMemories(true).catch((err) => {
+            recordCatchUpError('final session consolidation error', err);
+          });
+          updateTokenDisplay();
+        }
+
         // Scene: walk through the full chat detecting and summarizing scenes.
         // When scene_ai_detect is enabled, AI detection runs on each AI message
         // (matching normal flow). When disabled, the heuristic is used instead.
@@ -3235,24 +3249,18 @@ export function bindSettingsUI(ctrl) {
           updateTokenDisplay();
         }
 
-        // Final consolidation pass for any entries that didn't accumulate enough
-        // to hit the per-chunk threshold (e.g. a type that only got 1-2 new entries
-        // across the whole chat). Forces consolidation regardless of threshold.
-        if (settings.longterm_enabled && settings.consolidation_enabled) {
-          for (const name of catchUpCharacterNames) {
-            setStatusMessage(`Consolidating long-term memories for ${name}...`);
-            await consolidateMemories(name, true).catch((err) => {
-              recordCatchUpError('final long-term consolidation error', err);
-            });
-          }
-          updateTokenDisplay();
-        }
-        if (settings.session_enabled) {
-          setStatusMessage('Consolidating session memories...');
-          await consolidateSessionMemories(true).catch((err) => {
-            recordCatchUpError('final session consolidation error', err);
+        // Extract arcs once against the complete, consolidated chat after the
+        // scene and epistemic passes. This is intentionally not per chunk:
+        // otherwise a later chunk can create or resolve identities after the
+        // staged final reconciliation has consumed an earlier partial graph.
+        if (settings.arcs_enabled && !isFreshStart()) {
+          setStatusMessage('Extracting and resolving story arcs...');
+          await extractArcs(allMessages, characterName, null, {
+            arcResolutionStats: runResult.arcResolution,
+            arcPipeline: runResult.arcPipeline,
+          }).catch((err) => {
+            recordCatchUpError('arc extraction error (final)', err, 'arcs');
           });
-          updateTokenDisplay();
         }
 
         // Short-term compaction runs once at the end - it uses the real token

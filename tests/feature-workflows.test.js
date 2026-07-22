@@ -246,6 +246,17 @@ test('run completion distinguishes operational success from tier-quality degrada
   assert.match(settings, /Data quality degraded:/);
 });
 
+test('final catch-up stage order builds scenes before one complete arc pass and reconciliation', () => {
+  const settings = read('settings.js');
+  const sceneStage = settings.indexOf("setStatusMessage('Detecting scene breaks...')");
+  const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
+  const profileStage = settings.indexOf('await generateProfiles(name, null, { throwOnFailure: true })');
+  const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
+  assert.ok(sceneStage >= 0 && sceneStage < arcStage);
+  assert.ok(arcStage < profileStage && profileStage < reconcileStage);
+  assert.doesNotMatch(settings, /await extractArcs\(chunk, characterName/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
