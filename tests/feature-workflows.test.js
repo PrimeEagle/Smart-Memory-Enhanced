@@ -254,7 +254,7 @@ test('profile validation accepts a roster object and provider failures retain sa
   assert.match(profiles, /rosterEntries\(roster\)/);
   assert.match(profiles, /getCanonicalRosterPeople/);
   assert.match(generate, /sme_request_diagnostics/);
-  for (const field of ['endpoint_category', 'message_roles', 'role_sequence_valid', 'prompt_fingerprint', 'structured_output_expected']) {
+  for (const field of ['endpoint_category', 'model_name', 'message_roles', 'first_role', 'last_role', 'adjacent_same_role_messages_merged', 'stop_field_present', 'sanitized_provider_error', 'prompt_fingerprint', 'structured_output_expected']) {
     assert.match(generate, new RegExp(field));
   }
   assert.match(generate, /estimated_input_tokens/);

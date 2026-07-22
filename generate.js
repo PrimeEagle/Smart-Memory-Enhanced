@@ -289,6 +289,8 @@ async function generateWithConnectionProfile(
   // For text completion profiles, ConnectionManagerRequestService constructs the
   // prompt string internally using the profile's instruct template.
   const messages = normalizeConnectionProfileMessages(priorMessages, prompt);
+  const rawMessageCount = [...priorMessages, { role: 'user', content: prompt }]
+    .filter((message) => message?.content?.trim()).length;
   const limit = maxTokens > 0 ? maxTokens : undefined;
   try {
     const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
@@ -305,21 +307,28 @@ async function generateWithConnectionProfile(
     const requestDiagnostics = {
       provider: 'connection_profile',
       profile_id: String(profileId),
+      model_name: diagnosticContext.modelName ?? null,
       task: diagnosticContext.task ?? 'unspecified',
       endpoint_category: 'connection-manager-chat-completion',
       request_mode: priorMessages.length ? 'contextual-extraction' : 'standalone-extraction',
       http_status: Number(error?.status) || (/bad request/i.test(String(error?.message ?? '')) ? 400 : null),
       message_count: messages.length,
       message_roles: messages.map((message) => String(message?.role ?? 'unknown')),
+      first_role: messages[0]?.role ?? null,
+      last_role: messages.at(-1)?.role ?? null,
       role_sequence_valid: !messages.some((message, index) => index > 0 && message?.role === messages[index - 1]?.role && message?.role !== 'system'),
       message_normalization_applied: true,
+      adjacent_same_role_messages_merged: rawMessageCount > messages.length,
       requested_output_tokens: limit ?? null,
+      stop_field_present: false,
+      unsupported_or_omitted_parameters: [],
       estimated_input_tokens: estimatedInputTokens,
       configured_context_tokens: contextLimit,
       estimated_total_tokens: estimatedInputTokens + (limit ?? 0),
       prompt_character_count: String(prompt ?? '').length,
       prompt_fingerprint: safePromptFingerprint(prompt),
       structured_output_expected: /\[[A-Z_]+(?:[\]:])|structured (?:data|output)/i.test(String(prompt ?? '')),
+      sanitized_provider_error: sanitizeProviderError(error),
       likely_cause: estimatedInputTokens + (limit ?? 0) > contextLimit
         ? 'estimated_context_overflow'
         : 'provider_rejected_request',
@@ -337,6 +346,16 @@ function safePromptFingerprint(prompt) {
     hash = Math.imul(hash, 16777619);
   }
   return `fnv1a-${(hash >>> 0).toString(16)}`;
+}
+
+/** Removes credentials and oversized response bodies from provider diagnostics. */
+function sanitizeProviderError(error) {
+  const raw = String(error?.body ?? error?.response?.data ?? error?.message ?? 'Provider request failed');
+  return raw
+    .replace(/(?:bearer|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/https?:\/\/[^\s"']+/gi, '[url redacted]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 500);
 }
 
 /**
