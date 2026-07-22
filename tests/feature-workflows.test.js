@@ -233,6 +233,7 @@ test('profile current-state speculation is omitted instead of being stored as fa
   const settings = read('settings.js');
   assert.match(profiles, /export function omitSpeculativeProfileLines/);
   assert.match(profiles, /speculative_field_rejections/);
+  assert.match(profiles, /rumou\?red\|implied\|seems/);
   assert.match(prompts, /Never phrase a current-state claim as speculation/);
   assert.match(settings, /speculative_fields_dropped/);
 });

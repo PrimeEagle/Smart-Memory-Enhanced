@@ -223,7 +223,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
 /** Drops present-state profile lines framed as speculation rather than evidence. */
 export function omitSpeculativeProfileLines(parsed) {
   const profiles = { ...parsed };
-  const speculative = /\b(?:perhaps|possibly|probably|likely|apparently|presumably|rumou?red|seems?|appears?|might|may\s+(?:be|have|still|not)|could\s+be)\b/i;
+  const speculative = /\b(?:perhaps|possibly|probably|likely|apparently|presumably|rumou?red|implied|seems?|appears?|might|may\s+(?:be|have|still|not)|could\s+be)\b/i;
   const dropped = [];
   for (const field of ['character_state', 'world_state']) {
     const lines = String(profiles[field] ?? '').split('\n');
