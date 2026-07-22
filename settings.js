@@ -1194,10 +1194,13 @@ export function bindSettingsUI(ctrl) {
   refreshPromptPresetChoices();
   refreshPromptStudio();
 
-  let latestDryRunDiagnostics = null;
+  // Also retains a run report when the final chat save fails and its staged
+  // metadata must be rolled back. Export Diagnostics must still be useful in
+  // that exact failure case.
+  let latestExportDiagnostics = null;
   const exportCatchUpDiagnostics = () => {
     const metadata = getContext().chatMetadata?.[META_KEY];
-    const report = latestDryRunDiagnostics ?? metadata?.catch_up_diagnostics;
+    const report = latestExportDiagnostics ?? metadata?.catch_up_diagnostics;
     if (!report) return toastr.info('No Memorize Chat diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
@@ -1225,7 +1228,7 @@ export function bindSettingsUI(ctrl) {
       ]);
       const candidates = [...(longterm?.candidates ?? []), ...(session?.candidates ?? [])];
       const reviewCount = candidates.filter((candidate) => candidate.validation_status === 'needs_review').length;
-      latestDryRunDiagnostics = {
+      latestExportDiagnostics = {
         version: 1, created_at: Date.now(), dry_run: true,
         workload: { messages: messages.length, token_estimate: tokenEstimate, chunk_estimate: Math.ceil(tokenEstimate / chunkBudget), heuristic_scene_candidates: scenes },
         longterm, session, arcs,
@@ -2918,6 +2921,9 @@ export function bindSettingsUI(ctrl) {
       extractionFailuresByTier: {},
       saveFailures: 0,
       providerFailures: [],
+      errors: [],
+      warnings: [],
+      warningsSuppressed: 0,
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
@@ -2964,6 +2970,12 @@ export function bindSettingsUI(ctrl) {
       currentChunkFailed = true;
       if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
       if (isSave) runResult.saveFailures++;
+      runResult.errors.push({
+        label,
+        tier,
+        persistence: isSave,
+        message: String(err?.message ?? err ?? 'Unknown error').replace(/\s+/g, ' ').slice(0, 300),
+      });
       if (err?.sme_request_diagnostics) {
         runResult.providerFailures.push({
           label,
@@ -2972,6 +2984,30 @@ export function bindSettingsUI(ctrl) {
         });
       }
       console.error(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
+    };
+    const recordCatchUpWarning = (label, err, tier = null) => {
+      // Avoid turning a repeated optional-provider failure (such as AI scene
+      // detection) into a massive diagnostics payload that threatens the final
+      // chat save itself.
+      if (runResult.warnings.length < 50) {
+        runResult.warnings.push({
+          label,
+          tier,
+          message: String(err?.message ?? err ?? 'Unknown warning').replace(/\s+/g, ' ').slice(0, 300),
+        });
+      } else {
+        runResult.warningsSuppressed++;
+      }
+      console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
+    };
+    const runNonfatalPresentationTask = async (label, task) => {
+      try {
+        await task();
+      } catch (err) {
+        // Prompt/UI refresh does not change durable memories. Never let it
+        // roll back a multi-hour extraction transaction.
+        recordCatchUpWarning(`${label} warning`, err, 'presentation');
+      }
     };
     const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
     setCatchUpErrorCount(0);
@@ -3094,10 +3130,10 @@ export function bindSettingsUI(ctrl) {
           });
         }
         if (settings.arcs_enabled) {
-          injectArcs();
+          await runNonfatalPresentationTask('Story Arc injection', () => injectArcs());
         }
         if (settings.relationships_enabled) {
-          injectRelationshipHistory(characterName);
+          await runNonfatalPresentationTask('Relationship History injection', () => injectRelationshipHistory(characterName));
         }
 
         // Advance lastExtractCutoff so the normal extraction window starts from
@@ -3128,7 +3164,7 @@ export function bindSettingsUI(ctrl) {
         // Update progress and token display after each chunk so the user can
         // see memories accumulating in real time rather than only at the end.
         setStatusMessage(`Catching up... (${processed}/${total} messages, ${pct}%)`);
-        updateTokenDisplay();
+        await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
 
         runResult.totalChunks++;
         runResult.chunks.push({
@@ -3161,14 +3197,14 @@ export function bindSettingsUI(ctrl) {
               recordCatchUpError('final long-term consolidation error', err);
             });
           }
-          updateTokenDisplay();
+          await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
         if (settings.session_enabled) {
           setStatusMessage('Consolidating session memories...');
           await consolidateSessionMemories(true).catch((err) => {
             recordCatchUpError('final session consolidation error', err);
           });
-          updateTokenDisplay();
+          await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
 
         // Scene: walk through the full chat detecting and summarizing scenes.
@@ -3180,7 +3216,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0 };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0 };
           let prevAiMsg = '';
 
           /**
@@ -3215,7 +3251,10 @@ export function bindSettingsUI(ctrl) {
             const isBreak = settings.scene_ai_detect
               ? isAiMsg &&
                 sceneBuffer.length >= minMessages &&
-                (await detectSceneBreakAI(msgText, prevAiMsg))
+                (await detectSceneBreakAI(msgText, prevAiMsg, (err) => {
+                  sceneAudit.detection_failed++;
+                  recordCatchUpWarning('AI scene-break detection warning', err, 'scenes');
+                }))
               : detectSceneBreakHeuristic(msgText) && sceneBuffer.length >= minMessages;
 
             if (isAiMsg) prevAiMsg = msgText;
@@ -3283,7 +3322,7 @@ export function bindSettingsUI(ctrl) {
           runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;
-          updateTokenDisplay();
+          await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
 
         // Extract arcs once against the complete, consolidated chat after the
@@ -3315,7 +3354,7 @@ export function bindSettingsUI(ctrl) {
             .catch((err) => {
               recordCatchUpError('compaction error', err);
             });
-          updateTokenDisplay();
+          await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
       }
 
@@ -3353,31 +3392,51 @@ export function bindSettingsUI(ctrl) {
         }
       }
 
-      // Re-inject and refresh UI for everything processed so far, whether the
-      // run completed or was cancelled partway through.
-      await injectMemories(characterName);
-      injectRelationshipHistory(characterName);
-      injectSessionMemories();
-      injectSceneHistory();
-      injectArcs();
-      injectStateLedger();
-      // Reset the warn flag so the catch-up final inject can prompt if needed,
-      // then pass warn=true so a single exact-fit dialog fires if the full list
-      // exceeds the current budget.
-      resetEpistemicWarnFlag();
-      injectEpistemicKnowledge(characterName, characterName, false, true, true);
-      injectProfiles(characterName);
-      updateEntityPanel(characterName);
-      updateLongTermUI(characterName);
-      updateRelationshipHistoryUI(characterName);
-      updateEpistemicUI(characterName);
-      updateSessionUI();
-      updateScenesUI();
-      updateArcsUI();
-      updateProfilesUI(loadProfiles(characterName));
+      // Re-injection and panel refresh are presentation-only. Isolate every
+      // task so a DOM, prompt-slot, or embedding problem cannot abort the
+      // staged data commit near the end of a long run.
+      await runNonfatalPresentationTask('Long-term memory injection', () => injectMemories(characterName));
+      await runNonfatalPresentationTask('Relationship History injection', () => injectRelationshipHistory(characterName));
+      await runNonfatalPresentationTask('Session memory injection', () => injectSessionMemories());
+      await runNonfatalPresentationTask('Scene History injection', () => injectSceneHistory());
+      await runNonfatalPresentationTask('Story Arc injection', () => injectArcs());
+      await runNonfatalPresentationTask('State Ledger injection', () => injectStateLedger());
+      await runNonfatalPresentationTask('Perspectives & Secrets injection', () => {
+        resetEpistemicWarnFlag();
+        return injectEpistemicKnowledge(characterName, characterName, false, true, true);
+      });
+      await runNonfatalPresentationTask('Profile injection', () => injectProfiles(characterName));
+      await runNonfatalPresentationTask('Entity Registry refresh', () => updateEntityPanel(characterName));
+      await runNonfatalPresentationTask('Long-term memory panel refresh', () => updateLongTermUI(characterName));
+      await runNonfatalPresentationTask('Relationship History panel refresh', () => updateRelationshipHistoryUI(characterName));
+      await runNonfatalPresentationTask('Perspectives & Secrets panel refresh', () => updateEpistemicUI(characterName));
+      await runNonfatalPresentationTask('Session memory panel refresh', () => updateSessionUI());
+      await runNonfatalPresentationTask('Scene History panel refresh', () => updateScenesUI());
+      await runNonfatalPresentationTask('Story Arc panel refresh', () => updateArcsUI());
+      await runNonfatalPresentationTask('Profile panel refresh', () => updateProfilesUI(loadProfiles(characterName)));
       // Catch-up can surface first-name variants that only become resolvable
       // after the full roster and extracted evidence are available.
-      const reconciliation = await runFinalIntegrityReconciliation(characterName);
+      const reconciliationSnapshot = {
+        metadata: structuredClone(catchUpContext.chatMetadata?.[META_KEY] ?? {}),
+        settings: structuredClone(extension_settings[MODULE_NAME] ?? {}),
+      };
+      let reconciliation;
+      try {
+        reconciliation = await runFinalIntegrityReconciliation(characterName);
+      } catch (err) {
+        // Roll back only the partially-applied reconciliation edits while
+        // preserving scenes, profiles, and every earlier validated tier.
+        // The final staged transaction still protects the later chat save.
+        catchUpContext.chatMetadata[META_KEY] = reconciliationSnapshot.metadata;
+        extension_settings[MODULE_NAME] = reconciliationSnapshot.settings;
+        recordCatchUpError('final reconciliation error', err, 'identity');
+        runResult.finalReconciliation.error = String(err?.message ?? err ?? 'Unknown reconciliation error').slice(0, 300);
+        reconciliation = {
+          matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
+          persona_roster_size: 0, participant_lists_rewritten: 0, resolved_review_items_removed: 0,
+          integrity_audit: { stale_entity_references: [], status: 'degraded' }, quarantined_arc_summaries: 0,
+        };
+      }
       runResult.identityResolution = {
         matched: reconciliation.matched.length,
         merged: reconciliation.merged.length,
@@ -3440,6 +3499,16 @@ export function bindSettingsUI(ctrl) {
         tier: 'arcs',
         message: `${runResult.arcPipeline.classifiedResolved} arcs resolved but no summaries persisted.`,
       });
+      if ((runResult.sceneDetection?.detection_failed ?? 0) > 0) qualityReasons.push({
+        code: 'scene_detection_provider_failures',
+        tier: 'scenes',
+        message: `${runResult.sceneDetection.detection_failed} AI scene-break check${runResult.sceneDetection.detection_failed === 1 ? '' : 's'} failed; heuristic detection continued.`,
+      });
+      if (runResult.finalReconciliation.error) qualityReasons.push({
+        code: 'final_reconciliation_failed',
+        tier: 'identity',
+        message: 'Final canonical reconciliation failed and was rolled back; validated tier data was preserved.',
+      });
       if (runResult.profiles.relationship_conflicts_dropped > 0) qualityReasons.push({
         code: 'profile_relationship_conflicts_dropped',
         tier: 'profiles',
@@ -3457,8 +3526,8 @@ export function bindSettingsUI(ctrl) {
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
       });
       runResult.quality = { status: qualityReasons.length ? 'degraded' : 'clean', reasons: qualityReasons };
-      maybeInjectUnified();
-      updateTokenDisplay();
+      await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
+      await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
       saveSettingsDebounced();
 
       // Persist the final diagnostics with the same staged commit. The status
@@ -3483,6 +3552,9 @@ export function bindSettingsUI(ctrl) {
         persistence_failures: runResult.saveFailures,
         retried_requests: runResult.retriedRequests,
         errors: catchUpErrorCount,
+        error_details: runResult.errors,
+        warnings: runResult.warnings,
+        warnings_suppressed: runResult.warningsSuppressed,
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries()),
         arcResolution: runResult.arcResolution,
@@ -3497,10 +3569,20 @@ export function bindSettingsUI(ctrl) {
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
+      latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
       } catch (err) {
         recordCatchUpError('final persistence error', err, null, true);
+        diagnostics.status = 'partial';
+        diagnostics.operational_status = 'partial';
+        diagnostics.errors = catchUpErrorCount;
+        diagnostics.persistence_failures = runResult.saveFailures;
+        diagnostics.error_details = runResult.errors;
+        diagnostics.final_persistence_error = String(err?.message ?? err ?? 'Unknown persistence error').replace(/\s+/g, ' ').slice(0, 300);
+        // The transaction rollback removes saved metadata, but this session
+        // copy remains available through Export Diagnostics.
+        latestExportDiagnostics = diagnostics;
       } finally {
         finalTransaction = null;
       }
@@ -3517,11 +3599,17 @@ export function bindSettingsUI(ctrl) {
         const persistenceDetail = runResult.saveFailures > 0
           ? `, ${runResult.saveFailures} persistence failure${runResult.saveFailures === 1 ? '' : 's'}`
           : '';
+        const lateStageLabels = [...new Set(runResult.errors
+          .map((entry) => entry.label)
+          .filter((label) => !/\(chunk\)|chunk persistence/i.test(label)))];
+        const lateStageDetail = lateStageLabels.length
+          ? ` Late-stage failure${lateStageLabels.length === 1 ? '' : 's'}: ${lateStageLabels.join('; ')}.`
+          : '';
         setStatusMessage(
-          `Catch-up ${runResult.status}: ${runResult.completedChunks}/${runResult.totalChunks} chunks completed, ${runResult.failedChunks} failed${persistenceDetail}.`,
+          `Catch-up ${runResult.status}: ${runResult.completedChunks}/${runResult.totalChunks} chunks completed, ${runResult.failedChunks} failed${persistenceDetail}.${lateStageDetail}`,
         );
         toastr.warning(
-          `Catch-up ${runResult.status}. ${runResult.failedChunks} chunk${runResult.failedChunks === 1 ? '' : 's'} failed${persistenceDetail} after ${runResult.retriedRequests} retr${runResult.retriedRequests === 1 ? 'y' : 'ies'}.`,
+          `Catch-up ${runResult.status}. ${runResult.failedChunks} chunk${runResult.failedChunks === 1 ? '' : 's'} failed${persistenceDetail} after ${runResult.retriedRequests} retr${runResult.retriedRequests === 1 ? 'y' : 'ies'}.${lateStageDetail}`,
           'Smart Memory Enhanced',
           { timeOut: 8000, positionClass: 'toast-bottom-right' },
         );

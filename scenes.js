@@ -88,15 +88,23 @@ function sceneJaccard(a, b) {
  * @returns {Promise<{score: number, semantic: boolean}>}
  */
 export async function sceneSimilarity(a, b) {
-  const aKey = a.toLowerCase().trim();
-  const bKey = b.toLowerCase().trim();
-  const vectorMap = await getEmbeddingBatch([aKey, bKey]);
-  const aVec = vectorMap.get(aKey);
-  const bVec = vectorMap.get(bKey);
-  if (aVec && bVec) {
-    return { score: cosineSimilarity(aVec, bVec), semantic: true };
+  const aText = String(a ?? '');
+  const bText = String(b ?? '');
+  const aKey = aText.toLowerCase().trim();
+  const bKey = bText.toLowerCase().trim();
+  try {
+    const vectorMap = await getEmbeddingBatch([aKey, bKey]);
+    const aVec = vectorMap.get(aKey);
+    const bVec = vectorMap.get(bKey);
+    if (aVec && bVec) {
+      return { score: cosineSimilarity(aVec, bVec), semantic: true };
+    }
+  } catch (err) {
+    // Scene deduplication is useful but never worth losing a multi-hour
+    // catch-up run. The deterministic text fallback below remains safe.
+    console.warn('[Smart Memory Enhanced] Scene similarity embeddings unavailable; using text fallback.', err);
   }
-  return { score: sceneJaccard(a, b), semantic: false };
+  return { score: sceneJaccard(aText, bText), semantic: false };
 }
 
 // ---- Heuristics ---------------------------------------------------------
@@ -109,13 +117,14 @@ export async function sceneSimilarity(a, b) {
  * @param {string} [previousMessageText] - The preceding AI message for context.
  * @returns {Promise<boolean>}
  */
-export async function detectSceneBreakAI(messageText, previousMessageText) {
+export async function detectSceneBreakAI(messageText, previousMessageText, onError = null) {
   try {
     const prompt = buildSceneDetectPrompt(messageText, previousMessageText);
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.SCENE_SUMMARY), { responseLength: 5 });
     return response?.trim().toUpperCase().startsWith('YES') ?? false;
   } catch (err) {
     console.error('[Smart Memory Enhanced] AI scene break detection failed:', err);
+    onError?.(err);
     return false;
   }
 }

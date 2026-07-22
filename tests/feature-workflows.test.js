@@ -298,6 +298,23 @@ test('final arc extraction bounds long chats and exports request diagnostics', (
   assert.match(settings, /provider_failures: runResult\.providerFailures/);
 });
 
+test('late catch-up stages isolate non-critical failures and retain diagnostics', () => {
+  const scenes = read('scenes.js');
+  const settings = read('settings.js');
+  assert.match(scenes, /const aText = String\(a \?\? ''\)/);
+  assert.match(scenes, /Scene similarity embeddings unavailable; using text fallback/);
+  assert.match(scenes, /detectSceneBreakAI\(messageText, previousMessageText, onError = null\)/);
+  assert.match(settings, /runNonfatalPresentationTask/);
+  assert.match(settings, /final reconciliation error/);
+  assert.match(settings, /reconciliationSnapshot/);
+  assert.match(settings, /latestExportDiagnostics = diagnostics/);
+  assert.match(settings, /final_persistence_error/);
+  assert.match(settings, /Late-stage failure/);
+  assert.match(settings, /scene_detection_provider_failures/);
+  assert.match(settings, /warningsSuppressed/);
+  assert.match(settings, /warnings_suppressed/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
