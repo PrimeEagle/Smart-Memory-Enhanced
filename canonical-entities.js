@@ -89,6 +89,20 @@ export function buildCanonicalRoster(context, scope = {}) {
     personaRecord?.alias,
     words(personaName)[0],
   ].map((alias) => String(alias ?? '').trim()).filter(Boolean);
+  // Historical persona names are often shortened in imported prose (for
+  // example Adam -> Adam Lawson -> Kyle Holland). Preserve that direct alias
+  // only when no active card or approved alias could also mean Adam. This
+  // flattens a safe historical chain without guessing in a competing roster.
+  const rosterUsesFirstName = (firstName) => characters.some((entry) =>
+    [entry?.canonicalName, ...(entry?.aliases ?? [])]
+      .map((name) => words(name)[0])
+      .some((name) => name === firstName),
+  );
+  for (const alias of [...personaAliases]) {
+    const shortHistoricalAlias = words(alias)[0];
+    if (!shortHistoricalAlias || words(alias).length < 2 || rosterUsesFirstName(shortHistoricalAlias)) continue;
+    personaAliases.push(shortHistoricalAlias);
+  }
   if (personaName && !characters.some((entry) => normalize(entry.canonicalName) === normalize(personaName))) {
     characters.push({
       id: `persona:${personaId}`,

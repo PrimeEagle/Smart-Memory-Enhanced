@@ -278,6 +278,7 @@ test('active persona uses SillyTavern name2 and roster helpers accept object, ma
   assert.equal(resolveCanonicalCharacterName('Kyle', personaRoster).canonicalName, 'Kyle Holland');
   assert.equal(resolveCanonicalCharacterName('kyle', personaRoster).canonicalId, 'persona:kyle holland');
   assert.equal(resolveCanonicalCharacterName('Adam Lawson', personaRoster).canonicalName, 'Kyle Holland');
+  assert.equal(resolveCanonicalCharacterName('Adam', personaRoster).canonicalName, 'Kyle Holland');
   assert.equal(getCanonicalPersonaEntries(personaRoster).length, 1);
   assert.equal(getCanonicalCardEntries(personaRoster).length, 1);
   assert.equal(getCanonicalRosterPeople({ characters: new Map(personaRoster.characters.map((entry) => [entry.canonical_id, entry])) }).length, 2);
@@ -295,4 +296,14 @@ test('active persona short name is not guessed when a competing Kyle exists', ()
   assert.equal(ambiguous.canonicalId, undefined);
   assert.ok(ambiguous.candidates.includes('Kyle Holland'));
   assert.ok(ambiguous.candidates.includes('Kyle Renner'));
+});
+
+test('historical persona short names are not added when a card uses that name', () => {
+  const competingRoster = buildCanonicalCharacterRoster({
+    name2: 'Kyle Holland',
+    persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
+    characters: [{ id: 'adam-card', name: 'Adam Jones' }],
+  });
+  assert.equal(resolveCanonicalCharacterName('Adam', competingRoster).canonicalName, 'Adam Jones');
+  assert.equal(resolveCanonicalCharacterName('Adam Lawson', competingRoster).canonicalName, 'Kyle Holland');
 });
