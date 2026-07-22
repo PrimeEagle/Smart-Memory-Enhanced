@@ -301,6 +301,12 @@ async function deduplicateSession(existing, incoming, max) {
 export async function extractSessionMemories(recentMessages, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
   if (!settings.session_enabled) return 0;
+  const sessionDiagnostics = options.sessionDiagnostics;
+  const recordDisposition = (name, count = 1) => {
+    if (!sessionDiagnostics || count <= 0) return;
+    sessionDiagnostics.terminalDispositions ??= {};
+    sessionDiagnostics.terminalDispositions[name] = (sessionDiagnostics.terminalDispositions[name] ?? 0) + count;
+  };
 
   try {
     const chatHistory = recentMessages
@@ -341,7 +347,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     smLog('[Smart Memory Enhanced] Session extraction response:', response);
 
-    if (!response || response.trim().toUpperCase() === 'NONE') return 0;
+    if (!response || response.trim().toUpperCase() === 'NONE') {
+      if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
+      recordDisposition('provider_returned_none');
+      return 0;
+    }
 
     // Do not let candidate verification observe parser-time, chunk-relative
     // source claims.  Normalize them to original chat indices first.
@@ -353,7 +363,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       ? recentMessages.map((message) => message.__sme_original_index)
       : null;
     const parsedCandidates = parseSessionOutput(response);
-    const sessionDiagnostics = options.sessionDiagnostics;
+    const initiallyParsedCount = parsedCandidates.length;
     if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;
     // When the provider produced otherwise parseable session records but
     // omitted every citation, ask once for the *same records only* with their
@@ -374,14 +384,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         repairRecovered = repaired.length;
       }
     }
-    const missingProvenance = parsedCandidates.filter((candidate) => !(candidate.source_message_indices ?? []).length).length;
+    // A partial citation-repair reply must not make the omitted original
+    // candidates disappear from diagnostics.  Every parsed item gets one
+    // disposition: accepted later, rejected by validation, or quarantined.
+    const citedCandidates = parsedCandidates.filter((candidate) => (candidate.source_message_indices ?? []).length > 0);
+    const missingProvenance = Math.max(0, initiallyParsedCount - citedCandidates.length);
     if (sessionDiagnostics) {
       sessionDiagnostics.missingProvenance = (sessionDiagnostics.missingProvenance ?? 0) + missingProvenance;
       sessionDiagnostics.repairRecovered = (sessionDiagnostics.repairRecovered ?? 0) + repairRecovered;
     }
     // Uncited candidates are intentionally not stored. The repair pass above
     // is their only chance to supply the already-required evidence.
-    const citedCandidates = parsedCandidates.filter((candidate) => (candidate.source_message_indices ?? []).length > 0);
+    recordDisposition('quarantined_missing_citation', missingProvenance);
     applyDirectProvenance(citedCandidates, recentMessages, provenanceWindowStart, provenanceOriginalIndices);
 
     const {
@@ -389,7 +403,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       superseded: supersessionMap,
       confirmed: confirmedIds,
     } = await verifySessionCandidates(citedCandidates, existing);
-    if (sessionDiagnostics) sessionDiagnostics.validated = (sessionDiagnostics.validated ?? 0) + incoming.length;
+    if (sessionDiagnostics) {
+      sessionDiagnostics.validated = (sessionDiagnostics.validated ?? 0) + incoming.length;
+      const rejectedByValidation = Math.max(0, citedCandidates.length - incoming.length);
+      sessionDiagnostics.rejectedByValidation = (sessionDiagnostics.rejectedByValidation ?? 0) + rejectedByValidation;
+      recordDisposition('rejected_semantically_unsupported', rejectedByValidation);
+    }
+    const acceptedAfterRepair = Math.min(repairRecovered, incoming.length);
+    recordDisposition('accepted_after_citation_repair', acceptedAfterRepair);
+    recordDisposition('accepted_validated', Math.max(0, incoming.length - acceptedAfterRepair));
     if (incoming.length === 0) return 0;
 
     // Tag each new memory with the source message range so users can jump back
@@ -522,6 +544,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     return added;
   } catch (err) {
+    if (sessionDiagnostics) sessionDiagnostics.providerFailures = (sessionDiagnostics.providerFailures ?? 0) + 1;
+    recordDisposition('provider_failure');
     console.error('[Smart Memory Enhanced] Session extraction failed:', err);
     throw err;
   }

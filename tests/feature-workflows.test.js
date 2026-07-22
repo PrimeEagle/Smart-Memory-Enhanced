@@ -313,6 +313,7 @@ test('relationship reconciliation requires stable canonical participants and pre
   assert.match(longterm, /descriptor_removals/);
   assert.match(ui, /persistentRelationshipPairsMerged/);
   assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
+  assert.match(longterm, /compactRelationshipProvenance/);
   for (const field of ['source_record_ids', 'parent_memory_ids', 'evidence_ranges', 'manual_edits', 'validation_issues']) {
     assert.match(longterm, new RegExp(`${field}: mergeList`));
   }
@@ -326,7 +327,12 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /SESSION CITATION REPAIR/);
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
-  assert.match(settings, /sessionExtraction: \{ emitted: 0, validated: 0, missingProvenance: 0, repairAttempts: 0, repairRecovered: 0 \}/);
+  assert.match(settings, /sessionExtraction: \{/);
+  for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'quarantined_missing_citation', 'rejected_semantically_unsupported', 'provider_failure', 'provider_returned_none']) {
+    assert.match(settings, new RegExp(disposition));
+    assert.match(session, new RegExp(`recordDisposition\\('${disposition}'`));
+  }
+  assert.match(session, /rejectedByValidation/);
 });
 
 test('resolved arc classifications receive one traceable terminal summary outcome', () => {

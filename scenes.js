@@ -57,7 +57,7 @@ import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, findCanonicalParticipantsInText, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -148,6 +148,12 @@ export function createSceneRecord(summary, messages = [], details = {}) {
     details.character_participants,
     roster,
   );
+  // A structured [CHARACTERS] list can be omitted by local models even when
+  // a known card/persona is named plainly in the scene. Repair only those
+  // roster-backed mentions; never infer an unknown NPC from free prose.
+  const narrativeParticipants = findCanonicalParticipantsInText(summary, roster);
+  const participantReferences = [...participantResolution.references, ...narrativeParticipants.references]
+    .filter((reference, index, entries) => entries.findIndex((candidate) => candidate.entity_id === reference.entity_id && candidate.display_name_at_time === reference.display_name_at_time) === index);
   const narrativeResolution = canonicalizeNarrativeNames(summary, roster);
   const record = normalizeSceneRecord({
     id: generateMemoryId(),
@@ -156,7 +162,8 @@ export function createSceneRecord(summary, messages = [], details = {}) {
     source_memory_ids: [],
     source_message_indices: sourceMessageIndices,
     ...details,
-    character_participants: participantResolution.names,
+    character_participants: [...new Set([...participantResolution.names, ...narrativeParticipants.names])],
+    participant_references: participantReferences,
     identity_rejections: deduplicateIdentityDecisions([...(details.identity_rejections ?? []), ...participantResolution.rejected], 'scene'),
     identity_replacements: deduplicateIdentityDecisions([...(details.identity_replacements ?? []), ...narrativeResolution.replacements], 'scene'),
   }, generateMemoryId);

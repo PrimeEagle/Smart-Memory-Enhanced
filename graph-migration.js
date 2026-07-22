@@ -470,6 +470,11 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason, reason_code: result.reason.includes('persona') ? 'active_persona_match' : 'unique_first_name_match' });
         report.outcomes.push({ candidate: oldName, canonicalName: result.canonicalName, terminal_outcome: result.reason.includes('alias') || result.reason.includes('persona') ? 'deterministic_alias_match' : 'canonical_exact_match', reason: result.reason });
         report.changed = true;
+      } else {
+        // Reconciliation is an auditable terminal decision even when this
+        // record was already canonical.  Omitting it made a clean entity look
+        // indistinguishable from one that the pass never considered.
+        report.outcomes.push({ candidate: entity.name, canonicalName: result.canonicalName, terminal_outcome: 'canonical_exact_match', reason: result.reason });
       }
       continue;
     }

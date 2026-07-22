@@ -1642,7 +1642,7 @@ export async function reconcileCanonicalEntities(characterName) {
     const references = original.flatMap((displayName) => {
       const resolution = resolveCanonicalCharacterName(displayName, roster);
       return resolution.status === 'resolved' && resolution.canonicalId
-        ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim() }]
+        ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim(), alias_type: resolution.reason ?? 'canonical-name' }]
         : [];
     });
     const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);

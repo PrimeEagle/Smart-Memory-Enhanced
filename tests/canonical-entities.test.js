@@ -9,6 +9,7 @@ import {
   normalizeSyntheticIdentityQualifier,
   sanitizeSyntheticIdentityLabels,
   canonicalizeStructuredParticipants,
+  findCanonicalParticipantsInText,
   validateArcParticipants,
   buildIdentityReviewCandidate,
   buildStableLedgerKey,
@@ -240,6 +241,22 @@ test('phase 2: relationship and ledger keys use immutable card IDs but retain la
   assert.equal(pair.key, 'card:paul→card:alissa');
   assert.equal(pair.subject.displayName, 'Paul Schmidt');
   assert.equal(buildStableLedgerKey('Paul Kawaguchi', 'character', roster), 'name:paul kawaguchi|character');
+});
+
+test('scene participant repair promotes only explicit historical card aliases', () => {
+  const personaRoster = buildCanonicalCharacterRoster({
+    name2: 'Kyle Holland',
+    persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
+    characters: [{ id: 'alissa', name: 'Alissa Kawaguchi' }],
+  });
+  const repaired = findCanonicalParticipantsInText('Adam Lawson met an unknown bartender after the concert.', personaRoster);
+  assert.deepEqual(repaired.names, ['Kyle Holland']);
+  assert.deepEqual(repaired.references, [{
+    entity_id: 'persona:kyle holland',
+    canonical_name: 'Kyle Holland',
+    display_name_at_time: 'Adam Lawson',
+    alias_type: 'historical-alias',
+  }]);
 });
 
 test('active persona uses SillyTavern name2 and roster helpers accept object, map, and legacy array shapes', () => {

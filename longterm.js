@@ -408,6 +408,30 @@ export function getRelationshipHistoryPairDisplay(key, state = {}) {
   return { subject, target };
 }
 
+// Relationship updates can run for a long chat. Keep enough recent and
+// traceable provenance to audit a descriptor without letting every repeated
+// confirmation grow the pair forever. Descriptors and explicit manual edits
+// remain intact; only append-only evidence collections are bounded.
+export function compactRelationshipProvenance(state = {}) {
+  const compact = (values, limit, sortNumeric = false) => {
+    const unique = [...new Set((values ?? []).filter((value) => value !== null && value !== undefined))];
+    if (sortNumeric) unique.sort((left, right) => left - right);
+    return unique.length > limit ? unique.slice(-limit) : unique;
+  };
+  return {
+    ...state,
+    source_message_indices: compact(state.source_message_indices, 96, true),
+    last_update_source_indices: compact(state.last_update_source_indices, 24, true),
+    source_record_ids: compact(state.source_record_ids, 80),
+    parent_memory_ids: compact(state.parent_memory_ids, 80),
+    evidence_ranges: compact(state.evidence_ranges, 48),
+    source_messages: compact(state.source_messages, 48),
+    provenance: compact(state.provenance, 48),
+    source_chat_ids: compact(state.source_chat_ids, 24),
+    migration_metadata: compact(state.migration_metadata, 24),
+  };
+}
+
 export function reconcileRelationshipHistoryMap(history, roster = buildCanonicalCharacterRoster(getContext())) {
   const reconciled = {};
   let changed = false;
@@ -442,7 +466,7 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
     const prior = reconciled[pair.key];
     if (prior) merged++;
     const manualApproved = Boolean(prior?.manual_approved || prior?.manualApproved || canonicalState?.manual_approved || canonicalState?.manualApproved);
-    reconciled[pair.key] = prior
+    const mergedState = prior
       ? {
         ...prior,
         ...canonicalState,
@@ -465,6 +489,7 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
         updatedAt: Math.max(prior.updatedAt ?? 0, canonicalState.updatedAt ?? 0),
       }
       : canonicalState;
+    reconciled[pair.key] = compactRelationshipProvenance(mergedState);
     changed ||= pair.key !== key || JSON.stringify(canonicalState) !== JSON.stringify(state);
   }
   return { history: reconciled, changed, merged, unresolved };
@@ -954,7 +979,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             relationshipRecord.parent_memory_ids = [];
             validateGeneratedRecord(relationshipRecord);
             relationshipRecord.evidence_ranges = relationshipRecord.source_messages;
-            relHistory[key] = relationshipRecord;
+            relHistory[key] = compactRelationshipProvenance(relationshipRecord);
           }
           saveRelationshipHistory(characterName, relHistory);
           smLog(`[Smart Memory Enhanced] Relationship deltas applied: ${deltas.length} pair(s)`);

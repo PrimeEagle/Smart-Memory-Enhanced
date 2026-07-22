@@ -231,13 +231,19 @@ export function canonicalizeRelationshipPair(subject, target, roster) {
  * card-like names are omitted so they cannot become durable graph references.
  */
 export function canonicalizeStructuredParticipants(participants, roster) {
-  const result = { names: [], rejected: [] };
+  const result = { names: [], rejected: [], references: [] };
   for (const rawName of Array.isArray(participants) ? participants : []) {
     const name = String(rawName ?? '').trim();
     if (!name) continue;
     const resolution = resolveCanonicalCharacterName(name, roster);
     if (resolution.status === 'resolved') {
       result.names.push(resolution.canonicalName);
+      result.references.push({
+        entity_id: resolution.canonicalId,
+        canonical_name: resolution.canonicalName,
+        display_name_at_time: name,
+        alias_type: resolution.reason ?? 'canonical-name',
+      });
       continue;
     }
     if (resolution.status === 'ambiguous' || resolution.status === 'rejected') {
@@ -251,6 +257,37 @@ export function canonicalizeStructuredParticipants(participants, roster) {
       continue;
     }
     result.names.push(name);
+  }
+  result.names = [...new Set(result.names)];
+  result.references = result.references.filter((reference, index, entries) =>
+    entries.findIndex((candidate) => candidate.entity_id === reference.entity_id && candidate.display_name_at_time === reference.display_name_at_time) === index,
+  );
+  return result;
+}
+
+/**
+ * Finds only roster-backed people explicitly named in a stored narrative.
+ * This is deliberately not free-form entity extraction: it repairs an omitted
+ * structured participant list without creating NPCs from a scene summary.
+ */
+export function findCanonicalParticipantsInText(text, roster) {
+  const result = { names: [], references: [] };
+  const narrative = String(text ?? '');
+  for (const entry of getCanonicalRosterPeople(roster)) {
+    const references = [...new Set([entry.canonicalName, ...(entry.aliases ?? [])]
+      .map((name) => String(name ?? '').trim())
+      .filter(Boolean))];
+    for (const displayName of references) {
+      if (!new RegExp(`(^|[^\\p{L}])${escapeRegExp(displayName)}(?=$|[^\\p{L}])`, 'iu').test(narrative)) continue;
+      result.names.push(entry.canonicalName);
+      result.references.push({
+        entity_id: entry.id,
+        canonical_name: entry.canonicalName,
+        display_name_at_time: displayName,
+        alias_type: normalize(displayName) === normalize(entry.canonicalName) ? 'canonical-name' : 'historical-alias',
+      });
+      break;
+    }
   }
   result.names = [...new Set(result.names)];
   return result;
