@@ -2949,7 +2949,7 @@ export function bindSettingsUI(ctrl) {
         },
       },
       profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
-      finalReconciliation: { persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, stale_entity_references: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
+      finalReconciliation: { persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       quality: { status: 'clean', reasons: [] },
     };
     let currentChunkFailed = false;
@@ -3395,6 +3395,7 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.identity_decision_duplicates_removed = reconciliation.identity_decision_duplicates_removed ?? 0;
       runResult.finalReconciliation.persona_roster_size = reconciliation.persona_roster_size ?? 0;
       runResult.finalReconciliation.participant_lists_rewritten = reconciliation.participant_lists_rewritten ?? 0;
+      runResult.finalReconciliation.resolved_review_items_removed = reconciliation.resolved_review_items_removed ?? 0;
       runResult.finalReconciliation.integrity_audit = reconciliation.integrity_audit ?? null;
       runResult.finalReconciliation.stale_entity_references = reconciliation.integrity_audit?.stale_entity_references?.length ?? 0;
       runResult.finalReconciliation.personaRosterSize = runResult.finalReconciliation.persona_roster_size;

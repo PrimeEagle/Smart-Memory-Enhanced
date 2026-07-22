@@ -1631,7 +1631,23 @@ export async function reconcileCanonicalEntities(characterName) {
   });
   const dedupedReviewQueue = deduplicateIdentityDecisions(normalizedReviewQueue, 'identity-review');
   const reviewDecisionDuplicatesRemoved = reviewQueue.length - dedupedReviewQueue.length;
-  if (reviewDecisionDuplicatesRemoved || syntheticReviewNamesRemoved) getSettings().identity_review_queue = dedupedReviewQueue;
+  // A review record is stale only when its candidate now has a deterministic
+  // canonical target that is actually represented in a live registry.  Do not
+  // drop an ambiguous/unresolved item merely because the roster suggests a
+  // possible name: that remains user-reviewable data.
+  let resolvedReviewItemsRemoved = 0;
+  const activeReviewQueue = dedupedReviewQueue.filter((item) => {
+    const candidate = item?.candidateName ?? item?.candidateKey;
+    const resolution = resolveCanonicalCharacterName(candidate, roster);
+    if (resolution.status !== 'resolved' || !resolution.canonicalId) return true;
+    const targetExists = registryGroups.flat().some((entity) => entity?.canonical_card_id === resolution.canonicalId);
+    if (!targetExists) return true;
+    resolvedReviewItemsRemoved++;
+    return false;
+  });
+  if (reviewDecisionDuplicatesRemoved || syntheticReviewNamesRemoved || resolvedReviewItemsRemoved) {
+    getSettings().identity_review_queue = activeReviewQueue;
+  }
   const sceneRewrites = rewriteNarrativeRecords(scenes, ['summary']);
   const arcRewrites = rewriteNarrativeRecords(arcs, ['content']);
   const summaryRewrites = rewriteNarrativeRecords(summaries, ['summary', 'arc']);
@@ -1725,7 +1741,8 @@ export async function reconcileCanonicalEntities(characterName) {
     stale_entity_references: staleEntityReferences,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger'],
     duplicate_canonical_entities: [...canonicalGroups.values()].filter((entries) => entries.length > 1).map((entries) => entries.map((entity) => entity.id)),
-    identity_review_items: dedupedReviewQueue.length,
+    identity_review_items: activeReviewQueue.length,
+    resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: staleEntityReferences.length ? 'degraded' : 'clean',
   };
   return {
@@ -1743,6 +1760,7 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_pairs_merged: localRelationshipPairsMerged + persistentRelationshipPairsMerged,
     state_ledger_keys_reconciled: ledgerRewrites,
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
+    resolved_review_items_removed: resolvedReviewItemsRemoved,
     synthetic_review_names_removed: syntheticReviewNamesRemoved,
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,

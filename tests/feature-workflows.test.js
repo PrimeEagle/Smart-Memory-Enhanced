@@ -305,7 +305,10 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /stale_entity_references/);
   assert.match(ui, /state-ledger/);
   assert.match(ui, /_canonical_card_id/);
+  assert.match(ui, /resolvedReviewItemsRemoved/);
+  assert.match(ui, /targetExists/);
   assert.match(settings, /finalReconciliation\.integrity_audit/);
+  assert.match(settings, /resolved_review_items_removed/);
 });
 
 test('final reconciliation canonicalizes scene and arc participant lists while retaining historical display names', () => {
