@@ -339,11 +339,14 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
   assert.match(settings, /sessionExtraction: \{/);
-  for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'missing_provenance', 'semantic_support_rejected', 'provider_or_parser_error', 'provider_returned_none']) {
+  for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'missing_provenance', 'semantic_support_rejected']) {
     assert.match(settings, new RegExp(disposition));
     assert.match(session, new RegExp(`recordDisposition\\('${disposition}'`));
   }
+  for (const providerOutcome of ['provider_or_parser_error', 'provider_returned_none']) assert.match(settings, new RegExp(providerOutcome));
   assert.match(session, /rejectedByValidation/);
+  assert.match(settings, /sessionTerminalTotal/);
+  assert.match(settings, /terminalReconciled/);
   for (const repairField of ['repairEligible', 'repairProviderError', 'repairReturnedNone', 'repairMalformed', 'repairStillInvalid', 'repairSemanticallyUnsupported', 'repairAccepted']) {
     assert.match(settings, new RegExp(repairField));
   }

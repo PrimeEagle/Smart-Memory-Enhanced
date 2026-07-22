@@ -349,7 +349,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     if (!response || response.trim().toUpperCase() === 'NONE') {
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
-      recordDisposition('provider_returned_none');
       return 0;
     }
 
@@ -563,7 +562,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     return added;
   } catch (err) {
     if (sessionDiagnostics) sessionDiagnostics.providerFailures = (sessionDiagnostics.providerFailures ?? 0) + 1;
-    recordDisposition('provider_or_parser_error');
     console.error('[Smart Memory Enhanced] Session extraction failed:', err);
     throw err;
   }

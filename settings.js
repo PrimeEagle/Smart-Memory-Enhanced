@@ -3405,6 +3405,16 @@ export function bindSettingsUI(ctrl) {
       const sessionFailureRatio = runResult.sessionExtraction.emitted > 0
         ? runResult.sessionExtraction.missingProvenance / runResult.sessionExtraction.emitted
         : 0;
+      const sessionTerminalTotal = Object.entries(runResult.sessionExtraction.terminalDispositions ?? {})
+        .filter(([name]) => !['provider_or_parser_error', 'provider_returned_none'].includes(name))
+        .reduce((total, [, count]) => total + Number(count ?? 0), 0);
+      runResult.sessionExtraction.terminalTotal = sessionTerminalTotal;
+      runResult.sessionExtraction.terminalReconciled = sessionTerminalTotal === runResult.sessionExtraction.emitted;
+      if (!runResult.sessionExtraction.terminalReconciled) qualityReasons.push({
+        code: 'session_terminal_dispositions_unreconciled',
+        tier: 'session',
+        message: `${runResult.sessionExtraction.emitted} parsed candidates but ${sessionTerminalTotal} terminal dispositions.`,
+      });
       if (sessionFailureRatio > 0.5) qualityReasons.push({
         code: 'session_provenance_quarantine_majority',
         tier: 'session',
