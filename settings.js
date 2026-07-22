@@ -2921,7 +2921,7 @@ export function bindSettingsUI(ctrl) {
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
-      arcExtraction: { attempted: 0, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, rejectedCompletedEvents: 0, rejectedBackgroundFacts: 0, rejectedRelationshipStates: 0, rejectedSceneDetails: 0, rejectedMalformed: 0, participantRepairs: 0, participantReviewItems: 0, terminalOutcome: null },
+      arcExtraction: { attempted: 0, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, rejectedCompletedEvents: 0, rejectedBackgroundFacts: 0, rejectedRelationshipStates: 0, rejectedSceneDetails: 0, rejectedMalformed: 0, participantRepairs: 0, participantReviewItems: 0, inputTokenBudget: 0, inputTokenEstimate: 0, inputMessages: 0, omittedMessages: 0, truncatedMessage: false, terminalOutcome: null },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: {
         emitted: 0,
@@ -3486,7 +3486,9 @@ export function bindSettingsUI(ctrl) {
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries()),
         arcResolution: runResult.arcResolution,
+        arcExtraction: runResult.arcExtraction,
         arcPipeline: runResult.arcPipeline,
+        provider_failures: runResult.providerFailures,
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,

@@ -288,6 +288,16 @@ test('final catch-up stage order builds scenes before one complete arc pass and 
   assert.doesNotMatch(settings, /await extractArcs\(chunk, characterName/);
 });
 
+test('final arc extraction bounds long chats and exports request diagnostics', () => {
+  const arcs = read('arcs.js');
+  const settings = read('settings.js');
+  assert.match(arcs, /export function selectArcExtractionWindow\(messages, tokenBudget\)/);
+  assert.match(arcs, /getMemoryInputBudget\(responseLength\) \* 0\.7/);
+  assert.match(arcs, /omittedMessages: Math\.max\(0, eligible\.length - kept\.length\)/);
+  assert.match(settings, /arcExtraction: runResult\.arcExtraction/);
+  assert.match(settings, /provider_failures: runResult\.providerFailures/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');

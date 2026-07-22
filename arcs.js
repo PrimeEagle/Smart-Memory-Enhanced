@@ -54,7 +54,7 @@ import {
   extension_prompt_roles,
   saveSettingsDebounced,
 } from '../../../../script.js';
-import { generateMemoryExtract, retryTransientMemoryOperation } from './generate.js';
+import { generateMemoryExtract, getMemoryInputBudget, retryTransientMemoryOperation } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
@@ -74,6 +74,47 @@ import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalize
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
+
+/**
+ * Keeps the newest complete chat turns that can safely fit inside an arc
+ * extraction request. Arc extraction used to embed the entire chat into one
+ * prompt, which could exceed a local provider's context window after a long
+ * Memorize Chat run. The head is deliberately dropped: active unresolved
+ * threads and their later developments are most useful at the end of a chat.
+ */
+export function selectArcExtractionWindow(messages, tokenBudget) {
+  const eligible = (messages ?? []).filter((message) => message?.mes && !message.is_system);
+  const kept = [];
+  let tokenEstimate = 0;
+  let truncatedMessage = false;
+  for (let index = eligible.length - 1; index >= 0; index--) {
+    const message = eligible[index];
+    const labeled = `${message.name}: ${message.mes}`;
+    const tokens = estimateTokens(labeled);
+    if (kept.length > 0 && tokenEstimate + tokens > tokenBudget) break;
+    if (kept.length === 0 && tokens > tokenBudget) {
+      // Preserve the end of a single oversized turn rather than creating an
+      // unbounded request. This is only a last-resort guard; normal runs keep
+      // whole recent turns.
+      const tailChars = Math.max(1000, Math.floor(tokenBudget * 3));
+      const tail = String(message.mes).slice(-tailChars);
+      const trimmed = { ...message, mes: `[Earlier part of this message omitted for context safety]\n${tail}` };
+      kept.unshift(trimmed);
+      tokenEstimate += estimateTokens(`${trimmed.name}: ${trimmed.mes}`);
+      truncatedMessage = true;
+      break;
+    }
+    kept.unshift(message);
+    tokenEstimate += tokens;
+  }
+  return {
+    messages: kept,
+    tokenEstimate,
+    tokenBudget,
+    omittedMessages: Math.max(0, eligible.length - kept.length),
+    truncatedMessage,
+  };
+}
 
 /**
  * Jaccard word-overlap similarity between two arc content strings.
@@ -872,8 +913,23 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 
   try {
     if (arcExtraction) arcExtraction.attempted = (arcExtraction.attempted ?? 0) + 1;
-    const rawChatHistory = messages
-      .filter((m) => m.mes && !m.is_system)
+    const responseLength = settings.arcs_response_length ?? 400;
+    // Leave generous room for the extraction contract, roster, active arcs,
+    // and provider chat-template overhead. getMemoryInputBudget already
+    // reserves output tokens; 70% of that remaining space prevents the prompt
+    // body itself from consuming the final margin.
+    const inputBudget = Number(options.arcInputBudget) > 0
+      ? Number(options.arcInputBudget)
+      : Math.max(500, Math.floor(getMemoryInputBudget(responseLength) * 0.7));
+    const selected = selectArcExtractionWindow(messages, inputBudget);
+    if (arcExtraction) {
+      arcExtraction.inputTokenBudget = selected.tokenBudget;
+      arcExtraction.inputTokenEstimate = selected.tokenEstimate;
+      arcExtraction.inputMessages = selected.messages.length;
+      arcExtraction.omittedMessages = selected.omittedMessages;
+      arcExtraction.truncatedMessage = selected.truncatedMessage;
+    }
+    const rawChatHistory = selected.messages
       .map((m) => `${m.name}: ${m.mes}`)
       .join('\n\n');
 
@@ -888,7 +944,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 
     const response = await generateMemoryExtract(
       applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))), PROMPT_TASKS.ARC_EXTRACTION, characterName),
-      { responseLength: settings.arcs_response_length ?? 400, task: 'initial-arc-extraction' },
+      { responseLength, task: 'initial-arc-extraction' },
     );
 
     smLog('[Smart Memory Enhanced] Arc extraction response:', response);
