@@ -248,6 +248,7 @@ test('profile validation accepts a roster object and provider failures retain sa
   const settings = read('settings.js');
   assert.match(profiles, /function rosterEntries\(roster\)/);
   assert.match(profiles, /rosterEntries\(roster\)/);
+  assert.match(profiles, /getCanonicalRosterPeople/);
   assert.match(generate, /sme_request_diagnostics/);
   assert.match(generate, /estimated_input_tokens/);
   assert.match(generate, /likely_cause/);

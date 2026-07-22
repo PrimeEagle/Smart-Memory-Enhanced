@@ -58,7 +58,7 @@ import { buildProfileFormatRepairPrompt, buildProfileGenerationPrompt } from './
 import { parseProfileOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, getCanonicalRosterPeople, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
@@ -195,7 +195,7 @@ export function omitStaleCurrentProfileLines(parsed, currentEvidence = '') {
  * is not evidence for a stronger or different status.
  */
 function rosterEntries(roster) {
-  return Array.isArray(roster) ? roster : (Array.isArray(roster?.characters) ? roster.characters : []);
+  return getCanonicalRosterPeople(roster);
 }
 
 function extractCardRelationshipFacts(roster = []) {
