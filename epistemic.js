@@ -208,8 +208,28 @@ export function reconcileEpistemicCanonicalNames(characterName) {
   for (const entry of entries) {
     const subject = resolveCanonicalCharacterName(entry.subject, roster);
     const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
-    if (subject.status === 'resolved' && subject.canonicalName && entry.subject !== subject.canonicalName) { entry.subject = subject.canonicalName; changed = true; }
-    if (target?.status === 'resolved' && target.canonicalName && entry.target !== target.canonicalName) { entry.target = target.canonicalName; changed = true; }
+    if (subject.status === 'resolved' && subject.canonicalName) {
+      if (entry.subject !== subject.canonicalName) {
+        entry.subject_display_name_at_time ??= entry.subject;
+        entry.subject = subject.canonicalName;
+        changed = true;
+      }
+      if (entry.subject_canonical_card_id !== subject.canonicalId) {
+        entry.subject_canonical_card_id = subject.canonicalId ?? null;
+        changed = true;
+      }
+    }
+    if (target?.status === 'resolved' && target.canonicalName) {
+      if (entry.target !== target.canonicalName) {
+        entry.target_display_name_at_time ??= entry.target;
+        entry.target = target.canonicalName;
+        changed = true;
+      }
+      if (entry.target_canonical_card_id !== target.canonicalId) {
+        entry.target_canonical_card_id = target.canonicalId ?? null;
+        changed = true;
+      }
+    }
   }
   if (changed) saveEpistemicKnowledge(characterName, entries);
   return changed;
@@ -404,6 +424,10 @@ export async function extractEpistemicKnowledge(
         ...entry,
         subject: canonicalSubject,
         target: target?.canonicalName ?? entry.target,
+        subject_canonical_card_id: subject.canonicalId ?? null,
+        target_canonical_card_id: target?.canonicalId ?? null,
+        subject_display_name_at_time: entry.subject,
+        target_display_name_at_time: entry.target ?? null,
       }];
     });
     if (parsed.length === 0 && retiredCount === 0) {

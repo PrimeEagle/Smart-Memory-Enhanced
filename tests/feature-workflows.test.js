@@ -458,6 +458,9 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   const graph = read('graph-migration.js');
   assert.match(epistemic, /A named, approved epistemic record is independent grounded evidence/);
   assert.match(epistemic, /resolveEntityNames\(entry, names/);
+  assert.match(epistemic, /subject_canonical_card_id/);
+  assert.match(epistemic, /target_canonical_card_id/);
+  assert.match(epistemic, /subject_display_name_at_time/);
   assert.match(longterm, /Relationship History is independently grounded evidence/);
   assert.match(longterm, /reconcileCanonicalEntityRegistry\(entityRegistry, getContext\(\), finalActive\)/);
   assert.ok(
