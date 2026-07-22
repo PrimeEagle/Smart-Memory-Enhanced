@@ -1737,9 +1737,24 @@ export async function reconcileCanonicalEntities(characterName) {
       staleEntityReferences.push({ store: 'state-ledger', record_id: ledgerKey, entity_id: entityId });
     }
   }
+  // Perspectives & Secrets has separate subject and target links rather than
+  // a generic entity list.  Audit both after canonicalization so an obsolete
+  // card/persona ID cannot survive an otherwise successful entity merge.
+  for (const storeName of structuredStoreNames) {
+    for (const entry of loadEpistemicKnowledge(storeName)) {
+      for (const [field, entityId] of [
+        ['subject_canonical_card_id', entry?.subject_canonical_card_id],
+        ['target_canonical_card_id', entry?.target_canonical_card_id],
+      ]) {
+        if (entityId && !knownEntityIds.has(entityId)) {
+          staleEntityReferences.push({ store: `epistemic:${storeName}`, record_id: entry?.id ?? null, field, entity_id: entityId });
+        }
+      }
+    }
+  }
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
-    checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger'],
+    checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: [...canonicalGroups.values()].filter((entries) => entries.length > 1).map((entries) => entries.map((entity) => entity.id)),
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
