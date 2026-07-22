@@ -222,7 +222,7 @@ export function getDefaultPromptPreview(task) {
     case PROMPT_TASKS.SCENE_SUMMARY:
       return `${buildSceneDetectPrompt('[CURRENT MESSAGE]', '[PREVIOUS MESSAGE]')}\n\n--- Scene summary ---\n\n${SCENE_SUMMARY_PROMPT.replace('{{scene_text}}', sampleChat)}`;
     case PROMPT_TASKS.ARC_EXTRACTION:
-      return `${buildArcExtractionPrompt(sampleChat, '[OPEN ARCS ARE INSERTED HERE]')}\n\n--- Arc resolution summary ---\n\n${buildArcSummaryPrompt('[ARC]', '[SCENE SUMMARIES]', sampleMemories)}`;
+      return `${buildArcExtractionPrompt(sampleChat, '[OPEN ARCS ARE INSERTED HERE]', sampleRoster)}\n\n--- Arc resolution summary ---\n\n${buildArcSummaryPrompt('[ARC]', '[SCENE SUMMARIES]', sampleMemories)}`;
     case PROMPT_TASKS.CANON:
       return buildCanonSummaryPrompt('[ACTIVE CHARACTER]', ['[RESOLVED ARC SUMMARY]'], sampleMemories);
     case PROMPT_TASKS.PROFILES:
@@ -308,13 +308,13 @@ export function getLivePromptInspection(task, characterName = null) {
       prompt = `${buildSceneDetectPrompt(chat.split('\n').at(-1) ?? '', chat.split('\n').at(-2) ?? '')}\n\n--- Scene summary ---\n\n${buildSceneSummaryPrompt(sceneText, roster)}`;
       break;
     case PROMPT_TASKS.ARC_EXTRACTION:
-      prompt = buildArcExtractionPrompt(chat, arcs.map((arc) => arc?.content ?? arc?.summary ?? String(arc)).join('\n'));
+      prompt = buildArcExtractionPrompt(chat, arcs.map((arc) => arc?.content ?? arc?.summary ?? String(arc)).join('\n'), roster);
       break;
     case PROMPT_TASKS.CANON:
       prompt = buildCanonSummaryPrompt(activeCharacter, arcSummaries.map((summary) => summary?.summary ?? summary?.content ?? String(summary)), longterm);
       break;
     case PROMPT_TASKS.PROFILES:
-      prompt = buildProfileGenerationPrompt(activeCharacter, longterm, session, registry, roster);
+      prompt = buildProfileGenerationPrompt(activeCharacter, longterm, session, registry, roster, relationships);
       break;
     case PROMPT_TASKS.RELATIONSHIPS:
       prompt = buildRelationshipDeltaPrompt(sceneText, relationshipState, context?.characters?.find((card) => card.name === activeCharacter)?.description ?? '', roster);

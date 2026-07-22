@@ -533,6 +533,20 @@ test('Prompt Studio offers a read-only live inspector built from current evidenc
   assert.match(promptConfig, /buildCanonicalCharacterRoster\(context\)/);
 });
 
+test('live prompt inspection preserves protected Session, Arc, and Profile contracts after scoped composition', () => {
+  const promptConfig = read('prompt-config.js');
+  const prompts = read('prompts.js');
+  const arcs = read('arcs.js');
+  assert.match(promptConfig, /buildSessionExtractionPrompt\(chat, session, longterm, roster\)/);
+  assert.match(promptConfig, /buildArcExtractionPrompt\(chat, arcs\.map[\s\S]*roster\)/);
+  assert.match(promptConfig, /buildProfileGenerationPrompt\(activeCharacter, longterm, session, registry, roster, relationships\)/);
+  assert.match(promptConfig, /return \{\s+prompt: applyPromptOverride/);
+  assert.match(prompts, /Every output item MUST include one or more source message indices/);
+  assert.match(prompts, /An arc must state what remains unresolved, pending, unknown, promised, required, or undecided/);
+  assert.match(prompts, /Never phrase a current-state claim as speculation/);
+  assert.match(arcs, /buildArcExtractionPrompt\(chatHistory, existingText, formatCanonicalRosterForPrompt/);
+});
+
 test('lower navigation sections have distinct theme-neutral header icons', () => {
   const html = read('settings.html');
   for (const [section, icon] of [

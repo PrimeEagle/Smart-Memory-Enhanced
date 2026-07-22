@@ -289,7 +289,7 @@ export function buildSceneSummaryPrompt(sceneText, canonicalRoster = '') {
  * @param {string} existingArcs - Already-tracked arcs as [arc] lines (may be empty).
  * @returns {string} The complete prompt string.
  */
-export function buildArcExtractionPrompt(chatHistory, existingArcs) {
+export function buildArcExtractionPrompt(chatHistory, existingArcs, canonicalRoster = '') {
   const existingSection = existingArcs
     ? `EXISTING OPEN ARCS (read-only context - do not copy, annotate, or re-output these):\n${existingArcs}\n\n`
     : '';
@@ -298,12 +298,13 @@ export function buildArcExtractionPrompt(chatHistory, existingArcs) {
     NO_ACTION_PREAMBLE +
     `[STORY ARC EXTRACTION - Do NOT roleplay. Output structured data only.]
 
-${existingSection}CONVERSATION:\n${chatHistory}
+${canonicalRoster}${existingSection}CONVERSATION:\n${chatHistory}
 
 ---
 Extract the most significant open story threads from the conversation: unresolved conflicts, unfulfilled promises, active character goals, open mysteries, and tensions that have not yet played out. Aim for the 3-5 threads that matter most to the story - do not list every detail that has not resolved.
 
 An arc is something still in motion across the story - a question not yet answered, a goal not yet reached, a conflict still active. Do NOT output facts about things that already happened and are over.
+An arc must state what remains unresolved, pending, unknown, promised, required, or undecided. Use canonical participant names only; never use synthetic parenthetical identity labels.
 
 Before outputting [arc], apply this gate: could this entry still change what happens next? If the answer is no, it is a completed event or established fact, not an arc. A past event is allowed only when it directly leaves a named question, goal, promise, conflict, threat, or mystery still open.
 

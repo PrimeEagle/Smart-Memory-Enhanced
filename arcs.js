@@ -70,7 +70,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, sanitizeSyntheticIdentityLabels, validateArcParticipants } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, sanitizeSyntheticIdentityLabels, validateArcParticipants } from './canonical-entities.js';
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
@@ -884,7 +884,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const chatHistory = canonicalizeNarrativeNames(rawChatHistory, buildCanonicalCharacterRoster(getContext())).text;
 
     const response = await generateMemoryExtract(
-      applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText), PROMPT_TASKS.ARC_EXTRACTION, characterName),
+      applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))), PROMPT_TASKS.ARC_EXTRACTION, characterName),
       { responseLength: settings.arcs_response_length ?? 400 },
     );
 
