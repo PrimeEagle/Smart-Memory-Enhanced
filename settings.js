@@ -3412,7 +3412,10 @@ export function bindSettingsUI(ctrl) {
         ? runResult.sessionExtraction.missingProvenance / runResult.sessionExtraction.emitted
         : 0;
       const sessionTerminalTotal = Object.entries(runResult.sessionExtraction.terminalDispositions ?? {})
-        .filter(([name]) => !['provider_or_parser_error', 'provider_returned_none'].includes(name))
+        // `provider_or_parser_error` can represent already-parsed candidates
+        // whose later verification failed. `provider_returned_none` is only a
+        // request-level outcome and therefore has no candidate to reconcile.
+        .filter(([name]) => name !== 'provider_returned_none')
         .reduce((total, [, count]) => total + Number(count ?? 0), 0);
       runResult.sessionExtraction.terminalTotal = sessionTerminalTotal;
       runResult.sessionExtraction.terminalReconciled = sessionTerminalTotal === runResult.sessionExtraction.emitted;

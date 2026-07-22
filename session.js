@@ -310,10 +310,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
   const settings = extension_settings[MODULE_NAME];
   if (!settings.session_enabled) return 0;
   const sessionDiagnostics = options.sessionDiagnostics;
+  let parsedCandidateCount = 0;
+  let terminalCandidateCount = 0;
   const recordDisposition = (name, count = 1) => {
     if (!sessionDiagnostics || count <= 0) return;
     sessionDiagnostics.terminalDispositions ??= {};
     sessionDiagnostics.terminalDispositions[name] = (sessionDiagnostics.terminalDispositions[name] ?? 0) + count;
+    terminalCandidateCount += count;
   };
 
   try {
@@ -371,6 +374,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       : null;
     const parsedCandidates = parseSessionOutput(response);
     const initiallyParsedCount = parsedCandidates.length;
+    parsedCandidateCount = initiallyParsedCount;
     if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;
     // When the provider produced otherwise parseable session records but
     // omitted every citation, ask once for the *same records only* with their
@@ -579,7 +583,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     return added;
   } catch (err) {
-    if (sessionDiagnostics) sessionDiagnostics.providerFailures = (sessionDiagnostics.providerFailures ?? 0) + 1;
+    if (sessionDiagnostics) {
+      sessionDiagnostics.providerFailures = (sessionDiagnostics.providerFailures ?? 0) + 1;
+      // A request can fail after its initial response was parsed (for example,
+      // during embedding verification). Give every affected parsed candidate
+      // a terminal outcome so diagnostics still reconcile exactly.
+      recordDisposition('provider_or_parser_error', Math.max(0, parsedCandidateCount - terminalCandidateCount));
+    }
     console.error('[Smart Memory Enhanced] Session extraction failed:', err);
     throw err;
   }

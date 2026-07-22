@@ -353,7 +353,9 @@ test('session extraction repairs citation-only omissions once and never persists
   }
   for (const providerOutcome of ['provider_or_parser_error', 'provider_returned_none']) assert.match(settings, new RegExp(providerOutcome));
   assert.match(session, /rejectedByValidation/);
+  assert.match(session, /parsedCandidateCount - terminalCandidateCount/);
   assert.match(settings, /sessionTerminalTotal/);
+  assert.match(settings, /name !== 'provider_returned_none'/);
   assert.match(settings, /terminalReconciled/);
   for (const repairField of ['repairEligible', 'repairProviderError', 'repairReturnedNone', 'repairMalformed', 'repairStillInvalid', 'repairSemanticallyUnsupported', 'repairAccepted']) {
     assert.match(settings, new RegExp(repairField));
