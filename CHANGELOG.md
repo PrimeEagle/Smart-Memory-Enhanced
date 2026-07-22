@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.17] - 2026-07-22
+
+### Fixed
+
+- Prevented final story-arc extraction from sending an entire long chat in one
+  request. The extractor now keeps a conservative, provider-safe recent window
+  and reports its input budget, included messages, omitted messages, and any
+  single-message truncation.
+- Made scene deduplication resilient to embedding outages and malformed legacy
+  summaries by safely falling back to deterministic text similarity.
+- Isolated presentation-only prompt injection, panel refresh, unified-memory,
+  and token-display work from durable catch-up processing, so a UI or optional
+  embedding failure cannot roll back a multi-hour extraction run.
+- Preserved a session-local diagnostics export after a final chat-save failure,
+  even when transactional rollback removes the persisted diagnostics metadata.
+
+### Improved
+
+- Final canonical reconciliation now rolls back only its own partial edits on
+  failure while preserving earlier validated tier data and recording a degraded
+  quality result.
+- AI scene-break detection provider failures now remain non-fatal, are bounded
+  in diagnostic output, and explicitly report that heuristic detection
+  continued.
+- Partial-run status messages now identify late-stage failures directly rather
+  than implying that zero failed chunks means no failure occurred.
+- Diagnostics exports now include detailed errors, bounded warnings, final
+  persistence errors, initial arc-extraction context telemetry, and sanitized
+  provider-request metadata.
+
+### Tests
+
+- Added regression coverage for context-bounded arc extraction, late-stage
+  failure isolation, retained diagnostics, warning caps, and scene fallback
+  behavior.
+- The complete test command passes: 219 automated tests and 48 regression
+  harness assertions.
+
 ## [0.8.16] - 2026-07-22
 
 ### Fixed
