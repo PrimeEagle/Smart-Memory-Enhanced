@@ -2316,6 +2316,16 @@ export function updateEntityPanel(characterName) {
           ev.stopPropagation();
           $picker.remove();
 
+          const sourceCardId = entity.canonical_card_id ?? null;
+          const targetCardId = target.canonical_card_id ?? null;
+          const requiresIdentityConfirmation =
+            (sourceCardId && targetCardId && String(sourceCardId) !== String(targetCardId)) ||
+            Boolean(sourceCardId) !== Boolean(targetCardId) ||
+            Boolean(entity.canonical_persona_id) !== Boolean(target.canonical_persona_id);
+          if (requiresIdentityConfirmation && !window.confirm(
+            `This merge combines distinct authoritative identities:\n\n${entity.name} → ${target.name}\n\nOnly continue if this is an intentional identity decision. Use Rename instead when the entities are not the same person.`,
+          )) return;
+
           const srcCard = getStateCard(entity.name, entity.type);
           const dstCard = getStateCard(target.name, target.type);
 
@@ -2353,7 +2363,7 @@ export function updateEntityPanel(characterName) {
               const ltMems = characterName ? loadCharacterMemories(characterName) : [];
               const sessReg = loadSessionEntityRegistry();
               const sessMems = loadSessionMemories();
-              mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: 'User-confirmed Entity Registry merge from the state-card conflict dialog.' });
+              mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: requiresIdentityConfirmation ? 'User-confirmed authoritative-identity merge from the state-card conflict dialog.' : 'User-confirmed Entity Registry merge from the state-card conflict dialog.' });
               if (characterName) {
                 saveCharacterEntityRegistry(characterName, ltReg);
                 saveCharacterMemories(characterName, ltMems);
@@ -2381,7 +2391,7 @@ export function updateEntityPanel(characterName) {
           const ltMems = characterName ? loadCharacterMemories(characterName) : [];
           const sessReg = loadSessionEntityRegistry();
           const sessMems = loadSessionMemories();
-          mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: 'User-confirmed Entity Registry merge.' });
+          mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: requiresIdentityConfirmation ? 'User-confirmed authoritative-identity merge.' : 'User-confirmed Entity Registry merge.' });
           if (characterName) {
             saveCharacterEntityRegistry(characterName, ltReg);
             saveCharacterMemories(characterName, ltMems);
