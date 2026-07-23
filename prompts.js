@@ -628,6 +628,7 @@ export function buildProfileGenerationPrompt(
   entities = [],
   canonicalRoster = '',
   relationshipHistory = {},
+  cardRelationshipFacts = [],
 ) {
   const ltSection = longtermMemories
     ? `LONG-TERM MEMORIES:\n${longtermMemories}\n\n`
@@ -653,12 +654,22 @@ export function buildProfileGenerationPrompt(
     .filter(Boolean)
     .join('\n');
   const relationshipSection = relationshipEvidence ? `RELATIONSHIP HISTORY (authoritative current descriptors):\n${relationshipEvidence}\n\n` : '';
+  const cardRelationshipEvidence = (cardRelationshipFacts ?? [])
+    .map((fact) => {
+      const subject = String(fact?.subject ?? '').trim();
+      const target = String(fact?.target ?? '').trim();
+      const descriptors = (fact?.descriptors ?? []).map(String).filter(Boolean);
+      return subject && target && descriptors.length ? `${subject} -> ${target}: ${descriptors.join(', ')}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+  const cardRelationshipSection = cardRelationshipEvidence ? `CHARACTER CARD RELATIONSHIP FACTS (highest priority):\n${cardRelationshipEvidence}\n\n` : '';
 
   return (
     NO_ACTION_PREAMBLE +
     `[PROFILE GENERATION TASK - Do NOT roleplay. Output structured data only.]
 
-${canonicalRoster}${ltSection}${sessSection}${entitySection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing; directly supported unknown values may be written as "unknown". Never phrase a current-state claim as speculation (for example, "likely", "perhaps", "seems", "might", or "could be"); omit it instead.
+${canonicalRoster}${ltSection}${sessSection}${entitySection}${cardRelationshipSection}${relationshipSection}Generate a compact current state snapshot for the active roleplay character "${charLabel}". Base everything strictly on the approved evidence above. CHARACTER CARD RELATIONSHIP FACTS outrank Relationship History, which outranks generated summaries. The evidence is chronological: when two facts conflict, use the later active fact and do not revive retired or superseded circumstances. Do not infer new goals, relationships, personality traits, or world developments. Omit unsupported fields rather than guessing; directly supported unknown values may be written as "unknown". Never phrase a current-state claim as speculation (for example, "likely", "perhaps", "seems", "might", or "could be"); omit it instead.
 
 Output exactly three sections using these tags. Keep every field to one line. Write factually:
 

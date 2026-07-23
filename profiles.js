@@ -370,6 +370,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     entities,
     formatCanonicalRosterForPrompt(roster),
     relationshipHistory,
+    extractCardRelationshipFacts(roster),
   );
 
   try {
