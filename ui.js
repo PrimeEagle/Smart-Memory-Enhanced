@@ -1758,6 +1758,8 @@ export async function reconcileCanonicalEntities(characterName) {
       for (const [field, entityId] of [
         ['subject_canonical_card_id', entry?.subject_canonical_card_id],
         ['target_canonical_card_id', entry?.target_canonical_card_id],
+        ['subject_canonical_persona_id', entry?.subject_canonical_persona_id ? `persona:${entry.subject_canonical_persona_id}` : null],
+        ['target_canonical_persona_id', entry?.target_canonical_persona_id ? `persona:${entry.target_canonical_persona_id}` : null],
       ]) {
         if (entityId && !knownEntityIds.has(entityId)) {
           staleEntityReferences.push({ store: `epistemic:${storeName}`, record_id: entry?.id ?? null, field, entity_id: entityId });
