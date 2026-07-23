@@ -3526,6 +3526,17 @@ export function bindSettingsUI(ctrl) {
         else prior.source_record_ids = [...new Set([...(prior.source_record_ids ?? []), ...(outcome.source_record_ids ?? [])].filter(Boolean))];
         return records;
       }, new Map());
+      const sourceRecordKeys = new Set((reconciliation.identity_outcomes ?? [])
+        .map((outcome) => `${outcome.source_store ?? 'unknown'}|${outcome.source_record_id ?? ''}`)
+        .filter((key) => !key.endsWith('|')));
+      const conflictingTerminalRecords = [...finalTerminalRecords.values()]
+        .filter((outcome) => !outcome.source_record_id)
+        .map((outcome) => ({ candidate: outcome.candidate ?? null, source_store: outcome.source_store ?? null }));
+      runResult.identityResolution.source_records_total = sourceRecordKeys.size;
+      runResult.identityResolution.terminal_records_total = finalTerminalRecords.size;
+      runResult.identityResolution.terminal_reconciled = sourceRecordKeys.size === finalTerminalRecords.size && conflictingTerminalRecords.length === 0;
+      runResult.identityResolution.duplicate_terminal_records_removed = Math.max(0, (reconciliation.identity_outcomes ?? []).length - finalTerminalRecords.size);
+      runResult.identityResolution.conflicting_terminal_records = conflictingTerminalRecords;
       runResult.identityResolutionDetails = {
         matched: reconciliation.matched.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'matched', target: canonicalName, reason_code })),
         merged: reconciliation.merged.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'merged', target: canonicalName, reason_code })),

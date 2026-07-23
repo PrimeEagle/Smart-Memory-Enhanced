@@ -465,7 +465,6 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       entity.canonical_identity_type = 'character_card';
       entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), corruptedName])];
       report.changed = true;
-      report.outcomes.push({ candidate: corruptedName, source_record_id: entity.id, canonicalName: entity.name, terminal_outcome: 'canonical_exact_match', reason: 'Restored authoritative character-card name.' });
     }
     const result = resolveEntityCandidate(entity.name, roster, [registry.filter((entry) => entry.id !== entity.id)], {
       source_record_ids: entity.source_record_ids ?? entity.memory_ids ?? [],
@@ -474,12 +473,12 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     if (result.synthetic_parenthetical) report.synthetic_parenthetical_detected++;
     if (result.status === 'ambiguous') {
       report.skipped.push({ name: entity.name, reason: result.reason, reason_code: 'ambiguous_multiple_candidates' });
-      report.outcomes.push({ candidate: entity.name, terminal_outcome: 'ambiguous_review', reason: result.reason });
+      report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'ambiguous_review', reason: result.reason });
       continue;
     }
     if (!result.canonicalName || !result.canonicalId) {
       if (result.promotion?.allowed) {
-        report.outcomes.push({ candidate: entity.name, terminal_outcome: 'grounded_unknown_preserved', reason: result.promotion.creation_reason });
+        report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'grounded_unknown_preserved', reason: result.promotion.creation_reason });
         continue;
       }
       const reviewResult = { ...result, status: 'unresolved', reason: result.reason ?? 'No deterministic canonical identity candidate.' };
@@ -489,7 +488,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         source_message_indices: entity.source_message_indices ?? [],
       });
       report.skipped.push({ name: entity.name, reason: reviewResult.reason, reason_code: 'unmatched_review' });
-      report.outcomes.push({ candidate: entity.name, terminal_outcome: 'unmatched_review', reason: reviewResult.reason });
+      report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'unmatched_review', reason: reviewResult.reason });
       continue;
     }
     const target = registry.find((entry) => entry.id !== entity.id && (
@@ -519,13 +518,13 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         entity.type = 'character';
         entity.source = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId)?.source ?? 'character-card';
         report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason, reason_code: result.reason.includes('persona') ? 'active_persona_match' : 'unique_first_name_match' });
-        report.outcomes.push({ candidate: oldName, canonicalName: result.canonicalName, terminal_outcome: result.reason.includes('alias') || result.reason.includes('persona') ? 'deterministic_alias_match' : 'canonical_exact_match', reason: result.reason });
+        report.outcomes.push({ candidate: oldName, source_record_id: entity.id, canonicalName: result.canonicalName, terminal_outcome: result.reason.includes('alias') || result.reason.includes('persona') ? 'deterministic_alias_match' : 'canonical_exact_match', reason: result.reason });
         report.changed = true;
       } else {
         // Reconciliation is an auditable terminal decision even when this
         // record was already canonical.  Omitting it made a clean entity look
         // indistinguishable from one that the pass never considered.
-        report.outcomes.push({ candidate: entity.name, canonicalName: result.canonicalName, terminal_outcome: 'canonical_exact_match', reason: result.reason });
+        report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, canonicalName: result.canonicalName, terminal_outcome: 'canonical_exact_match', reason: result.reason });
       }
       continue;
     }
@@ -555,7 +554,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     registry.splice(registry.indexOf(entity), 1);
     report.merged.push({ name: entity.name, canonicalName: target.name, sourceId: entity.id, targetId: target.id, match: result.reason, authority_comparison: mergeSafety.authority_comparison, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
     if (result.synthetic_parenthetical) report.durable_entity_removed++;
-    report.outcomes.push({ candidate: entity.name, canonicalName: target.name, terminal_outcome: 'merged', reason: result.reason });
+    report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, canonicalName: target.name, terminal_outcome: 'merged', reason: result.reason });
     report.changed = true;
   }
   return report;

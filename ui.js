@@ -1593,7 +1593,7 @@ export async function reconcileCanonicalEntities(characterName) {
     await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
     localRewrites += await rewriteStoredNarratives(localMemories);
-    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, context, localMemories));
+    localReports.push({ ...reconcileCanonicalEntityRegistry(localRegistry, context, localMemories), source_store: `card-local:${localName}` });
   }
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
     await yieldEvery();
@@ -1886,7 +1886,11 @@ export async function reconcileCanonicalEntities(characterName) {
     merged: [...ltReport.merged, ...sessionReport.merged, ...localReports.flatMap((report) => report.merged)],
     skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
-    identity_outcomes: [...(ltReport.outcomes ?? []), ...(sessionReport.outcomes ?? []), ...localReports.flatMap((report) => report.outcomes ?? [])],
+    identity_outcomes: [
+      ...(ltReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: 'longterm' })),
+      ...(sessionReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: 'session' })),
+      ...localReports.flatMap((report) => (report.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: report.source_store }))),
+    ],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
     participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
     persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,
