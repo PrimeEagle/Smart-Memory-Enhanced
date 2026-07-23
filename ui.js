@@ -1532,6 +1532,10 @@ export function updateProfilesUI(profiles) {
  */
 /** Safely reconciles unambiguous canonical entity aliases without opening UI. */
 export async function reconcileCanonicalEntities(characterName) {
+  let reconciliationWorkIndex = 0;
+  const yieldEvery = async (batch = 75) => {
+    if (++reconciliationWorkIndex % batch === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
@@ -1559,11 +1563,13 @@ export async function reconcileCanonicalEntities(characterName) {
   let localRewrites = 0;
   let localRelationshipPairsMerged = 0;
   for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
+    await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
     localRewrites += rewriteStoredNarratives(localMemories);
     localReports.push(reconcileCanonicalEntityRegistry(localRegistry, getContext(), localMemories));
   }
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
+    await yieldEvery();
     const relationshipResult = reconcileRelationshipHistoryMap(history, roster);
     if (!relationshipResult.changed) continue;
     meta.card_local_relationships[localName] = relationshipResult.history;
@@ -1577,6 +1583,7 @@ export async function reconcileCanonicalEntities(characterName) {
   let crossStoreReferencesRedirected = 0;
   for (const report of allReports) {
     for (const merge of report.merged ?? []) {
+      await yieldEvery();
       if (!merge.sourceId || !merge.targetId) continue;
       const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, getContext());
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
@@ -1591,6 +1598,7 @@ export async function reconcileCanonicalEntities(characterName) {
     ...Object.entries(meta.card_local_entities ?? {}).map(([name, entries]) => [`card-local:${name}`, entries]),
   ];
   for (const [store, entries] of registrySources) for (const entity of entries ?? []) {
+    await yieldEvery();
     const key = entity?.canonical_persona_id
       ? `persona:${entity.canonical_persona_id}`
       : entity?.canonical_card_id
@@ -1782,6 +1790,7 @@ export async function reconcileCanonicalEntities(characterName) {
     .map(({ store, record_id, entity }) => ({ store, record_id, name: entity.name }));
   const relationshipPairKeyIssues = [];
   for (const storeName of structuredStoreNames) {
+    await yieldEvery();
     for (const [key, state] of Object.entries(loadRelationshipHistory(storeName))) {
       const labels = getRelationshipHistoryPairDisplay(key, state);
       const expected = getRelationshipHistoryPair(labels.subject, labels.target, roster).key;
