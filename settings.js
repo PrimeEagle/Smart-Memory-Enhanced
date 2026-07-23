@@ -269,6 +269,23 @@ function getLivePersonaCaptureContext(context) {
   };
 }
 
+/** Keeps legacy camelCase arc diagnostics as export aliases of snake_case. */
+function normalizeArcExtractionDiagnostics(diagnostics) {
+  const aliases = {
+    completed: 'request_completed', providerError: 'provider_error', returnedNone: 'returned_none',
+    malformedOutput: 'malformed_output', parsedCandidates: 'parsed_candidates', acceptedOpenThreads: 'accepted_open_threads',
+    rejectedCompletedEvents: 'rejected_completed_events', rejectedBackgroundFacts: 'rejected_background_facts',
+    rejectedRelationshipStates: 'rejected_relationship_states', rejectedSceneDetails: 'rejected_scene_details',
+    rejectedMalformed: 'rejected_malformed', participantRepairs: 'participant_repairs', participantReviewItems: 'participant_review_items',
+  };
+  for (const [camel, snake] of Object.entries(aliases)) {
+    const value = Math.max(Number(diagnostics?.[snake] ?? 0), Number(diagnostics?.[camel] ?? 0));
+    diagnostics[snake] = value;
+    diagnostics[camel] = value;
+  }
+  return diagnostics;
+}
+
 // ---- Default settings ---------------------------------------------------
 
 export const defaultSettings = {
@@ -3667,6 +3684,7 @@ export function bindSettingsUI(ctrl) {
           ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
           : 'completed';
       // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
+      normalizeArcExtractionDiagnostics(runResult.arcExtraction);
       const diagnostics = {
         version: 1,
         created_at: Date.now(),
