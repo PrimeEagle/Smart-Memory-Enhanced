@@ -556,6 +556,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(longterm, /\[\.\.\.entityRegistry, \.\.\.sessionEntityRegistry\]/);
   assert.match(read('settings.js'), /const terminalsBySource = new Map\(\)/);
   assert.match(read('settings.js'), /missing_source_record_id/);
+  assert.match(read('settings.js'), /text_identity_links_quarantined/);
   assert.match(ui, /card_identity_mismatches/);
   assert.match(ui, /authoritative_name: authoritative\.canonicalName/);
   assert.match(ui, /text_identity_mismatches/);

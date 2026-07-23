@@ -3665,6 +3665,11 @@ export function bindSettingsUI(ctrl) {
         tier: 'identity',
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
       });
+      if ((reconciliation.integrity_audit?.text_identity_mismatches?.length ?? 0) > 0) qualityReasons.push({
+        code: 'text_identity_links_quarantined',
+        tier: 'identity',
+        message: `${reconciliation.integrity_audit.text_identity_mismatches.length} entity link${reconciliation.integrity_audit.text_identity_mismatches.length === 1 ? '' : 's'} contradicted the record text and was removed for review.`,
+      });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
       repairs.repairTerminalReconciled = repairTerminalTotal === (repairs.repairAttempts ?? 0) && (repairs.repairAttempts ?? 0) <= (repairs.repairEligible ?? 0);
@@ -3687,6 +3692,7 @@ export function bindSettingsUI(ctrl) {
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
         ['no_stale_entity_references', !(reconciliation.integrity_audit?.stale_entity_references?.length), 'Structured records retain stale entity references.'],
+        ['no_text_identity_mismatches', !(reconciliation.integrity_audit?.text_identity_mismatches?.length), 'Entity links contradicted record text and were quarantined for review.'],
         ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {
