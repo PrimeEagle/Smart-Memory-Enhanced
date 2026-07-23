@@ -2353,7 +2353,7 @@ export function updateEntityPanel(characterName) {
               const ltMems = characterName ? loadCharacterMemories(characterName) : [];
               const sessReg = loadSessionEntityRegistry();
               const sessMems = loadSessionMemories();
-              mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems);
+              mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: 'User-confirmed Entity Registry merge from the state-card conflict dialog.' });
               if (characterName) {
                 saveCharacterEntityRegistry(characterName, ltReg);
                 saveCharacterMemories(characterName, ltMems);
@@ -2381,7 +2381,7 @@ export function updateEntityPanel(characterName) {
           const ltMems = characterName ? loadCharacterMemories(characterName) : [];
           const sessReg = loadSessionEntityRegistry();
           const sessMems = loadSessionMemories();
-          mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems);
+          mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: 'User-confirmed Entity Registry merge.' });
           if (characterName) {
             saveCharacterEntityRegistry(characterName, ltReg);
             saveCharacterMemories(characterName, ltMems);

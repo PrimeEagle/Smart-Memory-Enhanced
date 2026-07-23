@@ -910,8 +910,18 @@ export function mergeEntitiesById(
   ltMemories,
   sessionRegistry,
   sessionMemories,
+  options = {},
 ) {
-  if (sourceId === targetId) return;
+  if (sourceId === targetId) return { merged: false, reason: 'Source and target are identical.' };
+  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
+  const sources = [ltRegistry, sessionRegistry].flat().filter((entity) => entity?.id === sourceId);
+  const targets = [ltRegistry, sessionRegistry].flat().filter((entity) => entity?.id === targetId);
+  for (const source of sources) for (const target of targets) {
+    const safety = safeCanonicalMerge(source, target, roster);
+    if (!safety.allowed && !options.userApproved) {
+      return { merged: false, unsafe: true, reason: safety.reason };
+    }
+  }
 
   // Same-registry merges: both source and target exist in the same store.
   mergeInRegistry(sourceId, targetId, ltRegistry, ltMemories);
@@ -958,6 +968,20 @@ export function mergeEntitiesById(
       1,
     );
   }
+  if (options.userApproved) {
+    const decision = {
+      status: 'user_approved',
+      source_record_id: sourceId,
+      target_record_id: targetId,
+      reason: options.decisionReason ?? 'User-confirmed Entity Registry merge.',
+      approved_at: Date.now(),
+    };
+    for (const registry of [ltRegistry, sessionRegistry]) {
+      const target = registry.find((entity) => entity?.id === targetId);
+      if (target) target.manual_identity_decision = decision;
+    }
+  }
+  return { merged: true, manual_approved: Boolean(options.userApproved) };
 }
 
 /**

@@ -553,6 +553,8 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(ui, /authoritative_name: authoritative\.canonicalName/);
   assert.match(ui, /text_identity_mismatches/);
   assert.match(ui, /Suppressed an entity link whose canonical name is absent/);
+  assert.match(read('graph-migration.js'), /manual_identity_decision/);
+  assert.match(ui, /userApproved: true/);
   assert.match(graph, /off-roster ID as a generic NPC/);
   assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
   assert.match(ui, /global_legacy_integrity/);
