@@ -167,6 +167,7 @@ async function runStagedChatCleanup(context, mutate) {
  * final phase back rather than committing a partly reconciled graph.
  */
 async function runFinalIntegrityReconciliation(characterName) {
+  const startedAt = performance.now();
   const reconciliation = await reconcileCanonicalEntities(characterName);
   const summaries = loadArcSummaries();
   let quarantinedSummaries = 0;
@@ -181,10 +182,19 @@ async function runFinalIntegrityReconciliation(characterName) {
     quarantinedSummaries++;
   }
   if (quarantinedSummaries) await saveArcSummaries(summaries);
-  return {
+  const result = {
     ...reconciliation,
     quarantined_arc_summaries: quarantinedSummaries,
+    duration_ms: Math.round(performance.now() - startedAt),
   };
+  if (extension_settings[MODULE_NAME]?.verbose_logging) {
+    console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
+      duration_ms: result.duration_ms,
+      relationship_pairs_merged: result.relationship_pairs_merged ?? 0,
+      cross_store_entity_merges: result.cross_store_entity_merges ?? 0,
+    });
+  }
+  return result;
 }
 import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
@@ -3505,6 +3515,7 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.participant_lists_rewritten = reconciliation.participant_lists_rewritten ?? 0;
       runResult.finalReconciliation.resolved_review_items_removed = reconciliation.resolved_review_items_removed ?? 0;
       runResult.finalReconciliation.integrity_audit = reconciliation.integrity_audit ?? null;
+      runResult.finalReconciliation.duration_ms = reconciliation.duration_ms ?? null;
       runResult.finalReconciliation.stale_entity_references = reconciliation.integrity_audit?.stale_entity_references?.length ?? 0;
       runResult.finalReconciliation.personaRosterSize = runResult.finalReconciliation.persona_roster_size;
       runResult.finalReconciliation.personaAliasesMerged = runResult.finalReconciliation.persona_aliases_merged;
