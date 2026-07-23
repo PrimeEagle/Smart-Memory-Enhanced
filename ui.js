@@ -2085,6 +2085,9 @@ export function updateEntityPanel(characterName) {
     injectRelationshipHistory(characterName);
   };
 
+  // Build rows off-DOM and attach them once.  A large entity registry used to
+  // trigger a layout pass for every row and state-card subsection.
+  const $rows = $('<div class="sme_entity_rows">');
   for (const entity of entities) {
     const icon = TYPE_ICONS[entity.type] ?? 'fa-tag';
     const memCount = Array.isArray(entity.memory_ids) ? entity.memory_ids.length : 0;
@@ -2351,7 +2354,7 @@ export function updateEntityPanel(characterName) {
       await doDelete();
     });
 
-    $panel.append($row);
+    $rows.append($row);
 
     // State card subsection - only when the ledger is enabled and the entity type supports state cards.
     if (isStateLedgerEnabled() && STATE_CARD_TYPES.has(entity.type)) {
@@ -2443,16 +2446,17 @@ export function updateEntityPanel(characterName) {
         updateTokenDisplay();
       });
 
-      $panel.append($section);
+      $rows.append($section);
     } else if (isStateLedgerEnabled() && entity.type === 'unknown') {
       // Model failed to classify this entity - hint that retyping it unlocks the state card.
-      $panel.append(
+      $rows.append(
         '<div class="sme_state_card_section sm-muted" style="font-size:0.85em;padding:2px 0 4px 4px;">' +
           '<i class="fa-solid fa-circle-info"></i> Change type to enable state card' +
           '</div>',
       );
     }
   }
+  $panel.append($rows);
 }
 
 /**
