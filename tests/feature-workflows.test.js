@@ -358,6 +358,8 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(graph, /Different authoritative character cards cannot merge/);
   assert.match(graph, /card-backed identity cannot merge with an unrelated grounded NPC/);
   assert.match(graph, /A persisted card ID is authoritative/);
+  assert.match(graph, /split\(\/\\s\+\(\?:&\|and\)\\s\+\/i\)/);
+  assert.match(graph, /both sides independently resolve/);
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);

@@ -410,6 +410,16 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
   const roster = buildCanonicalCharacterRoster(getContext());
   const ids = rawNames
     .filter((n) => n && isPlausibleEntityName(n))
+    .flatMap((token) => {
+      const { name, classifiedType } = parseEntityToken(token.trim());
+      const parts = name.split(/\s+(?:&|and)\s+/i).map((part) => part.trim()).filter(Boolean);
+      // A conjunction is only split when both sides independently resolve to
+      // known people. This leaves legitimate organization/title names intact.
+      if (parts.length === 2 && parts.every((part) => resolveEntityCandidate(part, roster, [registry]).status === 'resolved')) {
+        return parts.map((part) => classifiedType ? `${part}/${classifiedType}` : part);
+      }
+      return [token];
+    })
     .flatMap((n) => {
       const { name, classifiedType } = parseEntityToken(n.trim());
       const resolution = resolveApprovedIdentityAlias(name, roster) ?? resolveEntityCandidate(name, roster, [registry], {
