@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.20] - 2026-07-23
+
 ### Fixed
 
 - Made canonical character-card and active-persona identities immutable during
