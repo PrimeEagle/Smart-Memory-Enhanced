@@ -75,6 +75,31 @@ function resolveApprovedIdentityAlias(name, roster) {
 
 const normalizeIdentityName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
+/** Keeps entity evidence auditable without turning every repeated mention into full-chat provenance. */
+export function compactEntityProvenance(entity = {}) {
+  const uniqueIndices = [...new Set((entity.source_message_indices ?? []).filter(Number.isInteger))].sort((left, right) => left - right);
+  const retainedIndices = uniqueIndices.length > 96 ? uniqueIndices.slice(-96) : uniqueIndices;
+  const latestEvidenceIndices = [...new Set((entity.latest_evidence_indices ?? retainedIndices.slice(-24)).filter(Number.isInteger))].sort((left, right) => left - right).slice(-24);
+  const toRanges = (indices) => {
+    const ranges = [];
+    for (const index of indices) {
+      const last = ranges[ranges.length - 1];
+      if (last && index === last.end + 1) last.end = index;
+      else ranges.push({ start: index, end: index });
+    }
+    return ranges;
+  };
+  const omitted = Math.max(0, uniqueIndices.length - retainedIndices.length);
+  return {
+    ...entity,
+    source_record_ids: [...new Set((entity.source_record_ids ?? []).filter(Boolean))].slice(-80),
+    source_message_indices: retainedIndices,
+    latest_evidence_indices: latestEvidenceIndices,
+    representative_evidence_ranges: toRanges(retainedIndices.slice(-12)),
+    historical_evidence_count: Number(entity.historical_evidence_count ?? 0) + omitted,
+  };
+}
+
 function getAuthoritativeIdentity(entity, roster) {
   if (entity?.canonical_persona_id) return { type: 'persona', id: String(entity.canonical_persona_id), name: null, authority: 4 };
   if (!entity?.canonical_card_id) return { type: 'grounded_npc', id: null, name: null, authority: 1 };
@@ -360,7 +385,7 @@ function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType 
       existing.aliases = existing.aliases ?? [];
       existing.aliases.push(rawName);
     }
-
+    Object.assign(existing, compactEntityProvenance(existing));
     return existing.id;
   }
 
@@ -379,7 +404,7 @@ function upsertEntity(rawName, memoryId, messageIndex, registry, classifiedType 
     source_message_indices: evidence?.source_message_indices ?? [],
     creation_reason: evidence?.creation_reason ?? 'grounded-record',
   };
-  registry.push(entity);
+  registry.push(compactEntityProvenance(entity));
   return entity.id;
 }
 

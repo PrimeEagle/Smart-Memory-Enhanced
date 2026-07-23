@@ -536,6 +536,8 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
     'Relationship history must remain available to the later promotion pass.',
   );
   assert.match(graph, /e\.memory_ids\.length > 0 \|\| \(e\.source_record_ids\?\.length/);
+  assert.match(graph, /export function compactEntityProvenance/);
+  assert.match(graph, /representative_evidence_ranges/);
   assert.match(graph, /off-roster ID as a generic NPC/);
   assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
   assert.match(ui, /global_legacy_integrity/);
