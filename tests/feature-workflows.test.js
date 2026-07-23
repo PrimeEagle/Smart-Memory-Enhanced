@@ -540,6 +540,8 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(graph, /representative_evidence_ranges/);
   assert.match(graph, /function buildMergeDecision/);
   assert.match(graph, /exact_card_name_assertion_failed/);
+  assert.match(ui, /allowed_cross_store_representation/);
+  assert.match(ui, /Store-local representations are allowed/);
   assert.match(graph, /off-roster ID as a generic NPC/);
   assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
   assert.match(ui, /global_legacy_integrity/);

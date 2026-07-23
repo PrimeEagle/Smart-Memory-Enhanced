@@ -1827,13 +1827,30 @@ export async function reconcileCanonicalEntities(characterName) {
       }
     }
   }
-  const duplicateCanonicalEntities = [...canonicalGroups.values()]
-    .map((entities) => entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index))
-    .filter((entities) => entities.length > 1)
-    .map((entities) => ({
-      normalized_name: entities[0]?.name ?? null,
-      records: observations.filter((observation) => entities.some((entity) => entity.id === observation.record_id)).map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type })),
-    }));
+  const duplicateCanonicalEntities = [];
+  const allowedCrossStoreRepresentation = [];
+  for (const [identityKey, entities] of canonicalGroups.entries()) {
+    const uniqueRecords = entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index);
+    if (uniqueRecords.length < 2) continue;
+    const records = observations
+      .filter((observation) => uniqueRecords.some((entity) => entity.id === observation.record_id))
+      .map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type }));
+    const expectedName = (roster.characters ?? []).find((entry) =>
+      identityKey === `card:${entry.canonical_card_id ?? entry.id}` ||
+      identityKey === `persona:${entry.canonical_persona_id ?? String(entry.id ?? '').replace(/^persona:/, '')}`,
+    )?.canonicalName;
+    const compatibleNames = expectedName && records.every((record) => record.normalized_name === String(expectedName).trim().toLowerCase());
+    const scopedCopies = new Set(records.map((record) => record.store)).size > 1;
+    const item = { normalized_name: expectedName ?? uniqueRecords[0]?.name ?? null, records };
+    // Store-local representations are allowed when every record carries the
+    // same stable card/persona ID and the exact authoritative display name.
+    // They are not duplicate people, so they must not degrade this chat run.
+    if (scopedCopies && compatibleNames && /^(?:card|persona):/.test(identityKey)) {
+      allowedCrossStoreRepresentation.push(item);
+    } else {
+      duplicateCanonicalEntities.push(item);
+    }
+  }
   const syntheticIdentityRemaining = observations
     .filter(({ entity }) => {
       const normalized = normalizeSyntheticIdentityQualifier(entity?.name, [...(roster.characters ?? []), ...registryGroups.flat()]);
@@ -1884,6 +1901,7 @@ export async function reconcileCanonicalEntities(characterName) {
     stale_entity_references: staleEntityReferences,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
+    allowed_cross_store_representation: allowedCrossStoreRepresentation,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
     relationship_integrity_errors: relationshipIntegrityErrors,
@@ -1913,6 +1931,7 @@ export async function reconcileCanonicalEntities(characterName) {
     card_local_reports: localReports,
     cross_store_entity_merges: crossStoreEntityMerges,
     cross_store_references_redirected: crossStoreReferencesRedirected,
+    allowed_cross_store_representations: allowedCrossStoreRepresentation.length,
     relationship_pairs_merged: localRelationshipPairsMerged + persistentRelationshipPairsMerged,
     state_ledger_keys_reconciled: ledgerRewrites,
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
