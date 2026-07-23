@@ -524,7 +524,7 @@ export function reconcileCanonicalLedger(ledger, roster) {
     const type = key.slice(separator + 1);
     const resolved = resolveCanonicalCharacterName(name, roster);
     if (!resolved.canonicalName || resolved.status !== 'resolved') continue;
-    const canonicalKey = `${normalize(resolved.canonicalName)}|${type}`;
+    const canonicalKey = buildStableLedgerKey(resolved.canonicalName, type, roster);
     // A stable ledger key alone is not sufficient: an old card identifier can
     // survive an earlier rename or merge and later be injected as a dangling
     // structured reference.  The resolver gives us the safe, authoritative
@@ -549,8 +549,8 @@ export function reconcileCanonicalLedger(ledger, roster) {
       continue;
     }
     result[canonicalKey] = {
-      ...canonicalFields,
       ...(result[canonicalKey] ?? {}),
+      ...canonicalFields,
       _name: resolved.canonicalName,
       _canonical_card_id: resolved.canonicalId,
     };

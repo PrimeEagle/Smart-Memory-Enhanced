@@ -251,7 +251,7 @@ test('integration: ledger variants merge without overwriting canonical fields', 
     'paul kawaguchi|character': { mood: 'worried' },
     'paul schmidt|character': { mood: 'calm', _canonical_card_id: 'stale-card-id' },
   }, roster);
-  assert.deepEqual(ledger['paul schmidt|character'], {
+  assert.deepEqual(ledger['card:paul|character'], {
     mood: 'calm',
     location: 'home',
     _name: 'Paul Schmidt',
@@ -260,6 +260,7 @@ test('integration: ledger variants merge without overwriting canonical fields', 
     _canonical_persona_id: null,
   });
   assert.equal(ledger['paul|character'], undefined);
+  assert.equal(ledger['paul schmidt|character'], undefined);
   assert.deepEqual(ledger['paul kawaguchi|character'], { mood: 'worried' });
   // Reconciliation may run at the end of every catch-up pass.  Once the
   // deterministic repair has completed, running it again must be a no-op so
