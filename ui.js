@@ -1533,8 +1533,12 @@ export function updateProfilesUI(profiles) {
 /** Safely reconciles unambiguous canonical entity aliases without opening UI. */
 export async function reconcileCanonicalEntities(characterName) {
   let reconciliationWorkIndex = 0;
+  let reconciliationYieldCount = 0;
   const yieldEvery = async (batch = 75) => {
-    if (++reconciliationWorkIndex % batch === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+    if (++reconciliationWorkIndex % batch === 0) {
+      reconciliationYieldCount++;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   };
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
@@ -1592,6 +1596,7 @@ export async function reconcileCanonicalEntities(characterName) {
   const registryGroups = [ltEntities, sessionEntities, ...Object.values(meta.card_local_entities ?? {})].filter(Array.isArray);
   const canonicalGroups = new Map();
   const observations = [];
+  const observedRegistryRecords = new Set();
   const registrySources = [
     ['longterm', ltEntities],
     ['session', sessionEntities],
@@ -1606,7 +1611,9 @@ export async function reconcileCanonicalEntities(characterName) {
         : String(entity?.name ?? '').trim().toLowerCase();
     if (!key || !entity?.id) continue;
     const observation = { store, record_id: entity.id, canonical_entity_id: entity.canonical_persona_id ?? entity.canonical_card_id ?? entity.id, normalized_name: String(entity.name ?? '').trim().toLowerCase(), identity_type: entity.canonical_identity_type ?? entity.type ?? 'unknown', entity };
-    if (observations.some((prior) => prior.store === observation.store && prior.record_id === observation.record_id)) continue;
+    const observationKey = `${observation.store}|${observation.record_id}`;
+    if (observedRegistryRecords.has(observationKey)) continue;
+    observedRegistryRecords.add(observationKey);
     observations.push(observation);
     (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
   }
@@ -1619,6 +1626,7 @@ export async function reconcileCanonicalEntities(characterName) {
       ?? entities.find((entity) => entity.canonical_card_id)
       ?? entities[0];
     for (const source of entities) {
+      await yieldEvery();
       if (source.id === target.id) continue;
       const result = mergeCanonicalEntityAcrossStores(source.id, target.id, getContext());
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
@@ -1846,6 +1854,11 @@ export async function reconcileCanonicalEntities(characterName) {
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
+    performance: {
+      reconciliation_work_items: reconciliationWorkIndex,
+      reconciliation_yields: reconciliationYieldCount,
+      registry_observations: observations.length,
+    },
     integrity_audit: integrityAudit,
   };
 }
