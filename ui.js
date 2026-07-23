@@ -1801,18 +1801,37 @@ export async function reconcileCanonicalEntities(characterName) {
     }
   }
   const staleEntityReferences = [];
-  const auditReferences = async (records, store, field = 'entities') => {
+  const textIdentityMismatches = [];
+  const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
+  const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
+  const auditReferences = async (records, store, field = 'entities', compareText = false) => {
     for (const record of records ?? []) {
       await yieldEvery();
+      const content = String(record?.content ?? record?.summary ?? '');
+      const namedPeople = compareText
+        ? canonicalPeople.filter((name) => new RegExp(`(^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content))
+        : [];
+      const unsafeIds = [];
       for (const id of record?.[field] ?? []) {
         const entityId = typeof id === 'string' ? id : id?.entity_id;
         if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
+        const entity = entityById.get(entityId);
+        const linkedName = String(entity?.name ?? '').trim();
+        if (compareText && namedPeople.length && linkedName && !new RegExp(`(^|[^a-z])${linkedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content)) {
+          unsafeIds.push(entityId);
+          textIdentityMismatches.push({ store, record_id: record?.id ?? null, entity_id: entityId, linked_name: linkedName, named_people: namedPeople });
+        }
+      }
+      if (unsafeIds.length) {
+        record[field] = record[field].filter((entry) => !unsafeIds.includes(typeof entry === 'string' ? entry : entry?.entity_id));
+        record.identity_integrity_status = 'needs_review';
+        record.identity_integrity_issues = [...new Set([...(record.identity_integrity_issues ?? []), 'Suppressed an entity link whose canonical name is absent from the record text.'])];
       }
     }
   };
-  await auditReferences(longtermMemories, 'longterm');
-  await auditReferences(sessionMemories, 'session');
-  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`);
+  await auditReferences(longtermMemories, 'longterm', 'entities', true);
+  await auditReferences(sessionMemories, 'session', 'entities', true);
+  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`, 'entities', true);
   await auditReferences(scenes, 'scenes', 'participant_references');
   await auditReferences(arcs, 'arcs', 'participant_references');
   // State Ledger cards use a single canonical card link rather than the
@@ -1905,7 +1924,7 @@ export async function reconcileCanonicalEntities(characterName) {
     .filter((item) => item.reason_code === 'unsafe_identity_merge_rejected');
   const integrityStatus = unsafe_identity_merges.length || cardIdentityMismatches.length
     ? 'unsafe'
-    : staleEntityReferences.length
+    : staleEntityReferences.length || textIdentityMismatches.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
@@ -1916,6 +1935,7 @@ export async function reconcileCanonicalEntities(characterName) {
         : 'clean';
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
+    text_identity_mismatches: textIdentityMismatches,
     card_identity_mismatches: cardIdentityMismatches,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
