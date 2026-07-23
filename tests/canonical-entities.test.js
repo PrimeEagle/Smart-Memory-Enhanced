@@ -307,6 +307,11 @@ test('integration: relationship pair uses canonical card names', () => {
   assert.equal(canonicalizeRelationshipPair('Paul Kawaguchi', 'Alissa', roster), null);
 });
 
+test('relationship pairs reject collective labels and accidental self-pairs', () => {
+  assert.equal(canonicalizeRelationshipPair('Paul and Alissa', 'Alissa', roster), null);
+  assert.equal(canonicalizeRelationshipPair('Paul', 'Paul Schmidt', roster), null);
+});
+
 test('phase 2: review candidates retain evidence and repeated-review identity', () => {
   const result = resolveCanonicalCharacterName('Paul Kawaguchi', roster);
   const item = buildIdentityReviewCandidate(result, { memoryId: 'memory-7', entityType: 'character', createdAt: 1 }, 'review-1');
@@ -343,6 +348,22 @@ test('scene participant repair promotes only explicit historical card aliases', 
     display_name_at_time: 'Adam Lawson',
     alias_type: 'historical-alias',
   }]);
+});
+
+test('scene participant repair retains every explicitly named active family member', () => {
+  const familyRoster = buildCanonicalCharacterRoster({
+    name2: 'Aaron Holland',
+    characters: [
+      { id: 'taylor', name: 'Taylor Covington' },
+      { id: 'richard', name: 'Richard Covington' },
+      { id: 'margaret', name: 'Margaret Covington' },
+    ],
+  });
+  const repaired = findCanonicalParticipantsInText(
+    'Taylor Covington revealed to her parents, Richard Covington and Margaret Covington, that she and Aaron Holland were still legally married.',
+    familyRoster,
+  );
+  assert.deepEqual(repaired.names, ['Taylor Covington', 'Richard Covington', 'Margaret Covington', 'Aaron Holland']);
 });
 
 test('active persona uses SillyTavern name2 and roster helpers accept object, map, and legacy array shapes', () => {

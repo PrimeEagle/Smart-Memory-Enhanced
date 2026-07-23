@@ -253,6 +253,8 @@ test('profile relationship lines require an exact descriptor from the establishe
   assert.doesNotMatch(profiles, /groundedRelationshipRecords = \[\s*\.\.\.longtermMemories,\s*\.\.\.sessionMemories,\s*\.\.\.loadSceneHistory/);
   assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
   assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
+  assert.match(prompts, /entity type .* never a relationship status/i);
+  assert.match(profiles, /contradictory_state_lines/);
 });
 
 test('profile current-state speculation is omitted instead of being stored as fact', () => {
@@ -355,6 +357,11 @@ test('final reconciliation uses one cross-store entity merge operation before st
   const ui = read('ui.js');
   const settings = read('settings.js');
   assert.match(graph, /export function mergeCanonicalEntityAcrossStores/);
+  assert.match(graph, /Different authoritative character cards cannot merge/);
+  assert.match(graph, /card-backed identity cannot merge with an unrelated grounded NPC/);
+  assert.match(graph, /A persisted card ID is authoritative/);
+  assert.match(graph, /split\(\/\\s\+\(\?:&\|and\)\\s\+\/i\)/);
+  assert.match(graph, /both sides independently resolve/);
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
@@ -433,7 +440,8 @@ test('resolved arc classifications receive one traceable terminal summary outcom
   assert.match(settings, /arcPipeline: \{ classifiedResolved: 0/);
   assert.match(settings, /arcPipeline: runResult\.arcPipeline/);
   assert.match(settings, /arcExtraction: \{ attempted: 0/);
-  assert.match(arcs, /arcExtraction\.providerError/);
+  assert.match(arcs, /arcExtraction\.provider_error/);
+  assert.doesNotMatch(arcs, /arcExtraction\.(?:providerError|acceptedOpenThreads|participantRepairs)/);
   assert.match(arcs, /malformed_request/);
 });
 
@@ -529,6 +537,41 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
     'Relationship history must remain available to the later promotion pass.',
   );
   assert.match(graph, /e\.memory_ids\.length > 0 \|\| \(e\.source_record_ids\?\.length/);
+  assert.match(graph, /export function compactEntityProvenance/);
+  assert.match(graph, /representative_evidence_ranges/);
+  assert.match(graph, /function buildMergeDecision/);
+  assert.match(graph, /exact_card_name_assertion_failed/);
+  assert.match(ui, /allowed_cross_store_representation/);
+  assert.match(ui, /Store-local representations are allowed/);
+  assert.match(ui, /global_legacy_maintenance_warning/);
+  assert.match(read('canonical-entities.js'), /Relationship History represents two individual people/);
+  assert.match(longterm, /Relationship display labels conflict with their stored canonical identity IDs/);
+  assert.match(read('arcs.js'), /Direct evidence means messages actually supplied to this provider call/);
+  assert.match(read('arcs.js'), /inherited_source_ranges/);
+  assert.match(read('profiles.js'), /dropped_invalid_label/);
+  assert.match(read('prompts.js'), /\[EntityName\]: \[directional one-line state\]/);
+  assert.match(read('prompts.js'), /CHARACTER CARD RELATIONSHIP FACTS \(highest priority\)/);
+  assert.match(read('profiles.js'), /extractCardRelationshipFacts\(roster\)/);
+  assert.match(read('canonical-entities.js'), /relationshipFactExcerpt/);
+  assert.match(longterm, /const sessionEntityRegistry = loadSessionEntityRegistry\(\)/);
+  assert.match(longterm, /\[\.\.\.entityRegistry, \.\.\.sessionEntityRegistry\]/);
+  assert.match(read('settings.js'), /const terminalsBySource = new Map\(\)/);
+  assert.match(read('settings.js'), /missing_source_record_id/);
+  assert.match(read('settings.js'), /text_identity_links_quarantined/);
+  assert.match(ui, /card_identity_mismatches/);
+  assert.match(ui, /authoritative_name: authoritative\.canonicalName/);
+  assert.match(ui, /text_identity_mismatches/);
+  assert.match(ui, /Suppressed an entity link whose canonical name is absent/);
+  assert.match(read('graph-migration.js'), /manual_identity_decision/);
+  assert.match(ui, /userApproved: true/);
+  assert.match(ui, /requiresIdentityConfirmation/);
+  assert.match(ui, /Use Rename instead when the entities are not the same person/);
+  assert.match(ui, /Authoritative card or persona identity/);
+  assert.match(ui, /Rename the source character card or persona instead/);
+  assert.match(graph, /off-roster ID as a generic NPC/);
+  assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
+  assert.match(ui, /global_legacy_integrity/);
+  assert.match(ui, /not reconciled as part of this chat's/);
 });
 
 test('integrity round: resolved arcs inherit evidence, profiles fail safely, and short summaries stay factual', () => {
@@ -623,6 +666,21 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(rename, /aliases = \[\.\.\.new Set\(\[\.\.\.\(entity\.aliases \?\? \[\]\), oldName\]\)\]/);
   assert.match(rename, /if \(conflict\) return \{ renamed: false/);
   assert.match(rename, /Use Merge instead/);
+  assert.match(graph, /function hasAuthoritativeIdentity/);
+  assert.match(rename, /hasAuthoritativeIdentity\(entity\)/);
+  assert.match(rename, /Rename the character card or persona instead/);
+  assert.match(graph, /authoritative character type/);
+  assert.match(graph, /retained from their authoritative source/);
+  assert.match(read('ui.js'), /Authoritative card and persona entities cannot be deleted here/);
+  assert.match(graph, /function canAbsorbSourceIntoTarget/);
+  assert.match(graph, /Merge the candidate into the card instead/);
+  assert.match(read('ui.js'), /Keep it as the merge target and merge the candidate into it instead/);
+  const mergeById = graph.slice(graph.indexOf('function mergeInRegistry'), graph.indexOf('export function mergeEntitiesById'));
+  assert.match(mergeById, /source_record_ids = \[\.\.\.new Set/);
+  assert.match(mergeById, /Object\.assign\(target, compactEntityProvenance\(target\)\)/);
+  const nameMerge = graph.slice(graph.indexOf('export function mergeEntitiesByName'), graph.indexOf('// ---- Character card entity seeding'));
+  assert.match(nameMerge, /const safety = safeCanonicalMerge\(source, target, roster\)/);
+  assert.match(nameMerge, /An authoritative card or persona identity cannot be renamed by a name-based merge/);
 });
 
 test('review UI: grounding and identity reviews use dialogs that clean up without closing the extensions panel', () => {

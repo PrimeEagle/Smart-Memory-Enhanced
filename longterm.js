@@ -72,6 +72,7 @@ import {
 import {
   applyGraphDefaults,
   loadCharacterEntityRegistry,
+  loadSessionEntityRegistry,
   saveCharacterEntityRegistry,
   resolveEntityNames,
   reconcileCanonicalEntityRegistry,
@@ -491,6 +492,20 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
       continue;
     }
     const pair = getRelationshipHistoryPair(participants[0], participants[1], roster);
+    const storedSubjectId = state.subject_canonical_card_id ?? state.subject_canonical_persona_id ?? null;
+    const storedTargetId = state.target_canonical_card_id ?? state.target_canonical_persona_id ?? null;
+    const expectedSubjectId = pair.subject.cardId ?? pair.subject.personaId ?? null;
+    const expectedTargetId = pair.target.cardId ?? pair.target.personaId ?? null;
+    if ((storedSubjectId && expectedSubjectId && String(storedSubjectId) !== String(expectedSubjectId)) ||
+        (storedTargetId && expectedTargetId && String(storedTargetId) !== String(expectedTargetId))) {
+      reconciled[key] = {
+        ...state,
+        validation_status: 'needs_review',
+        validation_issues: mergeList(state.validation_issues, ['Relationship display labels conflict with their stored canonical identity IDs.']),
+      };
+      unresolved++;
+      continue;
+    }
     const historicalDisplayNames = [subject, target].filter((name, index) =>
       String(name).trim().toLowerCase() !== String(index === 0 ? pair.subject.displayName : pair.target.displayName).trim().toLowerCase(),
     );
@@ -947,12 +962,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         // Only store pairs where the character is one of the parties.
         if (deltas.length > 0) {
           const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+          const sessionEntityRegistry = loadSessionEntityRegistry();
           const knownEntityType = (name) => {
             const normalized = String(name ?? '').trim().toLowerCase();
-            return entityRegistry.find((entity) =>
+            const known = [...entityRegistry, ...sessionEntityRegistry].find((entity) =>
               entity.name?.trim().toLowerCase() === normalized ||
               (entity.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized),
-            )?.type ?? null;
+            );
+            if (known?.type) return known.type;
+            return (canonicalRoster.characters ?? []).some((entry) =>
+              [entry.canonicalName, ...(entry.aliases ?? [])].some((alias) => String(alias).trim().toLowerCase() === normalized),
+            ) ? 'character' : null;
           };
           const relationshipSources = recentMessages.map((message) => Number.isInteger(message.__sme_original_index)
             ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);

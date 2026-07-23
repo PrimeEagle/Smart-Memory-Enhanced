@@ -1593,7 +1593,7 @@ export async function reconcileCanonicalEntities(characterName) {
     await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
     localRewrites += await rewriteStoredNarratives(localMemories);
-    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, context, localMemories));
+    localReports.push({ ...reconcileCanonicalEntityRegistry(localRegistry, context, localMemories), source_store: `card-local:${localName}` });
   }
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
     await yieldEvery();
@@ -1747,10 +1747,17 @@ export async function reconcileCanonicalEntities(characterName) {
   const rosterCharacterNames = (roster.characters ?? [])
     .filter((entry) => entry.source === 'character-card')
     .map((entry) => entry.canonicalName);
-  const persistentRelationshipStores = Object.entries(extension_settings[MODULE_NAME]?.characters ?? {})
-    .filter(([, store]) => store?.relationship_history)
-    .map(([name]) => name);
-  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames, ...persistentRelationshipStores].filter(Boolean))];
+  // Final catch-up integrity is scoped to the selected card and active group
+  // roster. Other installed cards remain a maintenance concern, not a reason
+  // to degrade an unrelated chat run.
+  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
+  const globalLegacyStoreNames = Object.keys(extension_settings[MODULE_NAME]?.characters ?? {})
+    .filter((name) => !structuredStoreNames.includes(name));
+  const globalLegacyIntegrity = globalLegacyStoreNames.map((name) => ({
+    character: name,
+    relationship_pairs: Object.keys(loadRelationshipHistory(name)).length,
+    epistemic_records: loadEpistemicKnowledge(name).length,
+  })).filter((entry) => entry.relationship_pairs || entry.epistemic_records);
   let relationshipStoresReconciled = 0;
   let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
@@ -1776,19 +1783,55 @@ export async function reconcileCanonicalEntities(characterName) {
     ...registryGroups.flat().map((entity) => entity?.id),
     ...(roster.characters ?? []).map((entry) => entry?.id),
   ].filter(Boolean));
+  const cardIdentityMismatches = [];
+  for (const [store, entries] of registrySources) {
+    for (const entity of entries ?? []) {
+      const cardId = entity?.canonical_card_id;
+      if (!cardId) continue;
+      const authoritative = (roster.characters ?? []).find((entry) => String(entry.id) === String(cardId) && entry.source !== 'user-persona');
+      if (authoritative && String(entity.name ?? '').trim().toLowerCase() !== String(authoritative.canonicalName ?? '').trim().toLowerCase()) {
+        cardIdentityMismatches.push({
+          store,
+          record_id: entity.id ?? null,
+          canonical_card_id: cardId,
+          stored_name: entity.name ?? null,
+          authoritative_name: authoritative.canonicalName,
+        });
+      }
+    }
+  }
   const staleEntityReferences = [];
-  const auditReferences = async (records, store, field = 'entities') => {
+  const textIdentityMismatches = [];
+  const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
+  const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
+  const auditReferences = async (records, store, field = 'entities', compareText = false) => {
     for (const record of records ?? []) {
       await yieldEvery();
+      const content = String(record?.content ?? record?.summary ?? '');
+      const namedPeople = compareText
+        ? canonicalPeople.filter((name) => new RegExp(`(^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content))
+        : [];
+      const unsafeIds = [];
       for (const id of record?.[field] ?? []) {
         const entityId = typeof id === 'string' ? id : id?.entity_id;
         if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
+        const entity = entityById.get(entityId);
+        const linkedName = String(entity?.name ?? '').trim();
+        if (compareText && namedPeople.length && linkedName && !new RegExp(`(^|[^a-z])${linkedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content)) {
+          unsafeIds.push(entityId);
+          textIdentityMismatches.push({ store, record_id: record?.id ?? null, entity_id: entityId, linked_name: linkedName, named_people: namedPeople });
+        }
+      }
+      if (unsafeIds.length) {
+        record[field] = record[field].filter((entry) => !unsafeIds.includes(typeof entry === 'string' ? entry : entry?.entity_id));
+        record.identity_integrity_status = 'needs_review';
+        record.identity_integrity_issues = [...new Set([...(record.identity_integrity_issues ?? []), 'Suppressed an entity link whose canonical name is absent from the record text.'])];
       }
     }
   };
-  await auditReferences(longtermMemories, 'longterm');
-  await auditReferences(sessionMemories, 'session');
-  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`);
+  await auditReferences(longtermMemories, 'longterm', 'entities', true);
+  await auditReferences(sessionMemories, 'session', 'entities', true);
+  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`, 'entities', true);
   await auditReferences(scenes, 'scenes', 'participant_references');
   await auditReferences(arcs, 'arcs', 'participant_references');
   // State Ledger cards use a single canonical card link rather than the
@@ -1820,13 +1863,30 @@ export async function reconcileCanonicalEntities(characterName) {
       }
     }
   }
-  const duplicateCanonicalEntities = [...canonicalGroups.values()]
-    .map((entities) => entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index))
-    .filter((entities) => entities.length > 1)
-    .map((entities) => ({
-      normalized_name: entities[0]?.name ?? null,
-      records: observations.filter((observation) => entities.some((entity) => entity.id === observation.record_id)).map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type })),
-    }));
+  const duplicateCanonicalEntities = [];
+  const allowedCrossStoreRepresentation = [];
+  for (const [identityKey, entities] of canonicalGroups.entries()) {
+    const uniqueRecords = entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index);
+    if (uniqueRecords.length < 2) continue;
+    const records = observations
+      .filter((observation) => uniqueRecords.some((entity) => entity.id === observation.record_id))
+      .map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type }));
+    const expectedName = (roster.characters ?? []).find((entry) =>
+      identityKey === `card:${entry.canonical_card_id ?? entry.id}` ||
+      identityKey === `persona:${entry.canonical_persona_id ?? String(entry.id ?? '').replace(/^persona:/, '')}`,
+    )?.canonicalName;
+    const compatibleNames = expectedName && records.every((record) => record.normalized_name === String(expectedName).trim().toLowerCase());
+    const scopedCopies = new Set(records.map((record) => record.store)).size > 1;
+    const item = { normalized_name: expectedName ?? uniqueRecords[0]?.name ?? null, records };
+    // Store-local representations are allowed when every record carries the
+    // same stable card/persona ID and the exact authoritative display name.
+    // They are not duplicate people, so they must not degrade this chat run.
+    if (scopedCopies && compatibleNames && /^(?:card|persona):/.test(identityKey)) {
+      allowedCrossStoreRepresentation.push(item);
+    } else {
+      duplicateCanonicalEntities.push(item);
+    }
+  }
   const syntheticIdentityRemaining = observations
     .filter(({ entity }) => {
       const normalized = normalizeSyntheticIdentityQualifier(entity?.name, [...(roster.characters ?? []), ...registryGroups.flat()]);
@@ -1860,7 +1920,11 @@ export async function reconcileCanonicalEntities(characterName) {
     seenReviewKeys.add(key);
     return false;
   }).map((item) => ({ id: item.id ?? null, candidate: item.candidateName ?? item.candidateKey ?? null }));
-  const integrityStatus = staleEntityReferences.length
+  const unsafe_identity_merges = allReports.flatMap((report) => report.skipped ?? [])
+    .filter((item) => item.reason_code === 'unsafe_identity_merge_rejected');
+  const integrityStatus = unsafe_identity_merges.length || cardIdentityMismatches.length
+    ? 'unsafe'
+    : staleEntityReferences.length || textIdentityMismatches.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
@@ -1871,12 +1935,21 @@ export async function reconcileCanonicalEntities(characterName) {
         : 'clean';
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
+    text_identity_mismatches: textIdentityMismatches,
+    card_identity_mismatches: cardIdentityMismatches,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
+    allowed_cross_store_representation: allowedCrossStoreRepresentation,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
+    unsafe_identity_merges,
+    // These records are intentionally not reconciled as part of this chat's
+    // transaction. Surface them for maintenance diagnostics without allowing
+    // an unrelated legacy card to make the active run look degraded.
+    global_legacy_integrity: globalLegacyIntegrity,
+    global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: integrityStatus,
@@ -1886,13 +1959,18 @@ export async function reconcileCanonicalEntities(characterName) {
     merged: [...ltReport.merged, ...sessionReport.merged, ...localReports.flatMap((report) => report.merged)],
     skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
-    identity_outcomes: [...(ltReport.outcomes ?? []), ...(sessionReport.outcomes ?? []), ...localReports.flatMap((report) => report.outcomes ?? [])],
+    identity_outcomes: [
+      ...(ltReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: 'longterm' })),
+      ...(sessionReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: 'session' })),
+      ...localReports.flatMap((report) => (report.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: report.source_store }))),
+    ],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
     participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
     persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,
     card_local_reports: localReports,
     cross_store_entity_merges: crossStoreEntityMerges,
     cross_store_references_redirected: crossStoreReferencesRedirected,
+    allowed_cross_store_representations: allowedCrossStoreRepresentation.length,
     relationship_pairs_merged: localRelationshipPairsMerged + persistentRelationshipPairsMerged,
     state_ledger_keys_reconciled: ledgerRewrites,
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
@@ -1903,6 +1981,8 @@ export async function reconcileCanonicalEntities(characterName) {
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
+    global_legacy_store_count: globalLegacyIntegrity.length,
+    global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     performance: {
       reconciliation_work_items: reconciliationWorkIndex,
       reconciliation_yields: reconciliationYieldCount,
@@ -2128,27 +2208,34 @@ export function updateEntityPanel(characterName) {
     const rejectedBadge = rejectedAliases.length
       ? `<span class="sme_entity_rejected_badge" title="Rejected identity candidates: ${$('<div>').text(rejectedAliases.join(', ')).html()}"><i class="fa-solid fa-shield-halved"></i> ${rejectedAliases.length}</span>`
       : '';
+    const isAuthoritativeIdentity = Boolean(entity.canonical_card_id || entity.canonical_persona_id || entity.canonical_identity_type === 'character_card');
+    const authoritativeBadge = isAuthoritativeIdentity
+      ? '<span class="sme_entity_rejected_badge" title="Authoritative card or persona identity: its name and type are controlled by its source record."><i class="fa-solid fa-lock"></i></span>'
+      : '';
+    const typeBadgeTitle = isAuthoritativeIdentity ? 'Authoritative identity type is controlled by its source record' : 'Click to change type';
+    const renameControl = isAuthoritativeIdentity
+      ? '<button class="sme_entity_rename_btn menu_button" title="Rename the source character card or persona instead" disabled><i class="fa-solid fa-pencil"></i></button>'
+      : '<button class="sme_entity_rename_btn menu_button" title="Rename this entity"><i class="fa-solid fa-pencil"></i></button>';
+    const deleteControl = isAuthoritativeIdentity
+      ? '<button class="sme_entity_delete_btn menu_button" title="Authoritative card and persona entities cannot be deleted here" disabled><i class="fa-solid fa-trash"></i></button>'
+      : '<button class="sme_entity_delete_btn menu_button" title="Delete this entity"><i class="fa-solid fa-trash"></i></button>';
 
     const $row = $(`
       <div class="sme_entity_row" data-entity-id="${entity.id}" style="position:relative;">
-        <span class="sme_entity_type_badge sme_entity_type_${entity.type}" data-clickable title="Click to change type">
+        <span class="sme_entity_type_badge sme_entity_type_${entity.type}" ${isAuthoritativeIdentity ? '' : 'data-clickable'} title="${typeBadgeTitle}">
           <i class="fa-solid ${icon}"></i> ${entity.type}
         </span>
         <span class="sme_entity_name">${safeName}</span>
-        ${rejectedBadge}
+        ${authoritativeBadge}${rejectedBadge}
         <span class="sme_entity_meta">${memCount} ${memCount === 1 ? 'memory' : 'memories'} &middot; last seen ${lastSeen}</span>
-        <button class="sme_entity_rename_btn menu_button" title="Rename this entity">
-          <i class="fa-solid fa-pencil"></i>
-        </button>
+        ${renameControl}
         <button class="sme_entity_merge_btn menu_button" title="Merge into another entity">
           <i class="fa-solid fa-code-merge"></i>
         </button>
         <button class="sme_entity_timeline_btn menu_button" title="View timeline for this entity">
           <i class="fa-solid fa-timeline"></i>
         </button>
-        <button class="sme_entity_delete_btn menu_button" title="Delete this entity">
-          <i class="fa-solid fa-trash"></i>
-        </button>
+        ${deleteControl}
       </div>
     `);
 
@@ -2159,6 +2246,7 @@ export function updateEntityPanel(characterName) {
     // Type-picker: clicking the badge opens an inline dropdown to change the type.
     $row.find('.sme_entity_type_badge').on('click', (e) => {
       e.stopPropagation();
+      if (isAuthoritativeIdentity) return;
       $panel.find('.sme_entity_type_picker').remove();
 
       const $picker = $('<div class="sme_entity_type_picker">');
@@ -2238,6 +2326,24 @@ export function updateEntityPanel(characterName) {
           ev.stopPropagation();
           $picker.remove();
 
+          const sourceCardId = entity.canonical_card_id ?? null;
+          const targetCardId = target.canonical_card_id ?? null;
+          const requiresIdentityConfirmation =
+            (sourceCardId && targetCardId && String(sourceCardId) !== String(targetCardId)) ||
+            Boolean(sourceCardId) !== Boolean(targetCardId) ||
+            Boolean(entity.canonical_persona_id) !== Boolean(target.canonical_persona_id);
+          const sourceIsAuthoritative = Boolean(sourceCardId || entity.canonical_persona_id || entity.canonical_identity_type === 'character_card');
+          const sameAuthoritativeIdentity =
+            (sourceCardId && targetCardId && String(sourceCardId) === String(targetCardId)) ||
+            (entity.canonical_persona_id && target.canonical_persona_id && String(entity.canonical_persona_id) === String(target.canonical_persona_id));
+          if (sourceIsAuthoritative && !sameAuthoritativeIdentity) {
+            window.alert('This direction would remove an authoritative card or persona record. Keep it as the merge target and merge the candidate into it instead.');
+            return;
+          }
+          if (requiresIdentityConfirmation && !window.confirm(
+            `This merge combines distinct authoritative identities:\n\n${entity.name} → ${target.name}\n\nOnly continue if this is an intentional identity decision. Use Rename instead when the entities are not the same person.`,
+          )) return;
+
           const srcCard = getStateCard(entity.name, entity.type);
           const dstCard = getStateCard(target.name, target.type);
 
@@ -2275,7 +2381,7 @@ export function updateEntityPanel(characterName) {
               const ltMems = characterName ? loadCharacterMemories(characterName) : [];
               const sessReg = loadSessionEntityRegistry();
               const sessMems = loadSessionMemories();
-              mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems);
+              mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: requiresIdentityConfirmation ? 'User-confirmed authoritative-identity merge from the state-card conflict dialog.' : 'User-confirmed Entity Registry merge from the state-card conflict dialog.' });
               if (characterName) {
                 saveCharacterEntityRegistry(characterName, ltReg);
                 saveCharacterMemories(characterName, ltMems);
@@ -2303,7 +2409,7 @@ export function updateEntityPanel(characterName) {
           const ltMems = characterName ? loadCharacterMemories(characterName) : [];
           const sessReg = loadSessionEntityRegistry();
           const sessMems = loadSessionMemories();
-          mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems);
+          mergeEntitiesById(entity.id, target.id, ltReg, ltMems, sessReg, sessMems, { userApproved: true, decisionReason: requiresIdentityConfirmation ? 'User-confirmed authoritative-identity merge.' : 'User-confirmed Entity Registry merge.' });
           if (characterName) {
             saveCharacterEntityRegistry(characterName, ltReg);
             saveCharacterMemories(characterName, ltMems);

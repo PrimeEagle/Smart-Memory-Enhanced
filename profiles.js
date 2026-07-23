@@ -109,10 +109,10 @@ export async function reconcileProfileCanonicalNames(characterName) {
     replacements.push(...narrative.replacements);
   }
   const matrix = String(next.relationship_matrix ?? '').split('\n').map((line) => {
-    const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
+    const match = line.match(/^\s*([^(:]+?)(?:\s*\(([^)]+)\))?\s*:\s*(.+)$/);
     if (!match) return line;
     const result = resolveCanonicalCharacterName(match[1].trim(), roster);
-    return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName} (${match[2]}): ${match[3]}`;
+    return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
   }).join('\n');
   next.relationship_matrix = matrix;
   if (next.character_state === profiles.character_state && next.world_state === profiles.world_state && next.relationship_matrix === profiles.relationship_matrix) return false;
@@ -203,7 +203,7 @@ function extractCardRelationshipFacts(roster = []) {
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const entry of rosterEntries(roster)) {
-    const description = String(entry?.descriptionExcerpt ?? '');
+    const description = String(entry?.relationshipFactExcerpt ?? entry?.descriptionExcerpt ?? '');
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
       const subject = resolve(match[1]);
       const target = resolve(match[3]);
@@ -248,8 +248,9 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
   let normalized = 0;
+  let invalidLabel = 0;
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
-    const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:\s*(.+)$/);
+    const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
     const entity = match[1].trim().toLowerCase();
     const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
@@ -257,20 +258,45 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const pair = cardPair ?? historyPair ?? groundedPair;
+    if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
+      rejected.push(line);
+      invalidLabel++;
+      return '';
+    }
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
     if (pair && exactStatus) return line;
     // “Partner” is weaker than an established spouse status. Normalize the
     // generated synonym only when the canonical relationship evidence gives a
     // precise current descriptor; never infer a stronger relationship.
     const precise = pair?.descriptors.find((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor));
-    if (precise && /\bpartner\b/i.test(status)) {
+    if (precise && /\b(?:partner|family|character|person)\b/i.test(status)) {
       normalized++;
-      return line.replace(/\bpartner\b/i, precise);
+      return line.replace(/\b(?:partner|family|character|person)\b/i, precise);
     }
     rejected.push(line);
     return '';
   }).filter(Boolean).join('\n');
-  return { profiles, rejected, normalized };
+  // A model may put a legally established relationship in the matrix but still
+  // call it "unresolved" in the free-form state fields.  Do not preserve that
+  // contradiction when the same counterpart has an exact spouse descriptor.
+  const establishedPartners = [cardPairs, historyPairs, groundedPairs]
+    .flat()
+    .filter((pair) => pair.subject === self || pair.target === self)
+    .filter((pair) => pair.descriptors.some((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor)))
+    .map((pair) => pair.subject === self ? pair.target : pair.subject);
+  const contradictory = /\b(?:unresolved|uncertain|pending|unknown)\b/i;
+  const relationshipIssue = /\b(?:divorc(?:e|ed|ing)|marri(?:age|ed)|spous(?:e|al)|husband|wife|partner)\b/i;
+  let contradictoryStateLines = 0;
+  for (const field of ['character_state', 'world_state']) {
+    profiles[field] = String(profiles[field] ?? '').split('\n').filter((line) => {
+      const namesEstablished = establishedPartners.some((partner) => new RegExp(`(^|[^a-z])${escapeRegExp(partner)}(?=$|[^a-z])`, 'i').test(line));
+      if (!namesEstablished || !contradictory.test(line) || !relationshipIssue.test(line)) return true;
+      rejected.push(line);
+      contradictoryStateLines++;
+      return false;
+    }).join('\n').trim();
+  }
+  return { profiles, rejected, normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
@@ -344,6 +370,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     entities,
     formatCanonicalRosterForPrompt(roster),
     relationshipHistory,
+    extractCardRelationshipFacts(roster),
   );
 
   try {
@@ -394,14 +421,14 @@ export async function generateProfiles(characterName, abortCheck = null, options
     parsed.relationship_matrix = parsed.relationship_matrix
       .split('\n')
       .map((line) => {
-        const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
+        const match = line.match(/^\s*([^(:]+?)(?:\s*\(([^)]+)\))?\s*:\s*(.+)$/);
         if (!match) return line;
         const resolution = resolveCanonicalCharacterName(match[1].trim(), roster, entityRegistry);
         // A guessed or contradictory card identity must not become durable
         // profile state. Exact/approved aliases are canonicalized; unknown
         // non-card entities remain readable under their supplied name.
         if (resolution.status === 'ambiguous' || resolution.status === 'rejected') return '';
-        return `${resolution.canonicalName ?? match[1].trim()} (${match[2]}): ${match[3]}`;
+        return `${resolution.canonicalName ?? match[1].trim()}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
       })
       .filter(Boolean)
       .join('\n');
@@ -473,6 +500,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
         preserved_prior: preservedPriorFields.length,
         dropped_conflict: relationshipCheck.rejected.length,
         dropped_speculative: speculationCheck.dropped.length,
+        dropped_invalid_label: relationshipCheck.invalid_label ?? 0,
         dropped_unsupported: fieldGrounding.rejected.length,
         dropped_malformed: 0,
       },

@@ -269,6 +269,25 @@ function getLivePersonaCaptureContext(context) {
   };
 }
 
+/** Keeps legacy camelCase arc diagnostics as export aliases of snake_case. */
+function normalizeArcExtractionDiagnostics(diagnostics) {
+  const aliases = {
+    completed: 'request_completed', providerError: 'provider_error', returnedNone: 'returned_none',
+    malformedOutput: 'malformed_output', parsedCandidates: 'parsed_candidates', acceptedOpenThreads: 'accepted_open_threads',
+    rejectedCompletedEvents: 'rejected_completed_events', rejectedBackgroundFacts: 'rejected_background_facts',
+    rejectedRelationshipStates: 'rejected_relationship_states', rejectedSceneDetails: 'rejected_scene_details',
+    rejectedMalformed: 'rejected_malformed', participantRepairs: 'participant_repairs', participantReviewItems: 'participant_review_items',
+    malformedRequest: 'malformed_request', inputTokenBudget: 'input_token_budget', inputTokenEstimate: 'input_token_estimate',
+    inputMessages: 'input_messages', omittedMessages: 'omitted_messages', truncatedMessage: 'truncated_message', terminalOutcome: 'terminal_outcome',
+  };
+  for (const [camel, snake] of Object.entries(aliases)) {
+    const value = Math.max(Number(diagnostics?.[snake] ?? 0), Number(diagnostics?.[camel] ?? 0));
+    diagnostics[snake] = value;
+    diagnostics[camel] = value;
+  }
+  return diagnostics;
+}
+
 // ---- Default settings ---------------------------------------------------
 
 export const defaultSettings = {
@@ -2977,7 +2996,7 @@ export function bindSettingsUI(ctrl) {
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
-      arcExtraction: { attempted: 0, request_completed: 0, provider_error: 0, http_status: null, error_class: null, non_retryable: false, returned_none: 0, malformed_output: 0, parsed_candidates: 0, accepted_open_threads: 0, rejected_completed_events: 0, rejected_background_facts: 0, rejected_relationship_states: 0, rejected_scene_details: 0, rejected_malformed: 0, participant_repairs: 0, participant_review_items: 0, terminal_reconciled: false, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, rejectedCompletedEvents: 0, rejectedBackgroundFacts: 0, rejectedRelationshipStates: 0, rejectedSceneDetails: 0, rejectedMalformed: 0, participantRepairs: 0, participantReviewItems: 0, inputTokenBudget: 0, inputTokenEstimate: 0, inputMessages: 0, omittedMessages: 0, truncatedMessage: false, terminalOutcome: null },
+      arcExtraction: { attempted: 0, request_completed: 0, provider_error: 0, http_status: null, error_class: null, non_retryable: false, returned_none: 0, malformed_output: 0, parsed_candidates: 0, accepted_open_threads: 0, rejected_completed_events: 0, rejected_background_facts: 0, rejected_relationship_states: 0, rejected_scene_details: 0, rejected_malformed: 0, participant_repairs: 0, participant_review_items: 0, terminal_reconciled: false, malformed_request: 0, input_token_budget: 0, input_token_estimate: 0, input_messages: 0, omitted_messages: 0, truncated_message: false, terminal_outcome: null },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: {
         emitted: 0,
@@ -3008,7 +3027,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_unsupported: 0, dropped_malformed: 0 }, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
@@ -3488,6 +3507,11 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.attempted = 1;
       try {
         reconciliation = await runFinalIntegrityReconciliation(characterName);
+        if (reconciliation.integrity_audit?.status === 'unsafe') {
+          const error = new Error('Unsafe canonical identity merge was rejected during final reconciliation.');
+          error.sme_failure_stage = 'identity_integrity';
+          throw error;
+        }
         runResult.finalReconciliation.completed = 1;
       } catch (err) {
         // Roll back only the partially-applied reconciliation edits while
@@ -3513,7 +3537,7 @@ export function bindSettingsUI(ctrl) {
         unmatched: reconciliation.unmatched.length,
         quarantined_arc_summaries: reconciliation.quarantined_arc_summaries,
       };
-      const finalTerminalRecords = [...(reconciliation.identity_outcomes ?? [])].filter(Boolean).reduce((records, outcome) => {
+      const deduplicatedTerminalOutcomes = [...(reconciliation.identity_outcomes ?? [])].filter(Boolean).reduce((records, outcome) => {
         const key = [
           String(outcome.candidate ?? outcome.name ?? '').trim().toLowerCase(),
           String(outcome.source_store ?? '').trim().toLowerCase(),
@@ -3526,6 +3550,32 @@ export function bindSettingsUI(ctrl) {
         else prior.source_record_ids = [...new Set([...(prior.source_record_ids ?? []), ...(outcome.source_record_ids ?? [])].filter(Boolean))];
         return records;
       }, new Map());
+      const sourceRecordKeys = new Set((reconciliation.identity_outcomes ?? [])
+        .map((outcome) => `${outcome.source_store ?? 'unknown'}|${outcome.source_record_id ?? ''}`)
+        .filter((key) => !key.endsWith('|')));
+      const terminalsBySource = new Map();
+      const missingSourceTerminals = [];
+      for (const outcome of deduplicatedTerminalOutcomes.values()) {
+        const sourceId = String(outcome.source_record_id ?? '').trim();
+        if (!sourceId) { missingSourceTerminals.push(outcome); continue; }
+        const sourceKey = `${outcome.source_store ?? 'unknown'}|${sourceId}`;
+        (terminalsBySource.get(sourceKey) ?? terminalsBySource.set(sourceKey, []).get(sourceKey)).push(outcome);
+      }
+      const conflictingTerminalRecords = [
+        ...missingSourceTerminals.map((outcome) => ({ candidate: outcome.candidate ?? null, source_store: outcome.source_store ?? null, reason: 'missing_source_record_id' })),
+        ...[...terminalsBySource.entries()].flatMap(([sourceKey, outcomes]) => {
+          const distinct = new Set(outcomes.map((outcome) => `${outcome.terminal_outcome ?? ''}|${outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? ''}`));
+          return distinct.size > 1 ? [{ source_key: sourceKey, outcomes: [...distinct] }] : [];
+        }),
+      ];
+      const finalTerminalRecords = [...terminalsBySource.values()]
+        .filter((outcomes) => new Set(outcomes.map((outcome) => `${outcome.terminal_outcome ?? ''}|${outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? ''}`)).size === 1)
+        .map(([outcome]) => outcome);
+      runResult.identityResolution.source_records_total = sourceRecordKeys.size;
+      runResult.identityResolution.terminal_records_total = terminalsBySource.size;
+      runResult.identityResolution.terminal_reconciled = sourceRecordKeys.size === finalTerminalRecords.size && conflictingTerminalRecords.length === 0;
+      runResult.identityResolution.duplicate_terminal_records_removed = Math.max(0, (reconciliation.identity_outcomes ?? []).length - deduplicatedTerminalOutcomes.size);
+      runResult.identityResolution.conflicting_terminal_records = conflictingTerminalRecords;
       runResult.identityResolutionDetails = {
         matched: reconciliation.matched.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'matched', target: canonicalName, reason_code })),
         merged: reconciliation.merged.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'merged', target: canonicalName, reason_code })),
@@ -3615,6 +3665,11 @@ export function bindSettingsUI(ctrl) {
         tier: 'identity',
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
       });
+      if ((reconciliation.integrity_audit?.text_identity_mismatches?.length ?? 0) > 0) qualityReasons.push({
+        code: 'text_identity_links_quarantined',
+        tier: 'identity',
+        message: `${reconciliation.integrity_audit.text_identity_mismatches.length} entity link${reconciliation.integrity_audit.text_identity_mismatches.length === 1 ? '' : 's'} contradicted the record text and was removed for review.`,
+      });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
       repairs.repairTerminalReconciled = repairTerminalTotal === (repairs.repairAttempts ?? 0) && (repairs.repairAttempts ?? 0) <= (repairs.repairEligible ?? 0);
@@ -3631,13 +3686,14 @@ export function bindSettingsUI(ctrl) {
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
         ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
         ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
-        ['identity_terminal_totals_reconcile', (reconciliation.identity_outcomes ?? []).length === [...finalTerminalRecords.values()].length, 'Final identity terminal records were duplicated or did not reconcile.'],
+        ['identity_terminal_totals_reconcile', runResult.identityResolution.terminal_reconciled, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
         ['no_stale_entity_references', !(reconciliation.integrity_audit?.stale_entity_references?.length), 'Structured records retain stale entity references.'],
-        ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
+        ['no_text_identity_mismatches', !(reconciliation.integrity_audit?.text_identity_mismatches?.length), 'Entity links contradicted record text and were quarantined for review.'],
+        ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {
         if (!passed) qualityReasons.push({ code, tier: 'identity', message });
@@ -3656,6 +3712,7 @@ export function bindSettingsUI(ctrl) {
           ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
           : 'completed';
       // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
+      normalizeArcExtractionDiagnostics(runResult.arcExtraction);
       const diagnostics = {
         version: 1,
         created_at: Date.now(),
