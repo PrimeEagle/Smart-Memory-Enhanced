@@ -388,10 +388,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // omitted every citation, ask once for the *same records only* with their
     // source indices. Do not rerun extraction or persist uncited candidates.
     let repairRecovered = 0;
+    let repairEligibleCount = 0;
+    let repairTerminalRecorded = false;
     if (parsedCandidates.length > 0 && parsedCandidates.every((candidate) => !(candidate.source_message_indices ?? []).length)) {
+      repairEligibleCount = initiallyParsedCount;
       if (sessionDiagnostics) {
-        sessionDiagnostics.repairEligible = (sessionDiagnostics.repairEligible ?? 0) + initiallyParsedCount;
-        sessionDiagnostics.repairAttempts = (sessionDiagnostics.repairAttempts ?? 0) + 1;
+        sessionDiagnostics.repairEligible = (sessionDiagnostics.repairEligible ?? 0) + repairEligibleCount;
+        // Attempts are candidates submitted to the one repair request, not
+        // merely the count of provider calls.
+        sessionDiagnostics.repairAttempts = (sessionDiagnostics.repairAttempts ?? 0) + repairEligibleCount;
       }
       const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return the SAME items only: preserve each type, importance, expiration, entity tags, and factual content. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${response}\n\nOutput only corrected bracketed memory lines.`;
       try {
@@ -400,11 +405,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           task: 'session-citation-repair',
         });
         if (!repairedResponse || repairedResponse.trim().toUpperCase() === 'NONE') {
-          if (sessionDiagnostics) sessionDiagnostics.repairReturnedNone = (sessionDiagnostics.repairReturnedNone ?? 0) + 1;
+          if (sessionDiagnostics) sessionDiagnostics.repairReturnedNone = (sessionDiagnostics.repairReturnedNone ?? 0) + repairEligibleCount;
+          repairTerminalRecorded = true;
         } else {
           const allowed = new Set(parsedCandidates.map((candidate) => `${candidate.type}|${candidate.content}`));
           const parsedRepair = parseSessionOutput(repairedResponse);
-          if (!parsedRepair.length && sessionDiagnostics) sessionDiagnostics.repairMalformed = (sessionDiagnostics.repairMalformed ?? 0) + 1;
+          if (!parsedRepair.length && sessionDiagnostics) {
+            sessionDiagnostics.repairMalformed = (sessionDiagnostics.repairMalformed ?? 0) + repairEligibleCount;
+            repairTerminalRecorded = true;
+          }
           const repaired = parsedRepair.filter((candidate) =>
             allowed.has(`${candidate.type}|${candidate.content}`) && (candidate.source_message_indices ?? []).length > 0,
           );
@@ -415,7 +424,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           }
         }
       } catch (error) {
-        if (sessionDiagnostics) sessionDiagnostics.repairProviderError = (sessionDiagnostics.repairProviderError ?? 0) + 1;
+        if (sessionDiagnostics) sessionDiagnostics.repairProviderError = (sessionDiagnostics.repairProviderError ?? 0) + repairEligibleCount;
+        repairTerminalRecorded = true;
         smLog(`[Smart Memory Enhanced] Session citation repair failed: ${error.message}`);
       }
     }
@@ -427,7 +437,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (sessionDiagnostics) {
       sessionDiagnostics.missingProvenance = (sessionDiagnostics.missingProvenance ?? 0) + missingProvenance;
       sessionDiagnostics.repairRecovered = (sessionDiagnostics.repairRecovered ?? 0) + repairRecovered;
-      sessionDiagnostics.repairStillInvalid = (sessionDiagnostics.repairStillInvalid ?? 0) + Math.max(0, initiallyParsedCount - repairRecovered);
+      if (repairEligibleCount && !repairTerminalRecorded) {
+        // Citation recovery alone is not a terminal success: candidates that
+        // still fail later validation are counted below after verification.
+        sessionDiagnostics.repairStillInvalid = (sessionDiagnostics.repairStillInvalid ?? 0) + Math.max(0, repairEligibleCount - repairRecovered);
+      }
     }
     // Uncited candidates are intentionally not stored. The repair pass above
     // is their only chance to supply the already-required evidence.
@@ -453,7 +467,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       recordDisposition('duplicate_existing', verificationDispositions.duplicate_existing);
     }
     const acceptedAfterRepair = incoming.filter((candidate) => candidate.__sme_citation_repair).length;
-    if (sessionDiagnostics) sessionDiagnostics.repairAccepted = (sessionDiagnostics.repairAccepted ?? 0) + acceptedAfterRepair;
+    if (sessionDiagnostics) {
+      sessionDiagnostics.repairAccepted = (sessionDiagnostics.repairAccepted ?? 0) + acceptedAfterRepair;
+      if (repairEligibleCount && !repairTerminalRecorded && acceptedAfterRepair) {
+        sessionDiagnostics.repairStillInvalid = Math.max(0, (sessionDiagnostics.repairStillInvalid ?? 0) - acceptedAfterRepair);
+      }
+    }
     recordDisposition('accepted_after_citation_repair', acceptedAfterRepair);
     recordDisposition('accepted_validated', Math.max(0, incoming.length - acceptedAfterRepair));
     if (incoming.length === 0) return 0;

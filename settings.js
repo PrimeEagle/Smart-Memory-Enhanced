@@ -3567,6 +3567,14 @@ export function bindSettingsUI(ctrl) {
         tier: 'identity',
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
       });
+      const repairs = runResult.sessionExtraction;
+      const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
+      repairs.repairTerminalReconciled = repairTerminalTotal === (repairs.repairAttempts ?? 0) && (repairs.repairAttempts ?? 0) <= (repairs.repairEligible ?? 0);
+      if (!repairs.repairTerminalReconciled) qualityReasons.push({
+        code: 'session_citation_repair_counters_unreconciled',
+        tier: 'session',
+        message: `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
+      });
       const requiredIdentityInvariants = [
         ['active_persona_present', runResult.runtimeContext?.active_persona?.canonical_name && runResult.finalReconciliation.persona_roster_size > 0, 'The active live persona was not available to final reconciliation.'],
         ['deterministic_persona_aliases_merged', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.skipped ?? []).some((entry) => /persona|Kyle/i.test(`${entry.name} ${entry.reason}`)), 'A deterministic active-persona alias remains unresolved.'],
