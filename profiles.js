@@ -109,10 +109,10 @@ export async function reconcileProfileCanonicalNames(characterName) {
     replacements.push(...narrative.replacements);
   }
   const matrix = String(next.relationship_matrix ?? '').split('\n').map((line) => {
-    const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
+    const match = line.match(/^\s*([^(:]+?)(?:\s*\(([^)]+)\))?\s*:\s*(.+)$/);
     if (!match) return line;
     const result = resolveCanonicalCharacterName(match[1].trim(), roster);
-    return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName} (${match[2]}): ${match[3]}`;
+    return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
   }).join('\n');
   next.relationship_matrix = matrix;
   if (next.character_state === profiles.character_state && next.world_state === profiles.world_state && next.relationship_matrix === profiles.relationship_matrix) return false;
@@ -250,7 +250,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   let normalized = 0;
   let invalidLabel = 0;
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
-    const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:\s*(.+)$/);
+    const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
     const entity = match[1].trim().toLowerCase();
     const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
@@ -420,14 +420,14 @@ export async function generateProfiles(characterName, abortCheck = null, options
     parsed.relationship_matrix = parsed.relationship_matrix
       .split('\n')
       .map((line) => {
-        const match = line.match(/^\s*([^(:]+?)\s*\(([^)]+)\)\s*:\s*(.+)$/);
+        const match = line.match(/^\s*([^(:]+?)(?:\s*\(([^)]+)\))?\s*:\s*(.+)$/);
         if (!match) return line;
         const resolution = resolveCanonicalCharacterName(match[1].trim(), roster, entityRegistry);
         // A guessed or contradictory card identity must not become durable
         // profile state. Exact/approved aliases are canonicalized; unknown
         // non-card entities remain readable under their supplied name.
         if (resolution.status === 'ambiguous' || resolution.status === 'rejected') return '';
-        return `${resolution.canonicalName ?? match[1].trim()} (${match[2]}): ${match[3]}`;
+        return `${resolution.canonicalName ?? match[1].trim()}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
       })
       .filter(Boolean)
       .join('\n');
