@@ -2208,18 +2208,24 @@ export function updateEntityPanel(characterName) {
     const rejectedBadge = rejectedAliases.length
       ? `<span class="sme_entity_rejected_badge" title="Rejected identity candidates: ${$('<div>').text(rejectedAliases.join(', ')).html()}"><i class="fa-solid fa-shield-halved"></i> ${rejectedAliases.length}</span>`
       : '';
+    const isAuthoritativeIdentity = Boolean(entity.canonical_card_id || entity.canonical_persona_id || entity.canonical_identity_type === 'character_card');
+    const authoritativeBadge = isAuthoritativeIdentity
+      ? '<span class="sme_entity_rejected_badge" title="Authoritative card or persona identity: its name and type are controlled by its source record."><i class="fa-solid fa-lock"></i></span>'
+      : '';
+    const typeBadgeTitle = isAuthoritativeIdentity ? 'Authoritative identity type is controlled by its source record' : 'Click to change type';
+    const renameControl = isAuthoritativeIdentity
+      ? '<button class="sme_entity_rename_btn menu_button" title="Rename the source character card or persona instead" disabled><i class="fa-solid fa-pencil"></i></button>'
+      : '<button class="sme_entity_rename_btn menu_button" title="Rename this entity"><i class="fa-solid fa-pencil"></i></button>';
 
     const $row = $(`
       <div class="sme_entity_row" data-entity-id="${entity.id}" style="position:relative;">
-        <span class="sme_entity_type_badge sme_entity_type_${entity.type}" data-clickable title="Click to change type">
+        <span class="sme_entity_type_badge sme_entity_type_${entity.type}" ${isAuthoritativeIdentity ? '' : 'data-clickable'} title="${typeBadgeTitle}">
           <i class="fa-solid ${icon}"></i> ${entity.type}
         </span>
         <span class="sme_entity_name">${safeName}</span>
-        ${rejectedBadge}
+        ${authoritativeBadge}${rejectedBadge}
         <span class="sme_entity_meta">${memCount} ${memCount === 1 ? 'memory' : 'memories'} &middot; last seen ${lastSeen}</span>
-        <button class="sme_entity_rename_btn menu_button" title="Rename this entity">
-          <i class="fa-solid fa-pencil"></i>
-        </button>
+        ${renameControl}
         <button class="sme_entity_merge_btn menu_button" title="Merge into another entity">
           <i class="fa-solid fa-code-merge"></i>
         </button>
@@ -2239,6 +2245,7 @@ export function updateEntityPanel(characterName) {
     // Type-picker: clicking the badge opens an inline dropdown to change the type.
     $row.find('.sme_entity_type_badge').on('click', (e) => {
       e.stopPropagation();
+      if (isAuthoritativeIdentity) return;
       $panel.find('.sme_entity_type_picker').remove();
 
       const $picker = $('<div class="sme_entity_type_picker">');
