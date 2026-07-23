@@ -248,6 +248,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
   let normalized = 0;
+  let invalidLabel = 0;
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:\s*(.+)$/);
     if (!match) return line;
@@ -259,6 +260,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const pair = cardPair ?? historyPair ?? groundedPair;
     if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
       rejected.push(line);
+      invalidLabel++;
       return '';
     }
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
@@ -294,7 +296,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       return false;
     }).join('\n').trim();
   }
-  return { profiles, rejected, normalized, contradictory_state_lines: contradictoryStateLines };
+  return { profiles, rejected, normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
@@ -497,6 +499,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
         preserved_prior: preservedPriorFields.length,
         dropped_conflict: relationshipCheck.rejected.length,
         dropped_speculative: speculationCheck.dropped.length,
+        dropped_invalid_label: relationshipCheck.invalid_label ?? 0,
         dropped_unsupported: fieldGrounding.rejected.length,
         dropped_malformed: 0,
       },
