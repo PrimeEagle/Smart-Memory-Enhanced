@@ -1738,6 +1738,7 @@ export async function reconcileCanonicalEntities(characterName) {
   let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
   for (const storeName of structuredStoreNames) {
+    await yieldEvery();
     const relationshipResult = reconcileRelationshipHistoryCanonicalNames(storeName);
     if (relationshipResult.changed) {
       relationshipStoresReconciled++;
@@ -1748,6 +1749,7 @@ export async function reconcileCanonicalEntities(characterName) {
   const profileNames = [...new Set([...structuredStoreNames, ...Object.keys(meta.profiles ?? {})].filter(Boolean))];
   let profilesReconciled = 0;
   for (const profileName of profileNames) {
+    await yieldEvery();
     if (await reconcileProfileCanonicalNames(profileName)) profilesReconciled++;
   }
   // Final read-only integrity audit. Reconciliation has already applied every
@@ -1758,24 +1760,26 @@ export async function reconcileCanonicalEntities(characterName) {
     ...(roster.characters ?? []).map((entry) => entry?.id),
   ].filter(Boolean));
   const staleEntityReferences = [];
-  const auditReferences = (records, store, field = 'entities') => {
+  const auditReferences = async (records, store, field = 'entities') => {
     for (const record of records ?? []) {
+      await yieldEvery();
       for (const id of record?.[field] ?? []) {
         const entityId = typeof id === 'string' ? id : id?.entity_id;
         if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
       }
     }
   };
-  auditReferences(longtermMemories, 'longterm');
-  auditReferences(sessionMemories, 'session');
-  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) auditReferences(records, `card-local:${localName}`);
-  auditReferences(scenes, 'scenes', 'participant_references');
-  auditReferences(arcs, 'arcs', 'participant_references');
+  await auditReferences(longtermMemories, 'longterm');
+  await auditReferences(sessionMemories, 'session');
+  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`);
+  await auditReferences(scenes, 'scenes', 'participant_references');
+  await auditReferences(arcs, 'arcs', 'participant_references');
   // State Ledger cards use a single canonical card link rather than the
   // memory-style `entities` list.  Check it separately so the audit covers
   // every structured store without treating free-form state-card text as an
   // identity reference.
   for (const [ledgerKey, fields] of Object.entries(reconciledLedger ?? {})) {
+    await yieldEvery();
     const entityId = fields?._canonical_card_id;
     if (entityId && !knownEntityIds.has(entityId)) {
       staleEntityReferences.push({ store: 'state-ledger', record_id: ledgerKey, entity_id: entityId });
@@ -1786,6 +1790,7 @@ export async function reconcileCanonicalEntities(characterName) {
   // card/persona ID cannot survive an otherwise successful entity merge.
   for (const storeName of structuredStoreNames) {
     for (const entry of loadEpistemicKnowledge(storeName)) {
+      await yieldEvery();
       for (const [field, entityId] of [
         ['subject_canonical_card_id', entry?.subject_canonical_card_id],
         ['target_canonical_card_id', entry?.target_canonical_card_id],
