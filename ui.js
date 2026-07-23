@@ -77,6 +77,7 @@ import {
   injectRelationshipHistory,
   reconcileRelationshipHistoryCanonicalNames,
   reconcileRelationshipHistoryMap,
+  getRelationshipHistoryPair,
   getRelationshipHistoryPairDisplay,
   remapRelationshipHistoryEntity,
 } from './longterm.js';

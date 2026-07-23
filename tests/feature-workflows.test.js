@@ -351,6 +351,8 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
+  assert.match(ui, /getRelationshipHistoryPair,/);
+  assert.match(ui, /getRelationshipHistoryPair\(labels\.subject, labels\.target, roster\)/);
   assert.match(ui, /state-ledger/);
   assert.match(ui, /_canonical_card_id/);
   assert.match(ui, /resolvedReviewItemsRemoved/);
