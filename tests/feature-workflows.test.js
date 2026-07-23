@@ -544,6 +544,8 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(ui, /Store-local representations are allowed/);
   assert.match(read('canonical-entities.js'), /Relationship History represents two individual people/);
   assert.match(longterm, /Relationship display labels conflict with their stored canonical identity IDs/);
+  assert.match(read('arcs.js'), /Direct evidence means messages actually supplied to this provider call/);
+  assert.match(read('arcs.js'), /inherited_source_ranges/);
   assert.match(graph, /off-roster ID as a generic NPC/);
   assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
   assert.match(ui, /global_legacy_integrity/);

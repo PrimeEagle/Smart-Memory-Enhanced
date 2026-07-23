@@ -621,6 +621,9 @@ export async function resolveArcWithSummary(index, characterName = null, groupId
       source_scene_ids: result.sourceSceneTs,
       source_memory_ids: result.sourceMemoryIds,
       source_message_indices: result.sourceMessageIndices,
+      direct_source_indices: result.directSourceIndices,
+      direct_source_ranges: result.directSourceRanges,
+      inherited_source_ranges: result.inheritedSourceRanges,
       parent_arc_id: result.parentArcId,
       grounding_status: 'derived',
       validation_status: result.semanticVerification?.validation_status ?? 'needs_review',
@@ -865,15 +868,26 @@ export async function generateArcSummary(resolvedArc, messages = []) {
   const semanticVerification = deterministicVerification.semantic_support === 'unsupported'
     ? { semantic_support: 'unsupported', validation_status: 'rejected', reason: deterministicVerification.reason }
     : await verifyArcSummarySemantics(candidate, evidence);
+  const toRanges = (indices) => [...new Set(indices.filter(Number.isInteger))].sort((a, b) => a - b).reduce((ranges, index) => {
+    const previous = ranges[ranges.length - 1];
+    if (previous && index === previous[1] + 1) previous[1] = index;
+    else ranges.push([index, index]);
+    return ranges;
+  }, []);
+  const inheritedSourceIndices = [...new Set([
+    ...(resolvedArc?.source_message_indices ?? []),
+    ...sceneHistory.flatMap((scene) => scene.source_message_indices ?? []),
+  ])].sort((a, b) => a - b);
   return {
     summary: candidate,
     sourceSceneTs: sceneHistory.map((s) => s.ts),
     sourceMemoryIds: [...allMemoryIds],
-    sourceMessageIndices: [...new Set([
-      ...(resolvedArc?.source_message_indices ?? []),
-      ...sceneHistory.flatMap((scene) => scene.source_message_indices ?? []),
-      ...resolutionMessageIndices,
-    ])].sort((a, b) => a - b),
+    // Direct evidence means messages actually supplied to this provider call.
+    // Broader arc and scene evidence remains explicit inherited ancestry.
+    sourceMessageIndices: [...new Set(resolutionMessageIndices)].sort((a, b) => a - b),
+    directSourceIndices: [...new Set(resolutionMessageIndices)].sort((a, b) => a - b),
+    directSourceRanges: toRanges(resolutionMessageIndices),
+    inheritedSourceRanges: toRanges(inheritedSourceIndices),
     parentArcId: resolvedArc?.id ?? null,
     identity_replacements: deduplicateIdentityDecisions(narrativeResolution.replacements, 'arc-summary'),
     deterministicVerification,
@@ -1123,6 +1137,9 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
               source_scene_ids: result.sourceSceneTs,
               source_memory_ids: result.sourceMemoryIds,
               source_message_indices: result.sourceMessageIndices,
+              direct_source_indices: result.directSourceIndices,
+              direct_source_ranges: result.directSourceRanges,
+              inherited_source_ranges: result.inheritedSourceRanges,
               parent_arc_id: result.parentArcId,
               derivation_type: 'resolved-arc-summary',
               parent_memory_ids: [],
