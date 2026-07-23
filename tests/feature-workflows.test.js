@@ -664,6 +664,8 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(rename, /aliases = \[\.\.\.new Set\(\[\.\.\.\(entity\.aliases \?\? \[\]\), oldName\]\)\]/);
   assert.match(rename, /if \(conflict\) return \{ renamed: false/);
   assert.match(rename, /Use Merge instead/);
+  assert.match(rename, /entity\.canonical_card_id \|\| entity\.canonical_persona_id/);
+  assert.match(rename, /Rename the character card or persona instead/);
 });
 
 test('review UI: grounding and identity reviews use dialogs that clean up without closing the extensions panel', () => {

@@ -754,6 +754,13 @@ export function renameEntityById(entityId, newName, registry) {
   const trimmed = String(newName ?? '').trim();
   if (!entity || !trimmed) return { renamed: false, reason: 'Enter a non-empty name.' };
   if (entity.name === trimmed) return { renamed: false, reason: 'The name is unchanged.' };
+  // Card and persona identities are authoritative external records.  A local
+  // Entity Registry rename must never make a stored card ID point at a
+  // different person; rename the source card/persona instead and let the
+  // normal roster reconciliation perform the explicit migration.
+  if (entity.canonical_card_id || entity.canonical_persona_id || entity.canonical_identity_type === 'character_card') {
+    return { renamed: false, reason: 'Card-backed and persona-backed entities use their authoritative source name. Rename the character card or persona instead.' };
+  }
   const conflict = registry.find((entry) => entry.id !== entityId && entry.type === entity.type && entry.name.toLowerCase() === trimmed.toLowerCase());
   if (conflict) return { renamed: false, reason: `A ${entity.type} named "${trimmed}" already exists. Use Merge instead.` };
   const oldName = entity.name;
