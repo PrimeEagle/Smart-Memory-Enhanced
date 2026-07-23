@@ -904,12 +904,18 @@ function mergeInRegistry(sourceId, targetId, registry, memories) {
   for (const id of source.memory_ids ?? []) {
     if (!target.memory_ids.includes(id)) target.memory_ids.push(id);
   }
+  target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(source.source_record_ids ?? []), ...(source.memory_ids ?? [])])];
+  target.source_message_indices = [...new Set([...(target.source_message_indices ?? []), ...(source.source_message_indices ?? [])])]
+    .filter(Number.isInteger)
+    .sort((left, right) => left - right);
 
   // Advance last_seen.
   target.last_seen = Math.max(target.last_seen ?? 0, source.last_seen ?? 0);
 
   // Rewrite entity refs in the memory array.
   remapEntityIdInMemories(memories, sourceId, targetId);
+
+  Object.assign(target, compactEntityProvenance(target));
 
   // Remove source from registry.
   registry.splice(sourceIdx, 1);

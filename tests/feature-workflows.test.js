@@ -672,6 +672,9 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(graph, /authoritative character type/);
   assert.match(graph, /retained from their authoritative source/);
   assert.match(read('ui.js'), /Authoritative card and persona entities cannot be deleted here/);
+  const mergeById = graph.slice(graph.indexOf('function mergeInRegistry'), graph.indexOf('export function mergeEntitiesById'));
+  assert.match(mergeById, /source_record_ids = \[\.\.\.new Set/);
+  assert.match(mergeById, /Object\.assign\(target, compactEntityProvenance\(target\)\)/);
   const nameMerge = graph.slice(graph.indexOf('export function mergeEntitiesByName'), graph.indexOf('// ---- Character card entity seeding'));
   assert.match(nameMerge, /const safety = safeCanonicalMerge\(source, target, roster\)/);
   assert.match(nameMerge, /An authoritative card or persona identity cannot be renamed by a name-based merge/);
