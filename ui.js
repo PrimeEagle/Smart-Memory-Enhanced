@@ -1783,6 +1783,23 @@ export async function reconcileCanonicalEntities(characterName) {
     ...registryGroups.flat().map((entity) => entity?.id),
     ...(roster.characters ?? []).map((entry) => entry?.id),
   ].filter(Boolean));
+  const cardIdentityMismatches = [];
+  for (const [store, entries] of registrySources) {
+    for (const entity of entries ?? []) {
+      const cardId = entity?.canonical_card_id;
+      if (!cardId) continue;
+      const authoritative = (roster.characters ?? []).find((entry) => String(entry.id) === String(cardId) && entry.source !== 'user-persona');
+      if (authoritative && String(entity.name ?? '').trim().toLowerCase() !== String(authoritative.canonicalName ?? '').trim().toLowerCase()) {
+        cardIdentityMismatches.push({
+          store,
+          record_id: entity.id ?? null,
+          canonical_card_id: cardId,
+          stored_name: entity.name ?? null,
+          authoritative_name: authoritative.canonicalName,
+        });
+      }
+    }
+  }
   const staleEntityReferences = [];
   const auditReferences = async (records, store, field = 'entities') => {
     for (const record of records ?? []) {
@@ -1886,7 +1903,7 @@ export async function reconcileCanonicalEntities(characterName) {
   }).map((item) => ({ id: item.id ?? null, candidate: item.candidateName ?? item.candidateKey ?? null }));
   const unsafe_identity_merges = allReports.flatMap((report) => report.skipped ?? [])
     .filter((item) => item.reason_code === 'unsafe_identity_merge_rejected');
-  const integrityStatus = unsafe_identity_merges.length
+  const integrityStatus = unsafe_identity_merges.length || cardIdentityMismatches.length
     ? 'unsafe'
     : staleEntityReferences.length
     ? 'degraded'
@@ -1899,6 +1916,7 @@ export async function reconcileCanonicalEntities(characterName) {
         : 'clean';
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
+    card_identity_mismatches: cardIdentityMismatches,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
     allowed_cross_store_representation: allowedCrossStoreRepresentation,
