@@ -1747,10 +1747,10 @@ export async function reconcileCanonicalEntities(characterName) {
   const rosterCharacterNames = (roster.characters ?? [])
     .filter((entry) => entry.source === 'character-card')
     .map((entry) => entry.canonicalName);
-  const persistentRelationshipStores = Object.entries(extension_settings[MODULE_NAME]?.characters ?? {})
-    .filter(([, store]) => store?.relationship_history)
-    .map(([name]) => name);
-  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames, ...persistentRelationshipStores].filter(Boolean))];
+  // Final catch-up integrity is scoped to the selected card and active group
+  // roster. Other installed cards remain a maintenance concern, not a reason
+  // to degrade an unrelated chat run.
+  const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
   let relationshipStoresReconciled = 0;
   let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
