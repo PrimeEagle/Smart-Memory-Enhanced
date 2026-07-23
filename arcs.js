@@ -928,6 +928,27 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       arcExtraction.inputMessages = selected.messages.length;
       arcExtraction.omittedMessages = selected.omittedMessages;
       arcExtraction.truncatedMessage = selected.truncatedMessage;
+      const source = settings.source ?? 'main';
+      arcExtraction.request_diagnostics = {
+        provider_type: source,
+        model: source === 'ollama' ? (settings.ollama_model || null) : source === 'openai_compat' ? (settings.openai_compat_model || null) : null,
+        endpoint_class: source === 'connection_profile' ? 'connection-profile' : source,
+        task: 'initial-arc-extraction',
+        message_count: selected.messages.length,
+        role_sequence_summary: selected.messages.map((message) => message.is_user ? 'user' : 'assistant').join(','),
+        first_role: selected.messages[0]?.is_user ? 'user' : 'assistant',
+        last_role: selected.messages.at(-1)?.is_user ? 'user' : 'assistant',
+        approximate_prompt_tokens: selected.tokenEstimate,
+        output_budget: responseLength,
+        context_limit: selected.tokenBudget,
+        structured_output_mode: 'prompt-contract',
+        stop_parameter_present: false,
+        request_normalization_applied: true,
+        adjacent_same_role_messages_merged: false,
+        // Hash only the shape and token estimate; raw prompt/chat text is
+        // deliberately excluded from exported diagnostics.
+        prompt_shape: `arc-extraction:${selected.messages.length}:${selected.tokenEstimate}`,
+      };
     }
     const rawChatHistory = selected.messages
       .map((m) => `${m.name}: ${m.mes}`)
@@ -1261,6 +1282,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       arcExtraction.http_status = Number.isFinite(status) ? status : null;
       arcExtraction.error_class = status === 400 ? 'bad_request' : 'provider_error';
       arcExtraction.non_retryable = status === 400;
+      arcExtraction.provider_response = String(err?.sme_request_diagnostics?.response_body ?? err?.message ?? '').replace(/\s+/g, ' ').slice(0, 300) || null;
       if (status === 400) arcExtraction.malformedRequest = (arcExtraction.malformedRequest ?? 0) + 1;
       arcExtraction.terminalOutcome = status === 400 ? 'malformed_request' : 'provider_error';
       arcExtraction.terminal_reconciled = true;
