@@ -680,6 +680,7 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 [EntityName] ([type]): [directional one-line state] [confidence: 0.X]
 (one line per entity from the KNOWN ENTITIES list; omit this section entirely if no entities are known)
 For each relationship line, use at least one exact descriptor from RELATIONSHIP HISTORY for that same pair. Do not upgrade, reinterpret, or substitute a status (for example, do not turn "trust" into "romantic" or "family"). If that pair has no listed descriptor, omit the line.
+An entity type (such as "character", "person", "NPC", "persona", or "entity") is never a relationship status. Do not use one as the relationship label or state. When the authoritative evidence explicitly establishes a current legal or relationship fact, state that fact plainly and never describe that same fact as unresolved, uncertain, pending, or speculative elsewhere in the profile.
 </relationship_matrix>`
   );
 }

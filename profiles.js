@@ -274,7 +274,27 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     rejected.push(line);
     return '';
   }).filter(Boolean).join('\n');
-  return { profiles, rejected, normalized };
+  // A model may put a legally established relationship in the matrix but still
+  // call it "unresolved" in the free-form state fields.  Do not preserve that
+  // contradiction when the same counterpart has an exact spouse descriptor.
+  const establishedPartners = [cardPairs, historyPairs, groundedPairs]
+    .flat()
+    .filter((pair) => pair.subject === self || pair.target === self)
+    .filter((pair) => pair.descriptors.some((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor)))
+    .map((pair) => pair.subject === self ? pair.target : pair.subject);
+  const contradictory = /\b(?:unresolved|uncertain|pending|unknown)\b/i;
+  const relationshipIssue = /\b(?:divorc(?:e|ed|ing)|marri(?:age|ed)|spous(?:e|al)|husband|wife|partner)\b/i;
+  let contradictoryStateLines = 0;
+  for (const field of ['character_state', 'world_state']) {
+    profiles[field] = String(profiles[field] ?? '').split('\n').filter((line) => {
+      const namesEstablished = establishedPartners.some((partner) => new RegExp(`(^|[^a-z])${escapeRegExp(partner)}(?=$|[^a-z])`, 'i').test(line));
+      if (!namesEstablished || !contradictory.test(line) || !relationshipIssue.test(line)) return true;
+      rejected.push(line);
+      contradictoryStateLines++;
+      return false;
+    }).join('\n').trim();
+  }
+  return { profiles, rejected, normalized, contradictory_state_lines: contradictoryStateLines };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */

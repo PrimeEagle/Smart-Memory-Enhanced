@@ -253,6 +253,8 @@ test('profile relationship lines require an exact descriptor from the establishe
   assert.doesNotMatch(profiles, /groundedRelationshipRecords = \[\s*\.\.\.longtermMemories,\s*\.\.\.sessionMemories,\s*\.\.\.loadSceneHistory/);
   assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
   assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
+  assert.match(prompts, /entity type .* never a relationship status/i);
+  assert.match(profiles, /contradictory_state_lines/);
 });
 
 test('profile current-state speculation is omitted instead of being stored as fact', () => {
