@@ -3505,6 +3505,11 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.attempted = 1;
       try {
         reconciliation = await runFinalIntegrityReconciliation(characterName);
+        if (reconciliation.integrity_audit?.status === 'unsafe') {
+          const error = new Error('Unsafe canonical identity merge was rejected during final reconciliation.');
+          error.sme_failure_stage = 'identity_integrity';
+          throw error;
+        }
         runResult.finalReconciliation.completed = 1;
       } catch (err) {
         // Roll back only the partially-applied reconciliation edits while
@@ -3665,7 +3670,7 @@ export function bindSettingsUI(ctrl) {
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
         ['no_stale_entity_references', !(reconciliation.integrity_audit?.stale_entity_references?.length), 'Structured records retain stale entity references.'],
-        ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
+        ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {
         if (!passed) qualityReasons.push({ code, tier: 'identity', message });

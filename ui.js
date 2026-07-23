@@ -1860,7 +1860,11 @@ export async function reconcileCanonicalEntities(characterName) {
     seenReviewKeys.add(key);
     return false;
   }).map((item) => ({ id: item.id ?? null, candidate: item.candidateName ?? item.candidateKey ?? null }));
-  const integrityStatus = staleEntityReferences.length
+  const unsafe_identity_merges = allReports.flatMap((report) => report.skipped ?? [])
+    .filter((item) => item.reason_code === 'unsafe_identity_merge_rejected');
+  const integrityStatus = unsafe_identity_merges.length
+    ? 'unsafe'
+    : staleEntityReferences.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
@@ -1877,6 +1881,7 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_pair_key_issues: relationshipPairKeyIssues,
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
+    unsafe_identity_merges,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: integrityStatus,
