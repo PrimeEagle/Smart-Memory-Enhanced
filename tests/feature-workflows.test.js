@@ -334,11 +334,20 @@ test('late catch-up stages isolate non-critical failures and retain diagnostics'
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
+  const settings = read('settings.js');
   assert.match(ui, /const context = getContext\(\);/);
   assert.match(ui, /buildCanonicalCharacterRoster\(context, \{ includeChatLocalApproved: true \}\)/);
   assert.match(canonical, /export function buildCanonicalRoster/);
   assert.match(canonical, /scope\.activePersona/);
   assert.match(canonical, /source_type: 'persona'/);
+  assert.match(settings, /power_user\.personas/);
+  assert.match(settings, /user_avatar/);
+  assert.match(settings, /getLivePersonaCaptureContext\(catchUpContext\)/);
+  assert.match(settings, /finalReconciliation\.attempted = 1/);
+  assert.match(settings, /finalReconciliation\.completed = 1/);
+  assert.match(settings, /finalReconciliation\.rolled_back = true/);
+  assert.match(settings, /active_persona_stable_id_present/);
+  assert.match(ui, /relationshipIntegrityErrors/);
 });
 
 test('final reconciliation uses one cross-store entity merge operation before structured-store repair', () => {

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed final Relationship History integrity reconciliation by importing its
+  canonical pair-key helper from the authoritative Relationship History module.
+  Per-record integrity failures now produce bounded diagnostics and leave other
+  safe records available for reconciliation.
+- Fixed live persona capture for imported chats and group chats. Memorize Chat
+  now reads SillyTavern's selected persona registry (`user_avatar` and
+  `power_user.personas`) before considering chat-header values, rejects
+  placeholders such as `unused`, and derives a deterministic namespaced
+  persona identity only when no runtime key is available.
+- Added explicit final-reconciliation attempt, completion, rollback, failure
+  stage, error class, and safe error-message diagnostics. A missing persona
+  name or stable identity key now degrades quality rather than reporting clean.
+
+### Tests
+
+- Added coverage for selected-persona capture over placeholder imported
+  headers, placeholder-only rejection, final reconciliation status telemetry,
+  stable persona-ID quality checks, and Relationship History audit isolation.
+
 ## [0.8.18] - 2026-07-23
 
 ### Fixed

@@ -134,6 +134,40 @@ test('runtime persona snapshot survives imported placeholder headers and carries
   }
 });
 
+test('runtime persona snapshot prefers an explicit selected persona over placeholder chat headers', () => {
+  const snapshot = snapshotCanonicalRuntimeContext({
+    name1: 'unused',
+    name2: 'Alissa Kawaguchi',
+    userName: 'unused',
+    activePersonaKey: 'kyle-holland.png',
+    activePersona: {
+      id: 'kyle-holland.png',
+      avatar: 'kyle-holland.png',
+      name: 'Kyle Holland',
+      aliases: ['Kyle'],
+      previous_names: ['Adam Lawson'],
+    },
+    chat: [{ is_user: true, name: 'unused', mes: 'Imported header placeholder' }],
+  });
+  assert.equal(snapshot.active_persona.canonical_name, 'Kyle Holland');
+  assert.equal(snapshot.active_persona.active_display_name, 'Kyle Holland');
+  assert.equal(snapshot.active_persona.stable_persona_id, 'kyle-holland.png');
+  assert.equal(snapshot.active_persona.runtime_source, 'active_persona');
+  assert.equal(snapshot.active_persona.stable_id_source, 'runtime_key');
+  assert.deepEqual(snapshot.active_persona.approved_aliases, ['Kyle', 'kyle']);
+  assert.deepEqual(snapshot.active_persona.historical_aliases, ['Adam Lawson']);
+});
+
+test('runtime persona snapshot rejects placeholder-only inputs instead of fabricating an empty identity', () => {
+  const snapshot = snapshotCanonicalRuntimeContext({
+    name1: 'unused', userName: 'User', name2: 'user-default.png', chat: [{ is_user: true, name: 'unused' }],
+  });
+  assert.equal(snapshot.active_persona.canonical_name, '');
+  assert.equal(snapshot.active_persona.stable_persona_id, null);
+  assert.equal(snapshot.active_persona.runtime_source, 'unavailable');
+  assert.equal(snapshot.active_persona.stable_id_source, 'unavailable');
+});
+
 test('stable relationship keys distinguish persona identities from card identities', () => {
   const personaRoster = buildCanonicalCharacterRoster({
     name2: 'Kyle Holland',

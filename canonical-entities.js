@@ -2,6 +2,11 @@
 
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const words = (value) => normalize(value).split(' ').filter(Boolean);
+const PERSONA_PLACEHOLDERS = new Set(['', 'unused', 'unknown', 'user', 'default', 'user-default', 'user-default.png', 'null', 'undefined']);
+const isUsablePersonaName = (value) => {
+  const name = String(value ?? '').trim();
+  return Boolean(name) && !PERSONA_PLACEHOLDERS.has(normalize(name)) && !/^(?:user[-_ ]?default|default[-_ ]?user)\.(?:png|jpg|jpeg|webp)$/i.test(name);
+};
 
 // Catch-up work can run for hours.  SillyTavern's serialized chat header is
 // not authoritative for a persona (and imported chats commonly contain
@@ -11,12 +16,27 @@ const words = (value) => normalize(value).split(' ').filter(Boolean);
 let activeRuntimePersonaSnapshot = null;
 
 export function snapshotCanonicalRuntimeContext(context = {}) {
-  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && String(message?.name ?? '').trim())?.name;
-  const personaName = String(context?.persona?.name ?? context?.userName ?? context?.name2 ?? chatPersonaName ?? '').trim();
-  const personaRecord = context?.persona
+  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && isUsablePersonaName(message?.name))?.name;
+  const explicitPersona = context?.activePersona ?? context?.persona ?? null;
+  const personaCandidates = [
+    { name: explicitPersona?.name, record: explicitPersona, source: context?.activePersona ? 'active_persona' : 'persona' },
+    { name: context?.personaName, record: explicitPersona, source: 'persona_name' },
+    { name: context?.userName, record: explicitPersona, source: 'resolved_user_name' },
+    // SillyTavern uses name1 for the current user/persona and name2 for the
+    // active character.  Keep name2 only as a legacy final fallback for older
+    // context adapters that expose the user identity there.
+    { name: context?.name1, record: explicitPersona, source: 'context_name1' },
+    { name: chatPersonaName, record: explicitPersona, source: 'user_message' },
+    { name: context?.name2, record: explicitPersona, source: 'legacy_name2' },
+  ];
+  const selected = personaCandidates.find((candidate) => isUsablePersonaName(candidate.name)) ?? null;
+  const personaName = selected ? String(selected.name).trim() : '';
+  const personaRecord = selected?.record
     ?? (Array.isArray(context?.personas) ? context.personas.find((entry) => normalize(entry?.name) === normalize(personaName)) : null)
     ?? {};
-  const stablePersonaId = String(personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? context?.user_avatar ?? normalize(personaName)).trim();
+  const runtimePersonaKey = String(context?.activePersonaKey ?? context?.personaKey ?? '').trim();
+  const providedPersonaId = String(personaRecord?.id ?? personaRecord?.avatar ?? runtimePersonaKey ?? context?.personaId ?? context?.persona_id ?? context?.user_avatar ?? '').trim();
+  const stablePersonaId = personaName ? (providedPersonaId || `name:${normalize(personaName)}`) : null;
   const aliases = [
     ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
     personaRecord?.alias,
@@ -29,12 +49,14 @@ export function snapshotCanonicalRuntimeContext(context = {}) {
   return Object.freeze({
     active_persona: Object.freeze({
       canonical_name: personaName,
-      stable_persona_id: stablePersonaId || null,
+      stable_persona_id: stablePersonaId,
       avatar_or_persona_key: String(personaRecord?.avatar ?? context?.user_avatar ?? '').trim() || null,
       active_display_name: personaName,
       approved_aliases: Object.freeze([...new Set(aliases)]),
       historical_aliases: Object.freeze([...new Set(historicalAliases)]),
       source: 'live_runtime',
+      runtime_source: selected?.source ?? 'unavailable',
+      stable_id_source: providedPersonaId ? 'runtime_key' : personaName ? 'derived_name' : 'unavailable',
     }),
   });
 }

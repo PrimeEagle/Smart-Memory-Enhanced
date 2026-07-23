@@ -1834,12 +1834,23 @@ export async function reconcileCanonicalEntities(characterName) {
     })
     .map(({ store, record_id, entity }) => ({ store, record_id, name: entity.name }));
   const relationshipPairKeyIssues = [];
+  const relationshipIntegrityErrors = [];
   for (const storeName of structuredStoreNames) {
     await yieldEvery();
     for (const [key, state] of Object.entries(loadRelationshipHistory(storeName))) {
-      const labels = getRelationshipHistoryPairDisplay(key, state);
-      const expected = getRelationshipHistoryPair(labels.subject, labels.target, roster).key;
-      if (key !== expected) relationshipPairKeyIssues.push({ store: storeName, key, expected });
+      try {
+        const labels = getRelationshipHistoryPairDisplay(key, state);
+        const expected = getRelationshipHistoryPair(labels.subject, labels.target, roster).key;
+        if (key !== expected) relationshipPairKeyIssues.push({ store: storeName, key, expected });
+      } catch (error) {
+        relationshipIntegrityErrors.push({
+          store: storeName,
+          key,
+          error_class: error?.name ?? 'Error',
+          error_message: String(error?.message ?? error ?? 'Relationship integrity error').replace(/\s+/g, ' ').slice(0, 300),
+        });
+        if (getSettings()?.verbose_logging) console.error('[Smart Memory Enhanced] Relationship History integrity audit failed:', error);
+      }
     }
   }
   const seenReviewKeys = new Set();
@@ -1853,7 +1864,7 @@ export async function reconcileCanonicalEntities(characterName) {
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
-      : syntheticIdentityRemaining.length || relationshipPairKeyIssues.length || duplicateReviewRecords.length
+      : syntheticIdentityRemaining.length || relationshipPairKeyIssues.length || relationshipIntegrityErrors.length || duplicateReviewRecords.length
         ? 'degraded'
       : crossStoreEntityMerges || localRelationshipPairsMerged || persistentRelationshipPairsMerged
         ? 'repaired'
@@ -1864,6 +1875,7 @@ export async function reconcileCanonicalEntities(characterName) {
     duplicate_canonical_entities: duplicateCanonicalEntities,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
+    relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,

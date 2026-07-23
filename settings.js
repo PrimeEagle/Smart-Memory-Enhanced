@@ -36,6 +36,8 @@ import {
   stopGeneration,
 } from '../../../../script.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../../scripts/popup.js';
+import { power_user } from '../../../../scripts/power-user.js';
+import { user_avatar } from '../../../../scripts/personas.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import {
   estimateTokens,
@@ -239,6 +241,33 @@ import {
   updateEmbeddingNotice,
   setCatchUpErrorCount,
 } from './ui.js';
+
+/**
+ * Builds the explicit live-persona input used for a long-running Memorize
+ * Chat.  `user_avatar` plus `power_user.personas` is SillyTavern's selected
+ * persona registry; serialized/imported chat headers are only fallbacks.
+ */
+function getLivePersonaCaptureContext(context) {
+  const metadataPersonaKey = context?.chatMetadata?.persona ?? context?.chatMetadata?.[META_KEY]?.persona_key ?? null;
+  const selectedPersonaKey = String(user_avatar || metadataPersonaKey || context?.personaId || context?.persona_id || '').trim();
+  const configuredName = selectedPersonaKey ? power_user?.personas?.[selectedPersonaKey] : null;
+  const existing = context?.activePersona ?? context?.persona ?? {};
+  const personaName = String(configuredName ?? existing?.name ?? context?.userName ?? context?.name1 ?? '').trim();
+  const descriptor = selectedPersonaKey ? power_user?.persona_descriptions?.[selectedPersonaKey] : null;
+  return {
+    ...context,
+    activePersonaKey: selectedPersonaKey || null,
+    activePersona: {
+      ...existing,
+      id: existing?.id ?? selectedPersonaKey ?? null,
+      avatar: existing?.avatar ?? selectedPersonaKey ?? null,
+      name: personaName,
+      aliases: existing?.aliases ?? [],
+      previous_names: existing?.previous_names ?? existing?.historical_aliases ?? [],
+      description: existing?.description ?? descriptor?.description ?? '',
+    },
+  };
+}
 
 // ---- Default settings ---------------------------------------------------
 
@@ -2899,7 +2928,7 @@ export function bindSettingsUI(ctrl) {
     // call. Imported JSONL headers can contain placeholder persona fields, so
     // final reconciliation must never rediscover this from serialized chat
     // metadata after a long run.
-    const canonicalRuntimeContext = snapshotCanonicalRuntimeContext(catchUpContext);
+    const canonicalRuntimeContext = snapshotCanonicalRuntimeContext(getLivePersonaCaptureContext(catchUpContext));
     const catchUpCharacterNames = (() => {
       if (!catchUpContext.groupId) return [characterName];
       const group = catchUpContext.groups?.find((g) => g.id === catchUpContext.groupId);
@@ -2980,7 +3009,7 @@ export function bindSettingsUI(ctrl) {
         },
       },
       profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_unsupported: 0, dropped_malformed: 0 }, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
-      finalReconciliation: { persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
+      finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
     };
@@ -3456,8 +3485,10 @@ export function bindSettingsUI(ctrl) {
         settings: structuredClone(extension_settings[MODULE_NAME] ?? {}),
       };
       let reconciliation;
+      runResult.finalReconciliation.attempted = 1;
       try {
         reconciliation = await runFinalIntegrityReconciliation(characterName);
+        runResult.finalReconciliation.completed = 1;
       } catch (err) {
         // Roll back only the partially-applied reconciliation edits while
         // preserving scenes, profiles, and every earlier validated tier.
@@ -3465,7 +3496,10 @@ export function bindSettingsUI(ctrl) {
         catchUpContext.chatMetadata[META_KEY] = reconciliationSnapshot.metadata;
         extension_settings[MODULE_NAME] = reconciliationSnapshot.settings;
         recordCatchUpError('final reconciliation error', err, 'identity');
-        runResult.finalReconciliation.error = String(err?.message ?? err ?? 'Unknown reconciliation error').slice(0, 300);
+        runResult.finalReconciliation.rolled_back = true;
+        runResult.finalReconciliation.failure_stage = err?.sme_failure_stage ?? 'final_reconciliation';
+        runResult.finalReconciliation.error_class = err?.name ?? 'Error';
+        runResult.finalReconciliation.error_message = String(err?.message ?? err ?? 'Unknown reconciliation error').replace(/\s+/g, ' ').slice(0, 300);
         reconciliation = {
           matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
           persona_roster_size: 0, participant_lists_rewritten: 0, resolved_review_items_removed: 0,
@@ -3590,10 +3624,12 @@ export function bindSettingsUI(ctrl) {
         message: `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
       });
       const requiredIdentityInvariants = [
-        ['active_persona_present', runResult.runtimeContext?.active_persona?.canonical_name && runResult.finalReconciliation.persona_roster_size > 0, 'The active live persona was not available to final reconciliation.'],
+        ['active_persona_present', runResult.runtimeContext?.active_persona?.canonical_name && runResult.finalReconciliation.persona_roster_size > 0, 'active_persona_snapshot_missing'],
+        ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'The active persona snapshot has no stable identity key.'],
         ['deterministic_persona_aliases_merged', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.skipped ?? []).some((entry) => /persona|Kyle/i.test(`${entry.name} ${entry.reason}`)), 'A deterministic active-persona alias remains unresolved.'],
         ['no_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
+        ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
         ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
         ['identity_terminal_totals_reconcile', (reconciliation.identity_outcomes ?? []).length === [...finalTerminalRecords.values()].length, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
