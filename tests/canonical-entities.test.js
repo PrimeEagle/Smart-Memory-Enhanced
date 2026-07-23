@@ -307,6 +307,11 @@ test('integration: relationship pair uses canonical card names', () => {
   assert.equal(canonicalizeRelationshipPair('Paul Kawaguchi', 'Alissa', roster), null);
 });
 
+test('relationship pairs reject collective labels and accidental self-pairs', () => {
+  assert.equal(canonicalizeRelationshipPair('Paul and Alissa', 'Alissa', roster), null);
+  assert.equal(canonicalizeRelationshipPair('Paul', 'Paul Schmidt', roster), null);
+});
+
 test('phase 2: review candidates retain evidence and repeated-review identity', () => {
   const result = resolveCanonicalCharacterName('Paul Kawaguchi', roster);
   const item = buildIdentityReviewCandidate(result, { memoryId: 'memory-7', entityType: 'character', createdAt: 1 }, 'review-1');
