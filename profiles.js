@@ -257,15 +257,19 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const pair = cardPair ?? historyPair ?? groundedPair;
+    if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
+      rejected.push(line);
+      return '';
+    }
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
     if (pair && exactStatus) return line;
     // “Partner” is weaker than an established spouse status. Normalize the
     // generated synonym only when the canonical relationship evidence gives a
     // precise current descriptor; never infer a stronger relationship.
     const precise = pair?.descriptors.find((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor));
-    if (precise && /\bpartner\b/i.test(status)) {
+    if (precise && /\b(?:partner|family|character|person)\b/i.test(status)) {
       normalized++;
-      return line.replace(/\bpartner\b/i, precise);
+      return line.replace(/\b(?:partner|family|character|person)\b/i, precise);
     }
     rejected.push(line);
     return '';
