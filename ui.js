@@ -1751,6 +1751,13 @@ export async function reconcileCanonicalEntities(characterName) {
   // roster. Other installed cards remain a maintenance concern, not a reason
   // to degrade an unrelated chat run.
   const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
+  const globalLegacyStoreNames = Object.keys(extension_settings[MODULE_NAME]?.characters ?? {})
+    .filter((name) => !structuredStoreNames.includes(name));
+  const globalLegacyIntegrity = globalLegacyStoreNames.map((name) => ({
+    character: name,
+    relationship_pairs: Object.keys(loadRelationshipHistory(name)).length,
+    epistemic_records: loadEpistemicKnowledge(name).length,
+  })).filter((entry) => entry.relationship_pairs || entry.epistemic_records);
   let relationshipStoresReconciled = 0;
   let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
@@ -1882,6 +1889,10 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
     unsafe_identity_merges,
+    // These records are intentionally not reconciled as part of this chat's
+    // transaction. Surface them for maintenance diagnostics without allowing
+    // an unrelated legacy card to make the active run look degraded.
+    global_legacy_integrity: globalLegacyIntegrity,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: integrityStatus,
@@ -1912,6 +1923,7 @@ export async function reconcileCanonicalEntities(characterName) {
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
+    global_legacy_store_count: globalLegacyIntegrity.length,
     performance: {
       reconciliation_work_items: reconciliationWorkIndex,
       reconciliation_yields: reconciliationYieldCount,
