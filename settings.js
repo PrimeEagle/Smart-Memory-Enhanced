@@ -3402,6 +3402,9 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.fields.dropped_conflict += profiles.relationship_field_rejections ?? 0;
             runResult.profiles.fields.dropped_speculative += profiles.speculative_field_rejections?.length ?? 0;
             runResult.profiles.fields.dropped_unsupported += profiles.field_grounding_rejections?.length ?? 0;
+            for (const [field, value] of Object.entries(profiles.field_validation ?? {})) {
+              runResult.profiles.fields[field] = (runResult.profiles.fields[field] ?? 0) + Number(value ?? 0);
+            }
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
