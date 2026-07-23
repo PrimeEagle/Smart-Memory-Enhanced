@@ -89,7 +89,11 @@ function safeCanonicalMerge(source, target, roster) {
   const right = getAuthoritativeIdentity(target, roster);
   if (left.type === 'character_card' && normalizeIdentityName(source.name) !== normalizeIdentityName(left.name)) return { allowed: false, reason: 'Source card-backed name conflicts with its authoritative card.' };
   if (right.type === 'character_card' && normalizeIdentityName(target.name) !== normalizeIdentityName(right.name)) return { allowed: false, reason: 'Target card-backed name conflicts with its authoritative card.' };
-  if (left.type === 'character_card' && right.type === 'character_card' && left.id !== right.id) return { allowed: false, reason: 'Different authoritative character cards cannot merge.' };
+  // A stored canonical_card_id remains authoritative even when that card is
+  // not in the active roster.  Treating an off-roster ID as a generic NPC was
+  // the path that allowed a stale card record to be redirected into another
+  // card-backed identity during reconciliation.
+  if (left.id && right.id && left.id !== right.id && /^(?:character_card|card_unknown)$/.test(left.type) && /^(?:character_card|card_unknown)$/.test(right.type)) return { allowed: false, reason: 'Different authoritative character cards cannot merge.' };
   if ((left.type === 'persona' && right.type === 'character_card') || (left.type === 'character_card' && right.type === 'persona')) return { allowed: false, reason: 'Persona and character-card identities cannot merge automatically.' };
   if ((left.type === 'character_card' && right.type === 'grounded_npc') || (left.type === 'grounded_npc' && right.type === 'character_card')) return { allowed: false, reason: 'A card-backed identity cannot merge with an unrelated grounded NPC.' };
   return { allowed: true, authority_comparison: `${left.authority}:${right.authority}` };
