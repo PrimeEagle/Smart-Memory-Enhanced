@@ -1949,6 +1949,7 @@ export async function reconcileCanonicalEntities(characterName) {
     // transaction. Surface them for maintenance diagnostics without allowing
     // an unrelated legacy card to make the active run look degraded.
     global_legacy_integrity: globalLegacyIntegrity,
+    global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: integrityStatus,
@@ -1981,6 +1982,7 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
     global_legacy_store_count: globalLegacyIntegrity.length,
+    global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     performance: {
       reconciliation_work_items: reconciliationWorkIndex,
       reconciliation_yields: reconciliationYieldCount,
