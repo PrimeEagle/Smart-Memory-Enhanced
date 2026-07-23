@@ -166,6 +166,15 @@ test('protected prompts prohibit aliases, synthetic identities, and premature ar
   assert.match(read('scenes.js'), /buildSceneSummaryPrompt\(sceneText\.slice/);
 });
 
+test('epistemic knowledge requires explicit evidence rather than implied certainty', () => {
+  const prompts = read('prompts.js');
+  const epistemic = read('epistemic.js');
+  assert.match(prompts, /\[knows\] requires explicit confirmation/);
+  assert.match(prompts, /implication, tone, inference/);
+  assert.match(epistemic, /hasUnsupportedKnowledgeQualifier/);
+  assert.match(epistemic, /unsupported inference/);
+});
+
 test('profiles keep only current, evidence-supported fields', () => {
   const profiles = read('profiles.js');
   const prompts = read('prompts.js');

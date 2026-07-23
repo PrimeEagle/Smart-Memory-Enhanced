@@ -1016,6 +1016,10 @@ export function buildEpistemicExtractionPrompt(sceneText, participants, existing
     `- KNOWS vs SUSPECTS: if a character is explicitly told a fact, use [knows].\n` +
     `  Reserve [suspects] only for characters who have a feeling without being\n` +
     `  directly informed\n\n` +
+    `- [knows] requires explicit confirmation in the supplied scene. Do not convert\n` +
+    `  implication, tone, inference, likelihood, or an apparent conclusion into\n` +
+    `  knowledge. Use [suspects] for an uncertain character inference. Use [believes]\n` +
+    `  only when the character demonstrably accepts a claim as true.\n\n` +
     `- DECEPTION RULE: when a character makes a false statement, write [hiding] for\n` +
     `  the liar. Then check whether the character who heard it accepted it without\n` +
     `  challenge - if so, also write [believes] for them with the false content.\n` +

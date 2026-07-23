@@ -404,9 +404,16 @@ export async function extractEpistemicKnowledge(
     const acceptedBySubject = new Map();
     const acceptedBySubjectAndType = new Map();
     const typeCaps = { knows: 2, unaware: 2, suspects: 3, believes: 3, hiding: 3 };
-    const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
+const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
       /\b(?:walked|looked|smiled|entered|left|sat|stood|held|moved|went|spoke|said)\b/i.test(entry.content) &&
       !/\b(?:secret|lie|hidden|identity|plan|plot|promise|threat|revealed|discovered|learned|overheard|witnessed|saw)\b/i.test(entry.content);
+    // A knowledge record is injected as durable fact.  Hedged language is
+    // evidence that the model has converted implication into certainty, so do
+    // not silently promote it to [knows].  It may be represented as a model
+    // generated [suspects] or [believes] record only when the model supplies
+    // that explicit type on a later pass.
+    const hasUnsupportedKnowledgeQualifier = (entry) => entry.type === 'knows' &&
+      /\b(?:implied|probably|likely|apparently|seems?|inferred|assumed)\b/i.test(entry.content);
     const parsed = parseEpistemicResponse(response).flatMap((entry) => {
       const subject = resolveCanonicalCharacterName(entry.subject, roster);
       const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
@@ -426,6 +433,10 @@ export async function extractEpistemicKnowledge(
       }
       if (isRoutineKnowledge(entry)) {
         smLog(`[Smart Memory Enhanced] Epistemic entry skipped: routine witnessed event for ${canonicalSubject}.`);
+        return [];
+      }
+      if (hasUnsupportedKnowledgeQualifier(entry)) {
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped: [knows] contains an unsupported inference for ${canonicalSubject}.`);
         return [];
       }
       const typeKey = `${canonicalSubject}|${entry.type}`;
