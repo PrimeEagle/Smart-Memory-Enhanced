@@ -209,7 +209,7 @@ EXPIRATION CLASS (choose one):
 - permanent  - should persist as a durable memory
 
 ENTITY TAGGING (optional but encouraged):
-If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use the canonical roster label for every structured identity reference. Historical source-used names may remain in memory prose only when explicitly present in the cited source. Do not create separate people from case variants, short-name variants, or supplied historical aliases. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
+If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use the canonical roster label for every structured identity reference. Historical source-used names may remain in memory prose only when explicitly present in the cited source. Do not create separate people from case variants, short-name variants, or supplied historical aliases. People sharing a surname are not the same person: never merge parents, siblings, spouses, or relatives merely because they share a surname or relationship record. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
@@ -263,7 +263,7 @@ Answer YES or NO only. Nothing else.`;
 
 export const SCENE_SUMMARY_PROMPT =
   NO_ACTION_PREAMBLE +
-  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list only the named CHARACTERS who actively participated. Do not list places, objects, organizations, or concepts. The structured participant list MUST use canonical roster identities; a historical source-used name may remain only in the narrative summary. Do not invent relationship labels or infer completed relationship facts from ambiguous wording. Do not use old persona names, inferred surnames, collective labels, or parenthetical identity labels in the structured list.
+  `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list every clearly present named CHARACTER who actively participated, including relatives and staff; do not omit them merely because they are secondary speakers. Do not add people mentioned only as historical background. Do not list places, objects, organizations, or concepts. The structured participant list MUST use canonical roster identities; a historical source-used name may remain only in the narrative summary. Do not invent relationship labels or infer completed relationship facts from ambiguous wording. Do not use old persona names, inferred surnames, collective labels, or parenthetical identity labels in the structured list.
 
 Output exactly:
 [SCENE]
@@ -305,7 +305,7 @@ ${canonicalRoster}${existingSection}CONVERSATION:\n${chatHistory}
 Extract the most significant open story threads from the conversation: unresolved conflicts, unfulfilled promises, active character goals, open mysteries, and tensions that have not yet played out. Aim for the 3-5 threads that matter most to the story - do not list every detail that has not resolved.
 
 An arc is something still in motion across the story - a question not yet answered, a goal not yet reached, a conflict still active. Do NOT output facts about things that already happened and are over.
-An arc must state what remains unresolved, pending, unknown, promised, required, or undecided. Use canonical participant names only; never use synthetic parenthetical identity labels.
+An arc must state what remains unresolved, pending, unknown, promised, required, or undecided: a concrete decision, obligation, conflict, danger, question, promised action, or pending consequence. Vague possibilities such as "is unexplored", "may affect", or "new role" alone are not arcs. Use canonical participant names only; every structured participant must be explicitly named in the arc text; never use synthetic parenthetical identity labels.
 
 Before outputting [arc], apply this gate: could this entry still change what happens next? If the answer is no, it is a completed event or established fact, not an arc. A past event is allowed only when it directly leaves a named question, goal, promise, conflict, threat, or mystery still open.
 
