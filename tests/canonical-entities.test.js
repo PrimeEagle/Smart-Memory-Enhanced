@@ -350,6 +350,22 @@ test('scene participant repair promotes only explicit historical card aliases', 
   }]);
 });
 
+test('scene participant repair retains every explicitly named active family member', () => {
+  const familyRoster = buildCanonicalCharacterRoster({
+    name2: 'Aaron Holland',
+    characters: [
+      { id: 'taylor', name: 'Taylor Covington' },
+      { id: 'richard', name: 'Richard Covington' },
+      { id: 'margaret', name: 'Margaret Covington' },
+    ],
+  });
+  const repaired = findCanonicalParticipantsInText(
+    'Taylor Covington revealed to her parents, Richard Covington and Margaret Covington, that she and Aaron Holland were still legally married.',
+    familyRoster,
+  );
+  assert.deepEqual(repaired.names, ['Taylor Covington', 'Richard Covington', 'Margaret Covington', 'Aaron Holland']);
+});
+
 test('active persona uses SillyTavern name2 and roster helpers accept object, map, and legacy array shapes', () => {
   const personaRoster = buildCanonicalRoster({
     name1: 'Alissa Kawaguchi',
