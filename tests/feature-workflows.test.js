@@ -551,6 +551,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(read('prompts.js'), /\[EntityName\]: \[directional one-line state\]/);
   assert.match(read('prompts.js'), /CHARACTER CARD RELATIONSHIP FACTS \(highest priority\)/);
   assert.match(read('profiles.js'), /extractCardRelationshipFacts\(roster\)/);
+  assert.match(read('canonical-entities.js'), /relationshipFactExcerpt/);
   assert.match(longterm, /const sessionEntityRegistry = loadSessionEntityRegistry\(\)/);
   assert.match(longterm, /\[\.\.\.entityRegistry, \.\.\.sessionEntityRegistry\]/);
   assert.match(read('settings.js'), /const terminalsBySource = new Map\(\)/);

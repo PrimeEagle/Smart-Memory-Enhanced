@@ -203,7 +203,7 @@ function extractCardRelationshipFacts(roster = []) {
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const entry of rosterEntries(roster)) {
-    const description = String(entry?.descriptionExcerpt ?? '');
+    const description = String(entry?.relationshipFactExcerpt ?? entry?.descriptionExcerpt ?? '');
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
       const subject = resolve(match[1]);
       const target = resolve(match[3]);

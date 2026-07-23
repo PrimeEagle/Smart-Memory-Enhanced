@@ -137,6 +137,9 @@ export function buildCanonicalRoster(context, scope = {}) {
         entity_type: 'character',
         aliases,
         descriptionExcerpt: String(card.description ?? '').trim().slice(0, 240),
+        // Relationship validation needs enough card text to find explicit
+        // spouse/family facts, while the shorter excerpt keeps prompts compact.
+        relationshipFactExcerpt: String(card.description ?? '').trim().slice(0, 2000),
         source: 'character-card',
         source_type: 'character-card',
       };
