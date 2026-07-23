@@ -1772,10 +1772,26 @@ export async function reconcileCanonicalEntities(characterName) {
       normalized_name: entities[0]?.name ?? null,
       records: observations.filter((observation) => entities.some((entity) => entity.id === observation.record_id)).map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type })),
     }));
+  const syntheticIdentityRemaining = observations
+    .filter(({ entity }) => {
+      const normalized = normalizeSyntheticIdentityQualifier(entity?.name, [...(roster.characters ?? []), ...registryGroups.flat()]);
+      return normalized.qualifier_removed && !entity?.manual_locked && !entity?.manual_confirmed;
+    })
+    .map(({ store, record_id, entity }) => ({ store, record_id, name: entity.name }));
+  const relationshipPairKeyIssues = [];
+  for (const storeName of structuredStoreNames) {
+    for (const [key, state] of Object.entries(loadRelationshipHistory(storeName))) {
+      const labels = getRelationshipHistoryPairDisplay(key, state);
+      const expected = getRelationshipHistoryPair(labels.subject, labels.target, roster).key;
+      if (key !== expected) relationshipPairKeyIssues.push({ store: storeName, key, expected });
+    }
+  }
   const integrityStatus = staleEntityReferences.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
+      : syntheticIdentityRemaining.length || relationshipPairKeyIssues.length
+        ? 'degraded'
       : crossStoreEntityMerges || localRelationshipPairsMerged || persistentRelationshipPairsMerged
         ? 'repaired'
         : 'clean';
@@ -1783,6 +1799,8 @@ export async function reconcileCanonicalEntities(characterName) {
     stale_entity_references: staleEntityReferences,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
+    synthetic_identity_remaining: syntheticIdentityRemaining,
+    relationship_pair_key_issues: relationshipPairKeyIssues,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: integrityStatus,
