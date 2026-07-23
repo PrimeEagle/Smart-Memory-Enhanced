@@ -1255,17 +1255,16 @@ export function updateScenesUI() {
     return;
   }
 
-  history.forEach((s, i) => {
+  const sceneMarkup = history.map((s, i) => {
     const range = Number.isInteger(s.source_start_index) && Number.isInteger(s.source_end_index)
       ? ` &middot; messages ${s.source_start_index + 1}-${s.source_end_index + 1}`
       : '';
     const method = s.detected_by ? ` &middot; ${s.detected_by}` : '';
     const validation = s.validation_status && s.validation_status !== 'validated' ? ` &middot; ${s.validation_status}` : '';
     const canJump = Number.isInteger(s.source_start_index);
-    $list.append(
-      `<div class="sme_scene_item"><div><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div><small class="sm-muted">${range}${method}${validation}</small><span class="sme_scene_actions">${canJump ? `<button class="sme_jump_scene menu_button" data-index="${i}" title="Jump to the source messages"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}<button class="sme_resummarize_scene menu_button" data-index="${i}" title="Generate this summary again from its source messages"><i class="fa-solid fa-rotate"></i></button><button class="sme_edit_scene menu_button" data-index="${i}" title="Edit scene summary"><i class="fa-solid fa-pencil"></i></button><button class="sme_delete_scene menu_button" data-index="${i}" title="Delete scene"><i class="fa-solid fa-trash-can"></i></button></span></div>`,
-    );
+    return `<div class="sme_scene_item"><div><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div><small class="sm-muted">${range}${method}${validation}</small><span class="sme_scene_actions">${canJump ? `<button class="sme_jump_scene menu_button" data-index="${i}" title="Jump to the source messages"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}<button class="sme_resummarize_scene menu_button" data-index="${i}" title="Generate this summary again from its source messages"><i class="fa-solid fa-rotate"></i></button><button class="sme_edit_scene menu_button" data-index="${i}" title="Edit scene summary"><i class="fa-solid fa-pencil"></i></button><button class="sme_delete_scene menu_button" data-index="${i}" title="Delete scene"><i class="fa-solid fa-trash-can"></i></button></span></div>`;
   });
+  $list.append(sceneMarkup.join(''));
 }
 
 /** Re-renders the story arcs list with per-arc edit, resolve, and add buttons. */
@@ -1289,6 +1288,8 @@ export function updateArcsUI() {
     $list.append('<div class="sme_no_char">No open story threads.</div>');
   }
 
+  const activeArcItems = document.createDocumentFragment();
+  const resolvedArcItems = document.createDocumentFragment();
   arcs.forEach((arc, idx) => {
     const isPersistent = !!arc.persistent;
     const isResolved = !!arc.resolved;
@@ -1301,7 +1302,7 @@ export function updateArcsUI() {
                   <button class="sme_remove_resolved_arc menu_button" data-index="${idx}" title="Remove"><i class="fa-solid fa-xmark"></i></button>
               </div>
           `);
-      $resolvedList.append($item);
+      resolvedArcItems.appendChild($item[0]);
     } else {
       const pinTitle = isPersistent
         ? 'Unpin - keep only in this chat'
@@ -1321,9 +1322,11 @@ export function updateArcsUI() {
                   </button>
               </div>
           `);
-      $list.append($item);
+      activeArcItems.appendChild($item[0]);
     }
   });
+  $list.append(activeArcItems);
+  $resolvedList.append(resolvedArcItems);
 
   // Show the resolved section only when there are resolved arcs.
   $resolvedSection.toggle(resolvedArcs.length > 0);
