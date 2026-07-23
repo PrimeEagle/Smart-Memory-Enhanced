@@ -953,7 +953,10 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       if (arcExtraction) {
         arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
         arcExtraction.returnedNone = (arcExtraction.returnedNone ?? 0) + 1;
+        arcExtraction.request_completed = (arcExtraction.request_completed ?? 0) + 1;
+        arcExtraction.returned_none = (arcExtraction.returned_none ?? 0) + 1;
         arcExtraction.terminalOutcome = 'returned_none';
+        arcExtraction.terminal_reconciled = true;
       }
       return 0;
     }
@@ -962,7 +965,9 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const { add: parsedAdd, resolve, rejected: parserRejected } = parseArcOutput(response, activeExisting);
     if (arcExtraction) {
       arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
+      arcExtraction.request_completed = (arcExtraction.request_completed ?? 0) + 1;
       arcExtraction.parsedCandidates = (arcExtraction.parsedCandidates ?? 0) + parsedAdd.length;
+      arcExtraction.parsed_candidates = (arcExtraction.parsed_candidates ?? 0) + parsedAdd.length;
       arcExtraction.acceptedOpenThreads = (arcExtraction.acceptedOpenThreads ?? 0) + parsedAdd.length;
       arcExtraction.rejectedCompletedEvents = (arcExtraction.rejectedCompletedEvents ?? 0) + parserRejected.filter((item) => item.reason_code === 'completed_event_not_open_thread').length;
       arcExtraction.rejectedBackgroundFacts = (arcExtraction.rejectedBackgroundFacts ?? 0) + parserRejected.filter((item) => item.reason_code === 'background_fact_not_open_thread').length;
@@ -971,6 +976,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       const taggedArcLines = (response.match(/^\s*\[arc(?:\s*:\s*characters=[^\]]+)?\]/gim) ?? []).length;
       arcExtraction.rejectedMalformed = (arcExtraction.rejectedMalformed ?? 0) + Math.max(0, taggedArcLines - parsedAdd.length - parserRejected.length);
       arcExtraction.terminalOutcome = 'parsed';
+      arcExtraction.terminal_reconciled = true;
     }
     const roster = buildCanonicalCharacterRoster(getContext());
     const rawAdd = parsedAdd.map((arc) => {
@@ -1251,8 +1257,13 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     if (arcExtraction) {
       const status = Number(err?.sme_request_diagnostics?.http_status ?? err?.status);
       arcExtraction.providerError = (arcExtraction.providerError ?? 0) + 1;
+      arcExtraction.provider_error = (arcExtraction.provider_error ?? 0) + 1;
+      arcExtraction.http_status = Number.isFinite(status) ? status : null;
+      arcExtraction.error_class = status === 400 ? 'bad_request' : 'provider_error';
+      arcExtraction.non_retryable = status === 400;
       if (status === 400) arcExtraction.malformedRequest = (arcExtraction.malformedRequest ?? 0) + 1;
       arcExtraction.terminalOutcome = status === 400 ? 'malformed_request' : 'provider_error';
+      arcExtraction.terminal_reconciled = true;
     }
     console.error('[Smart Memory Enhanced] Arc extraction failed:', err);
     throw err;
