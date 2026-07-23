@@ -598,6 +598,8 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       continue;
     }
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
+    target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(entity.source_record_ids ?? []), ...(entity.memory_ids ?? [])])];
+    target.source_message_indices = [...new Set([...(target.source_message_indices ?? []), ...(entity.source_message_indices ?? [])])].filter(Number.isInteger).sort((left, right) => left - right);
     target.canonical_identity_type = result.canonicalIdentityType ?? 'character_card';
     target.canonical_card_id = result.canonicalCardId ?? result.canonicalId;
     target.canonical_persona_id = result.canonicalPersonaId ?? null;
@@ -625,6 +627,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge',
     });
     if (result.synthetic_parenthetical) report.durable_entity_removed++;
+    Object.assign(target, compactEntityProvenance(target));
     report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, canonicalName: target.name, terminal_outcome: 'merged', reason: result.reason });
     report.changed = true;
   }
@@ -1036,8 +1039,10 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
     }
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(source.memory_ids ?? [])])];
     target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(source.source_record_ids ?? [])])];
+    target.source_message_indices = [...new Set([...(target.source_message_indices ?? []), ...(source.source_message_indices ?? [])])].filter(Number.isInteger).sort((left, right) => left - right);
     target.last_seen = Math.max(target.last_seen ?? 0, source.last_seen ?? 0);
   }
+  Object.assign(target, compactEntityProvenance(target));
   let referencesRedirected = 0;
   for (const memories of memoryStores) {
     for (const memory of memories) {
