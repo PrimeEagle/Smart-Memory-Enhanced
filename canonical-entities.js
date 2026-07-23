@@ -321,9 +321,14 @@ export function resolveEntityCandidate(candidate, canonicalRoster, registries = 
 }
 
 export function canonicalizeRelationshipPair(subject, target, roster) {
+  // Relationship History represents two individual people. Collective labels
+  // must be split before this point, and a person cannot form a pair with
+  // themself merely because an alias resolved twice to the same card.
+  if (/\s+(?:&|and)\s+/i.test(String(subject ?? '')) || /\s+(?:&|and)\s+/i.test(String(target ?? ''))) return null;
   const left = resolveCanonicalCharacterName(subject, roster);
   const right = resolveCanonicalCharacterName(target, roster);
   if (left.status !== 'resolved' || right.status !== 'resolved') return null;
+  if (String(left.canonicalId ?? '').toLowerCase() === String(right.canonicalId ?? '').toLowerCase()) return null;
   return [left.canonicalName ?? subject, right.canonicalName ?? target];
 }
 
