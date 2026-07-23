@@ -538,6 +538,8 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(graph, /e\.memory_ids\.length > 0 \|\| \(e\.source_record_ids\?\.length/);
   assert.match(graph, /export function compactEntityProvenance/);
   assert.match(graph, /representative_evidence_ranges/);
+  assert.match(graph, /function buildMergeDecision/);
+  assert.match(graph, /exact_card_name_assertion_failed/);
   assert.match(graph, /off-roster ID as a generic NPC/);
   assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
   assert.match(ui, /global_legacy_integrity/);

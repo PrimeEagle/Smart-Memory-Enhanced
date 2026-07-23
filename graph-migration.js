@@ -124,6 +124,23 @@ function safeCanonicalMerge(source, target, roster) {
   return { allowed: true, authority_comparison: `${left.authority}:${right.authority}` };
 }
 
+function buildMergeDecision(source, target, result, safety, decision, reason) {
+  return {
+    source_record_id: source?.id ?? null,
+    source_name: source?.name ?? null,
+    source_identity_type: source?.canonical_identity_type ?? source?.type ?? 'unknown',
+    source_card_id: source?.canonical_card_id ?? null,
+    target_record_id: target?.id ?? null,
+    target_name: target?.name ?? null,
+    target_identity_type: target?.canonical_identity_type ?? target?.type ?? 'unknown',
+    target_card_id: target?.canonical_card_id ?? null,
+    matching_rule: result?.reason ?? 'canonical_reconciliation',
+    authority_comparison: safety?.authority_comparison ?? null,
+    decision,
+    reason,
+  };
+}
+
 export function recordIdentityReviewCandidate(result, details = {}) {
   if (!['ambiguous', 'rejected', 'unresolved'].includes(result.status)) return;
   const settings = extension_settings[MODULE_NAME];
@@ -535,6 +552,13 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       entry.canonical_persona_id === result.canonicalPersonaId ||
       entry.name.toLowerCase() === result.canonicalName.toLowerCase()
     ));
+    const expectedCardName = (roster.characters ?? []).find((entry) => entry.id === (result.canonicalCardId ?? result.canonicalId))?.canonicalName;
+    if (result.reason?.toLowerCase().includes('exact canonical') && expectedCardName && normalizeIdentityName(entity.name) !== normalizeIdentityName(expectedCardName)) {
+      const reason = 'Exact card-name match rejected because the source name differs from the authoritative card name.';
+      report.skipped.push({ name: entity.name, source_record_id: entity.id, reason, reason_code: 'exact_card_name_assertion_failed' });
+      report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'ambiguous_review', reason });
+      continue;
+    }
     if (!target) {
       // Even an entity already named "Kyle Holland" must receive the stable
       // persona/card identity. Otherwise a later short alias cannot find it
@@ -591,7 +615,15 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       report.references_redirected++;
     }
     registry.splice(registry.indexOf(entity), 1);
-    report.merged.push({ name: entity.name, canonicalName: target.name, sourceId: entity.id, targetId: target.id, match: result.reason, authority_comparison: mergeSafety.authority_comparison, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
+    report.merged.push({
+      ...buildMergeDecision(entity, target, result, mergeSafety, 'merged', result.reason),
+      name: entity.name,
+      canonicalName: target.name,
+      sourceId: entity.id,
+      targetId: target.id,
+      match: result.reason,
+      reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge',
+    });
     if (result.synthetic_parenthetical) report.durable_entity_removed++;
     report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, canonicalName: target.name, terminal_outcome: 'merged', reason: result.reason });
     report.changed = true;
