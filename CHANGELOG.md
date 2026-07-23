@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Captured the active SillyTavern persona once at the beginning of Memorize
+  Chat and carried that immutable persona identity through extraction,
+  reconciliation, diagnostics, and final persistence. Persona aliases now use
+  stable persona IDs rather than synthetic character-card IDs.
+- Reconciled deterministic persona case, short-name, and historical aliases
+  across entity registries, Relationship History, Perspectives & Secrets,
+  profiles, State Ledger, scenes, and arcs. Ambiguous short names remain in
+  review instead of being merged unsafely.
+- Rebuilt Relationship History pair keys only after identity redirects exist,
+  merging duplicate directional records while retaining manual edits,
+  approvals, timestamps, descriptors, provenance, and migration metadata.
+- Removed deterministic generated parenthetical identity decorations when the
+  base entity is unambiguous, while preserving literal source names and
+  explicitly user-locked entries.
+- Corrected final-integrity duplicate detection, review-item deduplication,
+  stale-reference auditing, and quality-status evaluation so diagnostics no
+  longer report a clean result when a required identity invariant failed.
+- Added full persona-aware canonical links and immediate redirect repair to
+  Perspectives & Secrets and State Ledger records.
+- Prevented speculative or implied claims from being persisted as epistemic
+  `[knows]` facts; uncertain claims remain distinct from explicit knowledge.
+
+### Improved
+
+- Expanded arc, profile, session-repair, identity, integrity, and sanitized
+  provider diagnostics with terminal outcomes that reconcile against each
+  logical request or candidate.
+- Strengthened protected Session, Scene, Arc, Profile, and Perspectives &
+  Secrets defaults around canonical structured identities, citations,
+  explicit relationship facts, and anti-speculation rules.
+- Normalized Profile relationship terminology against higher-confidence
+  approved evidence, retained valid fields when another field is invalid, and
+  reported field-level validation outcomes.
+- Compacted Relationship History provenance into bounded representative ranges
+  while preserving exact latest/manual evidence and audit-only history.
+- Made final canonical reconciliation cooperative for large chats: record
+  rewrites, cross-store merges, structured-store reconciliation, and integrity
+  audits now process in bounded batches and yield safely without committing
+  partial state.
+- Eliminated a quadratic entity-observation deduplication scan, reduced
+  repeated live-context reads during reconciliation, and added developer-only
+  timing for reconciliation and larger registry/scene renders.
+- Rendered entity, scene, and arc lists off-DOM before one attachment to avoid
+  unnecessary repeated layout work in the Extensions panel.
+
+### Tests
+
+- Added and updated coverage for live persona snapshots, stable persona
+  identity links, alias ambiguity, canonical pair rebuilding, review and
+  identity diagnostics, session repair accounting, arc request telemetry,
+  profile validation, provenance compaction, and final reconciliation safety.
+- The complete suite currently passes: 223 automated tests and 48 regression
+  harness assertions.
+
 ## [0.8.17] - 2026-07-22
 
 ### Fixed

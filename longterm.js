@@ -394,8 +394,8 @@ export function getRelationshipHistoryPair(subject, target, roster = buildCanoni
   const pair = buildStableRelationshipPair(subject, target, roster);
   return {
     key: pair.key,
-    subject: { displayName: pair.subject.displayName, cardId: pair.subject.canonicalId, storageId: pair.subject.storageId },
-    target: { displayName: pair.target.displayName, cardId: pair.target.canonicalId, storageId: pair.target.storageId },
+    subject: { displayName: pair.subject.displayName, cardId: pair.subject.canonicalCardId, personaId: pair.subject.canonicalPersonaId, identityType: pair.subject.canonicalIdentityType, storageId: pair.subject.storageId },
+    target: { displayName: pair.target.displayName, cardId: pair.target.canonicalCardId, personaId: pair.target.canonicalPersonaId, identityType: pair.target.canonicalIdentityType, storageId: pair.target.storageId },
   };
 }
 
@@ -422,14 +422,34 @@ export function compactRelationshipProvenance(state = {}) {
   const supportingSourceIndices = compact(allSupportingIndices, 96, true);
   const historicalEvidenceCount = Number(state.historical_evidence_count ?? 0) + Math.max(0, allSupportingIndices.length - supportingSourceIndices.length);
   const latestUpdateIndices = compact(state.latest_update_indices ?? state.last_update_source_indices, 24, true);
+  const toRanges = (indices) => {
+    const sorted = [...new Set((indices ?? []).filter(Number.isInteger))].sort((a, b) => a - b);
+    const ranges = [];
+    for (const index of sorted) {
+      const last = ranges.at(-1);
+      if (last && index === last.end + 1) last.end = index;
+      else ranges.push({ start: index, end: index });
+    }
+    return ranges.map(({ start, end }) => start === end ? String(start) : `${start}-${end}`);
+  };
+  const representativeSupportIndices = compact(state.representative_support_indices ?? supportingSourceIndices, 24, true);
+  const audit = {
+    ...(state.provenance_audit ?? {}),
+    // Full provenance remains available for audit but is intentionally kept
+    // out of the prompt-facing relationship record.
+    full_supporting_indices: allSupportingIndices,
+    compacted_at: state.provenance_audit?.compacted_at ?? null,
+  };
   return {
     ...state,
     // New explicit fields are the compact relationship-audit contract. Keep
     // the legacy names synchronized for compatibility with existing records.
     supporting_source_indices: supportingSourceIndices,
-    supporting_source_ranges: compact(state.supporting_source_ranges ?? state.evidence_ranges, 48),
+    supporting_source_ranges: toRanges(supportingSourceIndices),
     latest_update_indices: latestUpdateIndices,
-    latest_update_range: compact(state.latest_update_range ?? latestUpdateIndices, 24, true),
+    latest_update_range: toRanges(latestUpdateIndices),
+    representative_support_indices: representativeSupportIndices,
+    representative_support_ranges: toRanges(representativeSupportIndices),
     historical_evidence_count: historicalEvidenceCount,
     historical_evidence_digest: historicalEvidenceCount
       ? `Omitted ${historicalEvidenceCount} older repeated evidence index${historicalEvidenceCount === 1 ? '' : 'es'}; representative recent evidence retained.`
@@ -443,6 +463,7 @@ export function compactRelationshipProvenance(state = {}) {
     provenance: compact(state.provenance, 48),
     source_chat_ids: compact(state.source_chat_ids, 24),
     migration_metadata: compact(state.migration_metadata, 24),
+    provenance_audit: audit,
   };
 }
 
@@ -479,6 +500,10 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
       target_name: pair.target.displayName,
       subject_canonical_card_id: pair.subject.cardId,
       target_canonical_card_id: pair.target.cardId,
+      subject_canonical_persona_id: pair.subject.personaId,
+      target_canonical_persona_id: pair.target.personaId,
+      subject_identity_type: pair.subject.identityType,
+      target_identity_type: pair.target.identityType,
       historical_display_names: mergeList(state.historical_display_names, historicalDisplayNames),
     };
     const prior = reconciled[pair.key];

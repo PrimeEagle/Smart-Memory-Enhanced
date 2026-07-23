@@ -22,6 +22,9 @@ import {
   reconcileCanonicalLedger,
   remapEntityIdInMemories,
   resolveEntityCandidate,
+  snapshotCanonicalRuntimeContext,
+  setCanonicalRuntimeContextSnapshot,
+  clearCanonicalRuntimeContextSnapshot,
 } from '../canonical-entities.js';
 
 const roster = buildCanonicalCharacterRoster({
@@ -107,6 +110,40 @@ test('canonical roster rewrites a former persona label before prompt constructio
   const resolution = resolveCanonicalCharacterName('Adam Lawson', personaRoster);
   assert.equal(resolution.canonicalId, 'persona:kyle holland');
   assert.equal(resolution.reason, 'Historical active persona name.');
+});
+
+test('runtime persona snapshot survives imported placeholder headers and carries a persona identity', () => {
+  const snapshot = snapshotCanonicalRuntimeContext({
+    name2: 'Kyle Holland',
+    persona: { id: 'persona-kyle', name: 'Kyle Holland', aliases: ['Kyle'], previous_names: ['Adam Lawson'] },
+    chat: [{ is_user: true, name: 'unused', mes: 'Imported header placeholder' }],
+  });
+  setCanonicalRuntimeContextSnapshot(snapshot);
+  try {
+    const runtimeRoster = buildCanonicalCharacterRoster({ name2: 'unused', chat: [], characters: [] });
+    const kyle = resolveCanonicalCharacterName('kyle', runtimeRoster);
+    const adam = resolveCanonicalCharacterName('Adam Lawson', runtimeRoster);
+    assert.equal(runtimeRoster.characters[0].canonical_persona_id, 'persona-kyle');
+    assert.equal(kyle.canonicalName, 'Kyle Holland');
+    assert.equal(kyle.canonicalIdentityType, 'persona');
+    assert.equal(kyle.canonicalCardId, null);
+    assert.equal(kyle.canonicalPersonaId, 'persona-kyle');
+    assert.equal(adam.canonicalName, 'Kyle Holland');
+  } finally {
+    clearCanonicalRuntimeContextSnapshot();
+  }
+});
+
+test('stable relationship keys distinguish persona identities from card identities', () => {
+  const personaRoster = buildCanonicalCharacterRoster({
+    name2: 'Kyle Holland',
+    persona: { id: 'persona-kyle', name: 'Kyle Holland' },
+    characters: [{ id: 'alissa-card', name: 'Alissa Kawaguchi' }],
+  });
+  const pair = buildStableRelationshipPair('Kyle', 'Alissa Kawaguchi', personaRoster);
+  assert.equal(pair.key, 'persona:persona-kyle→card:alissa-card');
+  assert.equal(pair.subject.canonicalPersonaId, 'persona-kyle');
+  assert.equal(pair.target.canonicalCardId, 'alissa-card');
 });
 
 test('identity decision metadata deduplicates while retaining evidence', () => {
@@ -214,13 +251,16 @@ test('integration: ledger variants merge without overwriting canonical fields', 
     'paul kawaguchi|character': { mood: 'worried' },
     'paul schmidt|character': { mood: 'calm', _canonical_card_id: 'stale-card-id' },
   }, roster);
-  assert.deepEqual(ledger['paul schmidt|character'], {
+  assert.deepEqual(ledger['card:paul|character'], {
     mood: 'calm',
     location: 'home',
     _name: 'Paul Schmidt',
     _canonical_card_id: 'paul',
+    _canonical_identity_type: 'character_card',
+    _canonical_persona_id: null,
   });
   assert.equal(ledger['paul|character'], undefined);
+  assert.equal(ledger['paul schmidt|character'], undefined);
   assert.deepEqual(ledger['paul kawaguchi|character'], { mood: 'worried' });
   // Reconciliation may run at the end of every catch-up pass.  Once the
   // deterministic repair has completed, running it again must be a no-op so

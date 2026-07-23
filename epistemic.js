@@ -205,6 +205,20 @@ export function reconcileEpistemicCanonicalNames(characterName) {
   const entries = loadEpistemicKnowledge(characterName);
   const roster = buildCanonicalCharacterRoster(getContext());
   let changed = false;
+  const applyIdentityLink = (entry, prefix, resolution) => {
+    const next = {
+      [`${prefix}_identity_type`]: resolution.canonicalIdentityType ?? 'grounded_npc',
+      [`${prefix}_canonical_card_id`]: resolution.canonicalCardId ?? null,
+      [`${prefix}_canonical_persona_id`]: resolution.canonicalPersonaId ?? null,
+      [`${prefix}_entity_id`]: resolution.canonicalId ?? null,
+      [`${prefix}_canonical_name`]: resolution.canonicalName ?? null,
+    };
+    for (const [key, value] of Object.entries(next)) {
+      if (entry[key] === value) continue;
+      entry[key] = value;
+      changed = true;
+    }
+  };
   for (const entry of entries) {
     const subject = resolveCanonicalCharacterName(entry.subject, roster);
     const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
@@ -214,10 +228,7 @@ export function reconcileEpistemicCanonicalNames(characterName) {
         entry.subject = subject.canonicalName;
         changed = true;
       }
-      if (entry.subject_canonical_card_id !== subject.canonicalId) {
-        entry.subject_canonical_card_id = subject.canonicalId ?? null;
-        changed = true;
-      }
+      applyIdentityLink(entry, 'subject', subject);
     }
     if (target?.status === 'resolved' && target.canonicalName) {
       if (entry.target !== target.canonicalName) {
@@ -225,10 +236,7 @@ export function reconcileEpistemicCanonicalNames(characterName) {
         entry.target = target.canonicalName;
         changed = true;
       }
-      if (entry.target_canonical_card_id !== target.canonicalId) {
-        entry.target_canonical_card_id = target.canonicalId ?? null;
-        changed = true;
-      }
+      applyIdentityLink(entry, 'target', target);
     }
   }
   if (changed) saveEpistemicKnowledge(characterName, entries);
@@ -244,9 +252,6 @@ export function remapEpistemicEntity(characterName, sourceName, targetName) {
   const canonicalTarget = resolvedTarget.status === 'resolved' && resolvedTarget.canonicalName
     ? resolvedTarget.canonicalName
     : targetName;
-  const canonicalTargetId = resolvedTarget.status === 'resolved'
-    ? resolvedTarget.canonicalId ?? null
-    : null;
   let changed = false;
   for (const entry of entries) {
     if (String(entry.subject ?? '').trim().toLowerCase() === source) {
@@ -254,7 +259,11 @@ export function remapEpistemicEntity(characterName, sourceName, targetName) {
         entry.subject_display_name_at_time ??= entry.subject;
       }
       entry.subject = canonicalTarget;
-      entry.subject_canonical_card_id = canonicalTargetId;
+      entry.subject_identity_type = resolvedTarget.canonicalIdentityType ?? 'grounded_npc';
+      entry.subject_canonical_card_id = resolvedTarget.canonicalCardId ?? null;
+      entry.subject_canonical_persona_id = resolvedTarget.canonicalPersonaId ?? null;
+      entry.subject_entity_id = resolvedTarget.canonicalId ?? null;
+      entry.subject_canonical_name = canonicalTarget;
       changed = true;
     }
     if (String(entry.target ?? '').trim().toLowerCase() === source) {
@@ -262,7 +271,11 @@ export function remapEpistemicEntity(characterName, sourceName, targetName) {
         entry.target_display_name_at_time ??= entry.target;
       }
       entry.target = canonicalTarget;
-      entry.target_canonical_card_id = canonicalTargetId;
+      entry.target_identity_type = resolvedTarget.canonicalIdentityType ?? 'grounded_npc';
+      entry.target_canonical_card_id = resolvedTarget.canonicalCardId ?? null;
+      entry.target_canonical_persona_id = resolvedTarget.canonicalPersonaId ?? null;
+      entry.target_entity_id = resolvedTarget.canonicalId ?? null;
+      entry.target_canonical_name = canonicalTarget;
       changed = true;
     }
   }
@@ -404,9 +417,16 @@ export async function extractEpistemicKnowledge(
     const acceptedBySubject = new Map();
     const acceptedBySubjectAndType = new Map();
     const typeCaps = { knows: 2, unaware: 2, suspects: 3, believes: 3, hiding: 3 };
-    const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
+const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
       /\b(?:walked|looked|smiled|entered|left|sat|stood|held|moved|went|spoke|said)\b/i.test(entry.content) &&
       !/\b(?:secret|lie|hidden|identity|plan|plot|promise|threat|revealed|discovered|learned|overheard|witnessed|saw)\b/i.test(entry.content);
+    // A knowledge record is injected as durable fact.  Hedged language is
+    // evidence that the model has converted implication into certainty, so do
+    // not silently promote it to [knows].  It may be represented as a model
+    // generated [suspects] or [believes] record only when the model supplies
+    // that explicit type on a later pass.
+    const hasUnsupportedKnowledgeQualifier = (entry) => entry.type === 'knows' &&
+      /\b(?:implied|probably|likely|apparently|seems?|inferred|assumed)\b/i.test(entry.content);
     const parsed = parseEpistemicResponse(response).flatMap((entry) => {
       const subject = resolveCanonicalCharacterName(entry.subject, roster);
       const target = entry.target ? resolveCanonicalCharacterName(entry.target, roster) : null;
@@ -428,6 +448,10 @@ export async function extractEpistemicKnowledge(
         smLog(`[Smart Memory Enhanced] Epistemic entry skipped: routine witnessed event for ${canonicalSubject}.`);
         return [];
       }
+      if (hasUnsupportedKnowledgeQualifier(entry)) {
+        smLog(`[Smart Memory Enhanced] Epistemic entry skipped: [knows] contains an unsupported inference for ${canonicalSubject}.`);
+        return [];
+      }
       const typeKey = `${canonicalSubject}|${entry.type}`;
       const typeCount = acceptedBySubjectAndType.get(typeKey) ?? 0;
       if (typeCount >= (typeCaps[entry.type] ?? 2)) {
@@ -440,8 +464,16 @@ export async function extractEpistemicKnowledge(
         ...entry,
         subject: canonicalSubject,
         target: target?.canonicalName ?? entry.target,
-        subject_canonical_card_id: subject.canonicalId ?? null,
-        target_canonical_card_id: target?.canonicalId ?? null,
+        subject_identity_type: subject.canonicalIdentityType ?? 'grounded_npc',
+        subject_canonical_card_id: subject.canonicalCardId ?? null,
+        subject_canonical_persona_id: subject.canonicalPersonaId ?? null,
+        subject_entity_id: subject.canonicalId ?? null,
+        subject_canonical_name: canonicalSubject,
+        target_identity_type: target?.canonicalIdentityType ?? (entry.target ? 'grounded_npc' : null),
+        target_canonical_card_id: target?.canonicalCardId ?? null,
+        target_canonical_persona_id: target?.canonicalPersonaId ?? null,
+        target_entity_id: target?.canonicalId ?? null,
+        target_canonical_name: target?.canonicalName ?? entry.target ?? null,
         subject_display_name_at_time: entry.subject,
         target_display_name_at_time: entry.target ?? null,
       }];

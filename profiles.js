@@ -247,9 +247,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   if (!historyPairs.length && !cardPairs.length && !groundedPairs.length) return { profiles: { ...profiles, relationship_matrix: '' }, rejected: String(profiles.relationship_matrix ?? '').trim() ? String(profiles.relationship_matrix).split('\n').filter(Boolean) : [] };
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
-  profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').filter((line) => {
+  let normalized = 0;
+  profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)\s*\([^)]+\)\s*:\s*(.+)$/);
-    if (!match) return true;
+    if (!match) return line;
     const entity = match[1].trim().toLowerCase();
     const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
     const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
@@ -257,11 +258,19 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const pair = cardPair ?? historyPair ?? groundedPair;
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
-    if (pair && exactStatus) return true;
+    if (pair && exactStatus) return line;
+    // “Partner” is weaker than an established spouse status. Normalize the
+    // generated synonym only when the canonical relationship evidence gives a
+    // precise current descriptor; never infer a stronger relationship.
+    const precise = pair?.descriptors.find((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor));
+    if (precise && /\bpartner\b/i.test(status)) {
+      normalized++;
+      return line.replace(/\bpartner\b/i, precise);
+    }
     rejected.push(line);
-    return false;
-  }).join('\n');
-  return { profiles, rejected };
+    return '';
+  }).filter(Boolean).join('\n');
+  return { profiles, rejected, normalized };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
@@ -458,6 +467,15 @@ export async function generateProfiles(characterName, abortCheck = null, options
       stale_field_rejections: temporalCheck.dropped.map((entry) => entry.field),
       speculative_field_rejections: speculationCheck.dropped.map((entry) => entry.field),
       relationship_field_rejections: relationshipCheck.rejected.length,
+      field_validation: {
+        accepted_exact: Math.max(0, profileFields.length - fieldGrounding.rejected.length - temporalCheck.dropped.length - speculationCheck.dropped.length - relationshipCheck.rejected.length),
+        accepted_normalized: relationshipCheck.normalized ?? 0,
+        preserved_prior: preservedPriorFields.length,
+        dropped_conflict: relationshipCheck.rejected.length,
+        dropped_speculative: speculationCheck.dropped.length,
+        dropped_unsupported: fieldGrounding.rejected.length,
+        dropped_malformed: 0,
+      },
     };
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
     if (!isGeneratedRecordApproved(profiles)) {

@@ -167,6 +167,7 @@ async function runStagedChatCleanup(context, mutate) {
  * final phase back rather than committing a partly reconciled graph.
  */
 async function runFinalIntegrityReconciliation(characterName) {
+  const startedAt = performance.now();
   const reconciliation = await reconcileCanonicalEntities(characterName);
   const summaries = loadArcSummaries();
   let quarantinedSummaries = 0;
@@ -181,10 +182,19 @@ async function runFinalIntegrityReconciliation(characterName) {
     quarantinedSummaries++;
   }
   if (quarantinedSummaries) await saveArcSummaries(summaries);
-  return {
+  const result = {
     ...reconciliation,
     quarantined_arc_summaries: quarantinedSummaries,
+    duration_ms: Math.round(performance.now() - startedAt),
   };
+  if (extension_settings[MODULE_NAME]?.verbose_logging) {
+    console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
+      duration_ms: result.duration_ms,
+      relationship_pairs_merged: result.relationship_pairs_merged ?? 0,
+      cross_store_entity_merges: result.cross_store_entity_merges ?? 0,
+    });
+  }
+  return result;
 }
 import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
@@ -196,6 +206,11 @@ import {
 } from './embeddings.js';
 import { clearCanon, generateCanon, injectCanon, saveCanon } from './canon.js';
 import { clearSessionEntityRegistry } from './graph-migration.js';
+import {
+  clearCanonicalRuntimeContextSnapshot,
+  setCanonicalRuntimeContextSnapshot,
+  snapshotCanonicalRuntimeContext,
+} from './canonical-entities.js';
 import {
   clearStateLedger,
   injectStateLedger,
@@ -2880,6 +2895,11 @@ export function bindSettingsUI(ctrl) {
     // extraction runs for every character, not just the one in the selector.
     // Solo chats collapse to a single-element array using the active character.
     const catchUpContext = getContext();
+    // Capture the *live* persona before any confirmation dialog or provider
+    // call. Imported JSONL headers can contain placeholder persona fields, so
+    // final reconciliation must never rediscover this from serialized chat
+    // metadata after a long run.
+    const canonicalRuntimeContext = snapshotCanonicalRuntimeContext(catchUpContext);
     const catchUpCharacterNames = (() => {
       if (!catchUpContext.groupId) return [characterName];
       const group = catchUpContext.groups?.find((g) => g.id === catchUpContext.groupId);
@@ -2912,6 +2932,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.extractionRunning = true;
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
+    setCanonicalRuntimeContextSnapshot(canonicalRuntimeContext);
     let catchUpErrorCount = 0;
     const runResult = {
       totalChunks: 0,
@@ -2927,7 +2948,7 @@ export function bindSettingsUI(ctrl) {
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
-      arcExtraction: { attempted: 0, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, rejectedCompletedEvents: 0, rejectedBackgroundFacts: 0, rejectedRelationshipStates: 0, rejectedSceneDetails: 0, rejectedMalformed: 0, participantRepairs: 0, participantReviewItems: 0, inputTokenBudget: 0, inputTokenEstimate: 0, inputMessages: 0, omittedMessages: 0, truncatedMessage: false, terminalOutcome: null },
+      arcExtraction: { attempted: 0, request_completed: 0, provider_error: 0, http_status: null, error_class: null, non_retryable: false, returned_none: 0, malformed_output: 0, parsed_candidates: 0, accepted_open_threads: 0, rejected_completed_events: 0, rejected_background_facts: 0, rejected_relationship_states: 0, rejected_scene_details: 0, rejected_malformed: 0, participant_repairs: 0, participant_review_items: 0, terminal_reconciled: false, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, rejectedCompletedEvents: 0, rejectedBackgroundFacts: 0, rejectedRelationshipStates: 0, rejectedSceneDetails: 0, rejectedMalformed: 0, participantRepairs: 0, participantReviewItems: 0, inputTokenBudget: 0, inputTokenEstimate: 0, inputMessages: 0, omittedMessages: 0, truncatedMessage: false, terminalOutcome: null },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: {
         emitted: 0,
@@ -2958,8 +2979,9 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_unsupported: 0, dropped_malformed: 0 }, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       finalReconciliation: { persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
+      runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
     };
     let currentChunkFailed = false;
@@ -3363,6 +3385,7 @@ export function bindSettingsUI(ctrl) {
       if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
         for (const name of catchUpCharacterNames) {
           setStatusMessage(`Generating character & world profiles for ${name}...`);
+          runResult.profiles.profiles_attempted++;
           const profiles = await generateProfiles(name, null, { throwOnFailure: true }).catch((err) => {
             recordCatchUpError('profile generation error', err);
             return null;
@@ -3374,12 +3397,24 @@ export function bindSettingsUI(ctrl) {
             updateProfilesUI(profiles);
           }
           if (profiles) {
+            runResult.profiles.profiles_parsed++;
+            runResult.profiles.profiles_saved++;
             runResult.profiles.sections_parsed++;
+            for (const section of ['character_state', 'world_state', 'relationship_matrix']) {
+              if (profiles[section]) runResult.profiles.sections_detected[section]++;
+            }
             runResult.profiles.stale_fields_dropped += profiles.stale_field_rejections?.length ?? 0;
             runResult.profiles.speculative_fields_dropped += profiles.speculative_field_rejections?.length ?? 0;
             runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
             runResult.profiles.prior_fields_preserved += profiles.preserved_prior_fields?.length ?? 0;
             runResult.profiles.relationship_conflicts_dropped += profiles.relationship_field_rejections ?? 0;
+            runResult.profiles.fields.preserved_prior += profiles.preserved_prior_fields?.length ?? 0;
+            runResult.profiles.fields.dropped_conflict += profiles.relationship_field_rejections ?? 0;
+            runResult.profiles.fields.dropped_speculative += profiles.speculative_field_rejections?.length ?? 0;
+            runResult.profiles.fields.dropped_unsupported += profiles.field_grounding_rejections?.length ?? 0;
+            for (const [field, value] of Object.entries(profiles.field_validation ?? {})) {
+              runResult.profiles.fields[field] = (runResult.profiles.fields[field] ?? 0) + Number(value ?? 0);
+            }
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
@@ -3444,22 +3479,43 @@ export function bindSettingsUI(ctrl) {
         unmatched: reconciliation.unmatched.length,
         quarantined_arc_summaries: reconciliation.quarantined_arc_summaries,
       };
+      const finalTerminalRecords = [...(reconciliation.identity_outcomes ?? [])].filter(Boolean).reduce((records, outcome) => {
+        const key = [
+          String(outcome.candidate ?? outcome.name ?? '').trim().toLowerCase(),
+          String(outcome.source_store ?? '').trim().toLowerCase(),
+          String(outcome.source_record_id ?? '').trim(),
+          String(outcome.terminal_outcome ?? '').trim().toLowerCase(),
+          String(outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? '').trim().toLowerCase(),
+        ].join('|');
+        const prior = records.get(key);
+        if (!prior) records.set(key, { ...outcome, source_record_ids: [...new Set((outcome.source_record_ids ?? []).filter(Boolean))] });
+        else prior.source_record_ids = [...new Set([...(prior.source_record_ids ?? []), ...(outcome.source_record_ids ?? [])].filter(Boolean))];
+        return records;
+      }, new Map());
       runResult.identityResolutionDetails = {
         matched: reconciliation.matched.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'matched', target: canonicalName, reason_code })),
         merged: reconciliation.merged.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'merged', target: canonicalName, reason_code })),
         needs_review: reconciliation.skipped.map(({ name, reason, reason_code }) => ({ candidate: name, decision: 'needs_review', reason, reason_code })),
         unmatched: reconciliation.unmatched.map(({ name, reason, reason_code }) => ({ candidate: name, decision: 'unmatched', reason, reason_code })),
-        terminal_outcomes: reconciliation.identity_outcomes ?? [],
+        // Initial extraction decisions may be useful for debugging, but only
+        // these final terminal records determine completion quality.
+        extraction_stage: [],
+        final_reconciliation_stage: reconciliation.identity_outcomes ?? [],
+        final_terminal_records: [...finalTerminalRecords.values()],
+        terminal_outcomes: [...finalTerminalRecords.values()],
       };
       runResult.finalReconciliation.persona_aliases_merged = reconciliation.merged.filter((entry) => entry.reason_code === 'unique_active_persona_first_name').length;
       runResult.finalReconciliation.card_local_entities_merged = reconciliation.card_local_reports?.reduce((count, report) => count + report.merged.length, 0) ?? 0;
       runResult.finalReconciliation.relationship_pairs_merged = (reconciliation.relationship_pairs_merged ?? 0) + reconciliation.merged.filter((entry) => entry.reason_code === 'canonical_duplicate_merge').length;
-      runResult.finalReconciliation.synthetic_parentheticals_removed = reconciliation.matched.filter((entry) => /synthetic|parenthetical/i.test(entry.match ?? '')).length + (reconciliation.synthetic_review_names_removed ?? 0);
+      // Count only records actually removed from durable storage; detecting or
+      // renaming a review label is not equivalent to completing cleanup.
+      runResult.finalReconciliation.synthetic_parentheticals_removed = reconciliation.durable_entities_removed ?? 0;
       runResult.finalReconciliation.identity_decision_duplicates_removed = reconciliation.identity_decision_duplicates_removed ?? 0;
       runResult.finalReconciliation.persona_roster_size = reconciliation.persona_roster_size ?? 0;
       runResult.finalReconciliation.participant_lists_rewritten = reconciliation.participant_lists_rewritten ?? 0;
       runResult.finalReconciliation.resolved_review_items_removed = reconciliation.resolved_review_items_removed ?? 0;
       runResult.finalReconciliation.integrity_audit = reconciliation.integrity_audit ?? null;
+      runResult.finalReconciliation.duration_ms = reconciliation.duration_ms ?? null;
       runResult.finalReconciliation.stale_entity_references = reconciliation.integrity_audit?.stale_entity_references?.length ?? 0;
       runResult.finalReconciliation.personaRosterSize = runResult.finalReconciliation.persona_roster_size;
       runResult.finalReconciliation.personaAliasesMerged = runResult.finalReconciliation.persona_aliases_merged;
@@ -3525,6 +3581,31 @@ export function bindSettingsUI(ctrl) {
         tier: 'identity',
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
       });
+      const repairs = runResult.sessionExtraction;
+      const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
+      repairs.repairTerminalReconciled = repairTerminalTotal === (repairs.repairAttempts ?? 0) && (repairs.repairAttempts ?? 0) <= (repairs.repairEligible ?? 0);
+      if (!repairs.repairTerminalReconciled) qualityReasons.push({
+        code: 'session_citation_repair_counters_unreconciled',
+        tier: 'session',
+        message: `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
+      });
+      const requiredIdentityInvariants = [
+        ['active_persona_present', runResult.runtimeContext?.active_persona?.canonical_name && runResult.finalReconciliation.persona_roster_size > 0, 'The active live persona was not available to final reconciliation.'],
+        ['deterministic_persona_aliases_merged', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.skipped ?? []).some((entry) => /persona|Kyle/i.test(`${entry.name} ${entry.reason}`)), 'A deterministic active-persona alias remains unresolved.'],
+        ['no_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
+        ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
+        ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
+        ['identity_terminal_totals_reconcile', (reconciliation.identity_outcomes ?? []).length === [...finalTerminalRecords.values()].length, 'Final identity terminal records were duplicated or did not reconcile.'],
+        ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
+        ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
+        ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
+        ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
+        ['no_stale_entity_references', !(reconciliation.integrity_audit?.stale_entity_references?.length), 'Structured records retain stale entity references.'],
+        ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
+      ];
+      for (const [code, passed, message] of requiredIdentityInvariants) {
+        if (!passed) qualityReasons.push({ code, tier: 'identity', message });
+      }
       runResult.quality = { status: qualityReasons.length ? 'degraded' : 'clean', reasons: qualityReasons };
       await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
       await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
@@ -3564,6 +3645,7 @@ export function bindSettingsUI(ctrl) {
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,
+        runtime_context: runResult.runtimeContext,
         quality: runResult.quality,
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
@@ -3635,6 +3717,7 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
+      clearCanonicalRuntimeContextSnapshot();
       unsubscribeRetry();
       $('#sme_cancel_catch_up').hide();
       $('#sme_catch_up').show();

@@ -3,6 +3,54 @@
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const words = (value) => normalize(value).split(' ').filter(Boolean);
 
+// Catch-up work can run for hours.  SillyTavern's serialized chat header is
+// not authoritative for a persona (and imported chats commonly contain
+// placeholders), so retain the live persona selected when the run began.
+// This is deliberately module-scoped rather than written to chat metadata:
+// it is transient runtime context, not a generated memory fact.
+let activeRuntimePersonaSnapshot = null;
+
+export function snapshotCanonicalRuntimeContext(context = {}) {
+  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && String(message?.name ?? '').trim())?.name;
+  const personaName = String(context?.persona?.name ?? context?.userName ?? context?.name2 ?? chatPersonaName ?? '').trim();
+  const personaRecord = context?.persona
+    ?? (Array.isArray(context?.personas) ? context.personas.find((entry) => normalize(entry?.name) === normalize(personaName)) : null)
+    ?? {};
+  const stablePersonaId = String(personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? context?.user_avatar ?? normalize(personaName)).trim();
+  const aliases = [
+    ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
+    personaRecord?.alias,
+    words(personaName)[0],
+  ].map((value) => String(value ?? '').trim()).filter(Boolean);
+  const historicalAliases = [
+    ...(Array.isArray(personaRecord?.previous_names) ? personaRecord.previous_names : []),
+    ...(Array.isArray(personaRecord?.historical_aliases) ? personaRecord.historical_aliases : []),
+  ].map((value) => String(value ?? '').trim()).filter(Boolean);
+  return Object.freeze({
+    active_persona: Object.freeze({
+      canonical_name: personaName,
+      stable_persona_id: stablePersonaId || null,
+      avatar_or_persona_key: String(personaRecord?.avatar ?? context?.user_avatar ?? '').trim() || null,
+      active_display_name: personaName,
+      approved_aliases: Object.freeze([...new Set(aliases)]),
+      historical_aliases: Object.freeze([...new Set(historicalAliases)]),
+      source: 'live_runtime',
+    }),
+  });
+}
+
+export function setCanonicalRuntimeContextSnapshot(snapshot) {
+  activeRuntimePersonaSnapshot = snapshot?.active_persona?.canonical_name ? snapshot : null;
+}
+
+export function clearCanonicalRuntimeContextSnapshot() {
+  activeRuntimePersonaSnapshot = null;
+}
+
+export function getCanonicalRuntimeContextSnapshot() {
+  return activeRuntimePersonaSnapshot;
+}
+
 /** Normalizes supported roster shapes before identity helpers inspect them. */
 export function getCanonicalRosterPeople(roster) {
   if (Array.isArray(roster)) return roster;
@@ -79,13 +127,16 @@ export function buildCanonicalRoster(context, scope = {}) {
   // SillyTavern's name1 is normally the active character while name2 is the
   // user/persona. Prefer explicit persona state, userName/name2, and actual
   // user messages before using name1 as a legacy fallback.
-  const personaName = String(scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.persona?.name ?? context?.userName ?? context?.name2 ?? chatPersonaName ?? context?.name1 ?? '').trim();
+  const runtimePersona = scope.runtimeSnapshot?.active_persona ?? activeRuntimePersonaSnapshot?.active_persona ?? null;
+  const personaName = String(runtimePersona?.canonical_name ?? scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.persona?.name ?? context?.userName ?? context?.name2 ?? chatPersonaName ?? context?.name1 ?? '').trim();
   const personaRecord = scope.persona ?? scope.activePersona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
-  const personaId = personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
+  const personaId = runtimePersona?.stable_persona_id ?? personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
   const personaAliases = [
     ...(Array.isArray(scope.personaAliases) ? scope.personaAliases : []),
     ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
     ...(Array.isArray(personaRecord?.previous_names) ? personaRecord.previous_names : []),
+    ...(runtimePersona?.approved_aliases ?? []),
+    ...(runtimePersona?.historical_aliases ?? []),
     personaRecord?.alias,
     words(personaName)[0],
   ].map((alias) => String(alias ?? '').trim()).filter(Boolean);
@@ -110,6 +161,9 @@ export function buildCanonicalRoster(context, scope = {}) {
       canonical_id: `persona:${personaId}`,
       canonical_name: personaName,
       entity_type: 'character',
+      canonical_identity_type: 'persona',
+      canonical_persona_id: String(personaId),
+      canonical_card_id: null,
       aliases: [...new Set(personaAliases)],
       descriptionExcerpt: '',
       source: 'user-persona',
@@ -198,7 +252,18 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
       : 'Unique first-name match.');
   }
   const existing = existingEntities.find((entry) => normalize(entry.name) === candidateNorm || (entry.aliases ?? []).some((alias) => normalize(alias) === candidateNorm));
-  if (existing) return { status: 'resolved', candidateName: candidate, canonicalName: existing.name, canonicalId: existing.canonical_card_id ?? null, reason: 'Existing approved entity alias.', shouldCreateEntity: false, shouldAddAlias: false };
+  if (existing) return {
+    status: 'resolved',
+    candidateName: candidate,
+    canonicalName: existing.name,
+    canonicalId: existing.id ?? existing.canonical_card_id ?? null,
+    canonicalIdentityType: existing.canonical_identity_type ?? (existing.canonical_persona_id ? 'persona' : existing.canonical_card_id ? 'character_card' : 'grounded_npc'),
+    canonicalCardId: existing.canonical_card_id ?? null,
+    canonicalPersonaId: existing.canonical_persona_id ?? null,
+    reason: 'Existing approved entity alias.',
+    shouldCreateEntity: false,
+    shouldAddAlias: false,
+  };
   return { status: 'unresolved', candidateName: candidate, reason: 'Not represented by a relevant character card.', shouldCreateEntity: true, shouldAddAlias: false };
 }
 
@@ -213,6 +278,7 @@ export function resolveEntityCandidate(candidate, canonicalRoster, registries = 
     ? registries.flatMap((registry) => Array.isArray(registry) ? registry : [registry])
     : [];
   const resolution = resolveCanonicalCharacterName(name, canonicalRoster, entries);
+  const synthetic = normalizeSyntheticIdentityQualifier(name, [...getCanonicalRosterPeople(canonicalRoster), ...entries]);
   const sourceRecordIds = [...new Set((evidence.source_record_ids ?? evidence.sourceRecordIds ?? []).filter(Boolean))];
   const sourceMessageIndices = [...new Set((evidence.source_message_indices ?? evidence.sourceMessageIndices ?? []).filter(Number.isInteger))];
   const explicitlyGrounded = evidence.grounding_status === 'direct' || sourceMessageIndices.length > 0;
@@ -220,6 +286,7 @@ export function resolveEntityCandidate(candidate, canonicalRoster, registries = 
   return {
     ...resolution,
     candidateName: String(name ?? '').trim(),
+    synthetic_parenthetical: synthetic.qualifier_removed ? { base_name: synthetic.normalized_name, qualifier_type: synthetic.qualifier_type } : null,
     promotion: resolution.shouldCreateEntity && (explicitlyGrounded || repeated || evidence.manual === true)
       ? {
         allowed: true,
@@ -398,10 +465,17 @@ export function buildStableEntityReference(name, roster) {
   const result = resolveCanonicalCharacterName(name, roster);
   const accepted = result.status === 'resolved';
   const displayName = accepted ? result.canonicalName : String(name).trim();
+  const identityType = accepted ? (result.canonicalIdentityType ?? 'character_card') : null;
+  const canonicalId = accepted ? (result.canonicalId ?? null) : null;
   return {
     displayName,
-    canonicalId: accepted ? (result.canonicalId ?? null) : null,
-    storageId: accepted && result.canonicalId ? `card:${result.canonicalId}` : `name:${normalize(displayName)}`,
+    canonicalId,
+    canonicalIdentityType: identityType,
+    canonicalCardId: accepted ? (result.canonicalCardId ?? null) : null,
+    canonicalPersonaId: accepted ? (result.canonicalPersonaId ?? null) : null,
+    storageId: accepted && canonicalId
+      ? `${identityType === 'persona' ? 'persona' : 'card'}:${identityType === 'persona' ? (result.canonicalPersonaId ?? String(canonicalId).replace(/^persona:/, '')) : canonicalId}`
+      : `name:${normalize(displayName)}`,
   };
 }
 
@@ -450,7 +524,7 @@ export function reconcileCanonicalLedger(ledger, roster) {
     const type = key.slice(separator + 1);
     const resolved = resolveCanonicalCharacterName(name, roster);
     if (!resolved.canonicalName || resolved.status !== 'resolved') continue;
-    const canonicalKey = `${normalize(resolved.canonicalName)}|${type}`;
+    const canonicalKey = buildStableLedgerKey(resolved.canonicalName, type, roster);
     // A stable ledger key alone is not sufficient: an old card identifier can
     // survive an earlier rename or merge and later be injected as a dangling
     // structured reference.  The resolver gives us the safe, authoritative
@@ -459,7 +533,9 @@ export function reconcileCanonicalLedger(ledger, roster) {
     const canonicalFields = {
       ...fields,
       _name: resolved.canonicalName,
-      _canonical_card_id: resolved.canonicalId,
+      _canonical_identity_type: resolved.canonicalIdentityType ?? 'character_card',
+      _canonical_card_id: resolved.canonicalCardId ?? resolved.canonicalId,
+      _canonical_persona_id: resolved.canonicalPersonaId ?? null,
     };
     if (canonicalKey === key) {
       // Earlier alias rows may already have contributed non-conflicting
@@ -473,8 +549,8 @@ export function reconcileCanonicalLedger(ledger, roster) {
       continue;
     }
     result[canonicalKey] = {
-      ...canonicalFields,
       ...(result[canonicalKey] ?? {}),
+      ...canonicalFields,
       _name: resolved.canonicalName,
       _canonical_card_id: resolved.canonicalId,
     };
@@ -484,7 +560,19 @@ export function reconcileCanonicalLedger(ledger, roster) {
 }
 
 function resolved(candidateName, entry, reason) {
-  return { status: 'resolved', candidateName, canonicalName: entry.canonicalName, canonicalId: entry.id, reason, shouldCreateEntity: false, shouldAddAlias: normalize(candidateName) === normalize(entry.canonicalName) || entry.aliases.some((alias) => normalize(alias) === normalize(candidateName)) };
+  const isPersona = entry.source === 'user-persona' || entry.source_type === 'persona';
+  return {
+    status: 'resolved',
+    candidateName,
+    canonicalName: entry.canonicalName,
+    canonicalId: entry.id,
+    canonicalIdentityType: isPersona ? 'persona' : 'character_card',
+    canonicalPersonaId: isPersona ? (entry.canonical_persona_id ?? String(entry.id).replace(/^persona:/, '')) : null,
+    canonicalCardId: isPersona ? null : entry.id,
+    reason,
+    shouldCreateEntity: false,
+    shouldAddAlias: normalize(candidateName) === normalize(entry.canonicalName) || entry.aliases.some((alias) => normalize(alias) === normalize(candidateName)),
+  };
 }
 
 function ambiguous(candidateName, entries, reason) {

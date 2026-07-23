@@ -157,13 +157,29 @@ test('protected prompts prohibit aliases, synthetic identities, and premature ar
   const prompts = read('prompts.js');
   assert.match(prompts, /partial progress, emotional reaction, or new information alone never resolves an arc/);
   assert.match(prompts, /old persona names, inferred surnames, collective labels, or parenthetical identity labels/);
-  assert.match(prompts, /historical source-used name may remain in the memory text only when grounded/);
+  assert.match(prompts, /Historical source-used names may remain in memory prose only when explicitly present/);
   assert.match(prompts, /structured participant list MUST use canonical roster identities/);
   assert.match(prompts, /Completed confessions, completed decisions, static relationship states/);
   assert.match(prompts, /short-name and full-name variant as separate people/);
   assert.match(prompts, /parenthetical disambiguated names/);
   assert.match(prompts, /export function buildSceneSummaryPrompt/);
   assert.match(read('scenes.js'), /buildSceneSummaryPrompt\(sceneText\.slice/);
+});
+
+test('session and scene prompts preserve canonical structured identities', () => {
+  const prompts = read('prompts.js');
+  assert.match(prompts, /Do not create separate people from case variants, short-name variants/);
+  assert.match(prompts, /Historical source-used names may remain in memory prose only when explicitly present/);
+  assert.match(prompts, /\[CHARACTERS\][\s\S]*Canonical Name One/);
+});
+
+test('epistemic knowledge requires explicit evidence rather than implied certainty', () => {
+  const prompts = read('prompts.js');
+  const epistemic = read('epistemic.js');
+  assert.match(prompts, /\[knows\] requires explicit confirmation/);
+  assert.match(prompts, /implication, tone, inference/);
+  assert.match(epistemic, /hasUnsupportedKnowledgeQualifier/);
+  assert.match(epistemic, /unsupported inference/);
 });
 
 test('profiles keep only current, evidence-supported fields', () => {
@@ -318,7 +334,8 @@ test('late catch-up stages isolate non-critical failures and retain diagnostics'
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
-  assert.match(ui, /buildCanonicalCharacterRoster\(getContext\(\), \{ includeChatLocalApproved: true \}\)/);
+  assert.match(ui, /const context = getContext\(\);/);
+  assert.match(ui, /buildCanonicalCharacterRoster\(context, \{ includeChatLocalApproved: true \}\)/);
   assert.match(canonical, /export function buildCanonicalRoster/);
   assert.match(canonical, /scope\.activePersona/);
   assert.match(canonical, /source_type: 'persona'/);
@@ -331,7 +348,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(graph, /export function mergeCanonicalEntityAcrossStores/);
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
-  assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
+  assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
   assert.match(ui, /state-ledger/);
@@ -361,7 +378,7 @@ test('relationship reconciliation requires stable canonical participants and pre
   assert.match(ui, /persistentRelationshipPairsMerged/);
   assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
   assert.match(longterm, /compactRelationshipProvenance/);
-  for (const field of ['supporting_source_indices', 'supporting_source_ranges', 'latest_update_indices', 'latest_update_range', 'historical_evidence_count', 'historical_evidence_digest']) {
+  for (const field of ['supporting_source_indices', 'supporting_source_ranges', 'latest_update_indices', 'latest_update_range', 'representative_support_indices', 'representative_support_ranges', 'historical_evidence_count', 'historical_evidence_digest', 'provenance_audit']) {
     assert.match(longterm, new RegExp(field));
   }
   for (const field of ['source_record_ids', 'parent_memory_ids', 'evidence_ranges', 'manual_edits', 'validation_issues']) {
@@ -587,7 +604,7 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
-  assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\], outcomes: \[\] \}/);
+  assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\], outcomes: \[\], synthetic_parenthetical_detected: 0, durable_entity_removed: 0, references_redirected: 0 \}/);
   assert.match(graph, /identity_review_queue/);
   assert.match(graph, /unmatched_review/);
   assert.match(graph, /grounded_unknown_preserved/);

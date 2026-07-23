@@ -152,6 +152,16 @@ function getSettings() {
   return extension_settings[MODULE_NAME];
 }
 
+/** Emits lightweight render timing only when developer logging is enabled. */
+function logPerformanceTiming(operation, startedAt, details = {}) {
+  if (!getSettings()?.verbose_logging) return;
+  console.debug('[Smart Memory Enhanced] Performance:', {
+    operation,
+    duration_ms: Math.round(performance.now() - startedAt),
+    ...details,
+  });
+}
+
 /** Returns the active character name, or null if no character is loaded. */
 function getCurrentCharacterName() {
   const context = getContext();
@@ -1246,26 +1256,28 @@ export function updateSessionUI() {
 
 /** Re-renders the scene history list. */
 export function updateScenesUI() {
+  const startedAt = performance.now();
   const history = loadSceneHistory();
   const $list = $('#sme_scenes_list');
   $list.empty();
 
   if (history.length === 0) {
     $list.append('<div class="sme_no_char">No scenes recorded yet.</div>');
+    logPerformanceTiming('render_scenes', startedAt, { scenes: 0 });
     return;
   }
 
-  history.forEach((s, i) => {
+  const sceneMarkup = history.map((s, i) => {
     const range = Number.isInteger(s.source_start_index) && Number.isInteger(s.source_end_index)
       ? ` &middot; messages ${s.source_start_index + 1}-${s.source_end_index + 1}`
       : '';
     const method = s.detected_by ? ` &middot; ${s.detected_by}` : '';
     const validation = s.validation_status && s.validation_status !== 'validated' ? ` &middot; ${s.validation_status}` : '';
     const canJump = Number.isInteger(s.source_start_index);
-    $list.append(
-      `<div class="sme_scene_item"><div><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div><small class="sm-muted">${range}${method}${validation}</small><span class="sme_scene_actions">${canJump ? `<button class="sme_jump_scene menu_button" data-index="${i}" title="Jump to the source messages"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}<button class="sme_resummarize_scene menu_button" data-index="${i}" title="Generate this summary again from its source messages"><i class="fa-solid fa-rotate"></i></button><button class="sme_edit_scene menu_button" data-index="${i}" title="Edit scene summary"><i class="fa-solid fa-pencil"></i></button><button class="sme_delete_scene menu_button" data-index="${i}" title="Delete scene"><i class="fa-solid fa-trash-can"></i></button></span></div>`,
-    );
+    return `<div class="sme_scene_item"><div><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div><small class="sm-muted">${range}${method}${validation}</small><span class="sme_scene_actions">${canJump ? `<button class="sme_jump_scene menu_button" data-index="${i}" title="Jump to the source messages"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}<button class="sme_resummarize_scene menu_button" data-index="${i}" title="Generate this summary again from its source messages"><i class="fa-solid fa-rotate"></i></button><button class="sme_edit_scene menu_button" data-index="${i}" title="Edit scene summary"><i class="fa-solid fa-pencil"></i></button><button class="sme_delete_scene menu_button" data-index="${i}" title="Delete scene"><i class="fa-solid fa-trash-can"></i></button></span></div>`;
   });
+  $list.append(sceneMarkup.join(''));
+  logPerformanceTiming('render_scenes', startedAt, { scenes: history.length });
 }
 
 /** Re-renders the story arcs list with per-arc edit, resolve, and add buttons. */
@@ -1289,6 +1301,8 @@ export function updateArcsUI() {
     $list.append('<div class="sme_no_char">No open story threads.</div>');
   }
 
+  const activeArcItems = document.createDocumentFragment();
+  const resolvedArcItems = document.createDocumentFragment();
   arcs.forEach((arc, idx) => {
     const isPersistent = !!arc.persistent;
     const isResolved = !!arc.resolved;
@@ -1301,7 +1315,7 @@ export function updateArcsUI() {
                   <button class="sme_remove_resolved_arc menu_button" data-index="${idx}" title="Remove"><i class="fa-solid fa-xmark"></i></button>
               </div>
           `);
-      $resolvedList.append($item);
+      resolvedArcItems.appendChild($item[0]);
     } else {
       const pinTitle = isPersistent
         ? 'Unpin - keep only in this chat'
@@ -1321,9 +1335,11 @@ export function updateArcsUI() {
                   </button>
               </div>
           `);
-      $list.append($item);
+      activeArcItems.appendChild($item[0]);
     }
   });
+  $list.append(activeArcItems);
+  $resolvedList.append(resolvedArcItems);
 
   // Show the resolved section only when there are resolved arcs.
   $resolvedSection.toggle(resolvedArcs.length > 0);
@@ -1532,38 +1548,54 @@ export function updateProfilesUI(profiles) {
  */
 /** Safely reconciles unambiguous canonical entity aliases without opening UI. */
 export async function reconcileCanonicalEntities(characterName) {
+  let reconciliationWorkIndex = 0;
+  let reconciliationYieldCount = 0;
+  const yieldEvery = async (batch = 75) => {
+    if (++reconciliationWorkIndex % batch === 0) {
+      reconciliationYieldCount++;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+  const context = getContext();
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
   const sessionMemories = loadSessionMemories();
   // Final reconciliation needs the active persona plus approved chat-local
   // characters in the same authoritative roster used for every store.
-  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
-  const rewriteStoredNarratives = (memories) => memories.reduce((count, memory) => {
-    if (typeof memory.content !== 'string') return count;
-    const narrative = canonicalizeNarrativeNames(memory.content, roster);
-    if (!narrative.replacements.length) return count;
-    memory.content = narrative.text;
-    memory.identity_replacements = narrative.replacements;
-    return count + narrative.replacements.length;
-  }, 0);
-  const longtermRewrites = rewriteStoredNarratives(longtermMemories);
-  const sessionRewrites = rewriteStoredNarratives(sessionMemories);
-  const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
-  const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
+  const roster = buildCanonicalCharacterRoster(context, { includeChatLocalApproved: true });
+  const rewriteStoredNarratives = async (memories) => {
+    let count = 0;
+    for (const memory of memories) {
+      await yieldEvery();
+      if (typeof memory.content !== 'string') continue;
+      const narrative = canonicalizeNarrativeNames(memory.content, roster);
+      if (!narrative.replacements.length) continue;
+      memory.content = narrative.text;
+      memory.identity_replacements = narrative.replacements;
+      count += narrative.replacements.length;
+    }
+    return count;
+  };
+  const longtermRewrites = await rewriteStoredNarratives(longtermMemories);
+  const sessionRewrites = await rewriteStoredNarratives(sessionMemories);
+  const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, context, longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
+  const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, context, sessionMemories);
   // Chat-local card stores are independent of the selected card. Reconcile all
   // of them so a unique active persona alias such as Kyle -> Kyle Holland does
   // not survive in an off-screen group member's local registry.
-  const meta = getContext().chatMetadata?.[META_KEY] ?? {};
+  const meta = context.chatMetadata?.[META_KEY] ?? {};
   const localReports = [];
   let localRewrites = 0;
   let localRelationshipPairsMerged = 0;
   for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
+    await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
-    localRewrites += rewriteStoredNarratives(localMemories);
-    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, getContext(), localMemories));
+    localRewrites += await rewriteStoredNarratives(localMemories);
+    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, context, localMemories));
   }
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
+    await yieldEvery();
     const relationshipResult = reconcileRelationshipHistoryMap(history, roster);
     if (!relationshipResult.changed) continue;
     meta.card_local_relationships[localName] = relationshipResult.history;
@@ -1577,16 +1609,34 @@ export async function reconcileCanonicalEntities(characterName) {
   let crossStoreReferencesRedirected = 0;
   for (const report of allReports) {
     for (const merge of report.merged ?? []) {
+      await yieldEvery();
       if (!merge.sourceId || !merge.targetId) continue;
-      const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, getContext());
+      const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, context);
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
     }
   }
   const registryGroups = [ltEntities, sessionEntities, ...Object.values(meta.card_local_entities ?? {})].filter(Array.isArray);
   const canonicalGroups = new Map();
-  for (const entity of registryGroups.flat()) {
-    const key = entity?.canonical_card_id || String(entity?.name ?? '').trim().toLowerCase();
+  const observations = [];
+  const observedRegistryRecords = new Set();
+  const registrySources = [
+    ['longterm', ltEntities],
+    ['session', sessionEntities],
+    ...Object.entries(meta.card_local_entities ?? {}).map(([name, entries]) => [`card-local:${name}`, entries]),
+  ];
+  for (const [store, entries] of registrySources) for (const entity of entries ?? []) {
+    await yieldEvery();
+    const key = entity?.canonical_persona_id
+      ? `persona:${entity.canonical_persona_id}`
+      : entity?.canonical_card_id
+        ? `card:${entity.canonical_card_id}`
+        : String(entity?.name ?? '').trim().toLowerCase();
     if (!key || !entity?.id) continue;
+    const observation = { store, record_id: entity.id, canonical_entity_id: entity.canonical_persona_id ?? entity.canonical_card_id ?? entity.id, normalized_name: String(entity.name ?? '').trim().toLowerCase(), identity_type: entity.canonical_identity_type ?? entity.type ?? 'unknown', entity };
+    const observationKey = `${observation.store}|${observation.record_id}`;
+    if (observedRegistryRecords.has(observationKey)) continue;
+    observedRegistryRecords.add(observationKey);
+    observations.push(observation);
     (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
   }
   for (const entities of canonicalGroups.values()) {
@@ -1598,23 +1648,28 @@ export async function reconcileCanonicalEntities(characterName) {
       ?? entities.find((entity) => entity.canonical_card_id)
       ?? entities[0];
     for (const source of entities) {
+      await yieldEvery();
       if (source.id === target.id) continue;
-      const result = mergeCanonicalEntityAcrossStores(source.id, target.id, getContext());
+      const result = mergeCanonicalEntityAcrossStores(source.id, target.id, context);
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
     }
   }
 
-  const rewriteNarrativeRecords = (records, keys) => records.reduce((count, record) => {
-    for (const key of keys) {
-      if (typeof record?.[key] !== 'string') continue;
-      const narrative = canonicalizeNarrativeNames(record[key], roster);
-      if (!narrative.replacements.length) continue;
-      record[key] = narrative.text;
-      record.identity_replacements = narrative.replacements;
-      count += narrative.replacements.length;
+  const rewriteNarrativeRecords = async (records, keys) => {
+    let count = 0;
+    for (const record of records) {
+      await yieldEvery();
+      for (const key of keys) {
+        if (typeof record?.[key] !== 'string') continue;
+        const narrative = canonicalizeNarrativeNames(record[key], roster);
+        if (!narrative.replacements.length) continue;
+        record[key] = narrative.text;
+        record.identity_replacements = narrative.replacements;
+        count += narrative.replacements.length;
+      }
     }
     return count;
-  }, 0);
+  };
   const scenes = loadSceneHistory();
   const arcs = loadArcs();
   const summaries = loadArcSummaries();
@@ -1648,28 +1703,33 @@ export async function reconcileCanonicalEntities(characterName) {
   if (reviewDecisionDuplicatesRemoved || syntheticReviewNamesRemoved || resolvedReviewItemsRemoved) {
     getSettings().identity_review_queue = activeReviewQueue;
   }
-  const sceneRewrites = rewriteNarrativeRecords(scenes, ['summary']);
-  const arcRewrites = rewriteNarrativeRecords(arcs, ['content']);
-  const summaryRewrites = rewriteNarrativeRecords(summaries, ['summary', 'arc']);
-  const rewriteParticipantLists = (records) => records.reduce((count, record) => {
-    const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
-    if (!original.length) return count;
-    const canonical = canonicalizeStructuredParticipants(original, roster);
-    const references = original.flatMap((displayName) => {
-      const resolution = resolveCanonicalCharacterName(displayName, roster);
-      return resolution.status === 'resolved' && resolution.canonicalId
-        ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim(), alias_type: resolution.reason ?? 'canonical-name' }]
-        : [];
-    });
-    const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);
-    const referencesChanged = references.length > 0 && JSON.stringify(record.participant_references ?? []) !== JSON.stringify(references);
-    if (!changed && !referencesChanged) return count;
-    record.character_participants = canonical.names;
-    if (references.length) record.participant_references = references;
-    return count + 1;
-  }, 0);
-  const sceneParticipantRewrites = rewriteParticipantLists(scenes);
-  const arcParticipantRewrites = rewriteParticipantLists(arcs);
+  const sceneRewrites = await rewriteNarrativeRecords(scenes, ['summary']);
+  const arcRewrites = await rewriteNarrativeRecords(arcs, ['content']);
+  const summaryRewrites = await rewriteNarrativeRecords(summaries, ['summary', 'arc']);
+  const rewriteParticipantLists = async (records) => {
+    let count = 0;
+    for (const record of records) {
+      await yieldEvery();
+      const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
+      if (!original.length) continue;
+      const canonical = canonicalizeStructuredParticipants(original, roster);
+      const references = original.flatMap((displayName) => {
+        const resolution = resolveCanonicalCharacterName(displayName, roster);
+        return resolution.status === 'resolved' && resolution.canonicalId
+          ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim(), alias_type: resolution.reason ?? 'canonical-name' }]
+          : [];
+      });
+      const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);
+      const referencesChanged = references.length > 0 && JSON.stringify(record.participant_references ?? []) !== JSON.stringify(references);
+      if (!changed && !referencesChanged) continue;
+      record.character_participants = canonical.names;
+      if (references.length) record.participant_references = references;
+      count++;
+    }
+    return count;
+  };
+  const sceneParticipantRewrites = await rewriteParticipantLists(scenes);
+  const arcParticipantRewrites = await rewriteParticipantLists(arcs);
   if (ltReport.changed || longtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
@@ -1694,6 +1754,7 @@ export async function reconcileCanonicalEntities(characterName) {
   let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
   for (const storeName of structuredStoreNames) {
+    await yieldEvery();
     const relationshipResult = reconcileRelationshipHistoryCanonicalNames(storeName);
     if (relationshipResult.changed) {
       relationshipStoresReconciled++;
@@ -1704,6 +1765,7 @@ export async function reconcileCanonicalEntities(characterName) {
   const profileNames = [...new Set([...structuredStoreNames, ...Object.keys(meta.profiles ?? {})].filter(Boolean))];
   let profilesReconciled = 0;
   for (const profileName of profileNames) {
+    await yieldEvery();
     if (await reconcileProfileCanonicalNames(profileName)) profilesReconciled++;
   }
   // Final read-only integrity audit. Reconciliation has already applied every
@@ -1714,24 +1776,26 @@ export async function reconcileCanonicalEntities(characterName) {
     ...(roster.characters ?? []).map((entry) => entry?.id),
   ].filter(Boolean));
   const staleEntityReferences = [];
-  const auditReferences = (records, store, field = 'entities') => {
+  const auditReferences = async (records, store, field = 'entities') => {
     for (const record of records ?? []) {
+      await yieldEvery();
       for (const id of record?.[field] ?? []) {
         const entityId = typeof id === 'string' ? id : id?.entity_id;
         if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
       }
     }
   };
-  auditReferences(longtermMemories, 'longterm');
-  auditReferences(sessionMemories, 'session');
-  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) auditReferences(records, `card-local:${localName}`);
-  auditReferences(scenes, 'scenes', 'participant_references');
-  auditReferences(arcs, 'arcs', 'participant_references');
+  await auditReferences(longtermMemories, 'longterm');
+  await auditReferences(sessionMemories, 'session');
+  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`);
+  await auditReferences(scenes, 'scenes', 'participant_references');
+  await auditReferences(arcs, 'arcs', 'participant_references');
   // State Ledger cards use a single canonical card link rather than the
   // memory-style `entities` list.  Check it separately so the audit covers
   // every structured store without treating free-form state-card text as an
   // identity reference.
   for (const [ledgerKey, fields] of Object.entries(reconciledLedger ?? {})) {
+    await yieldEvery();
     const entityId = fields?._canonical_card_id;
     if (entityId && !knownEntityIds.has(entityId)) {
       staleEntityReferences.push({ store: 'state-ledger', record_id: ledgerKey, entity_id: entityId });
@@ -1742,9 +1806,12 @@ export async function reconcileCanonicalEntities(characterName) {
   // card/persona ID cannot survive an otherwise successful entity merge.
   for (const storeName of structuredStoreNames) {
     for (const entry of loadEpistemicKnowledge(storeName)) {
+      await yieldEvery();
       for (const [field, entityId] of [
         ['subject_canonical_card_id', entry?.subject_canonical_card_id],
         ['target_canonical_card_id', entry?.target_canonical_card_id],
+        ['subject_canonical_persona_id', entry?.subject_canonical_persona_id ? `persona:${entry.subject_canonical_persona_id}` : null],
+        ['target_canonical_persona_id', entry?.target_canonical_persona_id ? `persona:${entry.target_canonical_persona_id}` : null],
       ]) {
         if (entityId && !knownEntityIds.has(entityId)) {
           staleEntityReferences.push({ store: `epistemic:${storeName}`, record_id: entry?.id ?? null, field, entity_id: entityId });
@@ -1752,13 +1819,54 @@ export async function reconcileCanonicalEntities(characterName) {
       }
     }
   }
+  const duplicateCanonicalEntities = [...canonicalGroups.values()]
+    .map((entities) => entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index))
+    .filter((entities) => entities.length > 1)
+    .map((entities) => ({
+      normalized_name: entities[0]?.name ?? null,
+      records: observations.filter((observation) => entities.some((entity) => entity.id === observation.record_id)).map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type })),
+    }));
+  const syntheticIdentityRemaining = observations
+    .filter(({ entity }) => {
+      const normalized = normalizeSyntheticIdentityQualifier(entity?.name, [...(roster.characters ?? []), ...registryGroups.flat()]);
+      return normalized.qualifier_removed && !entity?.manual_locked && !entity?.manual_confirmed;
+    })
+    .map(({ store, record_id, entity }) => ({ store, record_id, name: entity.name }));
+  const relationshipPairKeyIssues = [];
+  for (const storeName of structuredStoreNames) {
+    await yieldEvery();
+    for (const [key, state] of Object.entries(loadRelationshipHistory(storeName))) {
+      const labels = getRelationshipHistoryPairDisplay(key, state);
+      const expected = getRelationshipHistoryPair(labels.subject, labels.target, roster).key;
+      if (key !== expected) relationshipPairKeyIssues.push({ store: storeName, key, expected });
+    }
+  }
+  const seenReviewKeys = new Set();
+  const duplicateReviewRecords = activeReviewQueue.filter((item) => {
+    const key = item.review_key ?? `${String(item.candidateKey ?? item.candidateName ?? '').toLowerCase()}|${item.suggested_target_id ?? ''}|${item.issue_type ?? item.reason ?? ''}`;
+    if (seenReviewKeys.has(key)) return true;
+    seenReviewKeys.add(key);
+    return false;
+  }).map((item) => ({ id: item.id ?? null, candidate: item.candidateName ?? item.candidateKey ?? null }));
+  const integrityStatus = staleEntityReferences.length
+    ? 'degraded'
+    : duplicateCanonicalEntities.length
+      ? 'degraded'
+      : syntheticIdentityRemaining.length || relationshipPairKeyIssues.length || duplicateReviewRecords.length
+        ? 'degraded'
+      : crossStoreEntityMerges || localRelationshipPairsMerged || persistentRelationshipPairsMerged
+        ? 'repaired'
+        : 'clean';
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
-    duplicate_canonical_entities: [...canonicalGroups.values()].filter((entries) => entries.length > 1).map((entries) => entries.map((entity) => entity.id)),
+    duplicate_canonical_entities: duplicateCanonicalEntities,
+    synthetic_identity_remaining: syntheticIdentityRemaining,
+    relationship_pair_key_issues: relationshipPairKeyIssues,
+    duplicate_review_records: duplicateReviewRecords,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
-    status: staleEntityReferences.length ? 'degraded' : 'clean',
+    status: integrityStatus,
   };
   return {
     matched: [...ltReport.matched, ...sessionReport.matched, ...localReports.flatMap((report) => report.matched)],
@@ -1777,14 +1885,22 @@ export async function reconcileCanonicalEntities(characterName) {
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     synthetic_review_names_removed: syntheticReviewNamesRemoved,
+    synthetic_parenthetical_detected: allReports.reduce((total, report) => total + (report.synthetic_parenthetical_detected ?? 0), 0),
+    durable_entities_removed: allReports.reduce((total, report) => total + (report.durable_entity_removed ?? 0), 0),
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
+    performance: {
+      reconciliation_work_items: reconciliationWorkIndex,
+      reconciliation_yields: reconciliationYieldCount,
+      registry_observations: observations.length,
+    },
     integrity_audit: integrityAudit,
   };
 }
 
 export function updateEntityPanel(characterName) {
+  const startedAt = performance.now();
   const $panel = $('#sme_entity_panel');
   $panel.empty();
 
@@ -1950,6 +2066,7 @@ export function updateEntityPanel(characterName) {
 
   if (entities.length === 0) {
     $panel.append('<span class="sm-muted">No entities extracted yet.</span>');
+    logPerformanceTiming('render_entity_registry', startedAt, { entities: 0 });
     return;
   }
 
@@ -1986,6 +2103,9 @@ export function updateEntityPanel(characterName) {
     injectRelationshipHistory(characterName);
   };
 
+  // Build rows off-DOM and attach them once.  A large entity registry used to
+  // trigger a layout pass for every row and state-card subsection.
+  const $rows = $('<div class="sme_entity_rows">');
   for (const entity of entities) {
     const icon = TYPE_ICONS[entity.type] ?? 'fa-tag';
     const memCount = Array.isArray(entity.memory_ids) ? entity.memory_ids.length : 0;
@@ -2252,7 +2372,7 @@ export function updateEntityPanel(characterName) {
       await doDelete();
     });
 
-    $panel.append($row);
+    $rows.append($row);
 
     // State card subsection - only when the ledger is enabled and the entity type supports state cards.
     if (isStateLedgerEnabled() && STATE_CARD_TYPES.has(entity.type)) {
@@ -2344,16 +2464,18 @@ export function updateEntityPanel(characterName) {
         updateTokenDisplay();
       });
 
-      $panel.append($section);
+      $rows.append($section);
     } else if (isStateLedgerEnabled() && entity.type === 'unknown') {
       // Model failed to classify this entity - hint that retyping it unlocks the state card.
-      $panel.append(
+      $rows.append(
         '<div class="sme_state_card_section sm-muted" style="font-size:0.85em;padding:2px 0 4px 4px;">' +
           '<i class="fa-solid fa-circle-info"></i> Change type to enable state card' +
           '</div>',
       );
     }
   }
+  $panel.append($rows);
+  logPerformanceTiming('render_entity_registry', startedAt, { entities: entities.length });
 }
 
 /**
