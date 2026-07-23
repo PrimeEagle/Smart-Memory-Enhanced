@@ -79,15 +79,25 @@ export function recordIdentityReviewCandidate(result, details = {}) {
   if (!settings) return;
   const queue = (settings.identity_review_queue ??= []);
   const candidateKey = String(result.candidateName).trim().toLowerCase();
-  const existing = queue.find((item) => item.candidateKey === candidateKey && item.reason === result.reason);
+  const suggestedTargetId = result.canonicalId ?? result.suggested_target_id ?? null;
+  const issueType = result.status === 'ambiguous' ? 'ambiguous_identity' : result.status === 'rejected' ? 'unsupported_identity' : 'unmatched_identity';
+  const reviewKey = `${candidateKey}|${suggestedTargetId ?? ''}|${issueType}`;
+  const existing = queue.find((item) => item.review_key === reviewKey);
   if (existing) {
     existing.occurrences = (existing.occurrences ?? 1) + 1;
     existing.memoryIds ??= [];
     if (details.memoryId && !existing.memoryIds.includes(details.memoryId)) existing.memoryIds.push(details.memoryId);
+    existing.source_message_indices = [...new Set([...(existing.source_message_indices ?? []), ...(details.source_message_indices ?? [])].filter(Number.isInteger))].sort((a, b) => a - b);
     saveSettingsDebounced();
     return;
   }
-  queue.push(buildIdentityReviewCandidate(result, details, generateMemoryId()));
+  queue.push({
+    ...buildIdentityReviewCandidate(result, details, generateMemoryId()),
+    suggested_target_id: suggestedTargetId,
+    issue_type: issueType,
+    review_key: reviewKey,
+    source_message_indices: [...new Set((details.source_message_indices ?? []).filter(Number.isInteger))].sort((a, b) => a - b),
+  });
   saveSettingsDebounced();
 }
 
@@ -395,7 +405,9 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
       const id = upsertEntity(resolvedName, mem.id, messageIndex, registry, classifiedType, resolution.promotion);
       const entity = registry.find((entry) => entry.id === id);
       if (entity && resolution.canonicalId) {
-        entity.canonical_card_id = resolution.canonicalId;
+        entity.canonical_identity_type = resolution.canonicalIdentityType ?? 'character_card';
+        entity.canonical_card_id = resolution.canonicalCardId ?? resolution.canonicalId;
+        entity.canonical_persona_id = resolution.canonicalPersonaId ?? null;
         entity.type = 'character';
         const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === resolution.canonicalId);
         entity.source = rosterEntry?.source ?? 'character-card';
@@ -419,13 +431,14 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 /** Safely merges existing registry variants that unambiguously map to a card character. */
 export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = []) {
   const roster = buildCanonicalCharacterRoster(context);
-  const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [] };
+  const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [], synthetic_parenthetical_detected: 0, durable_entity_removed: 0, references_redirected: 0 };
   for (const entity of [...registry]) {
     if (!['character', 'unknown'].includes(entity.type)) continue;
     const result = resolveEntityCandidate(entity.name, roster, [registry.filter((entry) => entry.id !== entity.id)], {
       source_record_ids: entity.source_record_ids ?? entity.memory_ids ?? [],
       source_message_indices: entity.source_message_indices ?? [],
     });
+    if (result.synthetic_parenthetical) report.synthetic_parenthetical_detected++;
     if (result.status === 'ambiguous') {
       report.skipped.push({ name: entity.name, reason: result.reason, reason_code: 'ambiguous_multiple_candidates' });
       report.outcomes.push({ candidate: entity.name, terminal_outcome: 'ambiguous_review', reason: result.reason });
@@ -447,14 +460,17 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       continue;
     }
     const target = registry.find((entry) => entry.id !== entity.id && (
-      entry.canonical_card_id === result.canonicalId ||
+      entry.canonical_card_id === (result.canonicalCardId ?? result.canonicalId) ||
+      entry.canonical_persona_id === result.canonicalPersonaId ||
       entry.name.toLowerCase() === result.canonicalName.toLowerCase()
     ));
     if (!target) {
       // Even an entity already named "Kyle Holland" must receive the stable
       // persona/card identity. Otherwise a later short alias cannot find it
       // as the merge target and survives as a separate durable entity.
-      if (entity.name !== result.canonicalName || entity.canonical_card_id !== result.canonicalId) {
+      const expectedCardId = result.canonicalCardId ?? result.canonicalId;
+      const expectedPersonaId = result.canonicalPersonaId ?? null;
+      if (entity.name !== result.canonicalName || entity.canonical_card_id !== expectedCardId || entity.canonical_persona_id !== expectedPersonaId) {
         const oldName = entity.name;
         const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
         if (rosterEntry?.source === 'user-persona') {
@@ -464,7 +480,9 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
           entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), entity.name])];
         }
         entity.name = result.canonicalName;
-        entity.canonical_card_id = result.canonicalId;
+        entity.canonical_identity_type = result.canonicalIdentityType ?? 'character_card';
+        entity.canonical_card_id = result.canonicalCardId ?? result.canonicalId;
+        entity.canonical_persona_id = result.canonicalPersonaId ?? null;
         entity.type = 'character';
         entity.source = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId)?.source ?? 'character-card';
         report.matched.push({ name: oldName, canonicalName: result.canonicalName, match: result.reason, reason_code: result.reason.includes('persona') ? 'active_persona_match' : 'unique_first_name_match' });
@@ -479,7 +497,9 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       continue;
     }
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
-    target.canonical_card_id = result.canonicalId;
+    target.canonical_identity_type = result.canonicalIdentityType ?? 'character_card';
+    target.canonical_card_id = result.canonicalCardId ?? result.canonicalId;
+    target.canonical_persona_id = result.canonicalPersonaId ?? null;
     target.type = 'character';
     const rosterEntry = (roster.characters ?? []).find((entry) => entry.id === result.canonicalId);
     if (rosterEntry?.source === 'user-persona') {
@@ -491,9 +511,11 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     for (const memory of memories) {
       if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
       memory.entities = [...new Set(memory.entities.map((id) => id === entity.id ? target.id : id))];
+      report.references_redirected++;
     }
     registry.splice(registry.indexOf(entity), 1);
     report.merged.push({ name: entity.name, canonicalName: target.name, sourceId: entity.id, targetId: target.id, match: result.reason, reason_code: result.reason.includes('persona') ? 'unique_active_persona_first_name' : 'canonical_duplicate_merge' });
+    if (result.synthetic_parenthetical) report.durable_entity_removed++;
     report.outcomes.push({ candidate: entity.name, canonicalName: target.name, terminal_outcome: 'merged', reason: result.reason });
     report.changed = true;
   }

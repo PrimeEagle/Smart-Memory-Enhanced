@@ -587,7 +587,7 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
-  assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\], outcomes: \[\] \}/);
+  assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\], outcomes: \[\], synthetic_parenthetical_detected: 0, durable_entity_removed: 0, references_redirected: 0 \}/);
   assert.match(graph, /identity_review_queue/);
   assert.match(graph, /unmatched_review/);
   assert.match(graph, /grounded_unknown_preserved/);

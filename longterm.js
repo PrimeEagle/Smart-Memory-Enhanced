@@ -394,8 +394,8 @@ export function getRelationshipHistoryPair(subject, target, roster = buildCanoni
   const pair = buildStableRelationshipPair(subject, target, roster);
   return {
     key: pair.key,
-    subject: { displayName: pair.subject.displayName, cardId: pair.subject.canonicalId, storageId: pair.subject.storageId },
-    target: { displayName: pair.target.displayName, cardId: pair.target.canonicalId, storageId: pair.target.storageId },
+    subject: { displayName: pair.subject.displayName, cardId: pair.subject.canonicalCardId, personaId: pair.subject.canonicalPersonaId, identityType: pair.subject.canonicalIdentityType, storageId: pair.subject.storageId },
+    target: { displayName: pair.target.displayName, cardId: pair.target.canonicalCardId, personaId: pair.target.canonicalPersonaId, identityType: pair.target.canonicalIdentityType, storageId: pair.target.storageId },
   };
 }
 
@@ -479,6 +479,10 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
       target_name: pair.target.displayName,
       subject_canonical_card_id: pair.subject.cardId,
       target_canonical_card_id: pair.target.cardId,
+      subject_canonical_persona_id: pair.subject.personaId,
+      target_canonical_persona_id: pair.target.personaId,
+      subject_identity_type: pair.subject.identityType,
+      target_identity_type: pair.target.identityType,
       historical_display_names: mergeList(state.historical_display_names, historicalDisplayNames),
     };
     const prior = reconciled[pair.key];

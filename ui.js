@@ -1584,9 +1584,22 @@ export async function reconcileCanonicalEntities(characterName) {
   }
   const registryGroups = [ltEntities, sessionEntities, ...Object.values(meta.card_local_entities ?? {})].filter(Array.isArray);
   const canonicalGroups = new Map();
-  for (const entity of registryGroups.flat()) {
-    const key = entity?.canonical_card_id || String(entity?.name ?? '').trim().toLowerCase();
+  const observations = [];
+  const registrySources = [
+    ['longterm', ltEntities],
+    ['session', sessionEntities],
+    ...Object.entries(meta.card_local_entities ?? {}).map(([name, entries]) => [`card-local:${name}`, entries]),
+  ];
+  for (const [store, entries] of registrySources) for (const entity of entries ?? []) {
+    const key = entity?.canonical_persona_id
+      ? `persona:${entity.canonical_persona_id}`
+      : entity?.canonical_card_id
+        ? `card:${entity.canonical_card_id}`
+        : String(entity?.name ?? '').trim().toLowerCase();
     if (!key || !entity?.id) continue;
+    const observation = { store, record_id: entity.id, canonical_entity_id: entity.canonical_persona_id ?? entity.canonical_card_id ?? entity.id, normalized_name: String(entity.name ?? '').trim().toLowerCase(), identity_type: entity.canonical_identity_type ?? entity.type ?? 'unknown', entity };
+    if (observations.some((prior) => prior.store === observation.store && prior.record_id === observation.record_id)) continue;
+    observations.push(observation);
     (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
   }
   for (const entities of canonicalGroups.values()) {
@@ -1752,13 +1765,27 @@ export async function reconcileCanonicalEntities(characterName) {
       }
     }
   }
+  const duplicateCanonicalEntities = [...canonicalGroups.values()]
+    .map((entities) => entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index))
+    .filter((entities) => entities.length > 1)
+    .map((entities) => ({
+      normalized_name: entities[0]?.name ?? null,
+      records: observations.filter((observation) => entities.some((entity) => entity.id === observation.record_id)).map(({ store, record_id, canonical_entity_id, normalized_name, identity_type }) => ({ store, record_id, canonical_entity_id, normalized_name, identity_type })),
+    }));
+  const integrityStatus = staleEntityReferences.length
+    ? 'degraded'
+    : duplicateCanonicalEntities.length
+      ? 'degraded'
+      : crossStoreEntityMerges || localRelationshipPairsMerged || persistentRelationshipPairsMerged
+        ? 'repaired'
+        : 'clean';
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
-    duplicate_canonical_entities: [...canonicalGroups.values()].filter((entries) => entries.length > 1).map((entries) => entries.map((entity) => entity.id)),
+    duplicate_canonical_entities: duplicateCanonicalEntities,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
-    status: staleEntityReferences.length ? 'degraded' : 'clean',
+    status: integrityStatus,
   };
   return {
     matched: [...ltReport.matched, ...sessionReport.matched, ...localReports.flatMap((report) => report.matched)],
@@ -1777,6 +1804,8 @@ export async function reconcileCanonicalEntities(characterName) {
     identity_decision_duplicates_removed: reviewDecisionDuplicatesRemoved,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     synthetic_review_names_removed: syntheticReviewNamesRemoved,
+    synthetic_parenthetical_detected: allReports.reduce((total, report) => total + (report.synthetic_parenthetical_detected ?? 0), 0),
+    durable_entities_removed: allReports.reduce((total, report) => total + (report.durable_entity_removed ?? 0), 0),
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
