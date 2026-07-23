@@ -277,6 +277,8 @@ function normalizeArcExtractionDiagnostics(diagnostics) {
     rejectedCompletedEvents: 'rejected_completed_events', rejectedBackgroundFacts: 'rejected_background_facts',
     rejectedRelationshipStates: 'rejected_relationship_states', rejectedSceneDetails: 'rejected_scene_details',
     rejectedMalformed: 'rejected_malformed', participantRepairs: 'participant_repairs', participantReviewItems: 'participant_review_items',
+    malformedRequest: 'malformed_request', inputTokenBudget: 'input_token_budget', inputTokenEstimate: 'input_token_estimate',
+    inputMessages: 'input_messages', omittedMessages: 'omitted_messages', truncatedMessage: 'truncated_message', terminalOutcome: 'terminal_outcome',
   };
   for (const [camel, snake] of Object.entries(aliases)) {
     const value = Math.max(Number(diagnostics?.[snake] ?? 0), Number(diagnostics?.[camel] ?? 0));
@@ -2994,7 +2996,7 @@ export function bindSettingsUI(ctrl) {
       status: 'completed',
       chunks: [],
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
-      arcExtraction: { attempted: 0, request_completed: 0, provider_error: 0, http_status: null, error_class: null, non_retryable: false, returned_none: 0, malformed_output: 0, parsed_candidates: 0, accepted_open_threads: 0, rejected_completed_events: 0, rejected_background_facts: 0, rejected_relationship_states: 0, rejected_scene_details: 0, rejected_malformed: 0, participant_repairs: 0, participant_review_items: 0, terminal_reconciled: false, completed: 0, providerError: 0, malformedRequest: 0, returnedNone: 0, malformedOutput: 0, parsedCandidates: 0, acceptedOpenThreads: 0, rejectedCompletedEvents: 0, rejectedBackgroundFacts: 0, rejectedRelationshipStates: 0, rejectedSceneDetails: 0, rejectedMalformed: 0, participantRepairs: 0, participantReviewItems: 0, inputTokenBudget: 0, inputTokenEstimate: 0, inputMessages: 0, omittedMessages: 0, truncatedMessage: false, terminalOutcome: null },
+      arcExtraction: { attempted: 0, request_completed: 0, provider_error: 0, http_status: null, error_class: null, non_retryable: false, returned_none: 0, malformed_output: 0, parsed_candidates: 0, accepted_open_threads: 0, rejected_completed_events: 0, rejected_background_facts: 0, rejected_relationship_states: 0, rejected_scene_details: 0, rejected_malformed: 0, participant_repairs: 0, participant_review_items: 0, terminal_reconciled: false, malformed_request: 0, input_token_budget: 0, input_token_estimate: 0, input_messages: 0, omitted_messages: 0, truncated_message: false, terminal_outcome: null },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
       sessionExtraction: {
         emitted: 0,

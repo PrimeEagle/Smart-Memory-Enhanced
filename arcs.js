@@ -937,11 +937,11 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       : Math.max(500, Math.floor(getMemoryInputBudget(responseLength) * 0.7));
     const selected = selectArcExtractionWindow(messages, inputBudget);
     if (arcExtraction) {
-      arcExtraction.inputTokenBudget = selected.tokenBudget;
-      arcExtraction.inputTokenEstimate = selected.tokenEstimate;
-      arcExtraction.inputMessages = selected.messages.length;
-      arcExtraction.omittedMessages = selected.omittedMessages;
-      arcExtraction.truncatedMessage = selected.truncatedMessage;
+      arcExtraction.input_token_budget = selected.tokenBudget;
+      arcExtraction.input_token_estimate = selected.tokenEstimate;
+      arcExtraction.input_messages = selected.messages.length;
+      arcExtraction.omitted_messages = selected.omittedMessages;
+      arcExtraction.truncated_message = selected.truncatedMessage;
       const source = settings.source ?? 'main';
       arcExtraction.request_diagnostics = {
         provider_type: source,
@@ -987,10 +987,10 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     if (!response || response.trim().toUpperCase() === 'NONE') {
       if (arcExtraction) {
         arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
-        arcExtraction.returnedNone = (arcExtraction.returnedNone ?? 0) + 1;
+        arcExtraction.returned_none = (arcExtraction.returned_none ?? 0) + 1;
         arcExtraction.request_completed = (arcExtraction.request_completed ?? 0) + 1;
         arcExtraction.returned_none = (arcExtraction.returned_none ?? 0) + 1;
-        arcExtraction.terminalOutcome = 'returned_none';
+        arcExtraction.terminal_outcome = 'returned_none';
         arcExtraction.terminal_reconciled = true;
       }
       return 0;
@@ -999,18 +999,16 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // Parse against activeExisting so resolve indices map correctly to active arcs.
     const { add: parsedAdd, resolve, rejected: parserRejected } = parseArcOutput(response, activeExisting);
     if (arcExtraction) {
-      arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
       arcExtraction.request_completed = (arcExtraction.request_completed ?? 0) + 1;
-      arcExtraction.parsedCandidates = (arcExtraction.parsedCandidates ?? 0) + parsedAdd.length;
       arcExtraction.parsed_candidates = (arcExtraction.parsed_candidates ?? 0) + parsedAdd.length;
-      arcExtraction.acceptedOpenThreads = (arcExtraction.acceptedOpenThreads ?? 0) + parsedAdd.length;
-      arcExtraction.rejectedCompletedEvents = (arcExtraction.rejectedCompletedEvents ?? 0) + parserRejected.filter((item) => item.reason_code === 'completed_event_not_open_thread').length;
-      arcExtraction.rejectedBackgroundFacts = (arcExtraction.rejectedBackgroundFacts ?? 0) + parserRejected.filter((item) => item.reason_code === 'background_fact_not_open_thread').length;
-      arcExtraction.rejectedRelationshipStates = (arcExtraction.rejectedRelationshipStates ?? 0) + parserRejected.filter((item) => item.reason_code === 'static_relationship_state').length;
-      arcExtraction.rejectedSceneDetails = (arcExtraction.rejectedSceneDetails ?? 0) + parserRejected.filter((item) => item.reason_code === 'scene_detail_not_open_thread').length;
+      arcExtraction.accepted_open_threads = (arcExtraction.accepted_open_threads ?? 0) + parsedAdd.length;
+      arcExtraction.rejected_completed_events = (arcExtraction.rejected_completed_events ?? 0) + parserRejected.filter((item) => item.reason_code === 'completed_event_not_open_thread').length;
+      arcExtraction.rejected_background_facts = (arcExtraction.rejected_background_facts ?? 0) + parserRejected.filter((item) => item.reason_code === 'background_fact_not_open_thread').length;
+      arcExtraction.rejected_relationship_states = (arcExtraction.rejected_relationship_states ?? 0) + parserRejected.filter((item) => item.reason_code === 'static_relationship_state').length;
+      arcExtraction.rejected_scene_details = (arcExtraction.rejected_scene_details ?? 0) + parserRejected.filter((item) => item.reason_code === 'scene_detail_not_open_thread').length;
       const taggedArcLines = (response.match(/^\s*\[arc(?:\s*:\s*characters=[^\]]+)?\]/gim) ?? []).length;
-      arcExtraction.rejectedMalformed = (arcExtraction.rejectedMalformed ?? 0) + Math.max(0, taggedArcLines - parsedAdd.length - parserRejected.length);
-      arcExtraction.terminalOutcome = 'parsed';
+      arcExtraction.rejected_malformed = (arcExtraction.rejected_malformed ?? 0) + Math.max(0, taggedArcLines - parsedAdd.length - parserRejected.length);
+      arcExtraction.terminal_outcome = 'parsed';
       arcExtraction.terminal_reconciled = true;
     }
     const roster = buildCanonicalCharacterRoster(getContext());
@@ -1030,8 +1028,8 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       };
     });
     if (arcExtraction) {
-      arcExtraction.participantRepairs = (arcExtraction.participantRepairs ?? 0) + rawAdd.reduce((count, arc) => count + (arc.participant_additions?.length ?? 0), 0);
-      arcExtraction.participantReviewItems = (arcExtraction.participantReviewItems ?? 0) + rawAdd.reduce((count, arc) => count + (arc.identity_rejections?.length ?? 0), 0);
+      arcExtraction.participant_repairs = (arcExtraction.participant_repairs ?? 0) + rawAdd.reduce((count, arc) => count + (arc.participant_additions?.length ?? 0), 0);
+      arcExtraction.participant_review_items = (arcExtraction.participant_review_items ?? 0) + rawAdd.reduce((count, arc) => count + (arc.identity_rejections?.length ?? 0), 0);
     }
 
     // Filter new arc candidates against current session memories using semantic
@@ -1070,7 +1068,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
           return true;
         });
 
-        if (arcExtraction) arcExtraction.rejectedSceneDetails = (arcExtraction.rejectedSceneDetails ?? 0) + (rawAdd.length - add.length);
+        if (arcExtraction) arcExtraction.rejected_scene_details = (arcExtraction.rejected_scene_details ?? 0) + (rawAdd.length - add.length);
 
         smLog(
           `[Smart Memory Enhanced] Arc session-filter: ${rawAdd.length} candidates -> ${add.length} kept`,
@@ -1294,14 +1292,14 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
   } catch (err) {
     if (arcExtraction) {
       const status = Number(err?.sme_request_diagnostics?.http_status ?? err?.status);
-      arcExtraction.providerError = (arcExtraction.providerError ?? 0) + 1;
+      arcExtraction.provider_error = (arcExtraction.provider_error ?? 0) + 1;
       arcExtraction.provider_error = (arcExtraction.provider_error ?? 0) + 1;
       arcExtraction.http_status = Number.isFinite(status) ? status : null;
       arcExtraction.error_class = status === 400 ? 'bad_request' : 'provider_error';
       arcExtraction.non_retryable = status === 400;
       arcExtraction.provider_response = String(err?.sme_request_diagnostics?.response_body ?? err?.message ?? '').replace(/\s+/g, ' ').slice(0, 300) || null;
-      if (status === 400) arcExtraction.malformedRequest = (arcExtraction.malformedRequest ?? 0) + 1;
-      arcExtraction.terminalOutcome = status === 400 ? 'malformed_request' : 'provider_error';
+      if (status === 400) arcExtraction.malformed_request = (arcExtraction.malformed_request ?? 0) + 1;
+      arcExtraction.terminal_outcome = status === 400 ? 'malformed_request' : 'provider_error';
       arcExtraction.terminal_reconciled = true;
     }
     console.error('[Smart Memory Enhanced] Arc extraction failed:', err);
