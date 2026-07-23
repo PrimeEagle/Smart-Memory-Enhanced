@@ -1786,11 +1786,18 @@ export async function reconcileCanonicalEntities(characterName) {
       if (key !== expected) relationshipPairKeyIssues.push({ store: storeName, key, expected });
     }
   }
+  const seenReviewKeys = new Set();
+  const duplicateReviewRecords = activeReviewQueue.filter((item) => {
+    const key = item.review_key ?? `${String(item.candidateKey ?? item.candidateName ?? '').toLowerCase()}|${item.suggested_target_id ?? ''}|${item.issue_type ?? item.reason ?? ''}`;
+    if (seenReviewKeys.has(key)) return true;
+    seenReviewKeys.add(key);
+    return false;
+  }).map((item) => ({ id: item.id ?? null, candidate: item.candidateName ?? item.candidateKey ?? null }));
   const integrityStatus = staleEntityReferences.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
-      : syntheticIdentityRemaining.length || relationshipPairKeyIssues.length
+      : syntheticIdentityRemaining.length || relationshipPairKeyIssues.length || duplicateReviewRecords.length
         ? 'degraded'
       : crossStoreEntityMerges || localRelationshipPairsMerged || persistentRelationshipPairsMerged
         ? 'repaired'
@@ -1801,6 +1808,7 @@ export async function reconcileCanonicalEntities(characterName) {
     duplicate_canonical_entities: duplicateCanonicalEntities,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
+    duplicate_review_records: duplicateReviewRecords,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     status: integrityStatus,
