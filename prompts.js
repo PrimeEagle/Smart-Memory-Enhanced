@@ -209,7 +209,7 @@ EXPIRATION CLASS (choose one):
 - permanent  - should persist as a durable memory
 
 ENTITY TAGGING (optional but encouraged):
-If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use the canonical roster label when one is supplied; a historical source-used name may remain in the memory text only when grounded. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
+If the memory involves specific NAMED entities, append :entity=Name/type pairs inside the bracket. Use the canonical roster label for every structured identity reference. Historical source-used names may remain in memory prose only when explicitly present in the cited source. Do not create separate people from case variants, short-name variants, or supplied historical aliases. Classify each as: character, place, object, faction, or concept. Do not tag generic nouns unless they have a specific name in the conversation. Omit this field if no named entities are relevant.
 
 GROUNDING RULES: Never copy names, facts, objects, relationships, or events from these instructions or examples. Use only details supported by the supplied conversation or grounded memories. Every entity name must appear in the supplied conversation or existing-entity list.
 
@@ -270,7 +270,8 @@ Output exactly:
 <summary>
 [/SCENE]
 [CHARACTERS]
-Name One, Name Two
+Canonical Name One
+Canonical Name Two
 [/CHARACTERS]
 
 SCENE:

@@ -157,13 +157,20 @@ test('protected prompts prohibit aliases, synthetic identities, and premature ar
   const prompts = read('prompts.js');
   assert.match(prompts, /partial progress, emotional reaction, or new information alone never resolves an arc/);
   assert.match(prompts, /old persona names, inferred surnames, collective labels, or parenthetical identity labels/);
-  assert.match(prompts, /historical source-used name may remain in the memory text only when grounded/);
+  assert.match(prompts, /Historical source-used names may remain in memory prose only when explicitly present/);
   assert.match(prompts, /structured participant list MUST use canonical roster identities/);
   assert.match(prompts, /Completed confessions, completed decisions, static relationship states/);
   assert.match(prompts, /short-name and full-name variant as separate people/);
   assert.match(prompts, /parenthetical disambiguated names/);
   assert.match(prompts, /export function buildSceneSummaryPrompt/);
   assert.match(read('scenes.js'), /buildSceneSummaryPrompt\(sceneText\.slice/);
+});
+
+test('session and scene prompts preserve canonical structured identities', () => {
+  const prompts = read('prompts.js');
+  assert.match(prompts, /Do not create separate people from case variants, short-name variants/);
+  assert.match(prompts, /Historical source-used names may remain in memory prose only when explicitly present/);
+  assert.match(prompts, /\[CHARACTERS\][\s\S]*Canonical Name One/);
 });
 
 test('epistemic knowledge requires explicit evidence rather than implied certainty', () => {
