@@ -334,7 +334,8 @@ test('late catch-up stages isolate non-critical failures and retain diagnostics'
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
-  assert.match(ui, /buildCanonicalCharacterRoster\(getContext\(\), \{ includeChatLocalApproved: true \}\)/);
+  assert.match(ui, /const context = getContext\(\);/);
+  assert.match(ui, /buildCanonicalCharacterRoster\(context, \{ includeChatLocalApproved: true \}\)/);
   assert.match(canonical, /export function buildCanonicalRoster/);
   assert.match(canonical, /scope\.activePersona/);
   assert.match(canonical, /source_type: 'persona'/);
@@ -347,7 +348,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(graph, /export function mergeCanonicalEntityAcrossStores/);
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
-  assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, getContext\(\)\)/);
+  assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
   assert.match(ui, /state-ledger/);

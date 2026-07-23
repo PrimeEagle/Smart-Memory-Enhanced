@@ -1540,37 +1540,43 @@ export async function reconcileCanonicalEntities(characterName) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   };
+  const context = getContext();
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
   const sessionMemories = loadSessionMemories();
   // Final reconciliation needs the active persona plus approved chat-local
   // characters in the same authoritative roster used for every store.
-  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
-  const rewriteStoredNarratives = (memories) => memories.reduce((count, memory) => {
-    if (typeof memory.content !== 'string') return count;
-    const narrative = canonicalizeNarrativeNames(memory.content, roster);
-    if (!narrative.replacements.length) return count;
-    memory.content = narrative.text;
-    memory.identity_replacements = narrative.replacements;
-    return count + narrative.replacements.length;
-  }, 0);
-  const longtermRewrites = rewriteStoredNarratives(longtermMemories);
-  const sessionRewrites = rewriteStoredNarratives(sessionMemories);
-  const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, getContext(), longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
-  const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, getContext(), sessionMemories);
+  const roster = buildCanonicalCharacterRoster(context, { includeChatLocalApproved: true });
+  const rewriteStoredNarratives = async (memories) => {
+    let count = 0;
+    for (const memory of memories) {
+      await yieldEvery();
+      if (typeof memory.content !== 'string') continue;
+      const narrative = canonicalizeNarrativeNames(memory.content, roster);
+      if (!narrative.replacements.length) continue;
+      memory.content = narrative.text;
+      memory.identity_replacements = narrative.replacements;
+      count += narrative.replacements.length;
+    }
+    return count;
+  };
+  const longtermRewrites = await rewriteStoredNarratives(longtermMemories);
+  const sessionRewrites = await rewriteStoredNarratives(sessionMemories);
+  const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, context, longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
+  const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, context, sessionMemories);
   // Chat-local card stores are independent of the selected card. Reconcile all
   // of them so a unique active persona alias such as Kyle -> Kyle Holland does
   // not survive in an off-screen group member's local registry.
-  const meta = getContext().chatMetadata?.[META_KEY] ?? {};
+  const meta = context.chatMetadata?.[META_KEY] ?? {};
   const localReports = [];
   let localRewrites = 0;
   let localRelationshipPairsMerged = 0;
   for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
     await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
-    localRewrites += rewriteStoredNarratives(localMemories);
-    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, getContext(), localMemories));
+    localRewrites += await rewriteStoredNarratives(localMemories);
+    localReports.push(reconcileCanonicalEntityRegistry(localRegistry, context, localMemories));
   }
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
     await yieldEvery();
@@ -1589,7 +1595,7 @@ export async function reconcileCanonicalEntities(characterName) {
     for (const merge of report.merged ?? []) {
       await yieldEvery();
       if (!merge.sourceId || !merge.targetId) continue;
-      const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, getContext());
+      const result = mergeCanonicalEntityAcrossStores(merge.sourceId, merge.targetId, context);
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
     }
   }
@@ -1628,22 +1634,26 @@ export async function reconcileCanonicalEntities(characterName) {
     for (const source of entities) {
       await yieldEvery();
       if (source.id === target.id) continue;
-      const result = mergeCanonicalEntityAcrossStores(source.id, target.id, getContext());
+      const result = mergeCanonicalEntityAcrossStores(source.id, target.id, context);
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
     }
   }
 
-  const rewriteNarrativeRecords = (records, keys) => records.reduce((count, record) => {
-    for (const key of keys) {
-      if (typeof record?.[key] !== 'string') continue;
-      const narrative = canonicalizeNarrativeNames(record[key], roster);
-      if (!narrative.replacements.length) continue;
-      record[key] = narrative.text;
-      record.identity_replacements = narrative.replacements;
-      count += narrative.replacements.length;
+  const rewriteNarrativeRecords = async (records, keys) => {
+    let count = 0;
+    for (const record of records) {
+      await yieldEvery();
+      for (const key of keys) {
+        if (typeof record?.[key] !== 'string') continue;
+        const narrative = canonicalizeNarrativeNames(record[key], roster);
+        if (!narrative.replacements.length) continue;
+        record[key] = narrative.text;
+        record.identity_replacements = narrative.replacements;
+        count += narrative.replacements.length;
+      }
     }
     return count;
-  }, 0);
+  };
   const scenes = loadSceneHistory();
   const arcs = loadArcs();
   const summaries = loadArcSummaries();
@@ -1677,28 +1687,33 @@ export async function reconcileCanonicalEntities(characterName) {
   if (reviewDecisionDuplicatesRemoved || syntheticReviewNamesRemoved || resolvedReviewItemsRemoved) {
     getSettings().identity_review_queue = activeReviewQueue;
   }
-  const sceneRewrites = rewriteNarrativeRecords(scenes, ['summary']);
-  const arcRewrites = rewriteNarrativeRecords(arcs, ['content']);
-  const summaryRewrites = rewriteNarrativeRecords(summaries, ['summary', 'arc']);
-  const rewriteParticipantLists = (records) => records.reduce((count, record) => {
-    const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
-    if (!original.length) return count;
-    const canonical = canonicalizeStructuredParticipants(original, roster);
-    const references = original.flatMap((displayName) => {
-      const resolution = resolveCanonicalCharacterName(displayName, roster);
-      return resolution.status === 'resolved' && resolution.canonicalId
-        ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim(), alias_type: resolution.reason ?? 'canonical-name' }]
-        : [];
-    });
-    const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);
-    const referencesChanged = references.length > 0 && JSON.stringify(record.participant_references ?? []) !== JSON.stringify(references);
-    if (!changed && !referencesChanged) return count;
-    record.character_participants = canonical.names;
-    if (references.length) record.participant_references = references;
-    return count + 1;
-  }, 0);
-  const sceneParticipantRewrites = rewriteParticipantLists(scenes);
-  const arcParticipantRewrites = rewriteParticipantLists(arcs);
+  const sceneRewrites = await rewriteNarrativeRecords(scenes, ['summary']);
+  const arcRewrites = await rewriteNarrativeRecords(arcs, ['content']);
+  const summaryRewrites = await rewriteNarrativeRecords(summaries, ['summary', 'arc']);
+  const rewriteParticipantLists = async (records) => {
+    let count = 0;
+    for (const record of records) {
+      await yieldEvery();
+      const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
+      if (!original.length) continue;
+      const canonical = canonicalizeStructuredParticipants(original, roster);
+      const references = original.flatMap((displayName) => {
+        const resolution = resolveCanonicalCharacterName(displayName, roster);
+        return resolution.status === 'resolved' && resolution.canonicalId
+          ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim(), alias_type: resolution.reason ?? 'canonical-name' }]
+          : [];
+      });
+      const changed = JSON.stringify(original) !== JSON.stringify(canonical.names);
+      const referencesChanged = references.length > 0 && JSON.stringify(record.participant_references ?? []) !== JSON.stringify(references);
+      if (!changed && !referencesChanged) continue;
+      record.character_participants = canonical.names;
+      if (references.length) record.participant_references = references;
+      count++;
+    }
+    return count;
+  };
+  const sceneParticipantRewrites = await rewriteParticipantLists(scenes);
+  const arcParticipantRewrites = await rewriteParticipantLists(arcs);
   if (ltReport.changed || longtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
