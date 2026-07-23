@@ -128,6 +128,24 @@ function safeCanonicalMerge(source, target, roster) {
   return { allowed: true, authority_comparison: `${left.authority}:${right.authority}` };
 }
 
+/** A merge removes the source record, so an authoritative source may only be absorbed by its own duplicate. */
+function canAbsorbSourceIntoTarget(source, target, roster) {
+  const left = getAuthoritativeIdentity(source, roster);
+  const right = getAuthoritativeIdentity(target, roster);
+  if (left.type === 'grounded_npc') return { allowed: true };
+  if (left.type === 'persona') {
+    return right.type === 'persona' && left.id === right.id
+      ? { allowed: true }
+      : { allowed: false, reason: 'An active persona record cannot be absorbed into a different identity. Merge the candidate into the persona instead.' };
+  }
+  if (/^(?:character_card|card_unknown)$/.test(left.type)) {
+    return /^(?:character_card|card_unknown)$/.test(right.type) && left.id === right.id
+      ? { allowed: true }
+      : { allowed: false, reason: 'A character-card record cannot be absorbed into a different identity. Merge the candidate into the card instead.' };
+  }
+  return { allowed: true };
+}
+
 function buildMergeDecision(source, target, result, safety, decision, reason) {
   return {
     source_record_id: source?.id ?? null,
@@ -947,6 +965,8 @@ export function mergeEntitiesById(
   const sources = [ltRegistry, sessionRegistry].flat().filter((entity) => entity?.id === sourceId);
   const targets = [ltRegistry, sessionRegistry].flat().filter((entity) => entity?.id === targetId);
   for (const source of sources) for (const target of targets) {
+    const direction = canAbsorbSourceIntoTarget(source, target, roster);
+    if (!direction.allowed) return { merged: false, unsafe: true, reason: direction.reason };
     const safety = safeCanonicalMerge(source, target, roster);
     if (!safety.allowed && !options.userApproved) {
       return { merged: false, unsafe: true, reason: safety.reason };

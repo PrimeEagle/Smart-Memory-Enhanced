@@ -672,6 +672,9 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(graph, /authoritative character type/);
   assert.match(graph, /retained from their authoritative source/);
   assert.match(read('ui.js'), /Authoritative card and persona entities cannot be deleted here/);
+  assert.match(graph, /function canAbsorbSourceIntoTarget/);
+  assert.match(graph, /Merge the candidate into the card instead/);
+  assert.match(read('ui.js'), /Keep it as the merge target and merge the candidate into it instead/);
   const mergeById = graph.slice(graph.indexOf('function mergeInRegistry'), graph.indexOf('export function mergeEntitiesById'));
   assert.match(mergeById, /source_record_ids = \[\.\.\.new Set/);
   assert.match(mergeById, /Object\.assign\(target, compactEntityProvenance\(target\)\)/);

@@ -2332,6 +2332,14 @@ export function updateEntityPanel(characterName) {
             (sourceCardId && targetCardId && String(sourceCardId) !== String(targetCardId)) ||
             Boolean(sourceCardId) !== Boolean(targetCardId) ||
             Boolean(entity.canonical_persona_id) !== Boolean(target.canonical_persona_id);
+          const sourceIsAuthoritative = Boolean(sourceCardId || entity.canonical_persona_id || entity.canonical_identity_type === 'character_card');
+          const sameAuthoritativeIdentity =
+            (sourceCardId && targetCardId && String(sourceCardId) === String(targetCardId)) ||
+            (entity.canonical_persona_id && target.canonical_persona_id && String(entity.canonical_persona_id) === String(target.canonical_persona_id));
+          if (sourceIsAuthoritative && !sameAuthoritativeIdentity) {
+            window.alert('This direction would remove an authoritative card or persona record. Keep it as the merge target and merge the candidate into it instead.');
+            return;
+          }
           if (requiresIdentityConfirmation && !window.confirm(
             `This merge combines distinct authoritative identities:\n\n${entity.name} → ${target.name}\n\nOnly continue if this is an intentional identity decision. Use Rename instead when the entities are not the same person.`,
           )) return;
