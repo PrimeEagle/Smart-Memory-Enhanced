@@ -152,6 +152,16 @@ function getSettings() {
   return extension_settings[MODULE_NAME];
 }
 
+/** Emits lightweight render timing only when developer logging is enabled. */
+function logPerformanceTiming(operation, startedAt, details = {}) {
+  if (!getSettings()?.verbose_logging) return;
+  console.debug('[Smart Memory Enhanced] Performance:', {
+    operation,
+    duration_ms: Math.round(performance.now() - startedAt),
+    ...details,
+  });
+}
+
 /** Returns the active character name, or null if no character is loaded. */
 function getCurrentCharacterName() {
   const context = getContext();
@@ -1246,12 +1256,14 @@ export function updateSessionUI() {
 
 /** Re-renders the scene history list. */
 export function updateScenesUI() {
+  const startedAt = performance.now();
   const history = loadSceneHistory();
   const $list = $('#sme_scenes_list');
   $list.empty();
 
   if (history.length === 0) {
     $list.append('<div class="sme_no_char">No scenes recorded yet.</div>');
+    logPerformanceTiming('render_scenes', startedAt, { scenes: 0 });
     return;
   }
 
@@ -1265,6 +1277,7 @@ export function updateScenesUI() {
     return `<div class="sme_scene_item"><div><b>Scene ${i + 1}:</b> ${$('<div>').text(s.summary).html()}</div><small class="sm-muted">${range}${method}${validation}</small><span class="sme_scene_actions">${canJump ? `<button class="sme_jump_scene menu_button" data-index="${i}" title="Jump to the source messages"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}<button class="sme_resummarize_scene menu_button" data-index="${i}" title="Generate this summary again from its source messages"><i class="fa-solid fa-rotate"></i></button><button class="sme_edit_scene menu_button" data-index="${i}" title="Edit scene summary"><i class="fa-solid fa-pencil"></i></button><button class="sme_delete_scene menu_button" data-index="${i}" title="Delete scene"><i class="fa-solid fa-trash-can"></i></button></span></div>`;
   });
   $list.append(sceneMarkup.join(''));
+  logPerformanceTiming('render_scenes', startedAt, { scenes: history.length });
 }
 
 /** Re-renders the story arcs list with per-arc edit, resolve, and add buttons. */
@@ -1887,6 +1900,7 @@ export async function reconcileCanonicalEntities(characterName) {
 }
 
 export function updateEntityPanel(characterName) {
+  const startedAt = performance.now();
   const $panel = $('#sme_entity_panel');
   $panel.empty();
 
@@ -2052,6 +2066,7 @@ export function updateEntityPanel(characterName) {
 
   if (entities.length === 0) {
     $panel.append('<span class="sm-muted">No entities extracted yet.</span>');
+    logPerformanceTiming('render_entity_registry', startedAt, { entities: 0 });
     return;
   }
 
@@ -2460,6 +2475,7 @@ export function updateEntityPanel(characterName) {
     }
   }
   $panel.append($rows);
+  logPerformanceTiming('render_entity_registry', startedAt, { entities: entities.length });
 }
 
 /**
