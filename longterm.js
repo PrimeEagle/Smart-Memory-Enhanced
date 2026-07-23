@@ -72,6 +72,7 @@ import {
 import {
   applyGraphDefaults,
   loadCharacterEntityRegistry,
+  loadSessionEntityRegistry,
   saveCharacterEntityRegistry,
   resolveEntityNames,
   reconcileCanonicalEntityRegistry,
@@ -961,12 +962,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         // Only store pairs where the character is one of the parties.
         if (deltas.length > 0) {
           const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+          const sessionEntityRegistry = loadSessionEntityRegistry();
           const knownEntityType = (name) => {
             const normalized = String(name ?? '').trim().toLowerCase();
-            return entityRegistry.find((entity) =>
+            const known = [...entityRegistry, ...sessionEntityRegistry].find((entity) =>
               entity.name?.trim().toLowerCase() === normalized ||
               (entity.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalized),
-            )?.type ?? null;
+            );
+            if (known?.type) return known.type;
+            return (canonicalRoster.characters ?? []).some((entry) =>
+              [entry.canonicalName, ...(entry.aliases ?? [])].some((alias) => String(alias).trim().toLowerCase() === normalized),
+            ) ? 'character' : null;
           };
           const relationshipSources = recentMessages.map((message) => Number.isInteger(message.__sme_original_index)
             ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
