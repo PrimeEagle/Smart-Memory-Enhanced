@@ -3537,7 +3537,7 @@ export function bindSettingsUI(ctrl) {
         unmatched: reconciliation.unmatched.length,
         quarantined_arc_summaries: reconciliation.quarantined_arc_summaries,
       };
-      const finalTerminalRecords = [...(reconciliation.identity_outcomes ?? [])].filter(Boolean).reduce((records, outcome) => {
+      const deduplicatedTerminalOutcomes = [...(reconciliation.identity_outcomes ?? [])].filter(Boolean).reduce((records, outcome) => {
         const key = [
           String(outcome.candidate ?? outcome.name ?? '').trim().toLowerCase(),
           String(outcome.source_store ?? '').trim().toLowerCase(),
@@ -3553,13 +3553,28 @@ export function bindSettingsUI(ctrl) {
       const sourceRecordKeys = new Set((reconciliation.identity_outcomes ?? [])
         .map((outcome) => `${outcome.source_store ?? 'unknown'}|${outcome.source_record_id ?? ''}`)
         .filter((key) => !key.endsWith('|')));
-      const conflictingTerminalRecords = [...finalTerminalRecords.values()]
-        .filter((outcome) => !outcome.source_record_id)
-        .map((outcome) => ({ candidate: outcome.candidate ?? null, source_store: outcome.source_store ?? null }));
+      const terminalsBySource = new Map();
+      const missingSourceTerminals = [];
+      for (const outcome of deduplicatedTerminalOutcomes.values()) {
+        const sourceId = String(outcome.source_record_id ?? '').trim();
+        if (!sourceId) { missingSourceTerminals.push(outcome); continue; }
+        const sourceKey = `${outcome.source_store ?? 'unknown'}|${sourceId}`;
+        (terminalsBySource.get(sourceKey) ?? terminalsBySource.set(sourceKey, []).get(sourceKey)).push(outcome);
+      }
+      const conflictingTerminalRecords = [
+        ...missingSourceTerminals.map((outcome) => ({ candidate: outcome.candidate ?? null, source_store: outcome.source_store ?? null, reason: 'missing_source_record_id' })),
+        ...[...terminalsBySource.entries()].flatMap(([sourceKey, outcomes]) => {
+          const distinct = new Set(outcomes.map((outcome) => `${outcome.terminal_outcome ?? ''}|${outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? ''}`));
+          return distinct.size > 1 ? [{ source_key: sourceKey, outcomes: [...distinct] }] : [];
+        }),
+      ];
+      const finalTerminalRecords = [...terminalsBySource.values()]
+        .filter((outcomes) => new Set(outcomes.map((outcome) => `${outcome.terminal_outcome ?? ''}|${outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? ''}`)).size === 1)
+        .map(([outcome]) => outcome);
       runResult.identityResolution.source_records_total = sourceRecordKeys.size;
-      runResult.identityResolution.terminal_records_total = finalTerminalRecords.size;
+      runResult.identityResolution.terminal_records_total = terminalsBySource.size;
       runResult.identityResolution.terminal_reconciled = sourceRecordKeys.size === finalTerminalRecords.size && conflictingTerminalRecords.length === 0;
-      runResult.identityResolution.duplicate_terminal_records_removed = Math.max(0, (reconciliation.identity_outcomes ?? []).length - finalTerminalRecords.size);
+      runResult.identityResolution.duplicate_terminal_records_removed = Math.max(0, (reconciliation.identity_outcomes ?? []).length - deduplicatedTerminalOutcomes.size);
       runResult.identityResolution.conflicting_terminal_records = conflictingTerminalRecords;
       runResult.identityResolutionDetails = {
         matched: reconciliation.matched.map(({ name, canonicalName, reason_code }) => ({ candidate: name, decision: 'matched', target: canonicalName, reason_code })),
@@ -3666,7 +3681,7 @@ export function bindSettingsUI(ctrl) {
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
         ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
         ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
-        ['identity_terminal_totals_reconcile', (reconciliation.identity_outcomes ?? []).length === [...finalTerminalRecords.values()].length, 'Final identity terminal records were duplicated or did not reconcile.'],
+        ['identity_terminal_totals_reconcile', runResult.identityResolution.terminal_reconciled, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
