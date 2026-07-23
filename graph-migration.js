@@ -1108,7 +1108,9 @@ export function mergeEntitiesByName(
 ) {
   const sLower = sourceName.toLowerCase().trim();
   const tLower = targetName.toLowerCase().trim();
-  if (sLower === tLower) return; // nothing to do
+  if (sLower === tLower) return { merged: 0, skipped: [] }; // nothing to do
+  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
+  const report = { merged: 0, skipped: [] };
 
   for (const [registry, memories] of [
     [ltRegistry, ltMemories],
@@ -1130,18 +1132,31 @@ export function mergeEntitiesByName(
 
     if (target) {
       // Both exist in this registry - standard merge.
+      const safety = safeCanonicalMerge(source, target, roster);
+      if (!safety.allowed) {
+        report.skipped.push({ source_id: source.id, target_id: target.id, reason: safety.reason });
+        continue;
+      }
       mergeInRegistry(source.id, target.id, registry, memories);
+      report.merged++;
     } else {
       // Source exists but target does not - rename source to the target name,
       // keeping the old name as an alias so it is still recognised.
+      const identity = getAuthoritativeIdentity(source, roster);
+      if (identity.type !== 'grounded_npc') {
+        report.skipped.push({ source_id: source.id, reason: 'An authoritative card or persona identity cannot be renamed by a name-based merge.' });
+        continue;
+      }
       const oldName = source.name;
       source.name = targetName;
       if (!Array.isArray(source.aliases)) source.aliases = [];
       if (!source.aliases.some((a) => a.toLowerCase() === oldName.toLowerCase())) {
         source.aliases.push(oldName);
       }
+      report.merged++;
     }
   }
+  return report;
 }
 
 // ---- Character card entity seeding ------------------------------------------

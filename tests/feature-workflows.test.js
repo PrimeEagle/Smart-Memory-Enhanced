@@ -666,6 +666,9 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(rename, /Use Merge instead/);
   assert.match(rename, /entity\.canonical_card_id \|\| entity\.canonical_persona_id/);
   assert.match(rename, /Rename the character card or persona instead/);
+  const nameMerge = graph.slice(graph.indexOf('export function mergeEntitiesByName'), graph.indexOf('// ---- Character card entity seeding'));
+  assert.match(nameMerge, /const safety = safeCanonicalMerge\(source, target, roster\)/);
+  assert.match(nameMerge, /An authoritative card or persona identity cannot be renamed by a name-based merge/);
 });
 
 test('review UI: grounding and identity reviews use dialogs that clean up without closing the extensions panel', () => {
