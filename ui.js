@@ -2216,6 +2216,9 @@ export function updateEntityPanel(characterName) {
     const renameControl = isAuthoritativeIdentity
       ? '<button class="sme_entity_rename_btn menu_button" title="Rename the source character card or persona instead" disabled><i class="fa-solid fa-pencil"></i></button>'
       : '<button class="sme_entity_rename_btn menu_button" title="Rename this entity"><i class="fa-solid fa-pencil"></i></button>';
+    const deleteControl = isAuthoritativeIdentity
+      ? '<button class="sme_entity_delete_btn menu_button" title="Authoritative card and persona entities cannot be deleted here" disabled><i class="fa-solid fa-trash"></i></button>'
+      : '<button class="sme_entity_delete_btn menu_button" title="Delete this entity"><i class="fa-solid fa-trash"></i></button>';
 
     const $row = $(`
       <div class="sme_entity_row" data-entity-id="${entity.id}" style="position:relative;">
@@ -2232,9 +2235,7 @@ export function updateEntityPanel(characterName) {
         <button class="sme_entity_timeline_btn menu_button" title="View timeline for this entity">
           <i class="fa-solid fa-timeline"></i>
         </button>
-        <button class="sme_entity_delete_btn menu_button" title="Delete this entity">
-          <i class="fa-solid fa-trash"></i>
-        </button>
+        ${deleteControl}
       </div>
     `);
 

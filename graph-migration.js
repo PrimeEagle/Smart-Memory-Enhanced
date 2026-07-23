@@ -75,6 +75,10 @@ function resolveApprovedIdentityAlias(name, roster) {
 
 const normalizeIdentityName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
+function hasAuthoritativeIdentity(entity) {
+  return Boolean(entity?.canonical_card_id || entity?.canonical_persona_id || entity?.canonical_identity_type === 'character_card');
+}
+
 /** Keeps entity evidence auditable without turning every repeated mention into full-chat provenance. */
 export function compactEntityProvenance(entity = {}) {
   const uniqueIndices = [...new Set((entity.source_message_indices ?? []).filter(Number.isInteger))].sort((left, right) => left - right);
@@ -741,7 +745,12 @@ export function reconcileEntityRegistry(entityRegistry, currentMemories) {
  */
 export function setEntityType(entityId, newType, registry) {
   const entity = registry.find((e) => e.id === entityId);
-  if (entity) entity.type = newType;
+  if (!entity) return { updated: false, reason: 'Entity not found.' };
+  if (hasAuthoritativeIdentity(entity)) {
+    return { updated: false, reason: 'Card-backed and persona-backed entities use the authoritative character type.' };
+  }
+  entity.type = newType;
+  return { updated: true };
 }
 
 /**
@@ -758,7 +767,7 @@ export function renameEntityById(entityId, newName, registry) {
   // Entity Registry rename must never make a stored card ID point at a
   // different person; rename the source card/persona instead and let the
   // normal roster reconciliation perform the explicit migration.
-  if (entity.canonical_card_id || entity.canonical_persona_id || entity.canonical_identity_type === 'character_card') {
+  if (hasAuthoritativeIdentity(entity)) {
     return { renamed: false, reason: 'Card-backed and persona-backed entities use their authoritative source name. Rename the character card or persona instead.' };
   }
   const conflict = registry.find((entry) => entry.id !== entityId && entry.type === entity.type && entry.name.toLowerCase() === trimmed.toLowerCase());
@@ -783,13 +792,18 @@ export function renameEntityById(entityId, newName, registry) {
  */
 export function deleteEntityById(entityId, registry, memories) {
   const idx = registry.findIndex((e) => e.id === entityId);
-  if (idx < 0) return;
+  if (idx < 0) return { deleted: false, reason: 'Entity not found.' };
+  const entity = registry[idx];
+  if (hasAuthoritativeIdentity(entity)) {
+    return { deleted: false, reason: 'Card-backed and persona-backed entities are retained from their authoritative source.' };
+  }
   registry.splice(idx, 1);
   for (const mem of memories) {
     if (!Array.isArray(mem.entities)) continue;
     const mIdx = mem.entities.indexOf(entityId);
     if (mIdx >= 0) mem.entities.splice(mIdx, 1);
   }
+  return { deleted: true };
 }
 
 // ---- Parser-debris sanitation ----------------------------------------------

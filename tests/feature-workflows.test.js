@@ -666,8 +666,12 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(rename, /aliases = \[\.\.\.new Set\(\[\.\.\.\(entity\.aliases \?\? \[\]\), oldName\]\)\]/);
   assert.match(rename, /if \(conflict\) return \{ renamed: false/);
   assert.match(rename, /Use Merge instead/);
-  assert.match(rename, /entity\.canonical_card_id \|\| entity\.canonical_persona_id/);
+  assert.match(graph, /function hasAuthoritativeIdentity/);
+  assert.match(rename, /hasAuthoritativeIdentity\(entity\)/);
   assert.match(rename, /Rename the character card or persona instead/);
+  assert.match(graph, /authoritative character type/);
+  assert.match(graph, /retained from their authoritative source/);
+  assert.match(read('ui.js'), /Authoritative card and persona entities cannot be deleted here/);
   const nameMerge = graph.slice(graph.indexOf('export function mergeEntitiesByName'), graph.indexOf('// ---- Character card entity seeding'));
   assert.match(nameMerge, /const safety = safeCanonicalMerge\(source, target, roster\)/);
   assert.match(nameMerge, /An authoritative card or persona identity cannot be renamed by a name-based merge/);
