@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Made canonical character-card and active-persona identities immutable during
+  reconciliation. Unsafe card-to-card, card-to-NPC, and persona-to-card
+  redirects are rejected before structured references can be rewritten.
+- Repaired corrupted card-backed display names from the authoritative active
+  roster and quarantine text/entity mismatches instead of guessing a graph
+  redirect.
+- Scoped active-run integrity checks to the current chat and relevant active
+  cards. Unrelated historical data is reported separately as a maintenance
+  warning rather than degrading the current run.
+- Hardened Relationship History participant and pair-key validation, including
+  collective/self-pair rejection and card-fact preservation for profile
+  validation.
+- Prevented canonical card/persona Entity Registry records from being renamed,
+  retyped, deleted, or absorbed into a different identity through any manual
+  or legacy merge entry point.
+
+### Improved
+
+- Added auditable, source-record terminal identity outcomes; authoritative
+  merge decisions, cross-store representations, unsafe redirects, and legacy
+  maintenance findings are now distinguished in diagnostics.
+- Added compact entity provenance across automatic and manual merges, retaining
+  source records, recent evidence, representative ranges, and bounded history.
+- Strengthened scene participant repair, profile relationship-label validation,
+  canonical relationship validation, and direct-versus-inherited arc
+  provenance.
+- Updated protected prompts to require canonical roster names, prohibit
+  relative/surname-based identity merging, retain clearly participating scene
+  members, and require concrete open arc threads.
+- Clarified Entity Registry controls with authoritative-identity locks and
+  guidance to merge a candidate into its card/persona source instead.
+
+### Tests
+
+- Added regression coverage for the Aaron Holland/Taylor Covington family
+  scenario, collective/self relationship rejection, merge directionality,
+  manual merge provenance, authoritative-identity controls, and source-record
+  identity terminal accounting.
+- The full unit suite passes: 227 tests.
+
 ## [0.8.19] - 2026-07-23
 
 ### Fixed
