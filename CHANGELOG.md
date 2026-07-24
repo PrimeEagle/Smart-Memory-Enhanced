@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed group-chat Fresh Start leaving non-selected active members' personal
+  memory stores intact, which left stale character token bars after shared
+  chat data had been cleared.
+
 ## [0.8.25] - 2026-07-24
 
 ## [0.8.24] - 2026-07-23

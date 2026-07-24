@@ -3959,7 +3959,19 @@ export function bindSettingsUI(ctrl) {
   $('#sme_fresh_start_button').on('click', async function () {
     if (isCatchUpRunning()) return;
     const characterName = ctrl.getSelectedCharacterName();
-    const nameLabel = characterName ? `"${characterName}"` : 'this character';
+    const freshStartContext = getContext();
+    const freshStartCharacterNames = (() => {
+      if (!freshStartContext.groupId) return characterName ? [characterName] : [];
+      const group = freshStartContext.groups?.find((entry) => entry.id === freshStartContext.groupId);
+      if (!group) return characterName ? [characterName] : [];
+      return group.members
+        .filter((avatar) => !(group.disabled_members ?? []).includes(avatar))
+        .map((avatar) => freshStartContext.characters.find((card) => card.avatar === avatar)?.name)
+        .filter(Boolean);
+    })();
+    const nameLabel = freshStartCharacterNames.length > 1
+      ? `${freshStartCharacterNames.length} active group characters`
+      : characterName ? `"${characterName}"` : 'this character';
     if (
       !(await callGenericPopup(
         `Fresh Start for ${nameLabel} - this will permanently delete all Smart Memory Enhanced data for this character and chat.\n\nThis cannot be undone. Continue?`,
@@ -3969,17 +3981,20 @@ export function bindSettingsUI(ctrl) {
       return;
 
     // Clear all chat-scoped tiers.
-    const context = getContext();
+    const context = freshStartContext;
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
     try {
       await runStagedChatCleanup(context, async () => {
-        // Clear long-term memories, relationship history, epistemic knowledge, and canon for the character.
-        if (characterName) {
-          clearCharacterMemories(characterName);
-          clearRelationshipHistory(characterName);
-          clearEpistemicKnowledge(characterName);
-          clearCanon(characterName);
+        // Group token rows represent every active member's personal stores.
+        // Fresh Start therefore clears each active member, not merely the
+        // card currently selected in the settings selector.
+        for (const memberName of freshStartCharacterNames) {
+          clearCharacterMemories(memberName);
+          clearRelationshipHistory(memberName);
+          clearEpistemicKnowledge(memberName);
+          clearCanon(memberName);
+          await clearProfiles(memberName);
         }
 
         delete context.chatMetadata[META_KEY].summary;
@@ -3992,9 +4007,10 @@ export function bindSettingsUI(ctrl) {
         await clearSceneHistory();
         await clearArcs();
         await clearArcSummaries();
-        await clearProfiles(characterName);
         await clearStateLedger();
-        clearChatLocalCharacterData(context, characterName);
+        // These stores belong to this chat, so keeping another group
+        // member's local data would leave an apparently uncleared bar.
+        clearChatLocalCharacterData(context);
       });
     } catch (err) {
       console.error('[Smart Memory Enhanced] Fresh Start persistence failed:', err);
@@ -4004,7 +4020,7 @@ export function bindSettingsUI(ctrl) {
     }
     // Character-scoped stores live in extension settings. Do not schedule that
     // separate persistence write until the chat transaction has committed.
-    if (characterName) saveSettingsDebounced();
+    if (freshStartCharacterNames.length) saveSettingsDebounced();
     // Dismiss any open recap modal.
     $('#sme_recap_overlay').remove();
 
