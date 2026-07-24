@@ -187,6 +187,10 @@ function getSelectedCharacterName() {
 // Tier colours use OKLCH for perceptual uniformity: 10 hues at 36-degree
 // intervals (360/10) with fixed lightness and chroma give maximum perceptual
 // separation regardless of the display. oklch(62% 0.14 H).
+// Keep UI-side identity comparisons scoped and deterministic. This module
+// cannot rely on graph-migration's private helper during final auditing.
+const normalizeIdentityName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+
 const TIER_COLORS = {
   relationships: 'oklch(62% 0.14 0)',
   scenes: 'oklch(62% 0.14 36)',

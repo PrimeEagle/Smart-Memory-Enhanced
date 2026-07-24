@@ -396,6 +396,7 @@ test('final integrity aggregates logical review patterns and classifies text-lin
   assert.match(ui, /structurallySupported/);
   assert.match(ui, /identity_integrity_status = 'repaired'/);
   assert.match(ui, /persona_aliases_already_resolved/);
+  assert.match(ui, /const normalizeIdentityName =/);
   assert.match(graph, /isEntityRolePlaceholder/);
   assert.match(graph, /role_placeholder_entity/);
 });

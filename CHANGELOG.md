@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a late-stage reconciliation crash caused by the persona-alias audit
+  calling a graph-private normalization helper from `ui.js`.
 - Prevented an exact canonical-name decision from targeting a differently
   named or differently identified scoped record. Conflicting stored card IDs
   and exact active-card names are quarantined for review instead of being
