@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Repository history
+
+- Reverified that every published historical `codex/*` branch is an ancestor
+  of the current `main` branch after the latest reconciliation fixes. The
+  branches remain published for auditability; no duplicate merge commits were
+  created.
+
 ### Fixed
 
 - Prevented an exact canonical-name decision from targeting a differently
