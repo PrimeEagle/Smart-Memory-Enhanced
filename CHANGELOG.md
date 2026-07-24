@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.30] - 2026-07-24
+
+### Fixed
+
+- Fixed Memorize Chat failing before extraction because identity-review
+  diagnostics referenced a handler-local `settings` variable before it was
+  initialized.
+
 ## [0.8.29] - 2026-07-24
 
 ### Fixed
