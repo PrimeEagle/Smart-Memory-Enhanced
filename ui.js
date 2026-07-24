@@ -1807,6 +1807,7 @@ export async function reconcileCanonicalEntities(characterName) {
     }
   }
   const staleEntityReferences = [];
+  const repairedStaleEntityReferences = [];
   const textIdentityMismatches = [];
   const textLinkRepairCounters = {
     identity_links_removed_deterministically: 0,
@@ -1817,7 +1818,12 @@ export async function reconcileCanonicalEntities(characterName) {
     legacy_invalid_links_repaired: 0,
     previously_quarantined_links_seen: 0,
     duplicate_repair_events_suppressed: 0,
+    physical_repair_observations: 0,
+    unique_logical_links_repaired: 0,
+    unique_records_affected: 0,
   };
+  const logicalRepairKeys = new Set();
+  const repairedRecordIds = new Set();
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
   const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
   const auditReferences = async (records, store, field = 'entities', compareText = false) => {
@@ -1828,11 +1834,32 @@ export async function reconcileCanonicalEntities(characterName) {
         ? canonicalPeople.filter((name) => new RegExp(`(^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content))
         : [];
       const unsafeIds = [];
-      for (const id of record?.[field] ?? []) {
+      for (let entryIndex = 0; entryIndex < (record?.[field] ?? []).length; entryIndex++) {
+        const id = record?.[field]?.[entryIndex];
         const entityId = typeof id === 'string' ? id : id?.entity_id;
-        if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
         const entity = entityById.get(entityId);
         const linkedName = String(entity?.name ?? '').trim();
+        if (entityId && !knownEntityIds.has(entityId)) {
+          const structuralNames = [record?.owner, record?.character_name, record?.canonical_name, record?.entity_name]
+            .map((value) => String(value ?? '').trim()).filter(Boolean);
+          const candidateNames = [...new Set([...structuralNames, ...namedPeople])];
+          const canonicalTargets = candidateNames
+            .map((name) => (roster.characters ?? []).find((entry) => String(entry.canonicalName ?? '').trim().toLowerCase() === name.toLowerCase()))
+            .filter(Boolean);
+          const target = canonicalTargets.length === 1 ? canonicalTargets[0] : null;
+          const stale = {
+            store, record_id: record?.id ?? null, reference_field_path: `${field}[${entryIndex}]`,
+            actual_entity_id: entityId, actual_entity_name: linkedName || null, actual_entity_store: entity ? store : null,
+            expected_canonical_identity_id: target?.canonical_id ?? target?.id ?? null, expected_entity_id: target?.id ?? null,
+            stale_reason_code: entity ? 'wrong_scope_reference' : 'missing_registry_record', repair_attempted: Boolean(target), repair_result: target ? 'rewritten' : 'not_safe_to_infer',
+          };
+          if (target) {
+            record[field][entryIndex] = typeof id === 'string' ? target.id : { ...id, entity_id: target.id };
+            repairedStaleEntityReferences.push(stale);
+          } else {
+            staleEntityReferences.push(stale);
+          }
+        }
         const explicitlySupported = linkedName && new RegExp(`(^|[^a-z])${linkedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content);
         const structuredSubjectIds = [
           record?.subject_canonical_card_id, record?.target_canonical_card_id,
@@ -1846,22 +1873,28 @@ export async function reconcileCanonicalEntities(characterName) {
         // A simple absent name can be a pronoun or inherited record subject.
         if (compareText && namedPeople.length && linkedName && !explicitlySupported && !structurallySupported) {
           unsafeIds.push(entityId);
+          const canonicalIdentity = entity?.canonical_card_id ?? entity?.canonical_persona_id ?? entityId;
+          const logicalRepairKey = `${record?.id ?? 'unknown'}::${canonicalIdentity}::text_contradicted`;
           const repairKey = `${record?.id ?? 'unknown'}::${entityId}::text_contradicted`;
-          const priorRepair = (record.identity_link_repair_audit ?? []).find((item) => item.repair_key === repairKey);
+          const priorRepair = (record.identity_link_repair_audit ?? []).find((item) => item.logical_repair_key === logicalRepairKey || item.repair_key === repairKey);
           const repair = {
             store, record_id: record?.id ?? null, entity_id: entityId, entity_name: linkedName,
             support_class: 'text_contradicted', removal_reason: 'Other canonical people are explicitly named while this link has no textual or structural support.',
             text_names_detected: namedPeople, structured_subject_ids: structuredSubjectIds,
             source_evidence_ids: record?.source_record_ids ?? record?.source_memory_ids ?? [],
-            repair_key: repairKey, record_created_at: record?.created_at ?? record?.generated_at ?? null,
+            repair_key: repairKey, logical_repair_key: logicalRepairKey, canonical_entity_identity: canonicalIdentity, record_created_at: record?.created_at ?? record?.generated_at ?? null,
             link_origin_stage: record?.link_origin_stage ?? 'unknown', previously_quarantined: Boolean(priorRepair),
           };
-          if (priorRepair) {
+          textLinkRepairCounters.physical_repair_observations++;
+          if (priorRepair || logicalRepairKeys.has(logicalRepairKey)) {
             textLinkRepairCounters.previously_quarantined_links_seen++;
             textLinkRepairCounters.duplicate_repair_events_suppressed++;
           } else {
+            logicalRepairKeys.add(logicalRepairKey);
+            repairedRecordIds.add(record?.id ?? 'unknown');
             textIdentityMismatches.push(repair);
             textLinkRepairCounters.legacy_invalid_links_repaired++;
+            textLinkRepairCounters.unique_logical_links_repaired++;
             record.identity_link_repair_audit = [...(record.identity_link_repair_audit ?? []), { ...repair, repaired_at: Date.now() }];
           }
         }
@@ -1880,6 +1913,7 @@ export async function reconcileCanonicalEntities(characterName) {
   for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`, 'entities', true);
   await auditReferences(scenes, 'scenes', 'participant_references');
   await auditReferences(arcs, 'arcs', 'participant_references');
+  textLinkRepairCounters.unique_records_affected = repairedRecordIds.size;
   // State Ledger cards use a single canonical card link rather than the
   // memory-style `entities` list.  Check it separately so the audit covers
   // every structured store without treating free-form state-card text as an
@@ -2003,6 +2037,7 @@ export async function reconcileCanonicalEntities(characterName) {
         : 'clean';
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
+    repaired_stale_entity_references: repairedStaleEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
     text_link_repair_counters: textLinkRepairCounters,
     card_identity_mismatches: cardIdentityMismatches,

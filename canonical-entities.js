@@ -2,7 +2,21 @@
 
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const words = (value) => normalize(value).split(' ').filter(Boolean);
+const editDistance = (left, right) => {
+  const a = String(left ?? ''); const b = String(right ?? '');
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    let previous = row[0]; row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const prior = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
+      previous = prior;
+    }
+  }
+  return row[b.length];
+};
 const PERSONA_PLACEHOLDERS = new Set(['', 'unused', 'unknown', 'user', 'default', 'user-default', 'user-default.png', 'null', 'undefined']);
+const COMMON_NOUN_ENTITY_FRAGMENTS = new Set(['sides', 'both sides', 'family sides', 'parents', 'people', 'others', 'someone', 'everyone']);
 const isUsablePersonaName = (value) => {
   const name = String(value ?? '').trim();
   return Boolean(name) && !PERSONA_PLACEHOLDERS.has(normalize(name)) && !/^(?:user[-_ ]?default|default[-_ ]?user)\.(?:png|jpg|jpeg|webp)$/i.test(name);
@@ -299,20 +313,56 @@ export function resolveCanonicalCharacterName(candidateName, roster, existingEnt
  */
 export function resolveEntityCandidate(candidate, canonicalRoster, registries = [], evidence = {}) {
   const name = typeof candidate === 'string' ? candidate : candidate?.name;
+  const normalizedCandidate = normalize(name);
   const entries = Array.isArray(registries)
     ? registries.flatMap((registry) => Array.isArray(registry) ? registry : [registry])
     : [];
-  const resolution = resolveCanonicalCharacterName(name, canonicalRoster, entries);
+  let resolution = resolveCanonicalCharacterName(name, canonicalRoster, entries);
   const synthetic = normalizeSyntheticIdentityQualifier(name, [...getCanonicalRosterPeople(canonicalRoster), ...entries]);
   const sourceRecordIds = [...new Set((evidence.source_record_ids ?? evidence.sourceRecordIds ?? []).filter(Boolean))];
   const sourceMessageIndices = [...new Set((evidence.source_message_indices ?? evidence.sourceMessageIndices ?? []).filter(Number.isInteger))];
   const explicitlyGrounded = evidence.grounding_status === 'direct' || sourceMessageIndices.length > 0;
   const repeated = Number(evidence.repeated_mentions ?? evidence.repeatedMentions ?? 0) >= 2 || sourceRecordIds.length >= 2;
+  // A full-name spelling correction is deliberately stricter than alias
+  // resolution: same surname, one edit in the given name, exactly one active
+  // authoritative target, direct source support, and no manually confirmed
+  // distinct record may all be required before a durable redirect is allowed.
+  if (resolution.status === 'unresolved' && explicitlyGrounded) {
+    const candidateWords = words(name);
+    const manuallyDistinct = entries.some((entry) => normalize(entry?.name) === normalize(name) && (entry?.manual_locked || entry?.manual_confirmed));
+    const typoCandidates = !manuallyDistinct && candidateWords.length >= 2
+      ? getCanonicalRosterPeople(canonicalRoster).filter((entry) => {
+        const targetWords = words(entry.canonicalName);
+        return targetWords.length >= 2 && targetWords.at(-1) === candidateWords.at(-1) && editDistance(targetWords.slice(0, -1).join(' '), candidateWords.slice(0, -1).join(' ')) === 1;
+      })
+      : [];
+    if (typoCandidates.length === 1) {
+      const match = typoCandidates[0];
+      resolution = {
+        ...resolved(String(name ?? '').trim(), match, 'Deterministic typo match against authoritative full name.'),
+        matching_rule: 'deterministic_typo_match',
+        typo_diagnostic: {
+          candidate_name: String(name ?? '').trim(), canonical_name: match.canonicalName,
+          edit_distance: 1, surname_equal: true, competing_candidates: 0,
+          source_support: sourceMessageIndices.length ? 'direct_message_indices' : 'direct_grounding',
+        },
+      };
+    }
+  }
+  if (COMMON_NOUN_ENTITY_FRAGMENTS.has(normalizedCandidate)) {
+    return {
+      status: 'rejected', candidateName: String(name ?? '').trim(), reason: 'Common-noun parser fragment.',
+      matching_rule: 'common_noun_fragment', shouldCreateEntity: false, shouldAddAlias: false,
+      entity_name_classification: 'common_noun_fragment', promotion: { allowed: false },
+    };
+  }
+  const nameLooksProper = /^[A-Z][\p{L}'-]*(?:\s+[A-Z][\p{L}'-]*)*$/u.test(String(name ?? '').trim());
   return {
     ...resolution,
     candidateName: String(name ?? '').trim(),
     synthetic_parenthetical: synthetic.qualifier_removed ? { base_name: synthetic.normalized_name, qualifier_type: synthetic.qualifier_type } : null,
-    promotion: resolution.shouldCreateEntity && (explicitlyGrounded || repeated || evidence.manual === true)
+    entity_name_classification: resolution.status === 'resolved' ? 'known_canonical' : resolution.status === 'rejected' ? 'role_placeholder' : nameLooksProper ? 'proper_name_like' : 'ambiguous',
+    promotion: resolution.shouldCreateEntity && (nameLooksProper || evidence.structured_person_tag || evidence.manual === true) && (explicitlyGrounded || repeated || evidence.manual === true)
       ? {
         allowed: true,
         creation_reason: evidence.manual ? 'manual' : explicitlyGrounded ? 'grounded-record' : 'repeated-mention',

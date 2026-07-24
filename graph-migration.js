@@ -555,6 +555,28 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       });
       continue;
     }
+    const entityCandidate = resolveEntityCandidate(entity.name, roster, registry, {
+      grounding_status: entity.source_message_indices?.length ? 'direct' : 'none',
+      source_message_indices: entity.source_message_indices ?? [],
+      source_record_ids: entity.source_record_ids ?? [],
+      manual: Boolean(entity.manual_locked || entity.manual_confirmed),
+    });
+    if (entityCandidate.matching_rule === 'common_noun_fragment' && !entity.manual_locked && !entity.manual_confirmed) {
+      for (const memory of memories) {
+        if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
+        memory.entities = memory.entities.filter((id) => id !== entity.id);
+        report.references_redirected++;
+      }
+      registry.splice(registry.indexOf(entity), 1);
+      report.changed = true;
+      report.durable_entity_removed++;
+      report.outcomes.push({
+        candidate: entity.name, source_record_id: entity.id,
+        terminal_outcome: 'parser_debris_removed', reason_code: 'common_noun_fragment',
+        reason: 'Common-noun fragment is not a durable named entity.',
+      });
+      continue;
+    }
     // A persisted card ID is authoritative. Repair a prior corrupted display
     // name before resolution so a Taylor card can never be resolved as Margaret.
     const existingIdentity = getAuthoritativeIdentity(entity, roster);

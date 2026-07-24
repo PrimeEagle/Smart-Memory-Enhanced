@@ -688,6 +688,13 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
   assert.equal(result.world_state, 'Location: council chamber');
 });
 
+test('parseProfileOutput: ignores bounded conversational preamble before recognised sections', () => {
+  const result = parseProfileOutput(`Here is the requested profile:\n\n## Character State\nGoals: keep the treaty intact\n\n## World State\nLocation: council chamber\n\n## Relationship Matrix\nAlissa: trusted ally`);
+  assert.equal(result.character_state, 'Goals: keep the treaty intact');
+  assert.equal(result.world_state, 'Location: council chamber');
+  assert.equal(result.relationship_matrix, 'Alissa: trusted ally');
+});
+
 test('parseProfileOutput: accepts an unclosed but recognisable profile tag', () => {
   const result = parseProfileOutput('<character-state>\nGoals: leave safely');
   assert.equal(result.character_state, 'Goals: leave safely');

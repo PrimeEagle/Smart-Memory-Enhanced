@@ -70,15 +70,19 @@ test('Enhanced slash commands and global UI hooks use independent names', () => 
   assert.match(css, /body\.sme-read-only/);
 });
 
-test('catch-up preserves prior profiles and warns when output remains unparseable', () => {
+test('catch-up records one named terminal profile outcome when output remains unparseable', () => {
   const profiles = read('profiles.js');
   const settings = read('settings.js');
   assert.match(profiles, /options\.throwOnFailure/);
-  assert.match(profiles, /options\.onMalformedOutput\?\./);
+  assert.match(profiles, /options\.onTerminal\?\./);
+  assert.match(profiles, /profile_identity: characterName/);
+  assert.match(profiles, /terminal_outcome: prior \? 'preserved_prior' : 'rejected_unparseable'/);
+  assert.match(profiles, /\$\{characterName\} profile generation produced unparseable output/);
   assert.match(profiles, /return loadProfiles\(characterName\);/);
-  assert.match(settings, /onMalformedOutput: \(detail\) => \{ malformedProfileOutput = detail; \}/);
-  assert.match(settings, /recordCatchUpWarning\('profile generation returned malformed output after format repair/);
-  assert.match(profiles, /\[Smart Memory Enhanced\] Profile generation produced unparseable output/);
+  assert.match(settings, /onTerminal: \(detail\) => \{ profileTerminal = detail; \}/);
+  assert.match(settings, /\$\{name\} profile generation produced unparseable output/);
+  assert.match(settings, /profiles: \{ profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: \[\], attempts: \[\]/);
+  assert.match(profiles, /profile generation produced unparseable output/);
   for (const file of ['index.js', 'settings.js', 'longterm.js', 'session.js', 'profiles.js']) {
     assert.doesNotMatch(read(file), /\[SmartMemory\]/);
   }
@@ -413,11 +417,27 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(ui, /identity_link_repair_audit/);
   assert.match(ui, /duplicate_repair_events_suppressed/);
   assert.match(ui, /previously_quarantined_links_seen/);
+  assert.match(ui, /unique_logical_links_repaired/);
+  assert.match(ui, /physical_repair_observations/);
   assert.match(settings, /heuristic_break_candidates/);
+  assert.match(settings, /boundary_candidates_evaluated/);
+  assert.match(settings, /average_candidates_per_request/);
   assert.match(settings, /ai_breaks_added/);
   assert.match(settings, /final_break_indices/);
   assert.match(settings, /scene_boundary_source/);
   assert.match(settings, /boundary_source: boundarySource/);
+});
+
+test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {
+  const settings = read('settings.js');
+  const ui = read('ui.js');
+  assert.match(settings, /identity_review: \{ existing_at_start:/);
+  assert.match(settings, /created_this_run/);
+  assert.match(settings, /stale_entity_references_remaining/);
+  assert.doesNotMatch(settings, /cross_store_stale_entity_references/);
+  assert.match(ui, /repaired_stale_entity_references/);
+  assert.match(ui, /reference_field_path/);
+  assert.match(ui, /repair_result: target \? 'rewritten' : 'not_safe_to_infer'/);
 });
 
 test('profile disposition counters are derived once from field_validation', () => {

@@ -9,10 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A profile response that remains malformed after its bounded format-only
-  repair now preserves the prior approved profile and records a profile quality
-  warning instead of marking an otherwise completed catch-up run partial.
-  Provider and persistence failures remain run errors.
+- Added one privacy-safe terminal diagnostics record per profile attempt,
+  including the card identity, parser path, section shape, repair result, and
+  saved/preserved outcome. A malformed profile now names the affected
+  character in the run error while preserving approved prior data.
+- Made profile recovery explicitly accept only a safe partial profile with
+  Character State and World State; a missing Relationship Matrix is preserved
+  from the prior approved profile when available.
+- Added source-supported, unambiguous full-name typo matching and rejected
+  common-noun entity debris such as `sides`; legacy unprotected debris is
+  removed during entity reconciliation.
+- Repaired deterministically identifiable dangling entity links during the
+  final audit, with structured repair diagnostics, and consolidated duplicate
+  stale-reference quality wording into one truthful reason.
+- Separated existing identity-review queue items from new run results, and
+  deduplicated logical entity-link repairs across store wrappers.
+- Added scene-boundary request-volume diagnostics without changing detector
+  behavior or scene quality.
 
 ## [0.8.27] - 2026-07-24
 

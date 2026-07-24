@@ -329,6 +329,30 @@ test('entity resolver permits a grounded unknown NPC but never promotes an unsup
   assert.equal(variant.promotion.allowed, false);
 });
 
+test('entity resolver applies a source-supported unique full-name typo correction only', () => {
+  const typoRoster = buildCanonicalCharacterRoster({
+    characters: [{ id: 'taylor-card', name: 'Taylor Covington' }, { id: 'kyler-card', name: 'Kyler Covington' }],
+  });
+  const typo = resolveEntityCandidate('Tayor Covington', typoRoster, [], { grounding_status: 'direct', source_message_indices: [12] });
+  assert.equal(typo.canonicalName, 'Taylor Covington');
+  assert.equal(typo.matching_rule, 'deterministic_typo_match');
+  assert.equal(typo.typo_diagnostic.surname_equal, true);
+  const unsupported = resolveEntityCandidate('Tayor Covington', typoRoster, [], {});
+  assert.equal(unsupported.status, 'unresolved');
+  const locked = resolveEntityCandidate('Tayor Covington', typoRoster, [{ name: 'Tayor Covington', manual_locked: true }], { grounding_status: 'direct', source_message_indices: [12] });
+  assert.equal(locked.status, 'resolved');
+  assert.equal(locked.reason, 'Existing approved entity alias.');
+});
+
+test('entity resolver rejects bounded common-noun parser fragments without blocking grounded names', () => {
+  const debris = resolveEntityCandidate('sides', roster, [], { grounding_status: 'direct', source_message_indices: [3] });
+  assert.equal(debris.status, 'rejected');
+  assert.equal(debris.entity_name_classification, 'common_noun_fragment');
+  assert.equal(debris.promotion.allowed, false);
+  const lowercaseManual = resolveEntityCandidate('cher', roster, [], { manual: true, source_message_indices: [3] });
+  assert.equal(lowercaseManual.promotion.allowed, true);
+});
+
 test('integration: registry candidates collapse to the canonical card identity', () => {
   const candidates = ['Paul', 'Paul Kawaguchi', 'Sophie'].map((name) => resolveCanonicalCharacterName(name, roster));
   assert.deepEqual(candidates.map((entry) => entry.canonicalName ?? entry.candidateName), ['Paul Schmidt', 'Paul Schmidt', 'Sophie']);

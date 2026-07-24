@@ -3043,7 +3043,8 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      identity_review: { existing_at_start: settings.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: settings.identity_review_queue?.length ?? 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
@@ -3302,7 +3303,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_added: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0 };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_added: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, average_candidates_per_request: 0, batched_requests: 0, fallback_boundaries: 0 };
           let prevAiMsg = '';
 
           /**
@@ -3331,6 +3332,8 @@ export function bindSettingsUI(ctrl) {
             if (isAiMsg && settings.scene_ai_detect) {
               setStatusMessage(`Detecting scene breaks... (${msgIdx + 1}/${allMessages.length})`);
               sceneAudit.scene_detector_model_request_count++;
+              sceneAudit.boundary_candidates_evaluated++;
+              sceneAudit.requests_sent++;
             }
 
             // AI detection only runs on AI messages - user messages are skipped,
@@ -3339,7 +3342,8 @@ export function bindSettingsUI(ctrl) {
               ? isAiMsg &&
                 sceneBuffer.length >= minMessages &&
                 (await detectSceneBreakAI(msgText, prevAiMsg, (err) => {
-                  sceneAudit.detection_failed++;
+                sceneAudit.detection_failed++;
+                sceneAudit.fallback_boundaries++;
                   recordCatchUpWarning('AI scene-break detection warning', err, 'scenes');
                 }))
               : detectSceneBreakHeuristic(msgText) && sceneBuffer.length >= minMessages;
@@ -3413,6 +3417,7 @@ export function bindSettingsUI(ctrl) {
           await saveSceneHistory(sceneHistory).catch((err) => {
             recordCatchUpError('scene history save error', err);
           });
+          sceneAudit.average_candidates_per_request = sceneAudit.requests_sent ? Number((sceneAudit.boundary_candidates_evaluated / sceneAudit.requests_sent).toFixed(2)) : 0;
           runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;
@@ -3458,18 +3463,20 @@ export function bindSettingsUI(ctrl) {
         for (const name of catchUpCharacterNames) {
           setStatusMessage(`Generating character & world profiles for ${name}...`);
           runResult.profiles.profiles_attempted++;
-          let malformedProfileOutput = null;
+          let profileTerminal = null;
           const profiles = await generateProfiles(name, null, {
             throwOnFailure: true,
-            onMalformedOutput: (detail) => { malformedProfileOutput = detail; },
+            onTerminal: (detail) => { profileTerminal = detail; },
           }).catch((err) => {
-            recordCatchUpError('profile generation error', err);
+            recordCatchUpError(err?.sme_profile_malformed_output
+              ? `${name} profile generation produced unparseable output`
+              : `${name} profile generation error`, err);
             return null;
           });
-          if (malformedProfileOutput) {
+          if (profileTerminal) runResult.profiles.attempts.push(profileTerminal);
+          if (profileTerminal?.terminal_outcome === 'preserved_prior' || profileTerminal?.terminal_outcome === 'rejected_unparseable') {
             runResult.profiles.malformed_output++;
-            runResult.profiles.malformed_output_details.push(malformedProfileOutput);
-            recordCatchUpWarning('profile generation returned malformed output after format repair; prior profile was preserved', new Error('Profile output did not satisfy the required structured format.'), 'profiles');
+            runResult.profiles.malformed_output_details.push(profileTerminal);
             continue;
           }
           // Update UI with the selected character's profiles - other characters'
@@ -3689,6 +3696,10 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.unsafe_merge_candidates_rejected = reconciliation.integrity_audit?.unsafe_merge_candidates_rejected ?? 0;
       runResult.finalReconciliation.safe_merge_candidates_completed = reconciliation.integrity_audit?.safe_merge_candidates_completed ?? 0;
       runResult.finalReconciliation.review_items_created = reconciliation.integrity_audit?.review_items_created ?? 0;
+      runResult.identity_review.created_this_run = reconciliation.integrity_audit?.review_items_created ?? 0;
+      runResult.identity_review.resolved_this_run = reconciliation.resolved_review_items_removed ?? 0;
+      runResult.identity_review.removed_as_duplicate = reconciliation.identity_decision_duplicates_removed ?? 0;
+      runResult.identity_review.remaining_at_end = reconciliation.integrity_audit?.identity_review_items ?? runResult.identity_review.existing_at_start;
       runResult.finalReconciliation.personaRosterSize = runResult.finalReconciliation.persona_roster_size;
       runResult.finalReconciliation.personaAliasesMerged = runResult.finalReconciliation.persona_aliases_merged;
       runResult.finalReconciliation.cardLocalEntitiesMerged = runResult.finalReconciliation.card_local_entities_merged;
@@ -3759,14 +3770,15 @@ export function bindSettingsUI(ctrl) {
         message: `${identityFailures} unsafe identity merge pattern${identityFailures === 1 ? '' : 's'} blocked across ${runResult.identityResolution.logical_review_items.reduce((count, item) => count + item.observation_count, 0)} store observations.`,
       });
       if ((reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) > 0) qualityReasons.push({
-        code: 'cross_store_stale_entity_references',
+        code: 'stale_entity_references_remaining',
         tier: 'identity',
-        message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} could not be resolved after reconciliation.`,
+        count: reconciliation.integrity_audit.stale_entity_references.length,
+        message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} remain after reconciliation.`,
       });
       if ((reconciliation.integrity_audit?.text_identity_mismatches?.length ?? 0) > 0) qualityReasons.push({
         code: 'text_identity_links_quarantined',
         tier: 'identity',
-        message: `${reconciliation.integrity_audit.text_identity_mismatches.length} entity link${reconciliation.integrity_audit.text_identity_mismatches.length === 1 ? '' : 's'} contradicted their record text and were removed for review.`,
+        message: `${reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length} unique legacy entity link${(reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length) === 1 ? '' : 's'} ${reconciliation.integrity_audit.text_link_repair_counters?.physical_repair_observations > 1 ? `were repaired across ${reconciliation.integrity_audit.text_link_repair_counters.physical_repair_observations} store observations.` : 'was repaired.'}`,
       });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
@@ -3794,7 +3806,6 @@ export function bindSettingsUI(ctrl) {
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
-        ['no_stale_entity_references', !(reconciliation.integrity_audit?.stale_entity_references?.length), 'Structured records retain stale entity references.'],
         ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {
