@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-07-24
+
+### Repository history
+
+- Re-audited all local and published historical branches before this release.
+  Every branch is already contained in `main`; the published `codex/*`
+  branches remain available as an audit trail and required no duplicate merge.
+
 ### Fixed
 
 - Added one privacy-safe terminal diagnostics record per profile attempt,
