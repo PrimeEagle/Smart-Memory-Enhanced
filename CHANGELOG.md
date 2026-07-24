@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Repository history
+
+- Reverified after the v0.8.26 regression-fix work that all published
+  historical `codex/*` branches are already merged into `main`. They remain
+  published as an audit trail; no duplicate merge commits were created.
+
 ## [0.8.26] - 2026-07-24
 
 ### Fixed
