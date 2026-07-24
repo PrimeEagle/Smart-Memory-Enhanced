@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.21] - 2026-07-23
+
+### Fixed
+
+- Fixed final reconciliation handling when an unsafe merge is blocked before
+  any data is changed. The run now completes its safe reconciliation work and
+  records a degraded, reviewable diagnostic instead of rolling back the entire
+  late stage and reporting a partial run.
+
 ## [0.8.20] - 2026-07-23
 
 ### Fixed
