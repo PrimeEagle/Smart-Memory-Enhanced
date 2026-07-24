@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.31] - 2026-07-24
+
+### Repository history
+
+- Re-audited all local and published historical branches. Every branch is
+  already contained in `main`; the published historical branches remain as an
+  audit trail and required no duplicate merge commits.
+
 ### Fixed
 
 - Rebuilt stale-reference redirects from all pre-merge registry observations,
