@@ -3561,27 +3561,28 @@ export function bindSettingsUI(ctrl) {
         quarantined_arc_summaries: reconciliation.quarantined_arc_summaries,
       };
       const deduplicatedTerminalOutcomes = [...(reconciliation.identity_outcomes ?? [])].filter(Boolean).reduce((records, outcome) => {
-        const key = [
-          String(outcome.candidate ?? outcome.name ?? '').trim().toLowerCase(),
-          String(outcome.source_store ?? '').trim().toLowerCase(),
-          String(outcome.source_record_id ?? '').trim(),
-          String(outcome.terminal_outcome ?? '').trim().toLowerCase(),
-          String(outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? '').trim().toLowerCase(),
-        ].join('|');
+        // A source record ID is only unique within its store. Preserve one
+        // physical terminal record per scoped observation; a different
+        // terminal decision for the same composite key is a real conflict.
+        const key = `${String(outcome.source_store ?? 'unknown').trim().toLowerCase()}::${String(outcome.source_record_id ?? '').trim()}`;
         const prior = records.get(key);
-        if (!prior) records.set(key, { ...outcome, source_record_ids: [...new Set((outcome.source_record_ids ?? []).filter(Boolean))] });
-        else prior.source_record_ids = [...new Set([...(prior.source_record_ids ?? []), ...(outcome.source_record_ids ?? [])].filter(Boolean))];
+        if (!prior) records.set(key, { ...outcome, terminal_key: key, source_record_ids: [...new Set((outcome.source_record_ids ?? []).filter(Boolean))] });
+        else {
+          prior.source_record_ids = [...new Set([...(prior.source_record_ids ?? []), ...(outcome.source_record_ids ?? [])].filter(Boolean))];
+          prior._conflicting_terminal_outcomes ??= [];
+          if (`${prior.terminal_outcome}|${prior.canonical_target_id ?? prior.targetId ?? prior.canonicalName ?? ''}` !== `${outcome.terminal_outcome}|${outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? ''}`) prior._conflicting_terminal_outcomes.push(outcome);
+        }
         return records;
       }, new Map());
       const sourceRecordKeys = new Set((reconciliation.identity_outcomes ?? [])
-        .map((outcome) => `${outcome.source_store ?? 'unknown'}|${outcome.source_record_id ?? ''}`)
-        .filter((key) => !key.endsWith('|')));
+        .map((outcome) => `${outcome.source_store ?? 'unknown'}::${outcome.source_record_id ?? ''}`)
+        .filter((key) => !key.endsWith('::')));
       const terminalsBySource = new Map();
       const missingSourceTerminals = [];
       for (const outcome of deduplicatedTerminalOutcomes.values()) {
         const sourceId = String(outcome.source_record_id ?? '').trim();
         if (!sourceId) { missingSourceTerminals.push(outcome); continue; }
-        const sourceKey = `${outcome.source_store ?? 'unknown'}|${sourceId}`;
+        const sourceKey = `${outcome.source_store ?? 'unknown'}::${sourceId}`;
         (terminalsBySource.get(sourceKey) ?? terminalsBySource.set(sourceKey, []).get(sourceKey)).push(outcome);
       }
       const conflictingTerminalRecords = [
@@ -3611,6 +3612,29 @@ export function bindSettingsUI(ctrl) {
         final_terminal_records: [...finalTerminalRecords.values()],
         terminal_outcomes: [...finalTerminalRecords.values()],
       };
+      const logicalReviewItems = [...finalTerminalRecords.values()]
+        .filter((outcome) => ['unsafe_identity_merge_rejected', 'exact_target_name_mismatch', 'stored_card_id_name_conflict'].includes(outcome.reason_code))
+        .reduce((items, outcome) => {
+          const sourceIdentity = outcome.source_card_id ?? outcome.source_persona_id ?? outcome.source_record_id;
+          const targetIdentity = outcome.proposed_target_card_id ?? outcome.target_card_id ?? outcome.proposed_target_record_id ?? outcome.targetId ?? 'none';
+          const key = `${sourceIdentity}::${targetIdentity}::${outcome.reason_code}`;
+          const item = items.get(key) ?? {
+            source_identity: sourceIdentity,
+            proposed_target_identity: targetIdentity,
+            reason_code: outcome.reason_code,
+            affected_source_records: [], affected_stores: [], observation_count: 0,
+          };
+          item.observation_count++;
+          item.affected_source_records.push(outcome.source_record_id);
+          item.affected_stores.push(outcome.source_store);
+          items.set(key, item);
+          return items;
+        }, new Map());
+      runResult.identityResolution.logical_review_items = [...logicalReviewItems.values()].map((item) => ({
+        ...item,
+        affected_source_records: [...new Set(item.affected_source_records.filter(Boolean))],
+        affected_stores: [...new Set(item.affected_stores.filter(Boolean))],
+      }));
       runResult.finalReconciliation.persona_aliases_merged = reconciliation.merged.filter((entry) => entry.reason_code === 'unique_active_persona_first_name').length;
       runResult.finalReconciliation.card_local_entities_merged = reconciliation.card_local_reports?.reduce((count, report) => count + report.merged.length, 0) ?? 0;
       runResult.finalReconciliation.relationship_pairs_merged = (reconciliation.relationship_pairs_merged ?? 0) + reconciliation.merged.filter((entry) => entry.reason_code === 'canonical_duplicate_merge').length;
@@ -3634,6 +3658,16 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.relationshipPairsMerged = runResult.finalReconciliation.relationship_pairs_merged;
       runResult.finalReconciliation.participantListsRewritten = runResult.finalReconciliation.participant_lists_rewritten;
       runResult.finalReconciliation.syntheticParentheticalsRemoved = runResult.finalReconciliation.synthetic_parentheticals_removed;
+      // Finalize the one canonical arc outcome before evaluating quality.
+      // Compatibility aliases are derived from it, never maintained as a
+      // separately-updated second state.
+      normalizeArcExtractionDiagnostics(runResult.arcExtraction);
+      if (!runResult.arcExtraction.terminal_outcome && runResult.arcExtraction.request_completed > 0) {
+        runResult.arcExtraction.terminal_outcome = runResult.arcExtraction.parsed_candidates > 0
+          ? 'completed_with_candidates'
+          : 'completed_no_candidates';
+        runResult.arcExtraction.terminalOutcome = runResult.arcExtraction.terminal_outcome;
+      }
       const qualityReasons = [];
       const sessionFailureRatio = runResult.sessionExtraction.emitted > 0
         ? runResult.sessionExtraction.missingProvenance / runResult.sessionExtraction.emitted
@@ -3681,11 +3715,11 @@ export function bindSettingsUI(ctrl) {
         tier: 'profiles',
         message: `${runResult.profiles.relationship_conflicts_dropped} conflicting relationship profile field${runResult.profiles.relationship_conflicts_dropped === 1 ? '' : 's'} dropped.`,
       });
-      const identityFailures = (runResult.identityResolutionDetails?.unmatched?.length ?? 0) + (runResult.identityResolutionDetails?.needs_review?.length ?? 0);
-      if (identityFailures >= 5) qualityReasons.push({
+      const identityFailures = runResult.identityResolution.logical_review_items?.length ?? 0;
+      if (identityFailures > 0) qualityReasons.push({
         code: 'identity_reconciliation_failure_volume',
         tier: 'identity',
-        message: `${identityFailures} identity reconciliation candidates need review.`,
+        message: `${identityFailures} unsafe identity merge pattern${identityFailures === 1 ? '' : 's'} blocked across ${runResult.identityResolution.logical_review_items.reduce((count, item) => count + item.observation_count, 0)} store observations.`,
       });
       if ((reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) > 0) qualityReasons.push({
         code: 'cross_store_stale_entity_references',
@@ -3712,7 +3746,7 @@ export function bindSettingsUI(ctrl) {
         ['active_persona_snapshot_present', Boolean(runResult.runtimeContext?.active_persona?.canonical_name), 'active_persona_snapshot_missing'],
         ['active_persona_roster_entry_present', !runResult.runtimeContext?.active_persona?.canonical_name || runResult.finalReconciliation.persona_roster_size > 0, 'active_persona_roster_entry_missing'],
         ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'active_persona_invalid'],
-        ['deterministic_persona_aliases_merged', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.skipped ?? []).some((entry) => /persona|Kyle/i.test(`${entry.name} ${entry.reason}`)), 'A deterministic active-persona alias remains unresolved.'],
+        ['deterministic_persona_aliases_resolved', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.integrity_audit?.persona_aliases?.persona_aliases_unresolved), 'A deterministic active-persona alias remains unresolved.'],
         ['no_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
         ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
@@ -3724,7 +3758,6 @@ export function bindSettingsUI(ctrl) {
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
         ['no_stale_entity_references', !(reconciliation.integrity_audit?.stale_entity_references?.length), 'Structured records retain stale entity references.'],
-        ['no_text_identity_mismatches', !(reconciliation.integrity_audit?.text_identity_mismatches?.length), 'Entity links contradicted record text and were quarantined for review.'],
         ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {
@@ -3744,7 +3777,6 @@ export function bindSettingsUI(ctrl) {
           ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
           : 'completed';
       // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
-      normalizeArcExtractionDiagnostics(runResult.arcExtraction);
       const diagnostics = {
         version: 1,
         created_at: Date.now(),

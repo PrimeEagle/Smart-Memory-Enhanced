@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented an exact canonical-name decision from targeting a differently
+  named or differently identified scoped record. Conflicting stored card IDs
+  and exact active-card names are quarantined for review instead of being
+  silently renamed or proposed as a merge.
+- Aggregated repeated unsafe identity observations into logical review patterns
+  while preserving store-scoped terminal records for audit.
+- Made terminal identity reconciliation use `source_store::source_record_id`
+  consistently and finalized arc outcomes before quality evaluation.
+- Replaced the false persona-alias warning with final-state inspection.
+- Removed duplicate text-link quality warnings; deterministic unsupported-link
+  repairs now retain structured support, record an audit, and mark cleanly
+  repaired records as `repaired`.
+- Rejected exact role placeholders such as `supporting_character` and cleaned
+  unprotected existing placeholder entities during reconciliation.
+
+### Improved
+
+- Strengthened protected entity-extraction guidance against cross-name exact
+  matches and role-placeholder entities.
+
 ## [0.8.23] - 2026-07-23
 
 ### Fixed

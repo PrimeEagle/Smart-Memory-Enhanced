@@ -1804,6 +1804,12 @@ export async function reconcileCanonicalEntities(characterName) {
   }
   const staleEntityReferences = [];
   const textIdentityMismatches = [];
+  const textLinkRepairCounters = {
+    identity_links_removed_deterministically: 0,
+    records_repaired_cleanly: 0,
+    records_quarantined_for_review: 0,
+    records_left_ambiguous: 0,
+  };
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
   const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
   const auditReferences = async (records, store, field = 'entities', compareText = false) => {
@@ -1819,14 +1825,32 @@ export async function reconcileCanonicalEntities(characterName) {
         if (entityId && !knownEntityIds.has(entityId)) staleEntityReferences.push({ store, record_id: record?.id ?? null, entity_id: entityId });
         const entity = entityById.get(entityId);
         const linkedName = String(entity?.name ?? '').trim();
-        if (compareText && namedPeople.length && linkedName && !new RegExp(`(^|[^a-z])${linkedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content)) {
+        const explicitlySupported = linkedName && new RegExp(`(^|[^a-z])${linkedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content);
+        const structuredSubjectIds = [
+          record?.subject_canonical_card_id, record?.target_canonical_card_id,
+          record?.owner_canonical_card_id, record?.canonical_entity_id,
+          record?.pronoun_resolution?.entity_id,
+        ].filter(Boolean).map(String);
+        const structurallySupported = structuredSubjectIds.includes(String(entityId)) ||
+          String(record?.owner ?? record?.character_name ?? '').trim().toLowerCase() === linkedName.toLowerCase();
+        // Only remove a link when other explicitly named people prove it is
+        // unrelated and no structured ownership/subject evidence supports it.
+        // A simple absent name can be a pronoun or inherited record subject.
+        if (compareText && namedPeople.length && linkedName && !explicitlySupported && !structurallySupported) {
           unsafeIds.push(entityId);
-          textIdentityMismatches.push({ store, record_id: record?.id ?? null, entity_id: entityId, linked_name: linkedName, named_people: namedPeople });
+          textIdentityMismatches.push({
+            store, record_id: record?.id ?? null, entity_id: entityId, entity_name: linkedName,
+            support_class: 'text_contradicted', removal_reason: 'Other canonical people are explicitly named while this link has no textual or structural support.',
+            text_names_detected: namedPeople, structured_subject_ids: structuredSubjectIds,
+            source_evidence_ids: record?.source_record_ids ?? record?.source_memory_ids ?? [],
+          });
         }
       }
       if (unsafeIds.length) {
         record[field] = record[field].filter((entry) => !unsafeIds.includes(typeof entry === 'string' ? entry : entry?.entity_id));
-        record.identity_integrity_status = 'needs_review';
+        textLinkRepairCounters.identity_links_removed_deterministically += unsafeIds.length;
+        record.identity_integrity_status = 'repaired';
+        textLinkRepairCounters.records_repaired_cleanly++;
         record.identity_integrity_issues = [...new Set([...(record.identity_integrity_issues ?? []), 'Suppressed an entity link whose canonical name is absent from the record text.'])];
       }
     }
@@ -1933,6 +1957,19 @@ export async function reconcileCanonicalEntities(characterName) {
   // diagnostic context for a proposal the safety boundary refused.
   const rejected_unsafe_merges = allReports.flatMap((report) => (report.rejected_unsafe_merges ?? [])
     .map((entry) => ({ ...entry, source_store: report.source_store, proposed_target_store: report.source_store })));
+  const activePersona = (roster.characters ?? []).find((entry) => entry.source === 'user-persona');
+  const personaAliasNames = new Set((activePersona?.aliases ?? []).map((alias) => normalizeIdentityName(alias)).filter(Boolean));
+  const personaRecords = registryGroups.flat().filter((entity) => entity?.canonical_persona_id &&
+    String(entity.canonical_persona_id) === String(activePersona?.canonical_persona_id ?? activePersona?.id ?? '').replace(/^persona:/, ''));
+  const separatePersonaAliases = registryGroups.flat().filter((entity) =>
+    personaAliasNames.has(normalizeIdentityName(entity?.name)) && !personaRecords.includes(entity));
+  const persona_aliases = {
+    persona_aliases_already_resolved: Boolean(activePersona && personaAliasNames.size && personaRecords.length && !separatePersonaAliases.length),
+    persona_aliases_merged: allReports.reduce((count, report) => count + (report.merged ?? []).filter((entry) => entry.reason_code === 'unique_active_persona_first_name').length, 0),
+    persona_aliases_ambiguous: false,
+    persona_aliases_unresolved: separatePersonaAliases.length > 0,
+    separate_alias_records: separatePersonaAliases.map((entity) => ({ id: entity.id ?? null, name: entity.name ?? null })),
+  };
   const integrityStatus = cardIdentityMismatches.length
     ? 'unsafe'
     : blocked_unsafe_identity_merges.length || staleEntityReferences.length || textIdentityMismatches.length
@@ -1947,6 +1984,7 @@ export async function reconcileCanonicalEntities(characterName) {
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
+    text_link_repair_counters: textLinkRepairCounters,
     card_identity_mismatches: cardIdentityMismatches,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
@@ -1961,6 +1999,7 @@ export async function reconcileCanonicalEntities(characterName) {
     unsafe_merge_candidates_rejected: allReports.reduce((count, report) => count + (report.unsafe_merge_candidates_rejected ?? 0), 0),
     safe_merge_candidates_completed: allReports.reduce((count, report) => count + (report.safe_merge_candidates_completed ?? 0), 0),
     review_items_created: allReports.reduce((count, report) => count + (report.review_items_created ?? 0), 0),
+    persona_aliases,
     // These records are intentionally not reconciled as part of this chat's
     // transaction. Surface them for maintenance diagnostics without allowing
     // an unrelated legacy card to make the active run look degraded.

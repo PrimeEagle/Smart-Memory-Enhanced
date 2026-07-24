@@ -371,6 +371,35 @@ test('final diagnostics retain rejected identity candidates and a successful arc
   assert.match(settings, /finalReconciliation\.safe_merge_candidates_completed/);
 });
 
+test('exact identity reconciliation refuses a different scoped target before any merge', () => {
+  const graph = read('graph-migration.js');
+  const settings = read('settings.js');
+  assert.match(graph, /stored_card_id_name_conflict/);
+  assert.match(graph, /exact_target_name_mismatch/);
+  assert.match(graph, /source_target_name_equal/);
+  assert.match(graph, /Exact canonical card match rejected because source and proposed target are different canonical identities/);
+  assert.match(graph, /String\(sourceIdentity\.id\) !== String\(targetIdentity\.id\)/);
+  assert.match(settings, /Finalize the one canonical arc outcome before evaluating quality/);
+  assert.ok(settings.indexOf('normalizeArcExtractionDiagnostics(runResult.arcExtraction)') < settings.indexOf('const qualityReasons = []'));
+});
+
+test('final integrity aggregates logical review patterns and classifies text-link repairs', () => {
+  const ui = read('ui.js');
+  const settings = read('settings.js');
+  const graph = read('graph-migration.js');
+  assert.match(settings, /logical_review_items/);
+  assert.match(settings, /unsafe identity merge pattern/);
+  assert.match(settings, /source_store.*source_record_id/);
+  assert.match(settings, /terminal_key/);
+  assert.doesNotMatch(settings, /\['no_text_identity_mismatches'/);
+  assert.match(ui, /text_link_repair_counters/);
+  assert.match(ui, /structurallySupported/);
+  assert.match(ui, /identity_integrity_status = 'repaired'/);
+  assert.match(ui, /persona_aliases_already_resolved/);
+  assert.match(graph, /isEntityRolePlaceholder/);
+  assert.match(graph, /role_placeholder_entity/);
+});
+
 test('profile disposition counters are derived once from field_validation', () => {
   const settings = read('settings.js');
   const profileStage = settings.slice(settings.indexOf('// Generate character & world profiles once'), settings.indexOf('// Re-injection and panel refresh'));

@@ -26,6 +26,7 @@ import {
   setCanonicalRuntimeContextSnapshot,
   clearCanonicalRuntimeContextSnapshot,
 } from '../canonical-entities.js';
+import { isEntityRolePlaceholder, isPlausibleEntityName } from '../parsers.js';
 
 const roster = buildCanonicalCharacterRoster({
   characters: [
@@ -72,6 +73,15 @@ test('canonical roster: family members sharing a surname remain distinct exact i
   assert.equal(shortened.canonicalId, 'taylor-card');
   assert.notEqual(shortened.canonicalId, 'margaret-card');
   assert.equal(shortened.exact_name_equal, false);
+});
+
+test('exact role placeholder entity labels are rejected without rejecting proper names', () => {
+  for (const placeholder of ['supporting_character', 'supporting character', 'side_character', 'side character', 'character', 'person', 'NPC', 'unknown character', 'minor character']) {
+    assert.equal(isEntityRolePlaceholder(placeholder), true);
+    assert.equal(isPlausibleEntityName(placeholder), false);
+  }
+  assert.equal(isEntityRolePlaceholder('Supporting Character Smith'), false);
+  assert.equal(isPlausibleEntityName('Supporting Character Smith'), true);
 });
 
 test('canonical roster: unknown NPC remains creatable', () => {

@@ -49,7 +49,7 @@ import { saveChatMetadata } from './catchup-transaction.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
-import { isPlausibleEntityName } from './parsers.js';
+import { isEntityRolePlaceholder, isPlausibleEntityName } from './parsers.js';
 import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName, resolveEntityCandidate } from './canonical-entities.js';
 
 function getCharacterMemoryPolicy(characterName) {
@@ -540,10 +540,62 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
   };
   for (const entity of [...registry]) {
     if (!['character', 'unknown'].includes(entity.type)) continue;
+    if (isEntityRolePlaceholder(entity.name) && !entity.manual_locked && !entity.manual_confirmed) {
+      for (const memory of memories) {
+        if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;
+        memory.entities = memory.entities.filter((id) => id !== entity.id);
+        report.references_redirected++;
+      }
+      registry.splice(registry.indexOf(entity), 1);
+      report.changed = true;
+      report.outcomes.push({
+        candidate: entity.name, source_record_id: entity.id,
+        terminal_outcome: 'unsupported_rejected', reason_code: 'role_placeholder_entity',
+        reason: 'Role placeholder is not a durable named entity.',
+      });
+      continue;
+    }
     // A persisted card ID is authoritative. Repair a prior corrupted display
     // name before resolution so a Taylor card can never be resolved as Margaret.
     const existingIdentity = getAuthoritativeIdentity(entity, roster);
     if (existingIdentity.type === 'character_card' && normalizeIdentityName(entity.name) !== normalizeIdentityName(existingIdentity.name)) {
+      const nameBackedCard = (roster.characters ?? []).find((entry) =>
+        entry.source !== 'user-persona' && normalizeIdentityName(entry.canonicalName) === normalizeIdentityName(entity.name),
+      );
+      // A scoped wrapper can carry a stale neighbouring card ID. If its
+      // display name is itself another active canonical card, neither field
+      // may overwrite the other automatically. Quarantine the contradiction
+      // instead of turning Kyler into Taylor (or proposing their merge).
+      if (nameBackedCard && String(nameBackedCard.id) !== String(existingIdentity.id)) {
+        const reason = 'Stored card ID conflicts with a different exact active character-card name.';
+        const conflict = {
+          candidate: entity.name,
+          name: entity.name,
+          source_record_id: entity.id,
+          source_record_ids: entity.source_record_ids ?? entity.memory_ids ?? [],
+          source_card_id: entity.canonical_card_id ?? null,
+          proposed_target_card_id: existingIdentity.id,
+          source_normalized_name: normalizeIdentityName(entity.name),
+          target_normalized_name: normalizeIdentityName(existingIdentity.name),
+          authoritative_source_name: nameBackedCard.canonicalName,
+          authoritative_target_name: existingIdentity.name,
+          source_target_name_equal: false,
+          source_matches_authoritative_source: true,
+          target_matches_authoritative_target: true,
+          terminal_outcome: 'ambiguous_review',
+          reason,
+          reason_code: 'stored_card_id_name_conflict',
+        };
+        entity.identity_integrity_status = 'needs_review';
+        report.skipped.push(conflict);
+        report.outcomes.push(conflict);
+        recordIdentityReviewCandidate({
+          status: 'ambiguous', candidateName: entity.name,
+          canonicalId: existingIdentity.id, reason,
+        }, { entityType: entity.type, memoryId: entity.memory_ids?.[0], source_message_indices: entity.source_message_indices ?? [] });
+        report.review_items_created++;
+        continue;
+      }
       const corruptedName = entity.name;
       entity.name = existingIdentity.name;
       entity.canonical_identity_type = 'character_card';
@@ -580,6 +632,40 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       entry.canonical_persona_id === result.canonicalPersonaId ||
       entry.name.toLowerCase() === result.canonicalName.toLowerCase()
     ));
+    const sourceIdentity = getAuthoritativeIdentity(entity, roster);
+    const targetIdentity = target ? getAuthoritativeIdentity(target, roster) : null;
+    const exactCanonicalRule = result.reason?.toLowerCase().includes('exact canonical');
+    const exactTargetComparison = target ? {
+      source_normalized_name: normalizeIdentityName(entity.name),
+      target_normalized_name: normalizeIdentityName(target.name),
+      authoritative_source_name: sourceIdentity.name ?? entity.name,
+      authoritative_target_name: targetIdentity?.name ?? target.name,
+      source_target_name_equal: normalizeIdentityName(entity.name) === normalizeIdentityName(target.name),
+      source_matches_authoritative_source: sourceIdentity.name ? normalizeIdentityName(entity.name) === normalizeIdentityName(sourceIdentity.name) : null,
+      target_matches_authoritative_target: targetIdentity?.name ? normalizeIdentityName(target.name) === normalizeIdentityName(targetIdentity.name) : null,
+    } : null;
+    if (target && exactCanonicalRule && (!exactTargetComparison.source_target_name_equal ||
+      (sourceIdentity.id && targetIdentity?.id && String(sourceIdentity.id) !== String(targetIdentity.id)))) {
+      const reason = 'Exact canonical card match rejected because source and proposed target are different canonical identities.';
+      const rejected = {
+        candidate: entity.name, name: entity.name, source_record_id: entity.id,
+        source_record_ids: entity.source_record_ids ?? entity.memory_ids ?? [],
+        source_card_id: entity.canonical_card_id ?? null,
+        proposed_target_record_id: target.id, proposed_target_name: target.name,
+        proposed_target_card_id: target.canonical_card_id ?? null,
+        matching_rule: 'exact_target_name_assertion_failed',
+        ...exactTargetComparison,
+        terminal_outcome: 'ambiguous_review', reason,
+        reason_code: 'exact_target_name_mismatch',
+      };
+      report.skipped.push(rejected);
+      report.outcomes.push(rejected);
+      recordIdentityReviewCandidate({ ...result, status: 'ambiguous', candidateName: entity.name, canonicalId: target.id, reason }, {
+        entityType: entity.type, memoryId: entity.memory_ids?.[0], source_message_indices: entity.source_message_indices ?? [],
+      });
+      report.review_items_created++;
+      continue;
+    }
     const expectedCardName = (roster.characters ?? []).find((entry) => entry.id === (result.canonicalCardId ?? result.canonicalId))?.canonicalName;
     if (result.reason?.toLowerCase().includes('exact canonical') && expectedCardName && result.exact_name_equal === false) {
       const reason = 'Exact card-name match rejected because the source name differs from the authoritative card name.';
