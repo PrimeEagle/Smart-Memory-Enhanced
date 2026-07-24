@@ -3514,6 +3514,14 @@ export function bindSettingsUI(ctrl) {
         if (!catchUpCharacterNames.includes(characterName)) {
           injectProfiles(characterName);
         }
+        // Terminal profile records are the single source of truth for section
+        // diagnostics. Do not increment this aggregate independently while
+        // parsing profiles, or a preserved/partial profile can skew totals.
+        runResult.profiles.sections_detected = runResult.profiles.attempts.reduce((totals, attempt) => ({
+          character_state: totals.character_state + Number(Boolean(attempt.character_state_detected)),
+          world_state: totals.world_state + Number(Boolean(attempt.world_state_detected)),
+          relationship_matrix: totals.relationship_matrix + Number(Boolean(attempt.relationship_matrix_detected)),
+        }), { character_state: 0, world_state: 0, relationship_matrix: 0 });
       }
 
       // Re-injection and panel refresh are presentation-only. Isolate every
@@ -3778,7 +3786,7 @@ export function bindSettingsUI(ctrl) {
       if ((reconciliation.integrity_audit?.text_identity_mismatches?.length ?? 0) > 0) qualityReasons.push({
         code: 'text_identity_links_quarantined',
         tier: 'identity',
-        message: `${reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length} unique legacy entity link${(reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length) === 1 ? '' : 's'} ${reconciliation.integrity_audit.text_link_repair_counters?.physical_repair_observations > 1 ? `were repaired across ${reconciliation.integrity_audit.text_link_repair_counters.physical_repair_observations} store observations.` : 'was repaired.'}`,
+        message: `${reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length} preexisting entity link${(reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length) === 1 ? '' : 's'} ${reconciliation.integrity_audit.text_link_repair_counters?.physical_repair_observations > 1 ? `were repaired across ${reconciliation.integrity_audit.text_link_repair_counters.physical_repair_observations} store observations.` : 'was repaired.'}`,
       });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);

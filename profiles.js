@@ -267,6 +267,18 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     }
     const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
     if (pair && exactStatus) return line;
+    // A deliberately small, one-way synonym table handles common local-model
+    // wording without permitting fuzzy semantic approval. Every replacement
+    // must still be present in the authoritative pair vocabulary.
+    const descriptorSynonyms = { appreciative: 'grateful', trusting: 'open', caring: 'affectionate', reassuring: 'supportive' };
+    const descriptorTokens = status.split(',').map((value) => value.trim()).filter(Boolean);
+    const normalizedTokens = descriptorTokens.map((token) => descriptorSynonyms[token] ?? token);
+    if (pair && descriptorTokens.length && normalizedTokens.every((token) => pair.descriptors.includes(token))) {
+      normalized += descriptorTokens.filter((token, index) => token !== normalizedTokens[index]).length;
+      const normalizedStatus = normalizedTokens.join(', ');
+      rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, normalized_descriptor: normalizedStatus, normalization_rule: 'controlled_descriptor_synonym', authoritative_descriptors: pair.descriptors, disposition: 'accepted_normalized_synonym', reason_code: 'controlled_descriptor_synonym' });
+      return `${match[1].trim()}: ${normalizedStatus}`;
+    }
     // “Partner” is weaker than an established spouse status. Normalize the
     // generated synonym only when the canonical relationship evidence gives a
     // precise current descriptor; never infer a stronger relationship.
@@ -378,6 +390,9 @@ export async function generateProfiles(characterName, abortCheck = null, options
     raw_output_length: 0,
     normalized_output_length: 0,
     sections_detected: [],
+    character_state_detected: false,
+    world_state_detected: false,
+    relationship_matrix_detected: false,
     parser_path: [],
     formatting_repair_attempted: false,
     formatting_repair_succeeded: false,
@@ -588,7 +603,12 @@ export async function generateProfiles(characterName, abortCheck = null, options
     }
     if (abortCheck?.()) return null;
     await saveProfiles(profiles, characterName);
-    emitTerminal({ request_attempted: true, request_completed: true, ...inspectStructure(repaired || response), parser_path: parserPath, formatting_repair_attempted: Boolean(repaired), formatting_repair_succeeded: Boolean(repaired && parseProfileOutput(repaired, { requireAll: true })), terminal_outcome: partialProfile ? 'saved_partial' : 'saved_full', saved: true, prior_profile_preserved: preservedPriorFields.length > 0 });
+    const finalStructure = inspectStructure(repaired || response);
+    emitTerminal({ request_attempted: true, request_completed: true, ...finalStructure,
+      character_state_detected: finalStructure.sections_detected.includes('character_state'),
+      world_state_detected: finalStructure.sections_detected.includes('world_state'),
+      relationship_matrix_detected: finalStructure.sections_detected.includes('relationship_matrix'),
+      parser_path: parserPath, formatting_repair_attempted: Boolean(repaired), formatting_repair_succeeded: Boolean(repaired && parseProfileOutput(repaired, { requireAll: true })), terminal_outcome: partialProfile ? 'saved_partial' : 'saved_full', saved: true, prior_profile_preserved: preservedPriorFields.length > 0 });
     return profiles;
   } catch (err) {
     console.error('[Smart Memory Enhanced] Profile generation failed:', err);

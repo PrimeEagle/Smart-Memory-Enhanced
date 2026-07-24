@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Rebuilt stale-reference redirects from all pre-merge registry observations,
+  then persisted post-audit long-term, session, and card-local mutations. The
+  final audit now records rewrite/index/audit revisions so it can demonstrate
+  it examined the repaired state.
+- Derived aggregate profile section counts from the terminal profile-attempt
+  records, preventing a fully saved Relationship Matrix from being omitted
+  from aggregate diagnostics.
+- Added a tightly controlled relationship-descriptor synonym map; only an
+  explicitly mapped descriptor already present in the authoritative pair
+  vocabulary can be normalized.
+- Relabeled unknown-origin repair wording as preexisting rather than legacy.
+
 ## [0.8.30] - 2026-07-24
 
 ### Fixed

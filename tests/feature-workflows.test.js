@@ -439,6 +439,18 @@ test('final diagnostics separate historic identity review items and report one t
   assert.match(ui, /repaired_stale_entity_references/);
   assert.match(ui, /reference_field_path/);
   assert.match(ui, /repair_result: target \? 'rewritten' : 'not_safe_to_infer'/);
+  assert.match(ui, /referenceRedirects/);
+  assert.match(ui, /reference_rewrite_revision/);
+  assert.match(ui, /final_audit_revision/);
+});
+
+test('profile section totals derive once from terminal profile attempts', () => {
+  const settings = read('settings.js');
+  const profiles = read('profiles.js');
+  assert.match(settings, /runResult\.profiles\.attempts\.reduce/);
+  assert.match(profiles, /character_state_detected/);
+  assert.match(profiles, /relationship_matrix_detected/);
+  assert.match(profiles, /controlled_descriptor_synonym/);
 });
 
 test('profile disposition counters are derived once from field_validation', () => {

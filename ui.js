@@ -1646,6 +1646,14 @@ export async function reconcileCanonicalEntities(characterName) {
     observations.push(observation);
     (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
   }
+  // Registry entries may be merged across stores below. Keep an immutable
+  // redirect table from every observed durable ID to its authoritative stable
+  // identity so an old long-term reference can still be repaired after its
+  // local registry row is absorbed by a session/card-local representation.
+  const referenceRedirects = new Map(observations.map((observation) => [
+    String(observation.record_id),
+    String(observation.canonical_entity_id),
+  ]));
   for (const entities of canonicalGroups.values()) {
     if (entities.length < 2) continue;
     // Prefer the session record as the chat-wide canonical target, then the
@@ -1788,6 +1796,7 @@ export async function reconcileCanonicalEntities(characterName) {
   const knownEntityIds = new Set([
     ...registryGroups.flat().map((entity) => entity?.id),
     ...(roster.characters ?? []).map((entry) => entry?.id),
+    ...referenceRedirects.values(),
   ].filter(Boolean));
   const cardIdentityMismatches = [];
   for (const [store, entries] of registrySources) {
@@ -1808,6 +1817,8 @@ export async function reconcileCanonicalEntities(characterName) {
   }
   const staleEntityReferences = [];
   const repairedStaleEntityReferences = [];
+  let referenceRewriteRevision = 0;
+  let indexRebuildRevision = 0;
   const textIdentityMismatches = [];
   const textLinkRepairCounters = {
     identity_links_removed_deterministically: 0,
@@ -1846,16 +1857,21 @@ export async function reconcileCanonicalEntities(characterName) {
           const canonicalTargets = candidateNames
             .map((name) => (roster.characters ?? []).find((entry) => String(entry.canonicalName ?? '').trim().toLowerCase() === name.toLowerCase()))
             .filter(Boolean);
-          const target = canonicalTargets.length === 1 ? canonicalTargets[0] : null;
+          const redirectedIdentity = referenceRedirects.get(String(entityId));
+          const redirectTarget = (roster.characters ?? []).find((entry) => String(entry.id) === String(redirectedIdentity));
+          const target = redirectTarget ?? (canonicalTargets.length === 1 ? canonicalTargets[0] : null);
           const stale = {
             store, record_id: record?.id ?? null, reference_field_path: `${field}[${entryIndex}]`,
             actual_entity_id: entityId, actual_entity_name: linkedName || null, actual_entity_store: entity ? store : null,
             expected_canonical_identity_id: target?.canonical_id ?? target?.id ?? null, expected_entity_id: target?.id ?? null,
             stale_reason_code: entity ? 'wrong_scope_reference' : 'missing_registry_record', repair_attempted: Boolean(target), repair_result: target ? 'rewritten' : 'not_safe_to_infer',
+            resolution_strategies_attempted: ['registry_redirect', 'exact_canonical_roster_name', 'unique_text_name'], selected_strategy: redirectTarget ? 'registry_redirect' : target ? 'unique_text_name' : null,
+            candidate_canonical_ids: canonicalTargets.map((entry) => entry.id), selected_canonical_id: target?.id ?? null, failure_reason: target ? null : 'no_unique_authoritative_identity',
           };
           if (target) {
             record[field][entryIndex] = typeof id === 'string' ? target.id : { ...id, entity_id: target.id };
             repairedStaleEntityReferences.push(stale);
+            referenceRewriteRevision++;
           } else {
             staleEntityReferences.push(stale);
           }
@@ -1883,7 +1899,9 @@ export async function reconcileCanonicalEntities(characterName) {
             text_names_detected: namedPeople, structured_subject_ids: structuredSubjectIds,
             source_evidence_ids: record?.source_record_ids ?? record?.source_memory_ids ?? [],
             repair_key: repairKey, logical_repair_key: logicalRepairKey, canonical_entity_identity: canonicalIdentity, record_created_at: record?.created_at ?? record?.generated_at ?? null,
-            link_origin_stage: record?.link_origin_stage ?? 'unknown', previously_quarantined: Boolean(priorRepair),
+            link_origin_stage: record?.link_origin_stage ?? 'unknown',
+            origin_classification: priorRepair ? 'previously_quarantined' : record?.manual_link ? 'manual_user_link' : 'preexisting_origin_unknown',
+            previously_quarantined: Boolean(priorRepair),
           };
           textLinkRepairCounters.physical_repair_observations++;
           if (priorRepair || logicalRepairKeys.has(logicalRepairKey)) {
@@ -1913,6 +1931,17 @@ export async function reconcileCanonicalEntities(characterName) {
   for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`, 'entities', true);
   await auditReferences(scenes, 'scenes', 'participant_references');
   await auditReferences(arcs, 'arcs', 'participant_references');
+  // The audit mutates the same durable arrays used by long-term, session, and
+  // card-local storage. Persist after the final mutation pass, not only before
+  // it, so subsequent injection and diagnostics observe the repaired state.
+  if (referenceRewriteRevision || textLinkRepairCounters.identity_links_removed_deterministically) {
+    saveCharacterMemories(characterName, longtermMemories);
+    await saveSessionMemories(sessionMemories);
+    for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) {
+      meta.card_local_memories[localName] = records;
+    }
+    indexRebuildRevision = referenceRewriteRevision;
+  }
   textLinkRepairCounters.unique_records_affected = repairedRecordIds.size;
   // State Ledger cards use a single canonical card link rather than the
   // memory-style `entities` list.  Check it separately so the audit covers
@@ -2062,6 +2091,9 @@ export async function reconcileCanonicalEntities(characterName) {
     global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     identity_review_items: activeReviewQueue.length,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
+    reference_rewrite_revision: referenceRewriteRevision,
+    index_rebuild_revision: indexRebuildRevision,
+    final_audit_revision: indexRebuildRevision,
     status: integrityStatus,
   };
   return {
