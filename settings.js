@@ -3043,7 +3043,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
@@ -3458,10 +3458,20 @@ export function bindSettingsUI(ctrl) {
         for (const name of catchUpCharacterNames) {
           setStatusMessage(`Generating character & world profiles for ${name}...`);
           runResult.profiles.profiles_attempted++;
-          const profiles = await generateProfiles(name, null, { throwOnFailure: true }).catch((err) => {
+          let malformedProfileOutput = null;
+          const profiles = await generateProfiles(name, null, {
+            throwOnFailure: true,
+            onMalformedOutput: (detail) => { malformedProfileOutput = detail; },
+          }).catch((err) => {
             recordCatchUpError('profile generation error', err);
             return null;
           });
+          if (malformedProfileOutput) {
+            runResult.profiles.malformed_output++;
+            runResult.profiles.malformed_output_details.push(malformedProfileOutput);
+            recordCatchUpWarning('profile generation returned malformed output after format repair; prior profile was preserved', new Error('Profile output did not satisfy the required structured format.'), 'profiles');
+            continue;
+          }
           // Update UI with the selected character's profiles - other characters'
           // profiles are stored but only the active character is displayed.
           if (profiles && name === characterName) {

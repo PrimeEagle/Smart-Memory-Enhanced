@@ -334,8 +334,10 @@ function escapeRegExp(value) {
  *
  * @param {string} characterName - Active character name.
  * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
- * @param {{throwOnFailure?: boolean}} [options] - Lets a transactional caller
- * surface invalid provider output in its run-level error total.
+ * @param {{throwOnFailure?: boolean, onMalformedOutput?: Function}} [options]
+ * Lets a transactional caller surface provider/save failures in its run-level
+ * error total while treating exhausted format repair as a non-destructive
+ * quality warning.
  * @returns {Promise<{character_state: string, world_state: string, relationship_matrix: string, generated_at: number}|null>}
  */
 export async function generateProfiles(characterName, abortCheck = null, options = {}) {
@@ -398,10 +400,16 @@ export async function generateProfiles(characterName, abortCheck = null, options
       if (parsed) smLog('[Smart Memory Enhanced] Recovered profile output with a format-only repair.');
     }
     if (!parsed) {
-      const error = new Error('Profile generation produced unparseable output.');
       console.warn('[Smart Memory Enhanced] Profile generation produced unparseable output. Check format above.');
-      if (options.throwOnFailure) throw error;
-      return null;
+      // A malformed optional profile response must not turn a fully completed
+      // multi-hour extraction into a partial run. Preserve the last approved
+      // profile; genuine provider/persistence failures still propagate below.
+      options.onMalformedOutput?.({
+        characterName,
+        formatRepairAttempted: true,
+        preservedPriorProfile: Boolean(loadProfiles(characterName)),
+      });
+      return loadProfiles(characterName);
     }
     const profileFields = ['character_state', 'world_state', 'relationship_matrix'];
     const hasGroundedField = profileFields.some((field) => {
@@ -522,7 +530,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     return profiles;
   } catch (err) {
     console.error('[Smart Memory Enhanced] Profile generation failed:', err);
-    if (options.throwOnFailure) throw err;
+    if (options.throwOnFailure && !err?.sme_profile_malformed_output) throw err;
     return null;
   }
 }

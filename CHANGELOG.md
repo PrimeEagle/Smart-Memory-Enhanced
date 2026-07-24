@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A profile response that remains malformed after its bounded format-only
+  repair now preserves the prior approved profile and records a profile quality
+  warning instead of marking an otherwise completed catch-up run partial.
+  Provider and persistence failures remain run errors.
+
 ## [0.8.27] - 2026-07-24
 
 ### Repository history

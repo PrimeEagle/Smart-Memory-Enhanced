@@ -70,12 +70,14 @@ test('Enhanced slash commands and global UI hooks use independent names', () => 
   assert.match(css, /body\.sme-read-only/);
 });
 
-test('catch-up reports unparseable profile output and Enhanced owns its console prefix', () => {
+test('catch-up preserves prior profiles and warns when output remains unparseable', () => {
   const profiles = read('profiles.js');
   const settings = read('settings.js');
   assert.match(profiles, /options\.throwOnFailure/);
-  assert.match(profiles, /if \(options\.throwOnFailure\) throw error/);
-  assert.match(settings, /generateProfiles\(name, null, \{ throwOnFailure: true \}\)/);
+  assert.match(profiles, /options\.onMalformedOutput\?\./);
+  assert.match(profiles, /return loadProfiles\(characterName\);/);
+  assert.match(settings, /onMalformedOutput: \(detail\) => \{ malformedProfileOutput = detail; \}/);
+  assert.match(settings, /recordCatchUpWarning\('profile generation returned malformed output after format repair/);
   assert.match(profiles, /\[Smart Memory Enhanced\] Profile generation produced unparseable output/);
   for (const file of ['index.js', 'settings.js', 'longterm.js', 'session.js', 'profiles.js']) {
     assert.doesNotMatch(read(file), /\[SmartMemory\]/);
@@ -297,7 +299,7 @@ test('final catch-up stage order builds scenes before one complete arc pass and 
   const settings = read('settings.js');
   const sceneStage = settings.indexOf("setStatusMessage('Detecting scene breaks...')");
   const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
-  const profileStage = settings.indexOf('await generateProfiles(name, null, { throwOnFailure: true })');
+  const profileStage = settings.indexOf('const profiles = await generateProfiles(name, null, {');
   const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
   const stagedCommit = settings.indexOf('commitCatchUpTransaction(finalTransaction)');
   assert.ok(sceneStage >= 0 && sceneStage < arcStage);
