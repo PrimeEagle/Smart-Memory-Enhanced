@@ -405,6 +405,19 @@ test('final integrity aggregates logical review patterns and classifies text-lin
   assert.match(graph, /role_placeholder_entity/);
 });
 
+test('repair diagnostics are idempotent and scene boundaries retain their source', () => {
+  const ui = read('ui.js');
+  const settings = read('settings.js');
+  assert.match(ui, /identity_link_repair_audit/);
+  assert.match(ui, /duplicate_repair_events_suppressed/);
+  assert.match(ui, /previously_quarantined_links_seen/);
+  assert.match(settings, /heuristic_break_candidates/);
+  assert.match(settings, /ai_breaks_added/);
+  assert.match(settings, /final_break_indices/);
+  assert.match(settings, /scene_boundary_source/);
+  assert.match(settings, /boundary_source: boundarySource/);
+});
+
 test('profile disposition counters are derived once from field_validation', () => {
   const settings = read('settings.js');
   const profileStage = settings.slice(settings.indexOf('// Generate character & world profiles once'), settings.indexOf('// Re-injection and panel refresh'));
