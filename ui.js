@@ -1920,11 +1920,15 @@ export async function reconcileCanonicalEntities(characterName) {
     seenReviewKeys.add(key);
     return false;
   }).map((item) => ({ id: item.id ?? null, candidate: item.candidateName ?? item.candidateKey ?? null }));
-  const unsafe_identity_merges = allReports.flatMap((report) => report.skipped ?? [])
+  // A rejected merge is evidence that the guard worked: no redirect or
+  // canonical name was mutated. Keep it prominent in diagnostics and quality,
+  // but reserve an unsafe rollback for a corrupted card-backed record that
+  // actually survives the repair pass.
+  const blocked_unsafe_identity_merges = allReports.flatMap((report) => report.skipped ?? [])
     .filter((item) => item.reason_code === 'unsafe_identity_merge_rejected');
-  const integrityStatus = unsafe_identity_merges.length || cardIdentityMismatches.length
+  const integrityStatus = cardIdentityMismatches.length
     ? 'unsafe'
-    : staleEntityReferences.length || textIdentityMismatches.length
+    : blocked_unsafe_identity_merges.length || staleEntityReferences.length || textIdentityMismatches.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
@@ -1944,7 +1948,7 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_pair_key_issues: relationshipPairKeyIssues,
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
-    unsafe_identity_merges,
+    blocked_unsafe_identity_merges,
     // These records are intentionally not reconciled as part of this chat's
     // transaction. Surface them for maintenance diagnostics without allowing
     // an unrelated legacy card to make the active run look degraded.

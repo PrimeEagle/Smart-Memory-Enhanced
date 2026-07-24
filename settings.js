@@ -3686,6 +3686,7 @@ export function bindSettingsUI(ctrl) {
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
         ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
         ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
+        ['unsafe_identity_merge_blocked', !(reconciliation.integrity_audit?.blocked_unsafe_identity_merges?.length), 'An unsafe identity merge was blocked; the affected candidate remains separate for review.'],
         ['identity_terminal_totals_reconcile', runResult.identityResolution.terminal_reconciled, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],

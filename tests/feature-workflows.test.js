@@ -367,6 +367,8 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
+  assert.match(ui, /blocked_unsafe_identity_merges/);
+  assert.match(ui, /reserve an unsafe rollback for a corrupted card-backed record/);
   assert.match(ui, /getRelationshipHistoryPair,/);
   assert.match(ui, /getRelationshipHistoryPair\(labels\.subject, labels\.target, roster\)/);
   assert.match(ui, /state-ledger/);
@@ -374,6 +376,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /resolvedReviewItemsRemoved/);
   assert.match(ui, /targetExists/);
   assert.match(settings, /finalReconciliation\.integrity_audit/);
+  assert.match(settings, /unsafe_identity_merge_blocked/);
   assert.match(settings, /resolved_review_items_removed/);
 });
 
