@@ -379,6 +379,8 @@ test('exact identity reconciliation refuses a different scoped target before any
   assert.match(graph, /source_target_name_equal/);
   assert.match(graph, /Exact canonical card match rejected because source and proposed target are different canonical identities/);
   assert.match(graph, /validateExactCanonicalProposal/);
+  assert.match(graph, /Authoritative card self-resolution/);
+  assert.match(graph, /Never search neighbouring/);
   assert.match(settings, /Finalize the one canonical arc outcome before evaluating quality/);
   assert.ok(settings.indexOf('normalizeArcExtractionDiagnostics(runResult.arcExtraction)') < settings.indexOf('const qualityReasons = []'));
 });
@@ -391,6 +393,8 @@ test('final integrity aggregates logical review patterns and classifies text-lin
   assert.match(settings, /unsafe identity merge pattern/);
   assert.match(settings, /source_store.*source_record_id/);
   assert.match(settings, /terminal_key/);
+  assert.match(settings, /makeTerminalObservationKey/);
+  assert.match(settings, /missing_terminal_keys/);
   assert.doesNotMatch(settings, /\['no_text_identity_mismatches'/);
   assert.match(ui, /text_link_repair_counters/);
   assert.match(ui, /structurallySupported/);

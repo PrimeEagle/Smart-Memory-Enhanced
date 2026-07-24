@@ -297,6 +297,13 @@ function normalizeArcExtractionDiagnostics(diagnostics) {
   return diagnostics;
 }
 
+/** One canonical scoped identity-observation key for terminal accounting. */
+export function makeTerminalObservationKey(sourceStore, sourceRecordId) {
+  const store = String(sourceStore ?? 'unknown').trim().replace(/\s+/g, ' ').toLowerCase();
+  const record = String(sourceRecordId ?? '').trim();
+  return record ? `${store}::${record}` : null;
+}
+
 // ---- Default settings ---------------------------------------------------
 
 export const defaultSettings = {
@@ -3564,7 +3571,8 @@ export function bindSettingsUI(ctrl) {
         // A source record ID is only unique within its store. Preserve one
         // physical terminal record per scoped observation; a different
         // terminal decision for the same composite key is a real conflict.
-        const key = `${String(outcome.source_store ?? 'unknown').trim().toLowerCase()}::${String(outcome.source_record_id ?? '').trim()}`;
+        const key = makeTerminalObservationKey(outcome.source_store, outcome.source_record_id);
+        if (!key) return records;
         const prior = records.get(key);
         if (!prior) records.set(key, { ...outcome, terminal_key: key, source_record_ids: [...new Set((outcome.source_record_ids ?? []).filter(Boolean))] });
         else {
@@ -3575,14 +3583,14 @@ export function bindSettingsUI(ctrl) {
         return records;
       }, new Map());
       const sourceRecordKeys = new Set((reconciliation.identity_outcomes ?? [])
-        .map((outcome) => `${outcome.source_store ?? 'unknown'}::${outcome.source_record_id ?? ''}`)
-        .filter((key) => !key.endsWith('::')));
+        .map((outcome) => makeTerminalObservationKey(outcome.source_store, outcome.source_record_id))
+        .filter(Boolean));
       const terminalsBySource = new Map();
       const missingSourceTerminals = [];
       for (const outcome of deduplicatedTerminalOutcomes.values()) {
         const sourceId = String(outcome.source_record_id ?? '').trim();
         if (!sourceId) { missingSourceTerminals.push(outcome); continue; }
-        const sourceKey = `${outcome.source_store ?? 'unknown'}::${sourceId}`;
+        const sourceKey = makeTerminalObservationKey(outcome.source_store, sourceId);
         (terminalsBySource.get(sourceKey) ?? terminalsBySource.set(sourceKey, []).get(sourceKey)).push(outcome);
       }
       const conflictingTerminalRecords = [
@@ -3595,9 +3603,18 @@ export function bindSettingsUI(ctrl) {
       const finalTerminalRecords = [...terminalsBySource.values()]
         .filter((outcomes) => new Set(outcomes.map((outcome) => `${outcome.terminal_outcome ?? ''}|${outcome.canonical_target_id ?? outcome.targetId ?? outcome.canonicalName ?? ''}`)).size === 1)
         .map(([outcome]) => outcome);
+      const finalTerminalKeys = new Set(finalTerminalRecords.map((outcome) => outcome.terminal_key ?? makeTerminalObservationKey(outcome.source_store, outcome.source_record_id)).filter(Boolean));
+      const missingTerminalKeys = [...sourceRecordKeys].filter((key) => !finalTerminalKeys.has(key));
+      const unexpectedTerminalKeys = [...finalTerminalKeys].filter((key) => !sourceRecordKeys.has(key));
       runResult.identityResolution.source_records_total = sourceRecordKeys.size;
       runResult.identityResolution.terminal_records_total = terminalsBySource.size;
-      runResult.identityResolution.terminal_reconciled = sourceRecordKeys.size === finalTerminalRecords.size && conflictingTerminalRecords.length === 0;
+      runResult.identityResolution.source_terminal_keys = [...sourceRecordKeys].slice(0, 100);
+      runResult.identityResolution.final_terminal_keys = [...finalTerminalKeys].slice(0, 100);
+      runResult.identityResolution.missing_terminal_keys = missingTerminalKeys.slice(0, 100);
+      runResult.identityResolution.unexpected_terminal_keys = unexpectedTerminalKeys.slice(0, 100);
+      runResult.identityResolution.duplicate_source_keys = [];
+      runResult.identityResolution.duplicate_terminal_keys = [];
+      runResult.identityResolution.terminal_reconciled = missingTerminalKeys.length === 0 && unexpectedTerminalKeys.length === 0 && conflictingTerminalRecords.length === 0;
       runResult.identityResolution.duplicate_terminal_records_removed = Math.max(0, (reconciliation.identity_outcomes ?? []).length - deduplicatedTerminalOutcomes.size);
       runResult.identityResolution.conflicting_terminal_records = conflictingTerminalRecords;
       runResult.identityResolutionDetails = {
@@ -3611,6 +3628,7 @@ export function bindSettingsUI(ctrl) {
         final_reconciliation_stage: reconciliation.identity_outcomes ?? [],
         final_terminal_records: [...finalTerminalRecords.values()],
         terminal_outcomes: [...finalTerminalRecords.values()],
+        target_selection_traces: reconciliation.target_selection_traces ?? [],
       };
       const logicalReviewItems = [...finalTerminalRecords.values()]
         .filter((outcome) => ['unsafe_identity_merge_rejected', 'exact_target_name_mismatch', 'stored_card_id_name_conflict'].includes(outcome.reason_code))

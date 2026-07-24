@@ -2023,6 +2023,8 @@ export async function reconcileCanonicalEntities(characterName) {
       ...(sessionReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: sessionReport.source_store })),
       ...localReports.flatMap((report) => (report.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: report.source_store }))),
     ],
+    target_selection_traces: allReports.flatMap((report) => (report.target_selection_traces ?? [])
+      .map((trace) => ({ ...trace, source_store: report.source_store }))),
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
     participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
     persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,

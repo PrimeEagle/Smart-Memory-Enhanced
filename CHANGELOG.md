@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stopped exact card-backed self-resolutions from searching another scoped
+  registry record, eliminating false cross-card targets such as Taylor ↔ Kyler.
+  Added privacy-safe target-selection traces and canonical terminal-key set
+  diagnostics for any future reconciliation mismatch.
 - Fixed group-chat Fresh Start leaving non-selected active members' personal
   memory stores intact, which left stale character token bars after shared
   chat data had been cleared.

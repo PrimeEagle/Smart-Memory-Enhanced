@@ -627,12 +627,32 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'unmatched_review', reason: reviewResult.reason });
       continue;
     }
+    const sourceIdentity = getAuthoritativeIdentity(entity, roster);
+    // A record that is already the exact authoritative representation of its
+    // own card has reached a terminal decision. Never search neighbouring
+    // scoped wrappers for another target: that was the Taylor -> Kyler path
+    // when a wrapper happened to retain the same card ID.
+    if (sourceIdentity.type === 'character_card' &&
+      String(sourceIdentity.id) === String(result.canonicalCardId ?? result.canonicalId) &&
+      normalizeIdentityName(entity.name) === normalizeIdentityName(sourceIdentity.name)) {
+      report.outcomes.push({
+        candidate: entity.name, source_record_id: entity.id,
+        canonicalName: sourceIdentity.name, canonical_target_id: sourceIdentity.id,
+        terminal_outcome: 'canonical_exact_match', reason: 'Authoritative card self-resolution.',
+        lookup_strategy: 'authoritative_card_id', lookup_key: sourceIdentity.id,
+        authoritative_self_match_available: true, candidate_target_ids_considered: [sourceIdentity.id],
+        selected_target_id: sourceIdentity.id, selected_target_name: sourceIdentity.name,
+        selected_target_card_id: sourceIdentity.id, selection_reason: 'Source already matches its authoritative card.',
+      });
+      report.target_selection_traces ??= [];
+      report.target_selection_traces.push(report.outcomes.at(-1));
+      continue;
+    }
     const target = registry.find((entry) => entry.id !== entity.id && (
       entry.canonical_card_id === (result.canonicalCardId ?? result.canonicalId) ||
       entry.canonical_persona_id === result.canonicalPersonaId ||
       entry.name.toLowerCase() === result.canonicalName.toLowerCase()
     ));
-    const sourceIdentity = getAuthoritativeIdentity(entity, roster);
     const targetIdentity = target ? getAuthoritativeIdentity(target, roster) : null;
     const exactCanonicalRule = result.reason?.toLowerCase().includes('exact canonical');
     const exactTargetComparison = target ? {
