@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unified profile validation counters so legacy conflict and preserved-prior
   summaries are derived from the canonical field-disposition accumulator
   instead of being incremented twice.
+- Split active-persona quality checks into snapshot, roster-entry, and stable
+  identity validation, so a populated runtime persona is no longer reported as
+  missing merely because later roster construction needs attention.
 
 ## [0.8.21] - 2026-07-23
 

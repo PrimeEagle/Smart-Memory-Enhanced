@@ -349,6 +349,9 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(settings, /finalReconciliation\.completed = 1/);
   assert.match(settings, /finalReconciliation\.rolled_back = true/);
   assert.match(settings, /active_persona_stable_id_present/);
+  assert.match(settings, /active_persona_snapshot_present/);
+  assert.match(settings, /active_persona_roster_entry_present/);
+  assert.match(settings, /active_persona_roster_entry_missing/);
   assert.match(ui, /relationshipIntegrityErrors/);
 });
 

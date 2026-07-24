@@ -3702,8 +3702,12 @@ export function bindSettingsUI(ctrl) {
         message: `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
       });
       const requiredIdentityInvariants = [
-        ['active_persona_present', runResult.runtimeContext?.active_persona?.canonical_name && runResult.finalReconciliation.persona_roster_size > 0, 'active_persona_snapshot_missing'],
-        ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'The active persona snapshot has no stable identity key.'],
+        // Keep snapshot capture, roster construction, and identity validity
+        // separate. A historical avatar filename is an opaque stable key and
+        // must never make a populated Aaron-style runtime snapshot look absent.
+        ['active_persona_snapshot_present', Boolean(runResult.runtimeContext?.active_persona?.canonical_name), 'active_persona_snapshot_missing'],
+        ['active_persona_roster_entry_present', !runResult.runtimeContext?.active_persona?.canonical_name || runResult.finalReconciliation.persona_roster_size > 0, 'active_persona_roster_entry_missing'],
+        ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'active_persona_invalid'],
         ['deterministic_persona_aliases_merged', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.skipped ?? []).some((entry) => /persona|Kyle/i.test(`${entry.name} ${entry.reason}`)), 'A deterministic active-persona alias remains unresolved.'],
         ['no_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
