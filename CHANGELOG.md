@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.23] - 2026-07-23
+
+### Fixed
+
+- Aligned package and extension manifest version metadata so SillyTavern's
+  extension update check consistently reports the current release.
+
 ## [0.8.22] - 2026-07-23
 
 ### Repository history
