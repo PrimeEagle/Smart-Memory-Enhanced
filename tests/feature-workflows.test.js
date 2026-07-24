@@ -352,6 +352,28 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(ui, /relationshipIntegrityErrors/);
 });
 
+test('final diagnostics retain rejected identity candidates and a successful arc outcome', () => {
+  const settings = read('settings.js');
+  const arcs = read('arcs.js');
+  const ui = read('ui.js');
+  assert.match(settings, /terminal_outcome is the single canonical \*string\* outcome/);
+  assert.match(arcs, /completed_with_candidates/);
+  assert.match(arcs, /completed_no_candidates/);
+  assert.match(ui, /rejected_unsafe_merges/);
+  assert.match(ui, /unsafe_merge_candidates_rejected/);
+  assert.match(ui, /review_items_created/);
+  assert.match(settings, /sme_reconciliation_diagnostics/);
+  assert.match(settings, /A rollback reverses durable changes, not the compact evidence/);
+});
+
+test('profile disposition counters are derived once from field_validation', () => {
+  const settings = read('settings.js');
+  const profileStage = settings.slice(settings.indexOf('// Generate character & world profiles once'), settings.indexOf('// Re-injection and panel refresh'));
+  assert.match(profileStage, /field_validation is the sole accumulator/);
+  assert.match(profileStage, /relationship_conflicts_dropped = runResult\.profiles\.fields\.dropped_conflict/);
+  assert.match(profileStage, /prior_fields_preserved = runResult\.profiles\.fields\.preserved_prior/);
+});
+
 test('final reconciliation uses one cross-store entity merge operation before structured-store repair', () => {
   const graph = read('graph-migration.js');
   const ui = read('ui.js');
@@ -661,7 +683,10 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
-  assert.match(graph, /const report = \{ changed: false, matched: \[\], merged: \[\], skipped: \[\], unmatched: \[\], outcomes: \[\], synthetic_parenthetical_detected: 0, durable_entity_removed: 0, references_redirected: 0 \}/);
+  assert.match(graph, /rejected_unsafe_merges/);
+  assert.match(graph, /unsafe_merge_candidates_rejected/);
+  assert.match(graph, /rejected_unsafe_identity_merge/);
+  assert.match(graph, /candidate_normalized_name/);
   assert.match(graph, /identity_review_queue/);
   assert.match(graph, /unmatched_review/);
   assert.match(graph, /grounded_unknown_preserved/);

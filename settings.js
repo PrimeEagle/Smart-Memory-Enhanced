@@ -281,6 +281,15 @@ function normalizeArcExtractionDiagnostics(diagnostics) {
     inputMessages: 'input_messages', omittedMessages: 'omitted_messages', truncatedMessage: 'truncated_message', terminalOutcome: 'terminal_outcome',
   };
   for (const [camel, snake] of Object.entries(aliases)) {
+    // terminal_outcome is the single canonical *string* outcome.  Treating
+    // it like a numeric counter turned values such as
+    // "completed_with_candidates" into 0 during export.
+    if (snake === 'terminal_outcome') {
+      const value = diagnostics?.[snake] ?? diagnostics?.[camel] ?? null;
+      diagnostics[snake] = value;
+      diagnostics[camel] = value;
+      continue;
+    }
     const value = Math.max(Number(diagnostics?.[snake] ?? 0), Number(diagnostics?.[camel] ?? 0));
     diagnostics[snake] = value;
     diagnostics[camel] = value;
@@ -3454,15 +3463,14 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.stale_fields_dropped += profiles.stale_field_rejections?.length ?? 0;
             runResult.profiles.speculative_fields_dropped += profiles.speculative_field_rejections?.length ?? 0;
             runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
-            runResult.profiles.prior_fields_preserved += profiles.preserved_prior_fields?.length ?? 0;
-            runResult.profiles.relationship_conflicts_dropped += profiles.relationship_field_rejections ?? 0;
-            runResult.profiles.fields.preserved_prior += profiles.preserved_prior_fields?.length ?? 0;
-            runResult.profiles.fields.dropped_conflict += profiles.relationship_field_rejections ?? 0;
-            runResult.profiles.fields.dropped_speculative += profiles.speculative_field_rejections?.length ?? 0;
-            runResult.profiles.fields.dropped_unsupported += profiles.field_grounding_rejections?.length ?? 0;
+            // field_validation is the sole accumulator.  Legacy summary
+            // counters below are derived from it, preventing the same field
+            // disposition from being counted once here and once in the loop.
             for (const [field, value] of Object.entries(profiles.field_validation ?? {})) {
               runResult.profiles.fields[field] = (runResult.profiles.fields[field] ?? 0) + Number(value ?? 0);
             }
+            runResult.profiles.prior_fields_preserved = runResult.profiles.fields.preserved_prior;
+            runResult.profiles.relationship_conflicts_dropped = runResult.profiles.fields.dropped_conflict;
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
@@ -3510,6 +3518,15 @@ export function bindSettingsUI(ctrl) {
         if (reconciliation.integrity_audit?.status === 'unsafe') {
           const error = new Error('Unsafe canonical identity merge was rejected during final reconciliation.');
           error.sme_failure_stage = 'identity_integrity';
+          // Diagnostics describe a proposal/audit, not staged chat state.
+          // Preserve a compact copy if a genuinely structural integrity
+          // failure requires rolling the staged mutations back.
+          error.sme_reconciliation_diagnostics = {
+            identity_outcomes: structuredClone(reconciliation.identity_outcomes ?? []),
+            integrity_audit: structuredClone(reconciliation.integrity_audit ?? null),
+            persona_roster_size: reconciliation.persona_roster_size ?? 0,
+            rejected_unsafe_merges: structuredClone(reconciliation.integrity_audit?.rejected_unsafe_merges ?? []),
+          };
           throw error;
         }
         runResult.finalReconciliation.completed = 1;
@@ -3524,10 +3541,16 @@ export function bindSettingsUI(ctrl) {
         runResult.finalReconciliation.failure_stage = err?.sme_failure_stage ?? 'final_reconciliation';
         runResult.finalReconciliation.error_class = err?.name ?? 'Error';
         runResult.finalReconciliation.error_message = String(err?.message ?? err ?? 'Unknown reconciliation error').replace(/\s+/g, ' ').slice(0, 300);
+        const retained = err?.sme_reconciliation_diagnostics ?? null;
         reconciliation = {
-          matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
-          persona_roster_size: 0, participant_lists_rewritten: 0, resolved_review_items_removed: 0,
-          integrity_audit: { stale_entity_references: [], status: 'degraded' }, quarantined_arc_summaries: 0,
+          // A rollback reverses durable changes, not the compact evidence of
+          // why the final audit rejected them. Export it so the failed
+          // candidate can be diagnosed without retaining prompts or chat text.
+          matched: [], merged: [], skipped: retained?.rejected_unsafe_merges ?? [], unmatched: [], card_local_reports: [],
+          identity_outcomes: retained?.identity_outcomes ?? [],
+          persona_roster_size: retained?.persona_roster_size ?? 0,
+          participant_lists_rewritten: 0, resolved_review_items_removed: 0,
+          integrity_audit: retained?.integrity_audit ?? { stale_entity_references: [], status: 'degraded' }, quarantined_arc_summaries: 0,
         };
       }
       runResult.identityResolution = {

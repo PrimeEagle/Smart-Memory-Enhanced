@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved compact final-reconciliation diagnostics when a truly unsafe
+  structural audit rolls staged metadata back. Rejected identity proposals now
+  retain source/target authority details for exported diagnostics without
+  retaining raw prompts or chat text.
+- Classified unsafe identity proposals as individual
+  `rejected_unsafe_identity_merge` terminal outcomes, created a review item,
+  and continued unrelated safe reconciliation without adding a redirect.
+- Restored successful arc extraction terminal outcomes. The export normalizer
+  no longer converts string outcomes into zero, and parsed arc runs now report
+  `completed_with_candidates` or `completed_no_candidates`.
+- Unified profile validation counters so legacy conflict and preserved-prior
+  summaries are derived from the canonical field-disposition accumulator
+  instead of being incremented twice.
+
 ## [0.8.21] - 2026-07-23
 
 ### Fixed

@@ -1008,7 +1008,9 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       arcExtraction.rejected_scene_details = (arcExtraction.rejected_scene_details ?? 0) + parserRejected.filter((item) => item.reason_code === 'scene_detail_not_open_thread').length;
       const taggedArcLines = (response.match(/^\s*\[arc(?:\s*:\s*characters=[^\]]+)?\]/gim) ?? []).length;
       arcExtraction.rejected_malformed = (arcExtraction.rejected_malformed ?? 0) + Math.max(0, taggedArcLines - parsedAdd.length - parserRejected.length);
-      arcExtraction.terminal_outcome = 'parsed';
+      arcExtraction.terminal_outcome = parsedAdd.length
+        ? 'completed_with_candidates'
+        : 'completed_no_candidates';
       arcExtraction.terminal_reconciled = true;
     }
     const roster = buildCanonicalCharacterRoster(getContext());

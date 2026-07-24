@@ -1580,8 +1580,10 @@ export async function reconcileCanonicalEntities(characterName) {
   };
   const longtermRewrites = await rewriteStoredNarratives(longtermMemories);
   const sessionRewrites = await rewriteStoredNarratives(sessionMemories);
-  const ltReport = characterName ? reconcileCanonicalEntityRegistry(ltEntities, context, longtermMemories) : { changed: false, matched: [], merged: [], skipped: [], unmatched: [] };
-  const sessionReport = reconcileCanonicalEntityRegistry(sessionEntities, context, sessionMemories);
+  const ltReport = characterName
+    ? { ...reconcileCanonicalEntityRegistry(ltEntities, context, longtermMemories), source_store: 'longterm' }
+    : { changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [], source_store: 'longterm' };
+  const sessionReport = { ...reconcileCanonicalEntityRegistry(sessionEntities, context, sessionMemories), source_store: 'session' };
   // Chat-local card stores are independent of the selected card. Reconcile all
   // of them so a unique active persona alias such as Kyle -> Kyle Holland does
   // not survive in an off-screen group member's local registry.
@@ -1926,6 +1928,11 @@ export async function reconcileCanonicalEntities(characterName) {
   // actually survives the repair pass.
   const blocked_unsafe_identity_merges = allReports.flatMap((report) => report.skipped ?? [])
     .filter((item) => item.reason_code === 'unsafe_identity_merge_rejected');
+  // Keep full rejected-candidate evidence separate from staged graph state.
+  // Nothing in this list is a redirect or mutation; it is export-safe
+  // diagnostic context for a proposal the safety boundary refused.
+  const rejected_unsafe_merges = allReports.flatMap((report) => (report.rejected_unsafe_merges ?? [])
+    .map((entry) => ({ ...entry, source_store: report.source_store, proposed_target_store: report.source_store })));
   const integrityStatus = cardIdentityMismatches.length
     ? 'unsafe'
     : blocked_unsafe_identity_merges.length || staleEntityReferences.length || textIdentityMismatches.length
@@ -1949,6 +1956,11 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
     blocked_unsafe_identity_merges,
+    rejected_unsafe_merges,
+    unsafe_merge_candidates: allReports.reduce((count, report) => count + (report.unsafe_merge_candidates ?? 0), 0),
+    unsafe_merge_candidates_rejected: allReports.reduce((count, report) => count + (report.unsafe_merge_candidates_rejected ?? 0), 0),
+    safe_merge_candidates_completed: allReports.reduce((count, report) => count + (report.safe_merge_candidates_completed ?? 0), 0),
+    review_items_created: allReports.reduce((count, report) => count + (report.review_items_created ?? 0), 0),
     // These records are intentionally not reconciled as part of this chat's
     // transaction. Surface them for maintenance diagnostics without allowing
     // an unrelated legacy card to make the active run look degraded.
@@ -1964,8 +1976,8 @@ export async function reconcileCanonicalEntities(characterName) {
     skipped: [...ltReport.skipped, ...sessionReport.skipped, ...localReports.flatMap((report) => report.skipped)],
     unmatched: [...ltReport.unmatched, ...sessionReport.unmatched, ...localReports.flatMap((report) => report.unmatched)],
     identity_outcomes: [
-      ...(ltReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: 'longterm' })),
-      ...(sessionReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: 'session' })),
+      ...(ltReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: ltReport.source_store })),
+      ...(sessionReport.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: sessionReport.source_store })),
       ...localReports.flatMap((report) => (report.outcomes ?? []).map((outcome) => ({ ...outcome, source_store: report.source_store }))),
     ],
     narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,

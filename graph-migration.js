@@ -531,7 +531,13 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 /** Safely merges existing registry variants that unambiguously map to a card character. */
 export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = []) {
   const roster = buildCanonicalCharacterRoster(context);
-  const report = { changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [], synthetic_parenthetical_detected: 0, durable_entity_removed: 0, references_redirected: 0 };
+  const report = {
+    changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [],
+    rejected_unsafe_merges: [], unsafe_merge_candidates: 0,
+    unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0,
+    review_items_created: 0, synthetic_parenthetical_detected: 0,
+    durable_entity_removed: 0, references_redirected: 0,
+  };
   for (const entity of [...registry]) {
     if (!['character', 'unknown'].includes(entity.type)) continue;
     // A persisted card ID is authoritative. Repair a prior corrupted display
@@ -614,11 +620,50 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       continue;
     }
     const mergeSafety = safeCanonicalMerge(entity, target, roster);
+    report.unsafe_merge_candidates++;
     if (!mergeSafety.allowed) {
-      report.skipped.push({ name: entity.name, source_record_id: entity.id, reason: mergeSafety.reason, reason_code: 'unsafe_identity_merge_rejected' });
-      report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'ambiguous_review', reason: mergeSafety.reason });
+      const rejected = {
+        ...buildMergeDecision(entity, target, result, mergeSafety, 'rejected_unsafe_identity_merge', mergeSafety.reason),
+        name: entity.name,
+        candidate: entity.name,
+        source_record_id: entity.id,
+        source_record_ids: entity.source_record_ids ?? entity.memory_ids ?? [],
+        proposed_target_store: null,
+        proposed_target_record_id: target.id,
+        proposed_target_name: target.name,
+        proposed_target_identity_type: target.canonical_identity_type ?? target.type ?? 'unknown',
+        proposed_target_card_id: target.canonical_card_id ?? null,
+        candidate_normalized_name: normalizeIdentityName(entity.name),
+        authoritative_card_normalized_name: getAuthoritativeIdentity(entity, roster).name ? normalizeIdentityName(getAuthoritativeIdentity(entity, roster).name) : null,
+        exact_name_equal: getAuthoritativeIdentity(entity, roster).name
+          ? normalizeIdentityName(entity.name) === normalizeIdentityName(getAuthoritativeIdentity(entity, roster).name)
+          : null,
+        rejection_code: 'unsafe_identity_merge_rejected',
+        rejection_reason: mergeSafety.reason,
+        reason: mergeSafety.reason,
+        reason_code: 'unsafe_identity_merge_rejected',
+      };
+      report.skipped.push(rejected);
+      report.rejected_unsafe_merges.push(rejected);
+      report.outcomes.push({ ...rejected, terminal_outcome: 'rejected_unsafe_identity_merge' });
+      report.unsafe_merge_candidates_rejected++;
+      // The records remain untouched.  A compact review entry lets the user
+      // inspect the rejected proposal without creating a redirect.
+      recordIdentityReviewCandidate({
+        ...result,
+        status: 'ambiguous',
+        candidateName: entity.name,
+        canonicalId: target.canonical_card_id ?? target.canonical_persona_id ?? target.id,
+        reason: mergeSafety.reason,
+      }, {
+        entityType: entity.type,
+        memoryId: entity.memory_ids?.[0] ?? entity.source_record_ids?.[0],
+        source_message_indices: entity.source_message_indices ?? [],
+      });
+      report.review_items_created++;
       continue;
     }
+    report.safe_merge_candidates_completed++;
     target.memory_ids = [...new Set([...(target.memory_ids ?? []), ...(entity.memory_ids ?? [])])];
     target.source_record_ids = [...new Set([...(target.source_record_ids ?? []), ...(entity.source_record_ids ?? []), ...(entity.memory_ids ?? [])])];
     target.source_message_indices = [...new Set([...(target.source_message_indices ?? []), ...(entity.source_message_indices ?? [])])].filter(Number.isInteger).sort((left, right) => left - right);
