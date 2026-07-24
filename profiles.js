@@ -249,6 +249,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const rejected = [];
   let normalized = 0;
   let invalidLabel = 0;
+  const rejectionDetails = [];
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
@@ -260,6 +261,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const pair = cardPair ?? historyPair ?? groundedPair;
     if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
       rejected.push(line);
+      rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'invalid_relationship_label' });
       invalidLabel++;
       return '';
     }
@@ -274,6 +276,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       return line.replace(/\b(?:partner|family|character|person)\b/i, precise);
     }
     rejected.push(line);
+    rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'unsupported_relationship_descriptor' });
     return '';
   }).filter(Boolean).join('\n');
   // A model may put a legally established relationship in the matrix but still
@@ -296,7 +299,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       return false;
     }).join('\n').trim();
   }
-  return { profiles, rejected, normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines };
+  return { profiles, rejected, rejection_details: rejectionDetails, normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
@@ -494,6 +497,10 @@ export async function generateProfiles(characterName, abortCheck = null, options
       stale_field_rejections: temporalCheck.dropped.map((entry) => entry.field),
       speculative_field_rejections: speculationCheck.dropped.map((entry) => entry.field),
       relationship_field_rejections: relationshipCheck.rejected.length,
+      relationship_field_details: relationshipCheck.rejection_details.map((detail) => ({
+        profile_identity: characterName, profile_card_id: roster.characters?.find((entry) => entry.canonicalName === characterName)?.id ?? null,
+        ...detail,
+      })),
       field_validation: {
         accepted_exact: Math.max(0, profileFields.length - fieldGrounding.rejected.length - temporalCheck.dropped.length - speculationCheck.dropped.length - relationshipCheck.rejected.length),
         accepted_normalized: relationshipCheck.normalized ?? 0,

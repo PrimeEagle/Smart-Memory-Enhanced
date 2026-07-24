@@ -3043,7 +3043,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
@@ -3478,6 +3478,7 @@ export function bindSettingsUI(ctrl) {
             }
             runResult.profiles.prior_fields_preserved = runResult.profiles.fields.preserved_prior;
             runResult.profiles.relationship_conflicts_dropped = runResult.profiles.fields.dropped_conflict;
+            runResult.profiles.relationship_conflict_details.push(...(profiles.relationship_field_details ?? []));
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
@@ -3731,7 +3732,7 @@ export function bindSettingsUI(ctrl) {
       if (runResult.profiles.relationship_conflicts_dropped > 0) qualityReasons.push({
         code: 'profile_relationship_conflicts_dropped',
         tier: 'profiles',
-        message: `${runResult.profiles.relationship_conflicts_dropped} conflicting relationship profile field${runResult.profiles.relationship_conflicts_dropped === 1 ? '' : 's'} dropped.`,
+        message: `${runResult.profiles.relationship_conflicts_dropped} unsupported profile relationship field${runResult.profiles.relationship_conflicts_dropped === 1 ? '' : 's'} dropped; canonical values were preserved.`,
       });
       const identityFailures = runResult.identityResolution.logical_review_items?.length ?? 0;
       if (identityFailures > 0) qualityReasons.push({
@@ -3747,7 +3748,7 @@ export function bindSettingsUI(ctrl) {
       if ((reconciliation.integrity_audit?.text_identity_mismatches?.length ?? 0) > 0) qualityReasons.push({
         code: 'text_identity_links_quarantined',
         tier: 'identity',
-        message: `${reconciliation.integrity_audit.text_identity_mismatches.length} entity link${reconciliation.integrity_audit.text_identity_mismatches.length === 1 ? '' : 's'} contradicted the record text and was removed for review.`,
+        message: `${reconciliation.integrity_audit.text_identity_mismatches.length} entity link${reconciliation.integrity_audit.text_identity_mismatches.length === 1 ? '' : 's'} contradicted their record text and were removed for review.`,
       });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
