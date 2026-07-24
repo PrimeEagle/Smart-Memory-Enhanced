@@ -3302,7 +3302,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0 };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_added: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0 };
           let prevAiMsg = '';
 
           /**
@@ -3330,6 +3330,7 @@ export function bindSettingsUI(ctrl) {
 
             if (isAiMsg && settings.scene_ai_detect) {
               setStatusMessage(`Detecting scene breaks... (${msgIdx + 1}/${allMessages.length})`);
+              sceneAudit.scene_detector_model_request_count++;
             }
 
             // AI detection only runs on AI messages - user messages are skipped,
@@ -3346,6 +3347,11 @@ export function bindSettingsUI(ctrl) {
             if (isAiMsg) prevAiMsg = msgText;
 
             if (isBreak) {
+              const boundarySource = settings.scene_ai_detect ? 'ai-confirmation' : 'heuristic';
+              if (settings.scene_ai_detect) sceneAudit.ai_breaks_added++;
+              else sceneAudit.heuristic_break_candidates++;
+              sceneAudit.final_break_indices.push(msg.__sme_original_index ?? msgIdx);
+              sceneAudit.scene_boundary_source.push({ index: msg.__sme_original_index ?? msgIdx, source: boundarySource });
               sceneCount++;
               sceneAudit.candidates++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
@@ -3357,6 +3363,7 @@ export function bindSettingsUI(ctrl) {
               if (sceneResult?.summary && !(await isDuplicateScene(sceneResult.summary))) {
                 sceneHistory.push(createSceneRecord(sceneResult.summary, sceneBuffer, {
                   detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
+                  boundary_source: boundarySource,
                   detection_message_index: msg.__sme_original_index ?? null,
                   character_participants: sceneResult.characterParticipants,
                 }));
@@ -3387,6 +3394,7 @@ export function bindSettingsUI(ctrl) {
             if (sceneResult?.summary && !(await isDuplicateScene(sceneResult.summary))) {
               sceneHistory.push(createSceneRecord(sceneResult.summary, sceneBuffer, {
                 detected_by: 'final',
+                boundary_source: 'final-fallback',
                 detection_message_index: sceneBuffer.at(-1)?.__sme_original_index ?? null,
                 character_participants: sceneResult.characterParticipants,
               }));

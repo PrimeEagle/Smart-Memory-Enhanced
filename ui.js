@@ -1813,6 +1813,10 @@ export async function reconcileCanonicalEntities(characterName) {
     records_repaired_cleanly: 0,
     records_quarantined_for_review: 0,
     records_left_ambiguous: 0,
+    new_invalid_links_created_this_run: 0,
+    legacy_invalid_links_repaired: 0,
+    previously_quarantined_links_seen: 0,
+    duplicate_repair_events_suppressed: 0,
   };
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
   const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
@@ -1842,12 +1846,24 @@ export async function reconcileCanonicalEntities(characterName) {
         // A simple absent name can be a pronoun or inherited record subject.
         if (compareText && namedPeople.length && linkedName && !explicitlySupported && !structurallySupported) {
           unsafeIds.push(entityId);
-          textIdentityMismatches.push({
+          const repairKey = `${record?.id ?? 'unknown'}::${entityId}::text_contradicted`;
+          const priorRepair = (record.identity_link_repair_audit ?? []).find((item) => item.repair_key === repairKey);
+          const repair = {
             store, record_id: record?.id ?? null, entity_id: entityId, entity_name: linkedName,
             support_class: 'text_contradicted', removal_reason: 'Other canonical people are explicitly named while this link has no textual or structural support.',
             text_names_detected: namedPeople, structured_subject_ids: structuredSubjectIds,
             source_evidence_ids: record?.source_record_ids ?? record?.source_memory_ids ?? [],
-          });
+            repair_key: repairKey, record_created_at: record?.created_at ?? record?.generated_at ?? null,
+            link_origin_stage: record?.link_origin_stage ?? 'unknown', previously_quarantined: Boolean(priorRepair),
+          };
+          if (priorRepair) {
+            textLinkRepairCounters.previously_quarantined_links_seen++;
+            textLinkRepairCounters.duplicate_repair_events_suppressed++;
+          } else {
+            textIdentityMismatches.push(repair);
+            textLinkRepairCounters.legacy_invalid_links_repaired++;
+            record.identity_link_repair_audit = [...(record.identity_link_repair_audit ?? []), { ...repair, repaired_at: Date.now() }];
+          }
         }
       }
       if (unsafeIds.length) {

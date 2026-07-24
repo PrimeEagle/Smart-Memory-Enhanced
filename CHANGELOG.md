@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostics for any future reconciliation mismatch.
 - Added field-level profile relationship rejection diagnostics and clearer
   completion wording for safely dropped profile fields and removed entity links.
+- Added idempotent entity-link repair audit records and scene-boundary source
+  diagnostics for replay analysis.
 - Fixed group-chat Fresh Start leaving non-selected active members' personal
   memory stores intact, which left stale character token bars after shared
   chat data had been cleared.
