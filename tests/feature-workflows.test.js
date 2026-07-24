@@ -378,7 +378,7 @@ test('exact identity reconciliation refuses a different scoped target before any
   assert.match(graph, /exact_target_name_mismatch/);
   assert.match(graph, /source_target_name_equal/);
   assert.match(graph, /Exact canonical card match rejected because source and proposed target are different canonical identities/);
-  assert.match(graph, /String\(sourceIdentity\.id\) !== String\(targetIdentity\.id\)/);
+  assert.match(graph, /validateExactCanonicalProposal/);
   assert.match(settings, /Finalize the one canonical arc outcome before evaluating quality/);
   assert.ok(settings.indexOf('normalizeArcExtractionDiagnostics(runResult.arcExtraction)') < settings.indexOf('const qualityReasons = []'));
 });

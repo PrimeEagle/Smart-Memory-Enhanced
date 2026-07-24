@@ -50,7 +50,7 @@ import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './const
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
 import { isEntityRolePlaceholder, isPlausibleEntityName } from './parsers.js';
-import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName, resolveEntityCandidate } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName, resolveEntityCandidate, validateExactCanonicalProposal } from './canonical-entities.js';
 
 function getCharacterMemoryPolicy(characterName) {
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.memory_policy ?? 'full';
@@ -636,16 +636,19 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
     const targetIdentity = target ? getAuthoritativeIdentity(target, roster) : null;
     const exactCanonicalRule = result.reason?.toLowerCase().includes('exact canonical');
     const exactTargetComparison = target ? {
-      source_normalized_name: normalizeIdentityName(entity.name),
-      target_normalized_name: normalizeIdentityName(target.name),
+      ...validateExactCanonicalProposal({
+        sourceName: entity.name,
+        targetName: target.name,
+        sourceCardId: sourceIdentity.id,
+        targetCardId: targetIdentity?.id,
+        matchingRule: result.reason,
+      }),
       authoritative_source_name: sourceIdentity.name ?? entity.name,
       authoritative_target_name: targetIdentity?.name ?? target.name,
-      source_target_name_equal: normalizeIdentityName(entity.name) === normalizeIdentityName(target.name),
       source_matches_authoritative_source: sourceIdentity.name ? normalizeIdentityName(entity.name) === normalizeIdentityName(sourceIdentity.name) : null,
       target_matches_authoritative_target: targetIdentity?.name ? normalizeIdentityName(target.name) === normalizeIdentityName(targetIdentity.name) : null,
     } : null;
-    if (target && exactCanonicalRule && (!exactTargetComparison.source_target_name_equal ||
-      (sourceIdentity.id && targetIdentity?.id && String(sourceIdentity.id) !== String(targetIdentity.id)))) {
+    if (target && exactCanonicalRule && !exactTargetComparison.allowed) {
       const reason = 'Exact canonical card match rejected because source and proposed target are different canonical identities.';
       const rejected = {
         candidate: entity.name, name: entity.name, source_record_id: entity.id,

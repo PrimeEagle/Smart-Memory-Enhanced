@@ -25,6 +25,7 @@ import {
   snapshotCanonicalRuntimeContext,
   setCanonicalRuntimeContextSnapshot,
   clearCanonicalRuntimeContextSnapshot,
+  validateExactCanonicalProposal,
 } from '../canonical-entities.js';
 import { isEntityRolePlaceholder, isPlausibleEntityName } from '../parsers.js';
 
@@ -82,6 +83,24 @@ test('exact role placeholder entity labels are rejected without rejecting proper
   }
   assert.equal(isEntityRolePlaceholder('Supporting Character Smith'), false);
   assert.equal(isPlausibleEntityName('Supporting Character Smith'), true);
+});
+
+test('exact canonical proposals cannot cross different family-card names or IDs', () => {
+  const taylorToKyler = validateExactCanonicalProposal({
+    sourceName: 'Taylor Covington', targetName: 'Kyler Covington',
+    sourceCardId: 'taylor-card', targetCardId: 'kyler-card',
+    matchingRule: 'Exact canonical character-card name.',
+  });
+  assert.equal(taylorToKyler.source_target_name_equal, false);
+  assert.equal(taylorToKyler.card_ids_compatible, false);
+  assert.equal(taylorToKyler.allowed, false);
+
+  const sameIdentity = validateExactCanonicalProposal({
+    sourceName: 'Taylor Covington', targetName: 'Taylor Covington',
+    sourceCardId: 'taylor-card', targetCardId: 'taylor-card',
+    matchingRule: 'Exact canonical character-card name.',
+  });
+  assert.equal(sameIdentity.allowed, true);
 });
 
 test('canonical roster: unknown NPC remains creatable', () => {

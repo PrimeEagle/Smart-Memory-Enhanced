@@ -323,6 +323,26 @@ export function resolveEntityCandidate(candidate, canonicalRoster, registries = 
   };
 }
 
+/**
+ * Validates the target of a reconciliation decision independently of mutable
+ * scoped registry records. Exact-name decisions may only join records that
+ * have the same normalized canonical name and compatible stable identities.
+ */
+export function validateExactCanonicalProposal({ sourceName, targetName, sourceCardId = null, targetCardId = null, matchingRule = '' } = {}) {
+  const source_normalized_name = normalize(sourceName);
+  const target_normalized_name = normalize(targetName);
+  const source_target_name_equal = Boolean(source_normalized_name) && source_normalized_name === target_normalized_name;
+  const card_ids_compatible = !sourceCardId || !targetCardId || String(sourceCardId) === String(targetCardId);
+  const exactRule = /exact canonical/i.test(String(matchingRule));
+  return {
+    source_normalized_name,
+    target_normalized_name,
+    source_target_name_equal,
+    card_ids_compatible,
+    allowed: !exactRule || (source_target_name_equal && card_ids_compatible),
+  };
+}
+
 export function canonicalizeRelationshipPair(subject, target, roster) {
   // Relationship History represents two individual people. Collective labels
   // must be split before this point, and a person cannot form a pair with
