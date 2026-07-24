@@ -47,7 +47,7 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
-import { buildSceneDetectPrompt, buildSceneSummaryPrompt } from './prompts.js';
+import { buildSceneDetectPrompt, buildSceneDetectBatchPrompt, buildSceneSummaryPrompt } from './prompts.js';
 import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
@@ -127,6 +127,37 @@ export async function detectSceneBreakAI(messageText, previousMessageText, onErr
     onError?.(err);
     return false;
   }
+}
+
+/** Evaluates multiple stable boundary candidates in one provider request. */
+export async function detectSceneBreakAIBatch(candidates, options = {}) {
+  const result = new Map();
+  const batchSize = Math.max(1, Math.min(20, Number(options.batchSize ?? 12)));
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {} };
+  for (let offset = 0; offset < candidates.length; offset += batchSize) {
+    const batch = candidates.slice(offset, offset + batchSize);
+    try {
+      diagnostics.requests_sent++;
+      if (batch.length > 1) diagnostics.batched_requests++;
+      const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: Math.max(32, batch.length * 16), temperature: 0 });
+      const parsed = new Map();
+      for (const match of String(response ?? '').matchAll(/^\s*\[(\d+)\]\s*(YES|NO)\s+confidence\s*=\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*$/gim)) parsed.set(Number(match[1]), { decision: match[2] === 'YES', confidence: Number(match[3]) });
+      if (parsed.size !== batch.length || batch.some((candidate) => !parsed.has(candidate.candidate_index))) throw new Error('Malformed scene-boundary batch response.');
+      for (const candidate of batch) {
+        const decision = parsed.get(candidate.candidate_index);
+        result.set(candidate.candidate_index, decision.decision);
+        diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence;
+      }
+    } catch (error) {
+      diagnostics.malformed_batches++;
+      for (const candidate of batch) {
+        diagnostics.fallback_boundaries++;
+        result.set(candidate.candidate_index, detectSceneBreakHeuristic(candidate.message));
+      }
+      options.onError?.(error, batch);
+    }
+  }
+  return { decisions: result, diagnostics };
 }
 
 // ---- Storage ------------------------------------------------------------

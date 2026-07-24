@@ -422,6 +422,10 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /heuristic_break_candidates/);
   assert.match(settings, /boundary_candidates_evaluated/);
   assert.match(settings, /average_candidates_per_request/);
+  assert.match(settings, /detectSceneBreakAIBatch\(aiCandidates/);
+  assert.match(settings, /batch_size_target: 12/);
+  assert.match(read('scenes.js'), /export async function detectSceneBreakAIBatch/);
+  assert.match(read('prompts.js'), /buildSceneDetectBatchPrompt/);
   assert.match(settings, /ai_breaks_added/);
   assert.match(settings, /final_break_indices/);
   assert.match(settings, /scene_boundary_source/);

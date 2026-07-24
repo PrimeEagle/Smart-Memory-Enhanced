@@ -113,6 +113,7 @@ import {
   clearSceneHistory,
   createSceneRecord,
   detectSceneBreakAI,
+  detectSceneBreakAIBatch,
   detectSceneBreakHeuristic,
 } from './scenes.js';
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries, saveArcSummaries } from './arcs.js';
@@ -3303,8 +3304,24 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_added: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, average_candidates_per_request: 0, batched_requests: 0, fallback_boundaries: 0 };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_added: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0 }, scene_detection_run_signature: null, prompt_shape_hash: 'scene-boundary-batch-v1' };
           let prevAiMsg = '';
+          const aiCandidates = [];
+          if (settings.scene_ai_detect) {
+            let previous = '';
+            for (let index = 0; index < allMessages.length; index++) {
+              const message = allMessages[index];
+              if (message.is_user) continue;
+              aiCandidates.push({ candidate_index: index, message: message.mes ?? '', previous_message: previous });
+              previous = message.mes ?? '';
+            }
+            const batchResult = await detectSceneBreakAIBatch(aiCandidates, { batchSize: sceneAudit.batch_size_target, onError: (err) => { sceneAudit.detection_failed++; recordCatchUpWarning('AI scene-break batch warning', err, 'scenes'); } });
+            sceneAudit.boundary_candidates_evaluated = aiCandidates.length;
+            sceneAudit.scene_detection_run_signature = aiCandidates.map((candidate) => candidate.candidate_index).join(',');
+            sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.requests_sent;
+            Object.assign(sceneAudit, batchResult.diagnostics);
+            sceneAudit.ai_decisions = batchResult.decisions;
+          }
 
           /**
            * Deduplicates a candidate summary against the last three stored scenes,
@@ -3331,9 +3348,6 @@ export function bindSettingsUI(ctrl) {
 
             if (isAiMsg && settings.scene_ai_detect) {
               setStatusMessage(`Detecting scene breaks... (${msgIdx + 1}/${allMessages.length})`);
-              sceneAudit.scene_detector_model_request_count++;
-              sceneAudit.boundary_candidates_evaluated++;
-              sceneAudit.requests_sent++;
             }
 
             // AI detection only runs on AI messages - user messages are skipped,
@@ -3341,11 +3355,7 @@ export function bindSettingsUI(ctrl) {
             const isBreak = settings.scene_ai_detect
               ? isAiMsg &&
                 sceneBuffer.length >= minMessages &&
-                (await detectSceneBreakAI(msgText, prevAiMsg, (err) => {
-                sceneAudit.detection_failed++;
-                sceneAudit.fallback_boundaries++;
-                  recordCatchUpWarning('AI scene-break detection warning', err, 'scenes');
-                }))
+                Boolean(sceneAudit.ai_decisions?.get(msgIdx))
               : detectSceneBreakHeuristic(msgText) && sceneBuffer.length >= minMessages;
 
             if (isAiMsg) prevAiMsg = msgText;
@@ -3418,6 +3428,7 @@ export function bindSettingsUI(ctrl) {
             recordCatchUpError('scene history save error', err);
           });
           sceneAudit.average_candidates_per_request = sceneAudit.requests_sent ? Number((sceneAudit.boundary_candidates_evaluated / sceneAudit.requests_sent).toFixed(2)) : 0;
+          delete sceneAudit.ai_decisions;
           runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;

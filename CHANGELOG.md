@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicitly mapped descriptor already present in the authoritative pair
   vocabulary can be normalized.
 - Relabeled unknown-origin repair wording as preexisting rather than legacy.
+- Batched AI scene-boundary classification into stable, indexed requests of up
+  to 12 candidates with per-batch malformed-output fallback. Diagnostics now
+  report batch size, request volume, malformed batches, fallback boundaries,
+  and per-boundary confidence.
 
 ## [0.8.30] - 2026-07-24
 

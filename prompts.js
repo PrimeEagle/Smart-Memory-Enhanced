@@ -261,6 +261,12 @@ NOT a new scene:
 Answer YES or NO only. Nothing else.`;
 }
 
+/** Builds one deterministic, index-addressed scene-boundary classification batch. */
+export function buildSceneDetectBatchPrompt(candidates = []) {
+  const rows = candidates.map((candidate) => `[${candidate.candidate_index}]\nPREVIOUS:\n${String(candidate.previous_message ?? '').slice(0, 500)}\nCURRENT:\n${String(candidate.message ?? '').slice(0, 700)}`).join('\n\n---\n\n');
+  return `[SCENE BOUNDARY CLASSIFICATION]\nReturn exactly one line for every supplied candidate, in original order: [index] YES|NO confidence=0.00\nA break requires a meaningful change in time, location, active participants, activity, or narrative phase. Do not create a break for minor emotional shifts within a continuous interaction. Do not omit or reorder indices.\n\n${rows}`;
+}
+
 export const SCENE_SUMMARY_PROMPT =
   NO_ACTION_PREAMBLE +
   `Write a 2-3 sentence summary of the following scene for use as scene history. Write in past tense, narrative style. Capture what happened, where, and the emotional tone. Then list every clearly present named CHARACTER who actively participated, including relatives and staff; do not omit them merely because they are secondary speakers. Do not add people mentioned only as historical background. Do not list places, objects, organizations, or concepts. The structured participant list MUST use canonical roster identities; a historical source-used name may remain only in the narrative summary. Do not invent relationship labels or infer completed relationship facts from ambiguous wording. Do not use old persona names, inferred surnames, collective labels, or parenthetical identity labels in the structured list.
