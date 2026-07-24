@@ -391,7 +391,6 @@ export async function generateProfiles(characterName, abortCheck = null, options
     const raw = String(value ?? '');
     const normalized = raw
       .replace(/```(?:xml|markdown|text)?\s*/gi, '')
-      .replace(/^.*?(?=^\s*(?:<\s*(?:character[ _-]*state|world[ _-]*state|relationship[ _-]*(?:matrix|relationships?))\s*>|#{1,6}\s*(?:character|world|relationship)|\*{1,2}\s*(?:character|world|relationship))/ims, '')
       .trim();
     const sections = ['character_state', 'world_state', 'relationship_matrix'].filter((key) => {
       const label = key.replace('_', '[ _-]*');

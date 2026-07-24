@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.29] - 2026-07-24
+
+### Fixed
+
+- Fixed a profile-diagnostics regular expression that prevented the extension
+  module from loading. The diagnostics helper now relies on the already-tested
+  profile parser for conversational-preamble handling.
+
 ## [0.8.28] - 2026-07-24
 
 ### Repository history
