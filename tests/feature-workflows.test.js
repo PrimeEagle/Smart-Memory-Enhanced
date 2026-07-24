@@ -432,6 +432,7 @@ test('final diagnostics separate historic identity review items and report one t
   const settings = read('settings.js');
   const ui = read('ui.js');
   assert.match(settings, /identity_review: \{ existing_at_start:/);
+  assert.doesNotMatch(settings, /identity_review: \{ existing_at_start: settings\./);
   assert.match(settings, /created_this_run/);
   assert.match(settings, /stale_entity_references_remaining/);
   assert.doesNotMatch(settings, /cross_store_stale_entity_references/);
