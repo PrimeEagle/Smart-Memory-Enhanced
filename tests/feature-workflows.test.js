@@ -367,6 +367,8 @@ test('final diagnostics retain rejected identity candidates and a successful arc
   assert.match(ui, /review_items_created/);
   assert.match(settings, /sme_reconciliation_diagnostics/);
   assert.match(settings, /A rollback reverses durable changes, not the compact evidence/);
+  assert.match(settings, /finalReconciliation\.unsafe_merge_candidates_rejected/);
+  assert.match(settings, /finalReconciliation\.safe_merge_candidates_completed/);
 });
 
 test('profile disposition counters are derived once from field_validation', () => {

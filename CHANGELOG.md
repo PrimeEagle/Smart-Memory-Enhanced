@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity resolution and strengthened exact-card-match diagnostics. Family
   members with the same surname are now covered by a Taylor/Kyler/Margaret/
   Richard regression fixture.
+- Added top-level final-reconciliation candidate counts for unsafe proposals,
+  rejected proposals, completed safe merges, and created review items.
 
 ## [0.8.21] - 2026-07-23
 
