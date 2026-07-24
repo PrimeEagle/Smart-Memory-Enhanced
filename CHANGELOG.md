@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.27] - 2026-07-24
+
 ### Repository history
 
 - Reverified after the v0.8.26 regression-fix work that all published
