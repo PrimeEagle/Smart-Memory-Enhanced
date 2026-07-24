@@ -591,6 +591,8 @@ export function reconcileCanonicalLedger(ledger, roster) {
 
 function resolved(candidateName, entry, reason) {
   const isPersona = entry.source === 'user-persona' || entry.source_type === 'persona';
+  const candidate_normalized_name = normalize(candidateName);
+  const authoritative_card_normalized_name = normalize(entry.canonicalName);
   return {
     status: 'resolved',
     candidateName,
@@ -599,6 +601,12 @@ function resolved(candidateName, entry, reason) {
     canonicalIdentityType: isPersona ? 'persona' : 'character_card',
     canonicalPersonaId: isPersona ? (entry.canonical_persona_id ?? String(entry.id).replace(/^persona:/, '')) : null,
     canonicalCardId: isPersona ? null : entry.id,
+    // These fields are deliberately present for every roster resolution so
+    // reconciliation can prove whether "exact" really meant exact instead
+    // of relying on a mutable display name or a shared surname.
+    candidate_normalized_name,
+    authoritative_card_normalized_name,
+    exact_name_equal: candidate_normalized_name === authoritative_card_normalized_name,
     reason,
     shouldCreateEntity: false,
     shouldAddAlias: normalize(candidateName) === normalize(entry.canonicalName) || entry.aliases.some((alias) => normalize(alias) === normalize(candidateName)),

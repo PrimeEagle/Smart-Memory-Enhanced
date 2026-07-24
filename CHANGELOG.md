@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split active-persona quality checks into snapshot, roster-entry, and stable
   identity validation, so a populated runtime persona is no longer reported as
   missing merely because later roster construction needs attention.
+- Added normalized source-versus-authoritative-name evidence to every roster
+  identity resolution and strengthened exact-card-match diagnostics. Family
+  members with the same surname are now covered by a Taylor/Kyler/Margaret/
+  Richard regression fixture.
 
 ## [0.8.21] - 2026-07-23
 

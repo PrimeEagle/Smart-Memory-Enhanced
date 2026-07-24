@@ -581,7 +581,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       entry.name.toLowerCase() === result.canonicalName.toLowerCase()
     ));
     const expectedCardName = (roster.characters ?? []).find((entry) => entry.id === (result.canonicalCardId ?? result.canonicalId))?.canonicalName;
-    if (result.reason?.toLowerCase().includes('exact canonical') && expectedCardName && normalizeIdentityName(entity.name) !== normalizeIdentityName(expectedCardName)) {
+    if (result.reason?.toLowerCase().includes('exact canonical') && expectedCardName && result.exact_name_equal === false) {
       const reason = 'Exact card-name match rejected because the source name differs from the authoritative card name.';
       report.skipped.push({ name: entity.name, source_record_id: entity.id, reason, reason_code: 'exact_card_name_assertion_failed' });
       report.outcomes.push({ candidate: entity.name, source_record_id: entity.id, terminal_outcome: 'ambiguous_review', reason });
@@ -633,11 +633,12 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
         proposed_target_name: target.name,
         proposed_target_identity_type: target.canonical_identity_type ?? target.type ?? 'unknown',
         proposed_target_card_id: target.canonical_card_id ?? null,
-        candidate_normalized_name: normalizeIdentityName(entity.name),
-        authoritative_card_normalized_name: getAuthoritativeIdentity(entity, roster).name ? normalizeIdentityName(getAuthoritativeIdentity(entity, roster).name) : null,
-        exact_name_equal: getAuthoritativeIdentity(entity, roster).name
+        candidate_normalized_name: result.candidate_normalized_name ?? normalizeIdentityName(entity.name),
+        authoritative_card_normalized_name: result.authoritative_card_normalized_name
+          ?? (getAuthoritativeIdentity(entity, roster).name ? normalizeIdentityName(getAuthoritativeIdentity(entity, roster).name) : null),
+        exact_name_equal: result.exact_name_equal ?? (getAuthoritativeIdentity(entity, roster).name
           ? normalizeIdentityName(entity.name) === normalizeIdentityName(getAuthoritativeIdentity(entity, roster).name)
-          : null,
+          : null),
         rejection_code: 'unsafe_identity_merge_rejected',
         rejection_reason: mergeSafety.reason,
         reason: mergeSafety.reason,

@@ -47,6 +47,33 @@ test('canonical roster: unsupported married surname is rejected but resolved', (
   assert.equal(result.shouldAddAlias, false);
 });
 
+test('canonical roster: family members sharing a surname remain distinct exact identities', () => {
+  const familyRoster = buildCanonicalCharacterRoster({
+    characters: [
+      { id: 'taylor-card', name: 'Taylor Covington', description: '' },
+      { id: 'kyler-card', name: 'Kyler Covington', description: '' },
+      { id: 'margaret-card', name: 'Margaret Covington', description: '' },
+      { id: 'richard-card', name: 'Richard Covington', description: '' },
+    ],
+  });
+  for (const [name, id] of [
+    ['Taylor Covington', 'taylor-card'],
+    ['Kyler Covington', 'kyler-card'],
+    ['Margaret Covington', 'margaret-card'],
+    ['Richard Covington', 'richard-card'],
+  ]) {
+    const result = resolveEntityCandidate(name, familyRoster);
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.canonicalId, id);
+    assert.equal(result.exact_name_equal, true);
+    assert.equal(result.candidate_normalized_name, result.authoritative_card_normalized_name);
+  }
+  const shortened = resolveEntityCandidate('Taylor', familyRoster);
+  assert.equal(shortened.canonicalId, 'taylor-card');
+  assert.notEqual(shortened.canonicalId, 'margaret-card');
+  assert.equal(shortened.exact_name_equal, false);
+});
+
 test('canonical roster: unknown NPC remains creatable', () => {
   const result = resolveCanonicalCharacterName('Sophie', roster);
   assert.equal(result.status, 'unresolved');
