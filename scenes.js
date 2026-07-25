@@ -192,12 +192,24 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         } catch { diagnostics.repair_failures++; }
       }
       if (!parsed.ok) throw new Error(parsed.parse_error_code);
+      let smallerRetry = null;
+      if (parsed.truncated_output_suspected && parsed.missing_candidate_ids.length && batch.length > 1) {
+        const missingCandidates = batch.filter((candidate) => parsed.missing_candidate_ids.includes(candidate.candidate_index));
+        diagnostics.smaller_batch_retries++;
+        // Retrying only the missing tail with a smaller batch limits extra work
+        // and avoids discarding decisions already validated from this response.
+        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.max(1, Math.floor(batch.length / 2)), onError: options.onError });
+        for (const [candidateId, decision] of smallerRetry.decisions) parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, retried: true });
+        for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
+        Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
+        diagnostics.batch_attempts.push(...smallerRetry.diagnostics.batch_attempts);
+      }
       for (const candidate of batch) {
         const decision = parsed.valid.get(candidate.candidate_index);
-        if (decision) { result.set(candidate.candidate_index, decision.decision); diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source: 'ai-batch', ai_confidence: decision.confidence, batch_number: attempt.batch_number, terminal_disposition: decision.decision ? 'ai_break' : 'ai_no_break' }); }
+        if (decision) { const retryDisposition = smallerRetry?.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidate.candidate_index); const source = decision.retried ? (retryDisposition?.source === 'heuristic-fallback' ? 'heuristic-fallback' : 'ai-batch-recovered') : 'ai-batch'; result.set(candidate.candidate_index, decision.decision); if (decision.confidence !== null) diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source, ai_confidence: decision.confidence, heuristic_score: retryDisposition?.heuristic_score ?? null, ai_result_disposition: retryDisposition?.ai_result_disposition ?? null, batch_number: attempt.batch_number, terminal_disposition: source === 'heuristic-fallback' ? (decision.decision ? 'fallback_break' : 'fallback_no_break') : decision.decision ? 'ai_break' : 'ai_no_break' }); }
         else { const fallback = detectSceneBreakHeuristic(candidate.message); const missing = parsed.missing_candidate_ids.includes(candidate.candidate_index); result.set(candidate.candidate_index, fallback); diagnostics.fallback_boundaries++; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: fallback, source: 'heuristic-fallback', ai_confidence: null, heuristic_score: null, ai_result_disposition: missing ? 'missing_ai_decision' : 'invalid_ai_decision', batch_number: attempt.batch_number, terminal_disposition: fallback ? 'fallback_break' : 'fallback_no_break' }); }
       }
-      attempt.terminal_outcome = attempt.format_repair_succeeded ? 'recovered_after_repair_request' : parsed.parser_path?.includes('legacy_indexed_lines') ? 'recovered_after_normalization' : parsed.missing_candidate_ids.length ? 'parsed_partial' : 'parsed_full';
+      attempt.terminal_outcome = smallerRetry ? 'recovered_after_smaller_batch_retry' : attempt.format_repair_succeeded ? 'recovered_after_repair_request' : parsed.parser_path?.includes('legacy_indexed_lines') ? 'recovered_after_normalization' : parsed.missing_candidate_ids.length ? 'parsed_partial' : 'parsed_full';
     } catch (error) {
       if (!attempt.provider_error && !attempt.returned_none) diagnostics.malformed_batches++;
       attempt.provider_error = attempt.request_completed ? null : String(error?.message ?? error);

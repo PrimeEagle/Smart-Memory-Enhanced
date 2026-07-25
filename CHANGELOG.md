@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected scene-boundary attribution so AI decisions, heuristic fallbacks,
   confidence values, and final break sources cannot report contradictory
   results. Fallback breaks now remain labeled `heuristic-fallback`.
+- Added bounded split-and-retry for only the missing candidates of a suspected
+  truncated scene batch, plus privacy-safe candidate-context fingerprints and
+  prior-run boundary-difference diagnostics for stability review.
 - Validate profile relationship descriptors independently. A conflicting token
   no longer discards a separately supported descriptor on the same line; the
   approved controlled synonym map still requires authoritative support.

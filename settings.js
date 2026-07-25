@@ -144,6 +144,27 @@ import {
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
 
+/** Stable non-cryptographic fingerprint for diagnostics; never exports chat text. */
+function diagnosticFingerprint(value) {
+  let hash = 2166136261;
+  for (const char of String(value ?? '')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function compareSceneBoundaryRuns(previous, currentIndices = []) {
+  const before = new Set(previous?.final_break_indices ?? []);
+  const after = new Set(currentIndices);
+  const added = [...after].filter((index) => !before.has(index));
+  const removed = [...before].filter((index) => !after.has(index));
+  // A shift is a bounded one-message replacement, reported separately from
+  // broad count changes so marginal model variation is visible in exports.
+  const shifted = added.filter((index) => removed.some((prior) => Math.abs(prior - index) === 1));
+  return { compared_to_prior: Boolean(previous), breaks_added: added.length, breaks_removed: removed.length, breaks_shifted: shifted.length, unchanged_breaks: [...after].filter((index) => before.has(index)).length };
+}
+
 /**
  * Apply a user-initiated chat cleanup as one persisted operation. The storage
  * helpers used by the cleanup continue to call saveChatMetadata(), but the
@@ -3304,7 +3325,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0 }, scene_detection_run_signature: null, prompt_shape_hash: 'scene-boundary-batch-v2' };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 16 }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v2|candidate_id|break|confidence|previous-500|current-700') };
           let prevAiMsg = '';
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -3317,7 +3338,8 @@ export function bindSettingsUI(ctrl) {
             }
             const batchResult = await detectSceneBreakAIBatch(aiCandidates, { batchSize: sceneAudit.batch_size_target, onError: (err) => { sceneAudit.detection_failed++; recordCatchUpWarning('AI scene-break batch warning', err, 'scenes'); } });
             sceneAudit.boundary_candidates_evaluated = aiCandidates.length;
-            sceneAudit.scene_detection_run_signature = aiCandidates.map((candidate) => candidate.candidate_index).join(',');
+            sceneAudit.candidate_context_hashes = aiCandidates.map((candidate) => ({ candidate_id: candidate.candidate_index, context_hash: diagnosticFingerprint(`${candidate.previous_message}\n${candidate.message}`) }));
+            sceneAudit.scene_detection_run_signature = diagnosticFingerprint(sceneAudit.candidate_context_hashes.map((candidate) => `${candidate.candidate_id}:${candidate.context_hash}`).join('|'));
             sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.requests_sent;
             Object.assign(sceneAudit, batchResult.diagnostics);
             sceneAudit.ai_decisions = batchResult.decisions;
@@ -3449,6 +3471,11 @@ export function bindSettingsUI(ctrl) {
           sceneAudit.heuristic_fallback_candidates = sceneAudit.candidate_dispositions?.filter((item) => item.source === 'heuristic-fallback').length ?? 0;
           sceneAudit.heuristic_fallback_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_break').length ?? 0;
           sceneAudit.heuristic_fallback_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_no_break').length ?? 0;
+          const priorSceneAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.sceneDetection;
+          sceneAudit.boundary_comparison = compareSceneBoundaryRuns(
+            priorSceneAudit?.scene_detection_run_signature === sceneAudit.scene_detection_run_signature ? priorSceneAudit : null,
+            sceneAudit.final_break_indices,
+          );
           delete sceneAudit.ai_decisions;
           delete sceneAudit.ai_disposition_by_id;
           runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
@@ -3789,10 +3816,10 @@ export function bindSettingsUI(ctrl) {
         tier: 'arcs',
         message: `${runResult.arcPipeline.classifiedResolved} arcs resolved but no summaries persisted.`,
       });
-      if ((runResult.sceneDetection?.detection_failed ?? 0) > 0) qualityReasons.push({
-        code: 'scene_detection_provider_failures',
+      if ((runResult.sceneDetection?.heuristic_fallback_candidates ?? 0) > 0) qualityReasons.push({
+        code: 'scene_detection_candidate_fallbacks',
         tier: 'scenes',
-        message: `${runResult.sceneDetection.detection_failed} AI scene-break check${runResult.sceneDetection.detection_failed === 1 ? '' : 's'} failed; heuristic detection continued.`,
+        message: `${runResult.sceneDetection.heuristic_fallback_candidates} scene-boundary candidate${runResult.sceneDetection.heuristic_fallback_candidates === 1 ? '' : 's'} required deterministic heuristic fallback${runResult.sceneDetection.malformed_batches ? ` after ${runResult.sceneDetection.malformed_batches} malformed batch${runResult.sceneDetection.malformed_batches === 1 ? '' : 'es'}` : ''}.`,
       });
       if (runResult.finalReconciliation.error) qualityReasons.push({
         code: 'final_reconciliation_failed',

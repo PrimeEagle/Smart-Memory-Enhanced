@@ -336,7 +336,7 @@ test('late catch-up stages isolate non-critical failures and retain diagnostics'
   assert.match(settings, /latestExportDiagnostics = diagnostics/);
   assert.match(settings, /final_persistence_error/);
   assert.match(settings, /Late-stage failure/);
-  assert.match(settings, /scene_detection_provider_failures/);
+  assert.match(settings, /scene_detection_candidate_fallbacks/);
   assert.match(settings, /warningsSuppressed/);
   assert.match(settings, /warnings_suppressed/);
 });
@@ -428,6 +428,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /batch_size_target: 12/);
   assert.match(read('scenes.js'), /export async function detectSceneBreakAIBatch/);
   assert.match(read('scenes.js'), /legacy_indexed_lines/);
+  assert.match(read('scenes.js'), /recovered_after_smaller_batch_retry/);
+  assert.match(read('scenes.js'), /smaller_batch_retries/);
   assert.match(read('scenes.js'), /candidate_dispositions/);
   assert.match(read('scenes.js'), /terminal_outcome/);
   assert.match(read('prompts.js'), /Return ONLY this JSON object/);
@@ -439,6 +441,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /boundary_source: boundarySource/);
   assert.match(settings, /fallback_breaks_added/);
   assert.match(settings, /ai_decisions_invalid/);
+  assert.match(settings, /candidate_context_hashes/);
+  assert.match(settings, /boundary_comparison/);
 });
 
 test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {
