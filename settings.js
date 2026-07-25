@@ -3304,7 +3304,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_added: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0 }, scene_detection_run_signature: null, prompt_shape_hash: 'scene-boundary-batch-v1' };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0 }, scene_detection_run_signature: null, prompt_shape_hash: 'scene-boundary-batch-v2' };
           let prevAiMsg = '';
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -3321,6 +3321,11 @@ export function bindSettingsUI(ctrl) {
             sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.requests_sent;
             Object.assign(sceneAudit, batchResult.diagnostics);
             sceneAudit.ai_decisions = batchResult.decisions;
+            sceneAudit.candidate_dispositions = batchResult.diagnostics.candidate_dispositions.map((item) => ({ ...item, message_index: item.candidate_id }));
+            sceneAudit.ai_disposition_by_id = new Map(sceneAudit.candidate_dispositions.map((item) => [item.candidate_id, item]));
+            sceneAudit.ai_decisions_valid = batchResult.diagnostics.candidate_dispositions.filter((item) => /^ai_/.test(item.terminal_disposition)).length;
+            sceneAudit.ai_decisions_invalid = batchResult.diagnostics.batch_attempts.reduce((total, item) => total + (item.invalid_decision_count ?? 0), 0);
+            sceneAudit.ai_decisions_missing = batchResult.diagnostics.batch_attempts.reduce((total, item) => total + (item.missing_candidate_ids?.length ?? 0), 0);
           }
 
           /**
@@ -3361,11 +3366,22 @@ export function bindSettingsUI(ctrl) {
             if (isAiMsg) prevAiMsg = msgText;
 
             if (isBreak) {
-              const boundarySource = settings.scene_ai_detect ? 'ai-confirmation' : 'heuristic';
-              if (settings.scene_ai_detect) sceneAudit.ai_breaks_added++;
+              const disposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
+              const boundarySource = settings.scene_ai_detect ? (disposition?.source ?? 'heuristic-fallback') : 'deterministic-heuristic';
+              if (boundarySource === 'ai-batch') sceneAudit.ai_breaks_added++;
+              else if (settings.scene_ai_detect) sceneAudit.fallback_breaks_added++;
               else sceneAudit.heuristic_break_candidates++;
               sceneAudit.final_break_indices.push(msg.__sme_original_index ?? msgIdx);
-              sceneAudit.scene_boundary_source.push({ index: msg.__sme_original_index ?? msgIdx, source: boundarySource });
+              sceneAudit.scene_boundary_source.push({
+                candidate_id: msgIdx,
+                message_index: msg.__sme_original_index ?? msgIdx,
+                decision: true,
+                source: boundarySource,
+                ai_confidence: disposition?.ai_confidence ?? null,
+                heuristic_score: disposition?.heuristic_score ?? null,
+                batch_number: disposition?.batch_number ?? null,
+                terminal_disposition: disposition?.terminal_disposition ?? 'deterministic_break',
+              });
               sceneCount++;
               sceneAudit.candidates++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
@@ -3376,7 +3392,7 @@ export function bindSettingsUI(ctrl) {
               });
               if (sceneResult?.summary && !(await isDuplicateScene(sceneResult.summary))) {
                 sceneHistory.push(createSceneRecord(sceneResult.summary, sceneBuffer, {
-                  detected_by: settings.scene_ai_detect ? 'ai' : 'heuristic',
+                  detected_by: boundarySource,
                   boundary_source: boundarySource,
                   detection_message_index: msg.__sme_original_index ?? null,
                   character_participants: sceneResult.characterParticipants,
@@ -3428,7 +3444,13 @@ export function bindSettingsUI(ctrl) {
             recordCatchUpError('scene history save error', err);
           });
           sceneAudit.average_candidates_per_request = sceneAudit.requests_sent ? Number((sceneAudit.boundary_candidates_evaluated / sceneAudit.requests_sent).toFixed(2)) : 0;
+          sceneAudit.ai_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'ai_no_break').length ?? 0;
+          sceneAudit.fallback_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_no_break').length ?? 0;
+          sceneAudit.heuristic_fallback_candidates = sceneAudit.candidate_dispositions?.filter((item) => item.source === 'heuristic-fallback').length ?? 0;
+          sceneAudit.heuristic_fallback_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_break').length ?? 0;
+          sceneAudit.heuristic_fallback_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_no_break').length ?? 0;
           delete sceneAudit.ai_decisions;
+          delete sceneAudit.ai_disposition_by_id;
           runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;

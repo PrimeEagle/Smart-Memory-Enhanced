@@ -47,7 +47,7 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
-import { buildSceneDetectPrompt, buildSceneDetectBatchPrompt, buildSceneSummaryPrompt } from './prompts.js';
+import { buildSceneDetectPrompt, buildSceneDetectBatchPrompt, buildSceneDetectBatchRepairPrompt, buildSceneSummaryPrompt } from './prompts.js';
 import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
@@ -133,29 +133,83 @@ export async function detectSceneBreakAI(messageText, previousMessageText, onErr
 export async function detectSceneBreakAIBatch(candidates, options = {}) {
   const result = new Map();
   const batchSize = Math.max(1, Math.min(20, Number(options.batchSize ?? 12)));
-  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {} };
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, boundary_confidences: {}, batch_attempts: [], candidate_dispositions: [] };
+  const parseBatch = (raw, requestedIds) => {
+    const original = String(raw ?? '');
+    const codeFencePresent = /^\s*```/m.test(original);
+    let normalized = original.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    const first = normalized.search(/[\[{]/); const last = Math.max(normalized.lastIndexOf('}'), normalized.lastIndexOf(']'));
+    const leading = first > 0; const trailing = last >= 0 && last < normalized.length - 1; if (first >= 0 && last >= first) normalized = normalized.slice(first, last + 1);
+    let value;
+    let recoveredLegacyLines = false;
+    try {
+      value = JSON.parse(normalized);
+    } catch {
+      // Some local models follow the former line-oriented contract despite the
+      // JSON instruction. Recover only fully-addressed, confidence-bearing
+      // decisions; everything else remains candidate-local fallback below.
+      const legacy = [...original.matchAll(/^\s*\[\s*(\d+)\s*\]\s*[:\-]?\s*(YES|NO|TRUE|FALSE)\b[^\n]*?\b(?:confidence|conf)\s*[=:]?\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*$/gim)]
+        .map((match) => ({ candidate_id: Number(match[1]), break: /^(?:YES|TRUE)$/i.test(match[2]), confidence: Number(match[3]) }));
+      if (!legacy.length) return { ok: false, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: ['trim', leading ? 'strip_preamble' : 'direct_json'], parse_error_code: 'invalid_json', top_level_shape: 'unrecognized', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: [] };
+      value = { decisions: legacy };
+      recoveredLegacyLines = true;
+    }
+    const decisions = Array.isArray(value) ? value : value?.decisions;
+    if (!Array.isArray(decisions)) return { ok: false, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: ['json'], parse_error_code: 'missing_decisions_array', top_level_shape: Array.isArray(value) ? 'array' : value && typeof value === 'object' ? 'object' : typeof value, code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: value && typeof value === 'object' ? Object.keys(value).slice(0, 5) : [] };
+    const requested = new Set(requestedIds); const valid = new Map(); const duplicates = []; const unknown = []; let invalid = 0;
+    for (const item of decisions) {
+      const id = Number(item?.candidate_id ?? item?.id); const flag = item?.break ?? item?.is_break ?? item?.scene_break;
+      const bool = flag === true || flag === 'true' || flag === 'TRUE'; const no = flag === false || flag === 'false' || flag === 'FALSE'; const confidence = Number(item?.confidence);
+      if (!Number.isInteger(id) || !requested.has(id)) { unknown.push(item?.candidate_id ?? item?.id ?? null); invalid++; continue; }
+      if (valid.has(id)) { duplicates.push(id); invalid++; continue; }
+      if ((!bool && !no) || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) { invalid++; continue; }
+      valid.set(id, { decision: bool, confidence });
+    }
+    const missing = requestedIds.filter((id) => !valid.has(id));
+    return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [recoveredLegacyLines ? 'legacy_indexed_lines' : leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: recoveredLegacyLines ? 'legacy_lines' : Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
+  };
   for (let offset = 0; offset < candidates.length; offset += batchSize) {
     const batch = candidates.slice(offset, offset + batchSize);
+    const attempt = { batch_number: Math.floor(offset / batchSize) + 1, candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false };
     try {
       diagnostics.requests_sent++;
       if (batch.length > 1) diagnostics.batched_requests++;
       const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: Math.max(32, batch.length * 16), temperature: 0 });
-      const parsed = new Map();
-      for (const match of String(response ?? '').matchAll(/^\s*\[(\d+)\]\s*(YES|NO)\s+confidence\s*=\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*$/gim)) parsed.set(Number(match[1]), { decision: match[2] === 'YES', confidence: Number(match[3]) });
-      if (parsed.size !== batch.length || batch.some((candidate) => !parsed.has(candidate.candidate_index))) throw new Error('Malformed scene-boundary batch response.');
-      for (const candidate of batch) {
-        const decision = parsed.get(candidate.candidate_index);
-        result.set(candidate.candidate_index, decision.decision);
-        diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence;
+      attempt.request_completed = true; if (!response) { attempt.returned_none = true; throw new Error('Empty scene-boundary batch response.'); }
+      let parsed = parseBatch(response, attempt.candidate_ids_requested); Object.assign(attempt, parsed);
+      if (!parsed.ok) {
+        // One formatting-only retry is intentionally bounded. It receives the
+        // model's own malformed response and IDs, never the source chat again.
+        attempt.format_repair_attempted = true;
+        diagnostics.retried_batches++; diagnostics.repair_requests_sent++; diagnostics.requests_sent++;
+        try {
+          const repaired = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchRepairPrompt(response, attempt.candidate_ids_requested), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: Math.max(32, batch.length * 16), temperature: 0 });
+          const repairedParsed = parseBatch(repaired, attempt.candidate_ids_requested);
+          if (repairedParsed.ok) {
+            parsed = repairedParsed; Object.assign(attempt, repairedParsed);
+            attempt.format_repair_succeeded = true; diagnostics.repair_requests_succeeded++;
+          } else diagnostics.repair_failures++;
+        } catch { diagnostics.repair_failures++; }
       }
+      if (!parsed.ok) throw new Error(parsed.parse_error_code);
+      for (const candidate of batch) {
+        const decision = parsed.valid.get(candidate.candidate_index);
+        if (decision) { result.set(candidate.candidate_index, decision.decision); diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source: 'ai-batch', ai_confidence: decision.confidence, batch_number: attempt.batch_number, terminal_disposition: decision.decision ? 'ai_break' : 'ai_no_break' }); }
+        else { const fallback = detectSceneBreakHeuristic(candidate.message); const missing = parsed.missing_candidate_ids.includes(candidate.candidate_index); result.set(candidate.candidate_index, fallback); diagnostics.fallback_boundaries++; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: fallback, source: 'heuristic-fallback', ai_confidence: null, heuristic_score: null, ai_result_disposition: missing ? 'missing_ai_decision' : 'invalid_ai_decision', batch_number: attempt.batch_number, terminal_disposition: fallback ? 'fallback_break' : 'fallback_no_break' }); }
+      }
+      attempt.terminal_outcome = attempt.format_repair_succeeded ? 'recovered_after_repair_request' : parsed.parser_path?.includes('legacy_indexed_lines') ? 'recovered_after_normalization' : parsed.missing_candidate_ids.length ? 'parsed_partial' : 'parsed_full';
     } catch (error) {
-      diagnostics.malformed_batches++;
+      if (!attempt.provider_error && !attempt.returned_none) diagnostics.malformed_batches++;
+      attempt.provider_error = attempt.request_completed ? null : String(error?.message ?? error);
+      attempt.terminal_outcome = attempt.returned_none ? 'returned_none_all_fallback' : attempt.provider_error ? 'provider_error_all_fallback' : 'malformed_all_fallback';
       for (const candidate of batch) {
         diagnostics.fallback_boundaries++;
-        result.set(candidate.candidate_index, detectSceneBreakHeuristic(candidate.message));
+        const fallback = detectSceneBreakHeuristic(candidate.message); result.set(candidate.candidate_index, fallback);
+        diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: fallback, source: 'heuristic-fallback', ai_confidence: null, heuristic_score: null, ai_result_disposition: attempt.provider_error ? 'provider_error_fallback' : attempt.returned_none ? 'missing_ai_decision' : 'invalid_ai_decision', batch_number: attempt.batch_number, terminal_disposition: fallback ? 'fallback_break' : 'fallback_no_break' });
       }
       options.onError?.(error, batch);
     }
+    diagnostics.batch_attempts.push(attempt);
   }
   return { decisions: result, diagnostics };
 }

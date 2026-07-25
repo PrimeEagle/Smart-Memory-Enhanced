@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Replaced the fragile all-or-nothing scene-batch response handling with a
+  protected JSON contract, bounded local normalization, candidate-level
+  validation, and one formatting-only repair request when a non-empty response
+  is structurally malformed. Valid decisions in a partial batch are retained;
+  only the missing or invalid candidates use deterministic heuristic fallback.
+- Added non-content scene-batch diagnostics: requested/returned IDs, parser
+  path, structural response preview, coverage, partial/fallback disposition,
+  confidence, terminal outcome, and bounded repair counters.
+- Corrected scene-boundary attribution so AI decisions, heuristic fallbacks,
+  confidence values, and final break sources cannot report contradictory
+  results. Fallback breaks now remain labeled `heuristic-fallback`.
+- Validate profile relationship descriptors independently. A conflicting token
+  no longer discards a separately supported descriptor on the same line; the
+  approved controlled synonym map still requires authoritative support.
+
+### Tests
+
+- Extended workflow and regression coverage for the canonical scene-batch
+  schema, recovery diagnostics, fallback accounting, and per-descriptor
+  relationship validation.
+
 ## [0.8.31] - 2026-07-24
 
 ### Repository history

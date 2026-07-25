@@ -265,19 +265,31 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       invalidLabel++;
       return '';
     }
-    const exactStatus = pair?.descriptors.some((descriptor) => new RegExp(`(^|[^a-z])${escapeRegExp(descriptor)}(?=$|[^a-z])`, 'i').test(status));
-    if (pair && exactStatus) return line;
     // A deliberately small, one-way synonym table handles common local-model
     // wording without permitting fuzzy semantic approval. Every replacement
     // must still be present in the authoritative pair vocabulary.
     const descriptorSynonyms = { appreciative: 'grateful', trusting: 'open', caring: 'affectionate', reassuring: 'supportive' };
     const descriptorTokens = status.split(',').map((value) => value.trim()).filter(Boolean);
     const normalizedTokens = descriptorTokens.map((token) => descriptorSynonyms[token] ?? token);
-    if (pair && descriptorTokens.length && normalizedTokens.every((token) => pair.descriptors.includes(token))) {
-      normalized += descriptorTokens.filter((token, index) => token !== normalizedTokens[index]).length;
-      const normalizedStatus = normalizedTokens.join(', ');
-      rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, normalized_descriptor: normalizedStatus, normalization_rule: 'controlled_descriptor_synonym', authoritative_descriptors: pair.descriptors, disposition: 'accepted_normalized_synonym', reason_code: 'controlled_descriptor_synonym' });
-      return `${match[1].trim()}: ${normalizedStatus}`;
+    if (pair && descriptorTokens.length) {
+      // Validate each generated descriptor independently. A mixed line such as
+      // "wary, appreciative" must not discard the grounded "appreciative"
+      // part merely because "wary" lacks support; likewise it must never let
+      // an unsupported descriptor through simply because one sibling is valid.
+      const accepted = [];
+      descriptorTokens.forEach((token, index) => {
+        const canonical = normalizedTokens[index];
+        if (pair.descriptors.includes(canonical)) {
+          if (!accepted.includes(canonical)) accepted.push(canonical);
+          if (canonical !== token) {
+            normalized++;
+            rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: token, normalized_descriptor: canonical, normalization_rule: 'controlled_descriptor_synonym', authoritative_descriptors: pair.descriptors, disposition: 'accepted_normalized_synonym', reason_code: 'controlled_descriptor_synonym' });
+          }
+          return;
+        }
+        rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: token, authoritative_value: pair.descriptors, disposition: 'dropped_conflict', reason_code: 'unsupported_relationship_descriptor' });
+      });
+      if (accepted.length) return `${match[1].trim()}: ${accepted.join(', ')}`;
     }
     // “Partner” is weaker than an established spouse status. Normalize the
     // generated synonym only when the canonical relationship evidence gives a

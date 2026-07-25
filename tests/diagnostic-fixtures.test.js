@@ -86,7 +86,7 @@ test('v0.8.14 regression fixture covers persona, provenance, arcs, relationships
   assert.equal(data.expected_contracts.length, 6);
   assert.match(graph, /mergeCanonicalEntityAcrossStores/);
   assert.match(arcs, /terminal_status/);
-  assert.match(profiles, /exactStatus/);
+  assert.match(profiles, /descriptorTokens/);
   assert.match(settings, /quality: runResult\.quality/);
   assert.match(settings, new RegExp(data.quality.expected_reason));
   assert.match(settings, /participantListsRewritten/);

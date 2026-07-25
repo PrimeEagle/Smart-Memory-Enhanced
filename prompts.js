@@ -264,7 +264,12 @@ Answer YES or NO only. Nothing else.`;
 /** Builds one deterministic, index-addressed scene-boundary classification batch. */
 export function buildSceneDetectBatchPrompt(candidates = []) {
   const rows = candidates.map((candidate) => `[${candidate.candidate_index}]\nPREVIOUS:\n${String(candidate.previous_message ?? '').slice(0, 500)}\nCURRENT:\n${String(candidate.message ?? '').slice(0, 700)}`).join('\n\n---\n\n');
-  return `[SCENE BOUNDARY CLASSIFICATION]\nReturn exactly one line for every supplied candidate, in original order: [index] YES|NO confidence=0.00\nA break requires a meaningful change in time, location, active participants, activity, or narrative phase. Do not create a break for minor emotional shifts within a continuous interaction. Do not omit or reorder indices.\n\n${rows}`;
+  return `[SCENE BOUNDARY CLASSIFICATION]\nReturn ONLY this JSON object, with exactly one decision for every supplied candidate_id:\n{"decisions":[{"candidate_id":42,"break":true,"confidence":0.93}]}\nDo not omit, duplicate, reorder, rename, or invent candidate IDs. No Markdown, prose, explanations, or summaries. A break requires a meaningful change in time, location, active participants, activity, or narrative phase. Do not create a break for minor emotional shifts within a continuous interaction.\n\n${rows}`;
+}
+
+/** Repairs a malformed scene-batch response without re-sending chat content. */
+export function buildSceneDetectBatchRepairPrompt(response, candidateIds = []) {
+  return `[SCENE BOUNDARY FORMAT REPAIR]\nReturn ONLY valid JSON in this exact shape:\n{"decisions":[{"candidate_id":42,"break":true,"confidence":0.93}]}\nReturn exactly one decision for each requested candidate_id: ${candidateIds.join(', ')}. Do not add, remove, rename, or reorder IDs. Convert only the supplied response; do not explain.\n\nMALFORMED RESPONSE:\n${String(response ?? '').slice(0, 6000)}`;
 }
 
 export const SCENE_SUMMARY_PROMPT =

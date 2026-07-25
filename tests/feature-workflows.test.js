@@ -246,10 +246,12 @@ test('historical persona names remain durable aliases of the active persona iden
   assert.match(graph, /flattened_to_active_persona/);
 });
 
-test('profile relationship lines require an exact descriptor from the established pair history', () => {
+test('profile relationship descriptors are independently validated against established pair history', () => {
   const profiles = read('profiles.js');
   const prompts = read('prompts.js');
-  assert.match(profiles, /const exactStatus = pair\?\.descriptors\.some/);
+  assert.match(profiles, /Validate each generated descriptor independently/);
+  assert.match(profiles, /unsupported_relationship_descriptor/);
+  assert.match(profiles, /controlled_descriptor_synonym/);
   assert.match(profiles, /extractCardRelationshipFacts/);
   assert.match(profiles, /extractGroundedRelationshipFacts/);
   assert.match(profiles, /const pair = cardPair \?\? historyPair \?\? groundedPair/);
@@ -425,11 +427,18 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /detectSceneBreakAIBatch\(aiCandidates/);
   assert.match(settings, /batch_size_target: 12/);
   assert.match(read('scenes.js'), /export async function detectSceneBreakAIBatch/);
+  assert.match(read('scenes.js'), /legacy_indexed_lines/);
+  assert.match(read('scenes.js'), /candidate_dispositions/);
+  assert.match(read('scenes.js'), /terminal_outcome/);
+  assert.match(read('prompts.js'), /Return ONLY this JSON object/);
+  assert.match(read('prompts.js'), /candidate_id/);
   assert.match(read('prompts.js'), /buildSceneDetectBatchPrompt/);
   assert.match(settings, /ai_breaks_added/);
   assert.match(settings, /final_break_indices/);
   assert.match(settings, /scene_boundary_source/);
   assert.match(settings, /boundary_source: boundarySource/);
+  assert.match(settings, /fallback_breaks_added/);
+  assert.match(settings, /ai_decisions_invalid/);
 });
 
 test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {
