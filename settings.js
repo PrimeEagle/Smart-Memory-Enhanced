@@ -3346,8 +3346,11 @@ export function bindSettingsUI(ctrl) {
             sceneAudit.candidate_dispositions = batchResult.diagnostics.candidate_dispositions.map((item) => ({ ...item, message_index: item.candidate_id }));
             sceneAudit.ai_disposition_by_id = new Map(sceneAudit.candidate_dispositions.map((item) => [item.candidate_id, item]));
             sceneAudit.ai_decisions_valid = batchResult.diagnostics.candidate_dispositions.filter((item) => /^ai_/.test(item.terminal_disposition)).length;
-            sceneAudit.ai_decisions_invalid = batchResult.diagnostics.batch_attempts.reduce((total, item) => total + (item.invalid_decision_count ?? 0), 0);
-            sceneAudit.ai_decisions_missing = batchResult.diagnostics.batch_attempts.reduce((total, item) => total + (item.missing_candidate_ids?.length ?? 0), 0);
+            // Attempt-level parse misses remain available below for diagnosis,
+            // while the public AI decision counters are derived only from the
+            // final one-per-candidate dispositions after all bounded recovery.
+            sceneAudit.attempt_invalid_decisions = batchResult.diagnostics.batch_attempts.reduce((total, item) => total + (item.invalid_decision_count ?? 0), 0);
+            sceneAudit.attempt_missing_decisions = batchResult.diagnostics.batch_attempts.reduce((total, item) => total + (item.missing_candidate_ids?.length ?? 0), 0);
           }
 
           /**
@@ -3467,6 +3470,9 @@ export function bindSettingsUI(ctrl) {
           });
           sceneAudit.average_candidates_per_request = sceneAudit.requests_sent ? Number((sceneAudit.boundary_candidates_evaluated / sceneAudit.requests_sent).toFixed(2)) : 0;
           sceneAudit.ai_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'ai_no_break').length ?? 0;
+          sceneAudit.ai_decisions_valid = sceneAudit.candidate_dispositions?.filter((item) => /^ai_/.test(item.terminal_disposition)).length ?? 0;
+          sceneAudit.ai_decisions_invalid = sceneAudit.candidate_dispositions?.filter((item) => item.ai_result_disposition === 'invalid_ai_decision').length ?? 0;
+          sceneAudit.ai_decisions_missing = sceneAudit.candidate_dispositions?.filter((item) => item.ai_result_disposition === 'missing_ai_decision').length ?? 0;
           sceneAudit.fallback_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_no_break').length ?? 0;
           sceneAudit.heuristic_fallback_candidates = sceneAudit.candidate_dispositions?.filter((item) => item.source === 'heuristic-fallback').length ?? 0;
           sceneAudit.heuristic_fallback_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_break').length ?? 0;

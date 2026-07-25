@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.34] - 2026-07-25
+
+### Fixed
+
+- Made exported `ai_decisions_invalid` and `ai_decisions_missing` reflect each
+  candidate's final disposition after bounded recovery. Intermediate parse
+  misses remain separately available as attempt-level diagnostics.
+
 ## [0.8.33] - 2026-07-24
 
 ### Fixed
