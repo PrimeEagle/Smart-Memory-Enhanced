@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.33] - 2026-07-24
+
+### Fixed
+
+- Corrected the scene-batch prompt contract exposed by live diagnostics:
+  candidates are now explicitly labeled `CANDIDATE_ID`, the schema example
+  uses a requested ID rather than a misleading static value, and JSON output
+  has adequate per-candidate response budget.
+- Count recovered AI scene decisions as AI decisions rather than heuristic
+  fallbacks, and update partial-retry coverage before terminal diagnostics.
+- Restrict scene-stability comparisons to runs with matching chat signature,
+  prompt shape, model/source, connection profile, and deterministic settings.
+
+### Tests
+
+- Extended scene workflow coverage for explicit candidate IDs and compatible
+  run-comparison gating.
+
 ## [0.8.32] - 2026-07-24
 
 ### Fixed

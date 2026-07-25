@@ -446,6 +446,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /ai-batch-recovered/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /boundary_comparison/);
+  assert.match(settings, /comparablePriorRun/);
+  assert.match(settings, /prompt_shape_hash === sceneAudit\.prompt_shape_hash/);
 });
 
 test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {
