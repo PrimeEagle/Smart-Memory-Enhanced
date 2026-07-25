@@ -174,7 +174,11 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     try {
       diagnostics.requests_sent++;
       if (batch.length > 1) diagnostics.batched_requests++;
-      const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: Math.max(32, batch.length * 16), temperature: 0 });
+      // JSON needs enough space for every ID, boolean, and confidence. The
+      // former 16-token allowance frequently cut off confidence fields or all
+      // but the first item from local-model responses.
+      const responseBudget = Math.max(128, batch.length * 32);
+      const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
       attempt.request_completed = true; if (!response) { attempt.returned_none = true; throw new Error('Empty scene-boundary batch response.'); }
       let parsed = parseBatch(response, attempt.candidate_ids_requested); Object.assign(attempt, parsed);
       if (!parsed.ok) {
@@ -183,7 +187,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         attempt.format_repair_attempted = true;
         diagnostics.retried_batches++; diagnostics.repair_requests_sent++; diagnostics.requests_sent++;
         try {
-          const repaired = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchRepairPrompt(response, attempt.candidate_ids_requested), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: Math.max(32, batch.length * 16), temperature: 0 });
+          const repaired = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchRepairPrompt(response, attempt.candidate_ids_requested), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
           const repairedParsed = parseBatch(repaired, attempt.candidate_ids_requested);
           if (repairedParsed.ok) {
             parsed = repairedParsed; Object.assign(attempt, repairedParsed);
@@ -200,6 +204,8 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         // and avoids discarding decisions already validated from this response.
         smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.max(1, Math.floor(batch.length / 2)), onError: options.onError });
         for (const [candidateId, decision] of smallerRetry.decisions) parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, retried: true });
+        parsed.missing_candidate_ids = parsed.missing_candidate_ids.filter((candidateId) => !parsed.valid.has(candidateId));
+        parsed.valid_decision_count = parsed.valid.size;
         for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
         Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
         diagnostics.batch_attempts.push(...smallerRetry.diagnostics.batch_attempts);

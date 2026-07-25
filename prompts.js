@@ -263,8 +263,10 @@ Answer YES or NO only. Nothing else.`;
 
 /** Builds one deterministic, index-addressed scene-boundary classification batch. */
 export function buildSceneDetectBatchPrompt(candidates = []) {
-  const rows = candidates.map((candidate) => `[${candidate.candidate_index}]\nPREVIOUS:\n${String(candidate.previous_message ?? '').slice(0, 500)}\nCURRENT:\n${String(candidate.message ?? '').slice(0, 700)}`).join('\n\n---\n\n');
-  return `[SCENE BOUNDARY CLASSIFICATION]\nReturn ONLY this JSON object, with exactly one decision for every supplied candidate_id:\n{"decisions":[{"candidate_id":42,"break":true,"confidence":0.93}]}\nDo not omit, duplicate, reorder, rename, or invent candidate IDs. No Markdown, prose, explanations, or summaries. A break requires a meaningful change in time, location, active participants, activity, or narrative phase. Do not create a break for minor emotional shifts within a continuous interaction.\n\n${rows}`;
+  const ids = candidates.map((candidate) => Number(candidate.candidate_index));
+  const exampleId = ids[0] ?? 0;
+  const rows = candidates.map((candidate) => `CANDIDATE_ID: ${candidate.candidate_index}\nPREVIOUS:\n${String(candidate.previous_message ?? '').slice(0, 500)}\nCURRENT:\n${String(candidate.message ?? '').slice(0, 700)}`).join('\n\n---\n\n');
+  return `[SCENE BOUNDARY CLASSIFICATION]\nREQUESTED_CANDIDATE_IDS: ${ids.join(', ')}\nReturn ONLY this JSON object, with exactly one decision for EVERY requested candidate_id:\n{"decisions":[{"candidate_id":${exampleId},"break":true,"confidence":0.93}]}\nThe object above is a schema example only. It is NOT a complete answer unless there is exactly one requested ID. Include each REQUESTED_CANDIDATE_ID exactly once. Do not omit, duplicate, reorder, rename, or invent candidate IDs. Every decision MUST include a finite confidence from 0 to 1. No Markdown, prose, explanations, or summaries. A break requires a meaningful change in time, location, active participants, activity, or narrative phase. Do not create a break for minor emotional shifts within a continuous interaction.\n\n${rows}`;
 }
 
 /** Repairs a malformed scene-batch response without re-sending chat content. */

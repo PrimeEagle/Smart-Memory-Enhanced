@@ -3390,7 +3390,7 @@ export function bindSettingsUI(ctrl) {
             if (isBreak) {
               const disposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
               const boundarySource = settings.scene_ai_detect ? (disposition?.source ?? 'heuristic-fallback') : 'deterministic-heuristic';
-              if (boundarySource === 'ai-batch') sceneAudit.ai_breaks_added++;
+              if (['ai-batch', 'ai-batch-recovered', 'ai-repair'].includes(boundarySource)) sceneAudit.ai_breaks_added++;
               else if (settings.scene_ai_detect) sceneAudit.fallback_breaks_added++;
               else sceneAudit.heuristic_break_candidates++;
               sceneAudit.final_break_indices.push(msg.__sme_original_index ?? msgIdx);
