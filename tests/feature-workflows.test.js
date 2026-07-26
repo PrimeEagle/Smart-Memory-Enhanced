@@ -505,6 +505,7 @@ test('profile relationship diagnostics retain terminal descriptor and field outc
   assert.match(profiles, /accepted_normalized_synonym/);
   assert.match(profiles, /saved_with_partial_descriptors/);
   assert.match(profiles, /dropped_no_supported_descriptors/);
+  assert.match(profiles, /rejectedDescriptorsInSavedFields/);
   assert.match(settings, /unsupported model-generated relationship descriptor/);
   assert.match(settings, /unsupported model-generated relationship field/);
 });

@@ -3635,7 +3635,7 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.prior_fields_preserved = runResult.profiles.fields.preserved_prior;
             runResult.profiles.relationship_conflicts_dropped = runResult.profiles.fields.dropped_conflict;
             runResult.profiles.relationship_conflict_details.push(...(profiles.relationship_field_details ?? []));
-            runResult.profiles.relationship_descriptor_rejections += (profiles.profile_descriptor_terminal_outcomes ?? []).filter((entry) => String(entry.disposition ?? '').startsWith('rejected_')).length;
+            runResult.profiles.relationship_descriptor_rejections += Number(profiles.relationship_descriptor_rejections ?? 0);
             runResult.profiles.relationship_field_rejections += (profiles.profile_field_terminal_outcomes ?? []).filter((entry) => entry.field_terminal_outcome === 'dropped_no_supported_descriptors').length;
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;

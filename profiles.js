@@ -634,6 +634,12 @@ export async function generateProfiles(characterName, abortCheck = null, options
     const profileFieldTerminalOutcomes = relationshipCheck.field_terminal_outcomes ?? [];
     const rejectedRelationshipDescriptors = profileDescriptorTerminalOutcomes.filter((entry) => String(entry.disposition ?? '').startsWith('rejected_'));
     const rejectedRelationshipFields = profileFieldTerminalOutcomes.filter((entry) => entry.field_terminal_outcome === 'dropped_no_supported_descriptors');
+    // A descriptor inside a wholly dropped field is represented by the field
+    // outcome in user-facing status. Only rejected siblings of a field that
+    // was actually saved are a separate descriptor-level warning.
+    const rejectedDescriptorsInSavedFields = profileFieldTerminalOutcomes
+      .filter((entry) => entry.field_terminal_outcome === 'saved_with_partial_descriptors')
+      .flatMap((entry) => entry.rejected_descriptors ?? []);
     const profiles = {
       ...parsed,
       generated_at: Date.now(),
@@ -649,6 +655,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
       // consumers must use the terminal arrays below: attempt-level traces
       // are deliberately kept out of status/degradation accounting.
       relationship_field_rejections: rejectedRelationshipFields.length,
+      relationship_descriptor_rejections: rejectedDescriptorsInSavedFields.length,
       relationship_field_details: profileFieldTerminalOutcomes.map((detail) => ({
         profile_identity: characterName, profile_card_id: roster.characters?.find((entry) => entry.canonicalName === characterName)?.id ?? null,
         preserved_value: preservedPriorFields.includes('relationship_matrix') ? String(priorProfiles?.relationship_matrix ?? '') : null,
