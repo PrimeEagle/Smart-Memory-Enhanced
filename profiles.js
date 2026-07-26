@@ -199,7 +199,7 @@ function rosterEntries(roster) {
 }
 
 function extractCardRelationshipFacts(roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const entry of rosterEntries(roster)) {
@@ -219,7 +219,7 @@ function extractCardRelationshipFacts(roster = []) {
 }
 
 function extractGroundedRelationshipFacts(records = [], roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const record of records) {
@@ -242,7 +242,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       relationship_type: String(state?.relationship_type ?? state?.canonical_relationship_type ?? '').trim().toLowerCase() || null,
       descriptors: (state?.descriptors ?? []).map((descriptor) => String(typeof descriptor === 'string' ? descriptor : descriptor?.word ?? '').trim().toLowerCase()).filter(Boolean),
     }))
-    .filter((pair) => pair.subject && pair.target && pair.descriptors.length);
+    .filter((pair) => pair.subject && pair.target && (pair.descriptors.length || pair.relationship_type));
   const cardPairs = extractCardRelationshipFacts(roster);
   const groundedPairs = extractGroundedRelationshipFacts(groundedRecords, roster);
   if (!historyPairs.length && !cardPairs.length && !groundedPairs.length) {
@@ -286,7 +286,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       const outcome = { relationship_target: entity, generated_descriptor: status, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: 'rejected_malformed', reason_code: 'invalid_relationship_label', normalization_rule: null };
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
-      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: null, generated_descriptors: [status], accepted_descriptors: [], rejected_descriptors: [status], preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
+      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair?.relationship_type ?? null, generated_descriptors: [status], accepted_descriptors: [], rejected_descriptors: [status], preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
       rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'invalid_relationship_label' });
       invalidLabel++;
       return '';
@@ -332,7 +332,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
         fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? pair.descriptors.find((descriptor) => ['husband', 'wife', 'sister', 'brother', 'mother', 'father'].includes(descriptor)) ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: accepted, rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: rejectedDescriptors.length ? 'saved_with_partial_descriptors' : 'saved_with_all_descriptors' });
         return `${match[1].trim()}: ${pair.descriptors.join(', ')}`;
       }
-      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
+      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
       rejected.push(line);
       return '';
     }
@@ -354,7 +354,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
     }
-    fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: descriptorTokens, preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
+    fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair?.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: descriptorTokens, preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
     rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'unsupported_relationship_descriptor' });
     return '';
   }).filter(Boolean).join('\n');

@@ -527,6 +527,8 @@ test('profile relationship diagnostics retain terminal descriptor and field outc
   assert.match(profiles, /profile_descriptor_traces/);
   assert.match(profiles, /profile_descriptor_terminal_outcomes/);
   assert.match(profiles, /profile_field_terminal_outcomes/);
+  assert.match(profiles, /sister\|brother\|mother\|father/);
+  assert.match(profiles, /pair\.descriptors\.length \|\| pair\.relationship_type/);
   assert.match(profiles, /accepted_exact/);
   assert.match(profiles, /accepted_normalized_synonym/);
   assert.match(profiles, /saved_with_partial_descriptors/);
