@@ -1067,6 +1067,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     for (const mem of finalActive) {
       if (isGrounded(mem) && Array.isArray(mem._raw_entity_names)) {
         mem.entity_link_stage ??= 'longterm_extraction';
+        mem.entity_link_store ??= 'longterm';
         mem.entity_creation_method ??= 'structured_entity_output';
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
       }
@@ -1082,6 +1083,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         validation_status: relationship.validation_status,
         source_message_indices: relationship.source_message_indices ?? [],
         entity_link_stage: 'relationship_promotion',
+        entity_link_store: 'relationship-history',
         entity_creation_method: 'relationship_promotion',
       };
       resolveEntityNames(

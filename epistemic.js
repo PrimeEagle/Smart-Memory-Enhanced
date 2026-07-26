@@ -533,6 +533,7 @@ const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
           .filter(Boolean)
           .map((name) => `${name}/character`);
         entry.entity_link_stage ??= 'perspective_subject_extraction';
+        entry.entity_link_store ??= 'epistemic';
         entry.entity_creation_method ??= 'perspective_subject';
         resolveEntityNames(entry, names, Math.max(...(entry.source_message_indices ?? [0])), entityRegistry);
       }

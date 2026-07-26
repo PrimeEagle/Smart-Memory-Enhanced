@@ -526,6 +526,7 @@ export async function processSceneBreak(
   if (characterName && isGeneratedRecordApproved(sceneRecord) && sceneRecord.character_participants?.length) {
     const registry = loadCharacterEntityRegistry(characterName);
     sceneRecord.entity_link_stage ??= 'scene_participant_extraction';
+    sceneRecord.entity_link_store ??= 'scenes';
     sceneRecord.entity_creation_method ??= 'scene_participant';
     resolveEntityNames(
       sceneRecord,

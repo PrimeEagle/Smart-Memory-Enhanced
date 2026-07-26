@@ -539,7 +539,7 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     link_created_run_id: mem.catchup_run_id ?? getContext().chatMetadata?.[META_KEY]?.active_catchup_run_id ?? null,
     link_created_at: Date.now(),
     link_created_stage: mem.entity_link_stage ?? 'entity_resolution',
-    link_created_store: mem.scope ?? 'memory',
+    link_created_store: mem.entity_link_store ?? mem.scope ?? 'memory',
     underlying_record_id: mem.id ?? null,
     source_candidate_id: mem.source_candidate_id ?? mem.id ?? null,
     source_chunk_number: mem.source_chunk_number ?? null,
