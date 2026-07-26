@@ -199,7 +199,7 @@ function rosterEntries(roster) {
 }
 
 function extractCardRelationshipFacts(roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const entry of rosterEntries(roster)) {
@@ -207,19 +207,27 @@ function extractCardRelationshipFacts(roster = []) {
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
       const subject = resolve(match[1]);
       const target = resolve(match[3]);
-      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), descriptors: [match[2].toLowerCase()] });
+      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), relationship_type_source: 'card_fact', relationship_type_confidence_class: 'authoritative', descriptors: [match[2].toLowerCase()] });
+    }
+    // Common card phrasing: "Taylor Covington, Aaron Holland's wife" or
+    // "Taylor Covington is Aaron Holland's daughter". These are explicit
+    // directional facts, not descriptive inference.
+    for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s*(?:,|is)\\s*([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\b`, 'gi'))) {
+      const subject = resolve(match[1]);
+      const target = resolve(match[2]);
+      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[3].toLowerCase(), relationship_type_source: 'card_fact', relationship_type_confidence_class: 'authoritative', descriptors: [match[3].toLowerCase()] });
     }
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\s+is\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
       const subject = resolve(match[3]);
       const target = resolve(match[1]);
-      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), descriptors: [match[2].toLowerCase()] });
+      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), relationship_type_source: 'card_fact', relationship_type_confidence_class: 'authoritative', descriptors: [match[2].toLowerCase()] });
     }
   }
   return facts;
 }
 
 function extractGroundedRelationshipFacts(records = [], roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const record of records) {
@@ -240,6 +248,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       subject: String(state?.subject_name ?? '').toLowerCase(),
       target: String(state?.target_name ?? '').toLowerCase(),
       relationship_type: String(state?.relationship_type ?? state?.canonical_relationship_type ?? '').trim().toLowerCase() || null,
+      relationship_type_source: state?.relationship_type_source ?? 'approved_relationship_history',
+      relationship_type_confidence_class: state?.relationship_type ? 'authoritative' : null,
       descriptors: (state?.descriptors ?? []).map((descriptor) => String(typeof descriptor === 'string' ? descriptor : descriptor?.word ?? '').trim().toLowerCase()).filter(Boolean),
     }))
     .filter((pair) => pair.subject && pair.target && (pair.descriptors.length || pair.relationship_type));
