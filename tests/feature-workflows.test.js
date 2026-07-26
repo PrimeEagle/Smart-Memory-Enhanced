@@ -451,7 +451,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /ai_result_disposition === 'missing_ai_decision'/);
   assert.match(settings, /ai-batch-recovered/);
   assert.match(settings, /ai_breaks_rejected_by_deterministic_gate/);
-  assert.match(settings, /aiRequestedBreak && heuristicBreak/);
+  assert.match(settings, /evaluateDeterministicSceneGate/);
+  assert.match(settings, /gate_evidence/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /boundary_comparison/);
   assert.match(settings, /shifted_boundaries/);
@@ -460,6 +461,14 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /gate_rejections_by_reason/);
   assert.match(settings, /comparablePriorRun/);
   assert.match(settings, /prompt_shape_hash === sceneAudit\.prompt_shape_hash/);
+  assert.match(read('scenes.js'), /adaptive_batch_adjustments/);
+  assert.match(read('scenes.js'), /root_batch_summary/);
+  assert.match(settings, /data_quality_status/);
+  assert.match(settings, /operational_status/);
+  assert.match(settings, /maintenance_actions/);
+  assert.match(read('graph-migration.js'), /entity_link_provenance/);
+  assert.match(read('graph-migration.js'), /link_created_run_id/);
+  assert.match(read('graph-migration.js'), /creation_method/);
 });
 
 test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {
@@ -743,7 +752,8 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(longterm, /\[\.\.\.entityRegistry, \.\.\.sessionEntityRegistry\]/);
   assert.match(read('settings.js'), /const terminalsBySource = new Map\(\)/);
   assert.match(read('settings.js'), /missing_source_record_id/);
-  assert.match(read('settings.js'), /text_identity_links_quarantined/);
+  assert.match(read('settings.js'), /maintenance_actions/);
+  assert.match(read('settings.js'), /entity_links_repaired/);
   assert.match(ui, /card_identity_mismatches/);
   assert.match(ui, /authoritative_name: authoritative\.canonicalName/);
   assert.match(ui, /text_identity_mismatches/);

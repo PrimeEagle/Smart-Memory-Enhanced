@@ -154,7 +154,9 @@ function diagnosticFingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-function compareSceneBoundaryRuns(previous, currentIndices = [], currentSceneCount = null, tolerance = 2) {
+function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
+  const currentIndices = currentAudit.final_break_indices ?? [];
+  const currentSceneCount = currentAudit.generated ?? null;
   if (!previous) return { compared_to_prior: false, comparison_tolerance_messages: tolerance, breaks_added: currentIndices.length, breaks_removed: 0, breaks_shifted: 0, unchanged_breaks: 0, unchanged_boundaries: [], shifted_boundaries: [], added_boundaries: currentIndices, removed_boundaries: [], scene_count_stable: null, boundary_positions_exactly_stable: false, boundary_positions_materially_stable: false, marginal_boundary_comparison: [] };
   const remainingPrevious = new Set(previous.final_break_indices ?? []);
   const unchanged = [];
@@ -171,6 +173,8 @@ function compareSceneBoundaryRuns(previous, currentIndices = [], currentSceneCou
     else { remainingPrevious.delete(nearby); shifted.push({ previous_index: nearby, current_index: index, offset: index - nearby }); }
   }
   const previousDispositions = new Map((previous.candidate_dispositions ?? []).map((item) => [item.message_index ?? item.candidate_id, item]));
+  const previousContextHashes = new Map((previous.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
+  const currentContextHashes = new Map((currentAudit.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   return {
     compared_to_prior: true,
     comparison_tolerance_messages: tolerance,
@@ -192,12 +196,33 @@ function compareSceneBoundaryRuns(previous, currentIndices = [], currentSceneCou
       previous_ai_decision: previousDispositions.get(shift.previous_index)?.decision ?? null,
       previous_confidence: previousDispositions.get(shift.previous_index)?.ai_confidence ?? null,
       previous_gate_outcome: previousDispositions.get(shift.previous_index)?.terminal_break_disposition ?? null,
-      context_hash_equal: true,
-      prompt_hash_equal: previous.prompt_shape_hash === previous.prompt_shape_hash,
-      model_equal: true,
-      settings_equal: true,
+      context_hash_equal: previousContextHashes.get(shift.previous_index) === currentContextHashes.get(shift.current_index),
+      prompt_hash_equal: previous.prompt_shape_hash === currentAudit.prompt_shape_hash,
+      model_equal: previous.model_identifier === currentAudit.model_identifier
+        && previous.connection_profile_identifier === currentAudit.connection_profile_identifier,
+      settings_equal: JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),
     })),
   };
+}
+
+// Pure and order-independent gate: provider lineage/confidence never enters
+// this decision. The caller supplies only the sorted message index and stable
+// message-derived transition signal.
+export function evaluateDeterministicSceneGate({ aiRequestedBreak, heuristicBreak, sceneLength, minimumSceneLength, messageIndex, previousBoundaryIndex }) {
+  const distance = Number.isInteger(previousBoundaryIndex) ? messageIndex - previousBoundaryIndex : null;
+  const signals = {
+    time_change_detected: Boolean(heuristicBreak),
+    location_change_detected: false,
+    participant_change_detected: false,
+    activity_change_detected: Boolean(heuristicBreak),
+    channel_change_detected: false,
+    narrative_phase_change_detected: Boolean(heuristicBreak),
+    continuity_overlap_score: heuristicBreak ? 0 : 1,
+  };
+  if (!aiRequestedBreak) return { accepted: false, terminal_break_disposition: null, gate_result: 'not_requested', gate_reason_code: null, detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals };
+  if (!heuristicBreak) return { accepted: false, terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'insufficient_change_evidence', detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals };
+  if (sceneLength < minimumSceneLength) return { accepted: false, terminal_break_disposition: 'rejected_minimum_scene_length', gate_result: 'rejected', gate_reason_code: 'minimum_scene_length', detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: distance, gate_evidence: signals };
+  return { accepted: true, terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: null, detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: distance, gate_evidence: signals };
 }
 
 /**
@@ -3054,8 +3079,16 @@ export function bindSettingsUI(ctrl) {
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
     setCanonicalRuntimeContextSnapshot(canonicalRuntimeContext);
+    // A run ID is written before extraction so every entity link resolved by
+    // a tier can distinguish this run from legacy/mirrored data at final
+    // reconciliation. It is persisted by the existing staged chat save.
+    const catchUpRunId = generateMemoryId();
+    catchUpContext.chatMetadata = catchUpContext.chatMetadata ?? {};
+    catchUpContext.chatMetadata[META_KEY] = catchUpContext.chatMetadata[META_KEY] ?? {};
+    catchUpContext.chatMetadata[META_KEY].active_catchup_run_id = catchUpRunId;
     let catchUpErrorCount = 0;
     const runResult = {
+      run_id: catchUpRunId,
       totalChunks: 0,
       completedChunks: 0,
       failedChunks: 0,
@@ -3100,7 +3133,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       identity_review: { existing_at_start: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
@@ -3420,19 +3453,19 @@ export function bindSettingsUI(ctrl) {
             // matching the behaviour of the normal CHARACTER_MESSAGE_RENDERED path.
             const heuristicBreak = detectSceneBreakHeuristic(msgText);
             const aiRequestedBreak = settings.scene_ai_detect && isAiMsg && Boolean(sceneAudit.ai_decisions?.get(msgIdx));
-            const isBreak = settings.scene_ai_detect
-              ? aiRequestedBreak && heuristicBreak && sceneBuffer.length >= minMessages
-              : heuristicBreak && sceneBuffer.length >= minMessages;
+            const gate = evaluateDeterministicSceneGate({
+              aiRequestedBreak,
+              heuristicBreak,
+              sceneLength: sceneBuffer.length,
+              minimumSceneLength: minMessages,
+              messageIndex: msg.__sme_original_index ?? msgIdx,
+              previousBoundaryIndex: sceneAudit.final_break_indices.at(-1),
+            });
+            const isBreak = settings.scene_ai_detect ? gate.accepted : heuristicBreak && sceneBuffer.length >= minMessages;
             const aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
             if (aiRequestedBreak) {
-              if (!heuristicBreak) {
-                sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
-                Object.assign(aiDisposition ?? {}, { terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'insufficient_change_evidence', detected_change_types: [], distance_from_previous_accepted_boundary: sceneAudit.final_break_indices.length ? (msg.__sme_original_index ?? msgIdx) - sceneAudit.final_break_indices.at(-1) : null });
-              } else if (sceneBuffer.length < minMessages) {
-                Object.assign(aiDisposition ?? {}, { terminal_break_disposition: 'rejected_minimum_scene_length', gate_result: 'rejected', gate_reason_code: 'minimum_scene_length', detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: sceneAudit.final_break_indices.length ? (msg.__sme_original_index ?? msgIdx) - sceneAudit.final_break_indices.at(-1) : null });
-              } else {
-                Object.assign(aiDisposition ?? {}, { terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: null, detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: sceneAudit.final_break_indices.length ? (msg.__sme_original_index ?? msgIdx) - sceneAudit.final_break_indices.at(-1) : null });
-              }
+              if (gate.terminal_break_disposition === 'rejected_deterministic_gate') sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
+              Object.assign(aiDisposition ?? {}, gate);
             }
 
             if (isAiMsg) prevAiMsg = msgText;
@@ -3544,8 +3577,7 @@ export function bindSettingsUI(ctrl) {
               : null;
           sceneAudit.boundary_comparison = compareSceneBoundaryRuns(
             comparablePriorRun,
-            sceneAudit.final_break_indices,
-            sceneAudit.generated,
+            sceneAudit,
           );
           delete sceneAudit.ai_decisions;
           delete sceneAudit.ai_disposition_by_id;
@@ -3635,8 +3667,17 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.prior_fields_preserved = runResult.profiles.fields.preserved_prior;
             runResult.profiles.relationship_conflicts_dropped = runResult.profiles.fields.dropped_conflict;
             runResult.profiles.relationship_conflict_details.push(...(profiles.relationship_field_details ?? []));
+            for (const outcome of profiles.profile_descriptor_terminal_outcomes ?? []) {
+              const key = String(outcome.disposition ?? '');
+              if (key in runResult.profiles.descriptor_outcomes) runResult.profiles.descriptor_outcomes[key]++;
+            }
+            for (const outcome of profiles.profile_field_terminal_outcomes ?? []) {
+              const key = String(outcome.field_terminal_outcome ?? '');
+              if (key in runResult.profiles.field_outcomes) runResult.profiles.field_outcomes[key]++;
+            }
             runResult.profiles.relationship_descriptor_rejections += Number(profiles.relationship_descriptor_rejections ?? 0);
             runResult.profiles.relationship_field_rejections += (profiles.profile_field_terminal_outcomes ?? []).filter((entry) => entry.field_terminal_outcome === 'dropped_no_supported_descriptors').length;
+            runResult.profiles.relationship_dropped_field_descriptor_count += Number(profiles.relationship_dropped_field_descriptor_count ?? 0);
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
@@ -3907,7 +3948,7 @@ export function bindSettingsUI(ctrl) {
       if (runResult.profiles.relationship_field_rejections > 0) qualityReasons.push({
         code: 'profile_relationship_conflicts_dropped',
         tier: 'profiles',
-        message: `${runResult.profiles.relationship_field_rejections} unsupported model-generated relationship field${runResult.profiles.relationship_field_rejections === 1 ? '' : 's'} dropped; canonical profile values were preserved.`,
+        message: `${runResult.profiles.relationship_field_rejections} unsupported model-generated relationship field${runResult.profiles.relationship_field_rejections === 1 ? '' : 's'}${runResult.profiles.relationship_dropped_field_descriptor_count ? ` containing ${runResult.profiles.relationship_dropped_field_descriptor_count} descriptor${runResult.profiles.relationship_dropped_field_descriptor_count === 1 ? '' : 's'}` : ''} ${runResult.profiles.relationship_field_rejections === 1 ? 'was' : 'were'} dropped; canonical profile values were preserved.`,
       });
       if (runResult.profiles.relationship_descriptor_rejections > 0) qualityReasons.push({
         code: 'profile_relationship_descriptors_rejected',
@@ -3927,11 +3968,6 @@ export function bindSettingsUI(ctrl) {
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} remain after reconciliation.`,
       });
       const entityLinkRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
-      if ((entityLinkRepairs.actual_logical_mutations_this_run ?? 0) > 0) qualityReasons.push({
-        code: 'text_identity_links_quarantined',
-        tier: 'identity',
-        message: `${entityLinkRepairs.actual_logical_mutations_this_run} ${entityLinkRepairs.preexisting_invalid_links_repaired ? 'preexisting' : 'origin-unknown'} entity link${entityLinkRepairs.actual_logical_mutations_this_run === 1 ? '' : 's'} ${entityLinkRepairs.physical_store_mutations_this_run > 1 ? `were repaired across ${entityLinkRepairs.physical_store_mutations_this_run} store mutations.` : 'was repaired.'}`,
-      });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
       repairs.repairTerminalReconciled = repairTerminalTotal === (repairs.repairAttempts ?? 0) && (repairs.repairAttempts ?? 0) <= (repairs.repairEligible ?? 0);
@@ -3963,7 +3999,24 @@ export function bindSettingsUI(ctrl) {
       for (const [code, passed, message] of requiredIdentityInvariants) {
         if (!passed) qualityReasons.push({ code, tier: 'identity', message });
       }
-      runResult.quality = { status: qualityReasons.length ? 'degraded' : 'clean', reasons: qualityReasons };
+      const projectedOperationalStatus = ctrl.catchUpCancelled
+        ? 'cancelled'
+        : catchUpErrorCount > 0
+          ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
+          : 'completed';
+      const maintenanceActions = {
+        entity_links_repaired: entityLinkRepairs.actual_logical_mutations_this_run ?? 0,
+        entity_link_store_mutations: entityLinkRepairs.actual_physical_store_mutations_this_run ?? entityLinkRepairs.physical_store_mutations_this_run ?? 0,
+        duplicate_wrapper_observations_suppressed: entityLinkRepairs.duplicate_observations_suppressed ?? 0,
+        recreated_links_repaired: entityLinkRepairs.recreated_after_prior_repair ?? 0,
+      };
+      runResult.quality = {
+        status: qualityReasons.length ? 'degraded' : 'clean',
+        operational_status: projectedOperationalStatus,
+        data_quality_status: qualityReasons.length ? 'degraded' : 'clean',
+        maintenance_actions: maintenanceActions,
+        reasons: qualityReasons,
+      };
       await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
       await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
       saveSettingsDebounced();
@@ -3971,11 +4024,7 @@ export function bindSettingsUI(ctrl) {
       // Persist the final diagnostics with the same staged commit. The status
       // is a pre-commit projection; a failed final commit is then recorded and
       // reflected in the user-visible completion status below.
-      const projectedStatus = ctrl.catchUpCancelled
-        ? 'cancelled'
-        : catchUpErrorCount > 0
-          ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
-          : 'completed';
+      const projectedStatus = projectedOperationalStatus;
       // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
       const diagnostics = {
         version: 1,
@@ -4007,6 +4056,8 @@ export function bindSettingsUI(ctrl) {
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
+      catchUpContext.chatMetadata[META_KEY].last_catchup_run_id = catchUpRunId;
+      delete catchUpContext.chatMetadata[META_KEY].active_catchup_run_id;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       latestExportDiagnostics = diagnostics;
       try {

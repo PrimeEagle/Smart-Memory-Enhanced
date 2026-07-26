@@ -1839,6 +1839,11 @@ export async function reconcileCanonicalEntities(characterName) {
   const entityLinkRepairs = {
     actual_logical_mutations_this_run: 0,
     physical_store_mutations_this_run: 0,
+    actual_physical_store_mutations_this_run: 0,
+    already_repaired_no_mutation: 0,
+    already_quarantined_no_mutation: 0,
+    duplicate_wrapper_observations: 0,
+    recreated_after_prior_repair: 0,
     reobserved_already_repaired: 0,
     reobserved_previously_quarantined: 0,
     duplicate_observations_suppressed: 0,
@@ -1850,6 +1855,14 @@ export async function reconcileCanonicalEntities(characterName) {
   const repairedRecordIds = new Set();
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
   const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
+  const stableRepairIdentity = (entity) => {
+    if (entity?.canonical_card_id) return `card:${entity.canonical_card_id}`;
+    if (entity?.canonical_persona_id) return `persona:${entity.canonical_persona_id}`;
+    if (entity?.manual_locked || entity?.manual_confirmed) return `manual:${String(entity?.name ?? '').trim().toLowerCase()}`;
+    const persistentName = String(entity?.canonical_name ?? entity?.name ?? '').trim().toLowerCase();
+    if (persistentName) return `npc:${persistentName}:${entity?.scope ?? 'chat'}`;
+    return `registry:${entity?.id ?? 'unknown'}`;
+  };
   const auditReferences = async (records, store, field = 'entities', compareText = false) => {
     for (const record of records ?? []) {
       await yieldEvery();
@@ -1902,11 +1915,13 @@ export async function reconcileCanonicalEntities(characterName) {
         // A simple absent name can be a pronoun or inherited record subject.
         if (compareText && namedPeople.length && linkedName && !explicitlySupported && !structurallySupported) {
           unsafeIds.push(entityId);
-          const canonicalIdentity = entity?.canonical_card_id ?? entity?.canonical_persona_id ?? entityId;
-          const logicalRepairKey = `${record?.id ?? 'unknown'}::${canonicalIdentity}::text_contradicted`;
+          const canonicalIdentity = stableRepairIdentity(entity);
+          const linkProvenance = record?.entity_link_provenance?.[entityId] ?? {};
+          const logicalRepairKey = `${record?.id ?? 'unknown'}::${canonicalIdentity}::${field}[${entryIndex}]::text_contradicted`;
           const repairKey = `${record?.id ?? 'unknown'}::${entityId}::text_contradicted`;
           const priorRepair = (record.identity_link_repair_audit ?? []).find((item) => item.logical_repair_key === logicalRepairKey || item.repair_key === repairKey);
-          const createdThisRun = Boolean(record?.link_created_run_id && String(record.link_created_run_id) === String(meta?.last_catchup_run_id ?? ''));
+          const currentRunId = meta?.active_catchup_run_id ?? meta?.last_catchup_run_id ?? null;
+          const createdThisRun = Boolean((linkProvenance.link_created_run_id ?? record?.link_created_run_id) && String(linkProvenance.link_created_run_id ?? record?.link_created_run_id) === String(currentRunId));
           const originClassification = createdThisRun
             ? 'created_current_run'
             : priorRepair ? 'previously_quarantined'
@@ -1918,12 +1933,12 @@ export async function reconcileCanonicalEntities(characterName) {
             support_class: 'text_contradicted', removal_reason: 'Other canonical people are explicitly named while this link has no textual or structural support.',
             text_names_detected: namedPeople, structured_subject_ids: structuredSubjectIds,
             source_evidence_ids: record?.source_record_ids ?? record?.source_memory_ids ?? [],
-            repair_key: repairKey, logical_repair_key: logicalRepairKey, canonical_entity_identity: canonicalIdentity, record_created_at: record?.created_at ?? record?.generated_at ?? null,
-            link_created_run_id: record?.link_created_run_id ?? null,
-            link_created_stage: record?.link_created_stage ?? record?.link_origin_stage ?? null,
-            source_candidate_id: record?.source_candidate_id ?? null,
-            source_chunk: record?.source_chunk ?? null,
-            source_extraction_type: record?.source_extraction_type ?? null,
+            repair_key: repairKey, logical_repair_key: logicalRepairKey, canonical_entity_identity: canonicalIdentity, entity_link_id: linkProvenance.link_id ?? `${record?.id ?? 'unknown'}::${entityId}`, underlying_record_id: record?.id ?? null, record_created_at: record?.created_at ?? record?.generated_at ?? null,
+            link_created_run_id: linkProvenance.link_created_run_id ?? record?.link_created_run_id ?? null,
+            link_created_stage: linkProvenance.link_created_stage ?? record?.link_created_stage ?? record?.link_origin_stage ?? null,
+            source_candidate_id: linkProvenance.source_candidate_id ?? record?.source_candidate_id ?? null,
+            source_chunk: linkProvenance.source_chunk_number ?? record?.source_chunk ?? null,
+            source_extraction_type: linkProvenance.source_extraction_type ?? record?.source_extraction_type ?? null,
             created_from_structured_entity_list: Boolean(record?.created_from_structured_entity_list),
             created_from_text_inference: Boolean(record?.created_from_text_inference),
             created_from_relationship_promotion: Boolean(record?.created_from_relationship_promotion),
@@ -1938,6 +1953,7 @@ export async function reconcileCanonicalEntities(characterName) {
             entityLinkRepairs.reobserved_already_repaired++;
             if (priorRepair) entityLinkRepairs.reobserved_previously_quarantined++;
             entityLinkRepairs.duplicate_observations_suppressed++;
+            entityLinkRepairs.duplicate_wrapper_observations++;
           } else {
             logicalRepairKeys.add(logicalRepairKey);
             repairedRecordIds.add(record?.id ?? 'unknown');
@@ -1951,6 +1967,8 @@ export async function reconcileCanonicalEntities(characterName) {
           // prior run. A repeated audit record without a present link never
           // reaches this branch and is therefore not counted as a repair.
           entityLinkRepairs.physical_store_mutations_this_run++;
+          entityLinkRepairs.actual_physical_store_mutations_this_run++;
+          if (priorRepair) entityLinkRepairs.recreated_after_prior_repair++;
           if (!logicalRepairKeys.has(`${logicalRepairKey}::mutated`)) {
             logicalRepairKeys.add(`${logicalRepairKey}::mutated`);
             entityLinkRepairs.actual_logical_mutations_this_run++;

@@ -134,7 +134,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
   const result = new Map();
   const batchSize = Math.max(1, Math.min(20, Number(options.batchSize ?? 12)));
   const lineage = options.lineage ?? { next_attempt_id: 1 };
-  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, boundary_confidences: {}, batch_attempts: [], candidate_dispositions: [] };
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, batch_attempts: [], candidate_dispositions: [] };
   const parseBatch = (raw, requestedIds) => {
     const original = String(raw ?? '');
     const codeFencePresent = /^\s*```/m.test(original);
@@ -169,11 +169,13 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     const missing = requestedIds.filter((id) => !valid.has(id));
     return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [recoveredLegacyLines ? 'legacy_indexed_lines' : leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: recoveredLegacyLines ? 'legacy_lines' : Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
   };
-  for (let offset = 0; offset < candidates.length; offset += batchSize) {
-    const batch = candidates.slice(offset, offset + batchSize);
+  let adaptiveBatchSize = batchSize;
+  let consecutiveFullBatches = 0;
+  for (let offset = 0; offset < candidates.length;) {
+    const batch = candidates.slice(offset, offset + adaptiveBatchSize);
     const attemptType = options.attempt_type ?? 'initial_batch';
     const requestAttemptId = lineage.next_attempt_id++;
-    const attempt = { batch_number: Math.floor(offset / batchSize) + 1, request_attempt_id: requestAttemptId, root_batch_id: options.root_batch_id ?? requestAttemptId, parent_attempt_id: options.parent_attempt_id ?? null, attempt_type: attemptType, split_depth: Number(options.split_depth ?? 0), candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false };
+    const attempt = { batch_number: diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').length + 1, request_attempt_id: requestAttemptId, root_batch_id: options.root_batch_id ?? requestAttemptId, parent_attempt_id: options.parent_attempt_id ?? null, attempt_type: attemptType, split_depth: Number(options.split_depth ?? 0), candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, requested_output_budget: Math.max(128, batch.length * 32), estimated_required_output_tokens: 32 + (batch.length * 24), request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false };
     try {
       diagnostics.requests_sent++;
       diagnostics.total_provider_requests++;
@@ -185,7 +187,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       // JSON needs enough space for every ID, boolean, and confidence. The
       // former 16-token allowance frequently cut off confidence fields or all
       // but the first item from local-model responses.
-      const responseBudget = Math.max(128, batch.length * 32);
+      const responseBudget = attempt.requested_output_budget;
       const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
       attempt.request_completed = true; if (!response) { attempt.returned_none = true; throw new Error('Empty scene-boundary batch response.'); }
       let parsed = parseBatch(response, attempt.candidate_ids_requested); Object.assign(attempt, parsed);
@@ -220,6 +222,11 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries', 'initial_batch_requests', 'partial_retry_requests', 'single_candidate_retry_requests', 'format_repair_requests', 'total_provider_requests', 'multi_candidate_requests']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
         Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
         diagnostics.batch_attempts.push(...smallerRetry.diagnostics.batch_attempts);
+        diagnostics.adaptive_batch_adjustments.push(...(smallerRetry.diagnostics.adaptive_batch_adjustments ?? []).map((adjustment) => ({
+          ...adjustment,
+          inherited_from_retry: true,
+          root_batch_id: attempt.root_batch_id,
+        })));
       }
       for (const candidate of batch) {
         const decision = parsed.valid.get(candidate.candidate_index);
@@ -239,7 +246,36 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       options.onError?.(error, batch);
     }
     diagnostics.batch_attempts.push(attempt);
+    offset += batch.length;
+    const wasPartial = Boolean(attempt.truncated_output_suspected || attempt.terminal_outcome === 'parsed_partial' || attempt.terminal_outcome === 'recovered_after_smaller_batch_retry');
+    if (wasPartial && adaptiveBatchSize > 4) {
+      const previous = adaptiveBatchSize;
+      adaptiveBatchSize = Math.max(4, Math.min(8, Math.floor(adaptiveBatchSize / 2)));
+      consecutiveFullBatches = 0;
+      diagnostics.adaptive_batch_adjustments.push({ reason: 'partial_or_truncated_response', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
+    } else if (!wasPartial && attempt.terminal_outcome === 'parsed_full') {
+      consecutiveFullBatches++;
+      if (consecutiveFullBatches >= 3 && adaptiveBatchSize < batchSize) {
+        const previous = adaptiveBatchSize;
+        adaptiveBatchSize = Math.min(batchSize, adaptiveBatchSize + 2);
+        consecutiveFullBatches = 0;
+        diagnostics.adaptive_batch_adjustments.push({ reason: 'three_full_batches', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
+      }
+    }
   }
+  const rootAttempts = diagnostics.batch_attempts.filter((item) => item.attempt_type === 'initial_batch');
+  diagnostics.root_batch_summary = {
+    root_batches_total: rootAttempts.length,
+    root_batches_full_first_try: rootAttempts.filter((item) => item.terminal_outcome === 'parsed_full').length,
+    root_batches_partial: rootAttempts.filter((item) => item.truncated_output_suspected || item.terminal_outcome === 'parsed_partial' || item.terminal_outcome === 'recovered_after_smaller_batch_retry').length,
+    root_batches_repaired: rootAttempts.filter((item) => item.format_repair_attempted).length,
+    root_batches_provider_error: rootAttempts.filter((item) => item.terminal_outcome === 'provider_error_all_fallback').length,
+    root_batches_malformed: rootAttempts.filter((item) => item.terminal_outcome === 'malformed_all_fallback').length,
+    root_batches_all_fallback: rootAttempts.filter((item) => /all_fallback$/.test(item.terminal_outcome ?? '')).length,
+    candidates_evaluated: candidates.length,
+    maximum_split_depth: Math.max(0, ...diagnostics.batch_attempts.map((item) => Number(item.split_depth ?? 0))),
+    average_attempts_per_root_batch: rootAttempts.length ? Number((diagnostics.total_provider_requests / rootAttempts.length).toFixed(2)) : 0,
+  };
   return { decisions: result, diagnostics };
 }
 

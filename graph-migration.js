@@ -525,6 +525,30 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     });
 
   mem.entities = ids;
+  // Keep durable per-link provenance beside the legacy `entities` ID array.
+  // Existing links remain compatible; only links created by this resolver gain
+  // creation metadata. Later mirrors and redirects retain this map unchanged.
+  const sourceIndices = [...new Set([...(mem.source_message_indices ?? []).filter(Number.isInteger), ...(Number.isInteger(messageIndex) ? [messageIndex] : [])])];
+  const requestedCreationMethod = mem.entity_creation_method ?? 'structured_entity_output';
+  const creationMethod = ['structured_entity_output', 'scene_participant', 'manual_entry', 'canonical_redirect'].includes(requestedCreationMethod)
+    ? requestedCreationMethod
+    : 'structured_entity_output';
+  const existingLinks = mem.entity_link_provenance ?? {};
+  mem.entity_link_provenance = Object.fromEntries(ids.map((id) => [id, existingLinks[id] ?? {
+    link_id: generateMemoryId(),
+    link_created_run_id: mem.catchup_run_id ?? getContext().chatMetadata?.[META_KEY]?.active_catchup_run_id ?? null,
+    link_created_at: Date.now(),
+    link_created_stage: mem.entity_link_stage ?? 'entity_resolution',
+    link_created_store: mem.scope ?? 'memory',
+    underlying_record_id: mem.id ?? null,
+    source_candidate_id: mem.source_candidate_id ?? mem.id ?? null,
+    source_chunk_number: mem.source_chunk_number ?? null,
+    source_message_indices: sourceIndices.slice(-96),
+    source_extraction_type: mem.type ?? null,
+    creation_method: creationMethod,
+    canonical_identity_at_creation: registry.find((entity) => entity.id === id)?.canonical_card_id ?? registry.find((entity) => entity.id === id)?.canonical_persona_id ?? null,
+    entity_registry_id_at_creation: id,
+  }]));
   delete mem._raw_entity_names;
 }
 
@@ -1272,6 +1296,16 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
     for (const memory of memories) {
       if (!Array.isArray(memory?.entities) || !memory.entities.includes(sourceId)) continue;
       memory.entities = [...new Set(memory.entities.map((id) => id === sourceId ? targetId : id))];
+      // Preserve the original link creation record through a canonical entity
+      // redirect. The target ID changes, but the link did not become newly
+      // extracted or lose its provenance.
+      if (memory.entity_link_provenance?.[sourceId]) {
+        memory.entity_link_provenance[targetId] = memory.entity_link_provenance[targetId] ?? {
+          ...memory.entity_link_provenance[sourceId],
+          canonical_identity_at_creation: target.canonical_card_id ?? target.canonical_persona_id ?? null,
+        };
+        delete memory.entity_link_provenance[sourceId];
+      }
       referencesRedirected++;
     }
   }
