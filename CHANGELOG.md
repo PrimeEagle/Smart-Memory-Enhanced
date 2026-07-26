@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.37] - 2026-07-26
+
 ### Fixed
 
 - Added durable per-entity-link provenance for new extraction, scene, arc,
