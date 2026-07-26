@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.35] - 2026-07-25
+
+### Fixed
+
+- Accept and remove valid profile confidence annotations through `1.0`, so
+  authoritative descriptors such as `open [confidence: 1.0]` are compared as
+  `open` rather than incorrectly dropped.
+- Added a deterministic corroboration gate for AI scene breaks. A model break
+  must now also have a stable heuristic time/place/participant/phase signal
+  before it creates a stored scene boundary; rejected marginal AI breaks are
+  counted in diagnostics.
+
 ## [0.8.34] - 2026-07-25
 
 ### Fixed

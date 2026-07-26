@@ -254,7 +254,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
     const entity = match[1].trim().toLowerCase();
-    const status = match[2].replace(/\[confidence:\s*0?\.\d+\]/ig, '').toLowerCase();
+    // Accept the complete valid confidence range, including 1.0. Leaving a
+    // trailing annotation turns an otherwise exact descriptor (for example
+    // "open [confidence: 1.0]") into a false mismatch.
+    const status = match[2].replace(/\[confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]/ig, '').trim().toLowerCase();
     const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));

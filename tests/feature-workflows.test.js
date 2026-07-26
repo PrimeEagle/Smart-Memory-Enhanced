@@ -446,6 +446,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /attempt_invalid_decisions/);
   assert.match(settings, /ai_result_disposition === 'missing_ai_decision'/);
   assert.match(settings, /ai-batch-recovered/);
+  assert.match(settings, /ai_breaks_rejected_by_deterministic_gate/);
+  assert.match(settings, /aiRequestedBreak && heuristicBreak/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /boundary_comparison/);
   assert.match(settings, /comparablePriorRun/);

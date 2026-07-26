@@ -3325,7 +3325,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128 }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v3|requested_candidate_ids|candidate_id|break|confidence|previous-500|current-700') };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
           let prevAiMsg = '';
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -3382,11 +3382,12 @@ export function bindSettingsUI(ctrl) {
 
             // AI detection only runs on AI messages - user messages are skipped,
             // matching the behaviour of the normal CHARACTER_MESSAGE_RENDERED path.
+            const heuristicBreak = detectSceneBreakHeuristic(msgText);
+            const aiRequestedBreak = settings.scene_ai_detect && isAiMsg && Boolean(sceneAudit.ai_decisions?.get(msgIdx));
             const isBreak = settings.scene_ai_detect
-              ? isAiMsg &&
-                sceneBuffer.length >= minMessages &&
-                Boolean(sceneAudit.ai_decisions?.get(msgIdx))
-              : detectSceneBreakHeuristic(msgText) && sceneBuffer.length >= minMessages;
+              ? aiRequestedBreak && heuristicBreak && sceneBuffer.length >= minMessages
+              : heuristicBreak && sceneBuffer.length >= minMessages;
+            if (aiRequestedBreak && !heuristicBreak) sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
 
             if (isAiMsg) prevAiMsg = msgText;
 
