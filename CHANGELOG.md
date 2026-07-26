@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.38] - 2026-07-26
+
+### Fixed
+
+- Derived final integrity from the committed post-repair audit state. Successful
+  entity-link repairs are now reported as maintenance without falsely leaving a
+  clean final graph in the `degraded` state.
+- Expanded deterministic card relationship-fact parsing for common directional
+  wording such as “Taylor, Aaron's wife” and “Taylor is Margaret's daughter.”
+  The recognized canonical vocabulary now includes sibling, parent, daughter,
+  and son types alongside spouse types.
+
 ## [0.8.37] - 2026-07-26
 
 ### Fixed
