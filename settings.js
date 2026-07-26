@@ -3970,8 +3970,10 @@ export function bindSettingsUI(ctrl) {
         recreated_links_repaired: entityLinkRepairs.recreated_after_prior_repair ?? 0,
       };
       const auditStatus = reconciliation.integrity_audit?.status ?? 'failed';
-      const finalIntegrityStatus = ['clean', 'repaired'].includes(auditStatus)
-        && (reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) === 0
+      const finalState = reconciliation.integrity_audit?.final_state ?? {};
+      const finalIntegrityStatus = finalState.integrity_clean === true
+        || (['clean', 'repaired'].includes(auditStatus)
+        && (reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) === 0)
         ? 'clean'
         : auditStatus;
       runResult.quality = {

@@ -2135,7 +2135,7 @@ export async function reconcileCanonicalEntities(characterName) {
   };
   const integrityStatus = cardIdentityMismatches.length
     ? 'unsafe'
-    : blocked_unsafe_identity_merges.length || staleEntityReferences.length || textIdentityMismatches.length
+    : blocked_unsafe_identity_merges.length || staleEntityReferences.length
     ? 'degraded'
     : duplicateCanonicalEntities.length
       ? 'degraded'
@@ -2175,6 +2175,14 @@ export async function reconcileCanonicalEntities(characterName) {
     reference_rewrite_revision: referenceRewriteRevision,
     index_rebuild_revision: indexRebuildRevision,
     final_audit_revision: indexRebuildRevision,
+    final_state: {
+      stale_references: staleEntityReferences.length,
+      unsafe_merges: blocked_unsafe_identity_merges.length,
+      duplicate_canonical_entities: duplicateCanonicalEntities.length,
+      relationship_integrity_errors: relationshipIntegrityErrors.length,
+      unresolved_review_items_created_this_run: allReports.reduce((count, report) => count + (report.review_items_created ?? 0), 0),
+      integrity_clean: integrityStatus === 'clean' || integrityStatus === 'repaired',
+    },
     status: integrityStatus,
   };
   return {
