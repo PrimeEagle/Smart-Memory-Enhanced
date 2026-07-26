@@ -1281,6 +1281,8 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       const registry = loadCharacterEntityRegistry(characterName);
       for (const arc of merged) {
         if (!isGeneratedRecordApproved(arc) || !arc.character_participants?.length) continue;
+        arc.entity_link_stage ??= 'arc_participant_extraction';
+        arc.entity_creation_method ??= 'arc_participant';
         resolveEntityNames(
           arc,
           arc.character_participants.map((name) => `${name}/character`),

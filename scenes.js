@@ -512,6 +512,8 @@ export async function processSceneBreak(
   const characterName = getContext().name2 || getContext().characterName;
   if (characterName && isGeneratedRecordApproved(sceneRecord) && sceneRecord.character_participants?.length) {
     const registry = loadCharacterEntityRegistry(characterName);
+    sceneRecord.entity_link_stage ??= 'scene_participant_extraction';
+    sceneRecord.entity_creation_method ??= 'scene_participant';
     resolveEntityNames(
       sceneRecord,
       sceneRecord.character_participants.map((name) => `${name}/character`),

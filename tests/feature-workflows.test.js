@@ -469,6 +469,11 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('graph-migration.js'), /entity_link_provenance/);
   assert.match(read('graph-migration.js'), /link_created_run_id/);
   assert.match(read('graph-migration.js'), /creation_method/);
+  assert.match(read('longterm.js'), /entity_link_stage \?\?= 'longterm_extraction'/);
+  assert.match(read('session.js'), /entity_link_stage \?\?= 'session_extraction'/);
+  assert.match(read('scenes.js'), /entity_creation_method \?\?= 'scene_participant'/);
+  assert.match(read('arcs.js'), /entity_creation_method \?\?= 'arc_participant'/);
+  assert.match(read('epistemic.js'), /entity_creation_method \?\?= 'perspective_subject'/);
   assert.match(ui, /invalid_links_created_current_run/);
   assert.match(ui, /invalid_links_repaired_final_stage/);
   assert.match(ui, /current_run_stage_trace/);

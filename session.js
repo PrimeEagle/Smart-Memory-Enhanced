@@ -584,6 +584,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const entityRegistry = loadSessionEntityRegistry();
     for (const mem of finalActive) {
       if (isGrounded(mem) && Array.isArray(mem._raw_entity_names)) {
+        mem.entity_link_stage ??= 'session_extraction';
+        mem.entity_creation_method ??= 'structured_entity_output';
         resolveEntityNames(mem, mem._raw_entity_names, messageIndex, entityRegistry);
       }
     }
