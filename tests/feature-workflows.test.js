@@ -252,6 +252,8 @@ test('profile relationship descriptors are independently validated against estab
   assert.match(profiles, /Validate each generated descriptor independently/);
   assert.match(profiles, /unsupported_relationship_descriptor/);
   assert.match(profiles, /controlled_descriptor_synonym/);
+  assert.match(profiles, /pair\?\.descriptors\.includes\(token\) \? token/);
+  assert.match(profiles, /pair\.descriptors\.join\(', '\)/);
   assert.match(profiles, /extractCardRelationshipFacts/);
   assert.match(profiles, /extractGroundedRelationshipFacts/);
   assert.match(profiles, /const pair = cardPair \?\? historyPair \?\? groundedPair/);
@@ -436,6 +438,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('prompts.js'), /candidate_id/);
   assert.match(read('prompts.js'), /REQUESTED_CANDIDATE_IDS/);
   assert.match(read('prompts.js'), /CANDIDATE_ID:/);
+  assert.match(read('prompts.js'), /Confidence is optional/);
+  assert.match(read('scenes.js'), /confidence_missing/);
   assert.match(read('prompts.js'), /buildSceneDetectBatchPrompt/);
   assert.match(settings, /ai_breaks_added/);
   assert.match(settings, /final_break_indices/);

@@ -273,7 +273,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // must still be present in the authoritative pair vocabulary.
     const descriptorSynonyms = { appreciative: 'grateful', trusting: 'open', caring: 'affectionate', reassuring: 'supportive' };
     const descriptorTokens = status.split(',').map((value) => value.trim()).filter(Boolean);
-    const normalizedTokens = descriptorTokens.map((token) => descriptorSynonyms[token] ?? token);
+    // Exact authoritative vocabulary always wins. A synonym is only a fallback
+    // for a token that is not already an approved descriptor (for example,
+    // authoritative "trusting" must never be rewritten to "open").
+    const normalizedTokens = descriptorTokens.map((token) => pair?.descriptors.includes(token) ? token : (descriptorSynonyms[token] ?? token));
     if (pair && descriptorTokens.length) {
       // Validate each generated descriptor independently. A mixed line such as
       // "wary, appreciative" must not discard the grounded "appreciative"
@@ -292,7 +295,12 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
         }
         rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: token, authoritative_value: pair.descriptors, disposition: 'dropped_conflict', reason_code: 'unsupported_relationship_descriptor' });
       });
-      if (accepted.length) return `${match[1].trim()}: ${accepted.join(', ')}`;
+      if (accepted.length) {
+        // Profiles are a guarded projection, not a relationship-history
+        // editor. Preserve the complete authoritative set and merely record
+        // which model-proposed descriptors were accepted or rejected.
+        return `${match[1].trim()}: ${pair.descriptors.join(', ')}`;
+      }
     }
     // “Partner” is weaker than an established spouse status. Normalize the
     // generated synonym only when the canonical relationship evidence gives a
