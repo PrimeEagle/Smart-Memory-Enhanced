@@ -454,6 +454,10 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /aiRequestedBreak && heuristicBreak/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /boundary_comparison/);
+  assert.match(settings, /shifted_boundaries/);
+  assert.match(settings, /comparison_tolerance_messages: tolerance/);
+  assert.match(settings, /terminal_break_disposition: 'accepted_final_break'/);
+  assert.match(settings, /gate_rejections_by_reason/);
   assert.match(settings, /comparablePriorRun/);
   assert.match(settings, /prompt_shape_hash === sceneAudit\.prompt_shape_hash/);
 });

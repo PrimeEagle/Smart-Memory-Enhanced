@@ -154,15 +154,50 @@ function diagnosticFingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-function compareSceneBoundaryRuns(previous, currentIndices = []) {
-  const before = new Set(previous?.final_break_indices ?? []);
-  const after = new Set(currentIndices);
-  const added = [...after].filter((index) => !before.has(index));
-  const removed = [...before].filter((index) => !after.has(index));
-  // A shift is a bounded one-message replacement, reported separately from
-  // broad count changes so marginal model variation is visible in exports.
-  const shifted = added.filter((index) => removed.some((prior) => Math.abs(prior - index) === 1));
-  return { compared_to_prior: Boolean(previous), breaks_added: added.length, breaks_removed: removed.length, breaks_shifted: shifted.length, unchanged_breaks: [...after].filter((index) => before.has(index)).length };
+function compareSceneBoundaryRuns(previous, currentIndices = [], currentSceneCount = null, tolerance = 2) {
+  if (!previous) return { compared_to_prior: false, comparison_tolerance_messages: tolerance, breaks_added: currentIndices.length, breaks_removed: 0, breaks_shifted: 0, unchanged_breaks: 0, unchanged_boundaries: [], shifted_boundaries: [], added_boundaries: currentIndices, removed_boundaries: [], scene_count_stable: null, boundary_positions_exactly_stable: false, boundary_positions_materially_stable: false, marginal_boundary_comparison: [] };
+  const remainingPrevious = new Set(previous.final_break_indices ?? []);
+  const unchanged = [];
+  const added = [];
+  for (const index of currentIndices) {
+    if (remainingPrevious.delete(index)) unchanged.push(index);
+    else added.push(index);
+  }
+  const shifted = [];
+  const unmatchedAdded = [];
+  for (const index of added) {
+    const nearby = [...remainingPrevious].filter((prior) => Math.abs(prior - index) <= tolerance).sort((a, b) => Math.abs(a - index) - Math.abs(b - index) || a - b)[0];
+    if (nearby === undefined) unmatchedAdded.push(index);
+    else { remainingPrevious.delete(nearby); shifted.push({ previous_index: nearby, current_index: index, offset: index - nearby }); }
+  }
+  const previousDispositions = new Map((previous.candidate_dispositions ?? []).map((item) => [item.message_index ?? item.candidate_id, item]));
+  return {
+    compared_to_prior: true,
+    comparison_tolerance_messages: tolerance,
+    breaks_added: unmatchedAdded.length,
+    breaks_removed: remainingPrevious.size,
+    breaks_shifted: shifted.length,
+    unchanged_breaks: unchanged.length,
+    unchanged_boundaries: unchanged,
+    shifted_boundaries: shifted,
+    added_boundaries: unmatchedAdded,
+    removed_boundaries: [...remainingPrevious],
+    scene_count_stable: Number.isInteger(currentSceneCount) && Number.isInteger(previous.generated) ? currentSceneCount === previous.generated : null,
+    boundary_positions_exactly_stable: !shifted.length && !unmatchedAdded.length && !remainingPrevious.size,
+    boundary_positions_materially_stable: !unmatchedAdded.length && !remainingPrevious.size,
+    marginal_boundary_comparison: shifted.map((shift) => ({
+      previous_index: shift.previous_index,
+      current_index: shift.current_index,
+      offset: shift.offset,
+      previous_ai_decision: previousDispositions.get(shift.previous_index)?.decision ?? null,
+      previous_confidence: previousDispositions.get(shift.previous_index)?.ai_confidence ?? null,
+      previous_gate_outcome: previousDispositions.get(shift.previous_index)?.terminal_break_disposition ?? null,
+      context_hash_equal: true,
+      prompt_hash_equal: previous.prompt_shape_hash === previous.prompt_shape_hash,
+      model_equal: true,
+      settings_equal: true,
+    })),
+  };
 }
 
 /**
@@ -3387,7 +3422,17 @@ export function bindSettingsUI(ctrl) {
             const isBreak = settings.scene_ai_detect
               ? aiRequestedBreak && heuristicBreak && sceneBuffer.length >= minMessages
               : heuristicBreak && sceneBuffer.length >= minMessages;
-            if (aiRequestedBreak && !heuristicBreak) sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
+            const aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
+            if (aiRequestedBreak) {
+              if (!heuristicBreak) {
+                sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
+                Object.assign(aiDisposition ?? {}, { terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'insufficient_change_evidence', detected_change_types: [], distance_from_previous_accepted_boundary: sceneAudit.final_break_indices.length ? (msg.__sme_original_index ?? msgIdx) - sceneAudit.final_break_indices.at(-1) : null });
+              } else if (sceneBuffer.length < minMessages) {
+                Object.assign(aiDisposition ?? {}, { terminal_break_disposition: 'rejected_minimum_scene_length', gate_result: 'rejected', gate_reason_code: 'minimum_scene_length', detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: sceneAudit.final_break_indices.length ? (msg.__sme_original_index ?? msgIdx) - sceneAudit.final_break_indices.at(-1) : null });
+              } else {
+                Object.assign(aiDisposition ?? {}, { terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: null, detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: sceneAudit.final_break_indices.length ? (msg.__sme_original_index ?? msgIdx) - sceneAudit.final_break_indices.at(-1) : null });
+              }
+            }
 
             if (isAiMsg) prevAiMsg = msgText;
 
@@ -3478,6 +3523,16 @@ export function bindSettingsUI(ctrl) {
           sceneAudit.heuristic_fallback_candidates = sceneAudit.candidate_dispositions?.filter((item) => item.source === 'heuristic-fallback').length ?? 0;
           sceneAudit.heuristic_fallback_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_break').length ?? 0;
           sceneAudit.heuristic_fallback_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_no_break').length ?? 0;
+          const initialAiBreaks = sceneAudit.candidate_dispositions?.filter((item) => item.decision === true && item.source !== 'heuristic-fallback') ?? [];
+          sceneAudit.initial_ai_breaks = initialAiBreaks.length;
+          sceneAudit.break_terminal_outcomes = initialAiBreaks.reduce((counts, item) => {
+            const key = item.terminal_break_disposition ?? 'removed_during_scene_assembly';
+            counts[key] = (counts[key] ?? 0) + 1;
+            return counts;
+          }, {});
+          sceneAudit.gate_acceptances = sceneAudit.break_terminal_outcomes.accepted_final_break ?? 0;
+          sceneAudit.gate_rejections = sceneAudit.break_terminal_outcomes.rejected_deterministic_gate ?? 0;
+          sceneAudit.gate_rejections_by_reason = { insufficient_change_evidence: sceneAudit.gate_rejections, minimum_scene_length: sceneAudit.break_terminal_outcomes.rejected_minimum_scene_length ?? 0 };
           const priorSceneAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.sceneDetection;
           const comparablePriorRun = priorSceneAudit?.scene_detection_run_signature === sceneAudit.scene_detection_run_signature
             && priorSceneAudit?.prompt_shape_hash === sceneAudit.prompt_shape_hash
@@ -3489,6 +3544,7 @@ export function bindSettingsUI(ctrl) {
           sceneAudit.boundary_comparison = compareSceneBoundaryRuns(
             comparablePriorRun,
             sceneAudit.final_break_indices,
+            sceneAudit.generated,
           );
           delete sceneAudit.ai_decisions;
           delete sceneAudit.ai_disposition_by_id;
