@@ -455,8 +455,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('scene-gate-utils.js'), /gate_evidence/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /boundary_comparison/);
-  assert.match(settings, /shifted_boundaries/);
-  assert.match(settings, /comparison_tolerance_messages: tolerance/);
+  assert.match(read('scene-stability-utils.js'), /shifted_boundaries/);
+  assert.match(read('scene-stability-utils.js'), /comparison_tolerance_messages: tolerance/);
   assert.match(read('scene-gate-utils.js'), /terminal_break_disposition: 'accepted_final_break'/);
   assert.match(settings, /gate_rejections_by_reason/);
   assert.match(settings, /comparablePriorRun/);
@@ -481,8 +481,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(ui, /invalid_links_repaired_final_stage/);
   assert.match(ui, /current_run_stage_trace/);
   assert.match(settings, /scene_comparison_tolerance/);
-  assert.match(settings, /current_ai_decision/);
-  assert.match(settings, /current_gate_result/);
+  assert.match(read('scene-stability-utils.js'), /current_ai_decision/);
+  assert.match(read('scene-stability-utils.js'), /current_gate_result/);
   assert.match(settings, /makeSceneStabilitySnapshot/);
   assert.match(settings, /scene_stability_history/);
   assert.match(settings, /slice\(-3\)/);
