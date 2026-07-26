@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.36] - 2026-07-26
+
+### Fixed
+
+- Split profile relationship diagnostics into raw descriptor traces, final
+  descriptor outcomes, and final field outcomes. Exact authoritative
+  descriptors now take precedence over controlled synonym normalization, so a
+  value such as `trusting` cannot be incorrectly recorded as rejected when it
+  is already an approved canonical descriptor.
+- Made mixed relationship-descriptor fields explicit: supported descriptors
+  are retained with the authoritative descriptor set while unsupported siblings
+  are recorded as descriptor-level rejections. Completion status now correctly
+  distinguishes a dropped descriptor from a fully dropped relationship field.
+- Reworked entity-link repair accounting to distinguish durable logical/store
+  mutations in the current run from duplicate, already-quarantined, and
+  reobserved audit evidence. Repair records now preserve bounded origin and
+  source-stage provenance for follow-up diagnosis.
+- Added globally unique lineage to every scene-boundary provider attempt,
+  including formatting repairs and split retries. Diagnostics now expose
+  reconciled initial, partial-retry, single-candidate-retry, format-repair,
+  total-provider, and multi-candidate request counts.
+
+### Tests
+
+- Added regression coverage for terminal-only profile diagnostics, current-run
+  entity mutation accounting, and scene request lineage/counter fields.
+
 ## [0.8.35] - 2026-07-25
 
 ### Fixed
