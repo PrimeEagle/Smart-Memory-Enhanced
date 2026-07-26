@@ -134,7 +134,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
   const result = new Map();
   const batchSize = Math.max(1, Math.min(20, Number(options.batchSize ?? 12)));
   const lineage = options.lineage ?? { next_attempt_id: 1 };
-  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, batch_attempts: [], candidate_dispositions: [] };
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, confidence_outcomes: { confidence_available: 0, confidence_not_returned: 0, confidence_invalid: 0, confidence_removed_during_repair: 0 }, batch_attempts: [], candidate_dispositions: [] };
   const parseBatch = (raw, requestedIds) => {
     const original = String(raw ?? '');
     const codeFencePresent = /^\s*```/m.test(original);
@@ -157,17 +157,24 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     }
     const decisions = Array.isArray(value) ? value : value?.decisions;
     if (!Array.isArray(decisions)) return { ok: false, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: ['json'], parse_error_code: 'missing_decisions_array', top_level_shape: Array.isArray(value) ? 'array' : value && typeof value === 'object' ? 'object' : typeof value, code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: value && typeof value === 'object' ? Object.keys(value).slice(0, 5) : [] };
-    const requested = new Set(requestedIds); const valid = new Map(); const duplicates = []; const unknown = []; let invalid = 0;
+    const requested = new Set(requestedIds); const valid = new Map(); const duplicates = []; const unknown = []; let invalid = 0; let invalidConfidence = 0;
     for (const item of decisions) {
       const id = Number(item?.candidate_id ?? item?.id); const flag = item?.break ?? item?.is_break ?? item?.scene_break;
       const bool = flag === true || flag === 'true' || flag === 'TRUE'; const no = flag === false || flag === 'false' || flag === 'FALSE'; const confidenceProvided = item && Object.prototype.hasOwnProperty.call(item, 'confidence'); const confidence = confidenceProvided ? Number(item.confidence) : null;
       if (!Number.isInteger(id) || !requested.has(id)) { unknown.push(item?.candidate_id ?? item?.id ?? null); invalid++; continue; }
       if (valid.has(id)) { duplicates.push(id); invalid++; continue; }
-      if ((!bool && !no) || (confidenceProvided && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1))) { invalid++; continue; }
-      valid.set(id, { decision: bool, confidence, confidence_missing: !confidenceProvided });
+      if (!bool && !no) { invalid++; continue; }
+      const confidenceInvalid = confidenceProvided && (!Number.isFinite(confidence) || confidence < 0 || confidence > 1);
+      if (confidenceInvalid) invalidConfidence++;
+      valid.set(id, {
+        decision: bool,
+        confidence: confidenceInvalid ? null : confidence,
+        confidence_missing: !confidenceProvided || confidenceInvalid,
+        confidence_status: confidenceInvalid ? 'confidence_invalid' : confidenceProvided ? 'confidence_available' : 'confidence_not_returned',
+      });
     }
     const missing = requestedIds.filter((id) => !valid.has(id));
-    return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [recoveredLegacyLines ? 'legacy_indexed_lines' : leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: recoveredLegacyLines ? 'legacy_lines' : Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
+    return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [recoveredLegacyLines ? 'legacy_indexed_lines' : leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, invalid_confidence_count: invalidConfidence, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: recoveredLegacyLines ? 'legacy_lines' : Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
   };
   let adaptiveBatchSize = batchSize;
   let consecutiveFullBatches = 0;
@@ -216,11 +223,17 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         // Retrying only the missing tail with a smaller batch limits extra work
         // and avoids discarding decisions already validated from this response.
         smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.max(1, Math.floor(batch.length / 2)), onError: options.onError, lineage, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, split_depth: attempt.split_depth + 1, attempt_type: missingCandidates.length === 1 ? 'single_candidate_retry' : 'partial_missing_retry' });
-        for (const [candidateId, decision] of smallerRetry.decisions) parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, retried: true });
+        for (const [candidateId, decision] of smallerRetry.decisions) {
+          const retryDisposition = smallerRetry.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidateId);
+          parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, confidence_status: retryDisposition?.confidence_status ?? 'confidence_not_returned', retried: true });
+        }
         parsed.missing_candidate_ids = parsed.missing_candidate_ids.filter((candidateId) => !parsed.valid.has(candidateId));
         parsed.valid_decision_count = parsed.valid.size;
         for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries', 'initial_batch_requests', 'partial_retry_requests', 'single_candidate_retry_requests', 'format_repair_requests', 'total_provider_requests', 'multi_candidate_requests']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
         Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
+        for (const [confidenceStatus, count] of Object.entries(smallerRetry.diagnostics.confidence_outcomes ?? {})) {
+          diagnostics.confidence_outcomes[confidenceStatus] = (diagnostics.confidence_outcomes[confidenceStatus] ?? 0) + Number(count ?? 0);
+        }
         diagnostics.batch_attempts.push(...smallerRetry.diagnostics.batch_attempts);
         diagnostics.adaptive_batch_adjustments.push(...(smallerRetry.diagnostics.adaptive_batch_adjustments ?? []).map((adjustment) => ({
           ...adjustment,
@@ -230,7 +243,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       }
       for (const candidate of batch) {
         const decision = parsed.valid.get(candidate.candidate_index);
-        if (decision) { const retryDisposition = smallerRetry?.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidate.candidate_index); const source = decision.retried ? (retryDisposition?.source === 'heuristic-fallback' ? 'heuristic-fallback' : 'ai-batch-recovered') : 'ai-batch'; result.set(candidate.candidate_index, decision.decision); if (decision.confidence !== null) diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source, ai_confidence: decision.confidence, confidence_missing: decision.confidence_missing ?? (decision.confidence === null), heuristic_score: retryDisposition?.heuristic_score ?? null, ai_result_disposition: retryDisposition?.ai_result_disposition ?? null, batch_number: attempt.batch_number, terminal_disposition: source === 'heuristic-fallback' ? (decision.decision ? 'fallback_break' : 'fallback_no_break') : decision.decision ? 'ai_break' : 'ai_no_break' }); }
+        if (decision) { const retryDisposition = smallerRetry?.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidate.candidate_index); const source = decision.retried ? (retryDisposition?.source === 'heuristic-fallback' ? 'heuristic-fallback' : 'ai-batch-recovered') : 'ai-batch'; const confidenceStatus = decision.confidence_status ?? retryDisposition?.confidence_status ?? 'confidence_not_returned'; result.set(candidate.candidate_index, decision.decision); if (decision.confidence !== null) diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; diagnostics.confidence_outcomes[confidenceStatus] = (diagnostics.confidence_outcomes[confidenceStatus] ?? 0) + 1; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source, ai_confidence: decision.confidence, confidence_missing: decision.confidence_missing ?? (decision.confidence === null), confidence_status: confidenceStatus, heuristic_score: retryDisposition?.heuristic_score ?? null, ai_result_disposition: retryDisposition?.ai_result_disposition ?? null, batch_number: attempt.batch_number, terminal_disposition: source === 'heuristic-fallback' ? (decision.decision ? 'fallback_break' : 'fallback_no_break') : decision.decision ? 'ai_break' : 'ai_no_break' }); }
         else { const fallback = detectSceneBreakHeuristic(candidate.message); const missing = parsed.missing_candidate_ids.includes(candidate.candidate_index); result.set(candidate.candidate_index, fallback); diagnostics.fallback_boundaries++; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: fallback, source: 'heuristic-fallback', ai_confidence: null, heuristic_score: null, ai_result_disposition: missing ? 'missing_ai_decision' : 'invalid_ai_decision', batch_number: attempt.batch_number, terminal_disposition: fallback ? 'fallback_break' : 'fallback_no_break' }); }
       }
       attempt.terminal_outcome = smallerRetry ? 'recovered_after_smaller_batch_retry' : attempt.format_repair_succeeded ? 'recovered_after_repair_request' : parsed.parser_path?.includes('legacy_indexed_lines') ? 'recovered_after_normalization' : parsed.missing_candidate_ids.length ? 'parsed_partial' : 'parsed_full';

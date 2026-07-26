@@ -463,6 +463,9 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /prompt_shape_hash === sceneAudit\.prompt_shape_hash/);
   assert.match(read('scenes.js'), /adaptive_batch_adjustments/);
   assert.match(read('scenes.js'), /root_batch_summary/);
+  assert.match(read('scenes.js'), /confidence_outcomes/);
+  assert.match(read('scenes.js'), /confidence_invalid/);
+  assert.match(read('scenes.js'), /confidence_not_returned/);
   assert.match(settings, /data_quality_status/);
   assert.match(settings, /operational_status/);
   assert.match(settings, /maintenance_actions/);
