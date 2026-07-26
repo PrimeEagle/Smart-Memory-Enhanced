@@ -224,6 +224,24 @@ function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
   };
 }
 
+// Keep only bounded, text-free material needed to compare equivalent scene
+// detection runs. This deliberately excludes prompts, chat messages, and raw
+// provider responses.
+function makeSceneStabilitySnapshot(audit = {}) {
+  return {
+    run_signature: audit.scene_detection_run_signature ?? null,
+    final_break_indices: [...(audit.final_break_indices ?? [])],
+    generated: audit.generated ?? null,
+    prompt_shape_hash: audit.prompt_shape_hash ?? null,
+    model_identifier: audit.model_identifier ?? null,
+    connection_profile_identifier: audit.connection_profile_identifier ?? null,
+    task_sampling_settings: audit.task_sampling_settings ?? {},
+    candidate_context_hashes: audit.candidate_context_hashes ?? [],
+    candidate_dispositions: audit.candidate_dispositions ?? [],
+    completed_at: Date.now(),
+  };
+}
+
 // Pure and order-independent gate: provider lineage/confidence never enters
 // this decision. The caller supplies only the sorted message index and stable
 // message-derived transition signal.
@@ -3589,14 +3607,17 @@ export function bindSettingsUI(ctrl) {
           sceneAudit.gate_acceptances = sceneAudit.break_terminal_outcomes.accepted_final_break ?? 0;
           sceneAudit.gate_rejections = sceneAudit.break_terminal_outcomes.rejected_deterministic_gate ?? 0;
           sceneAudit.gate_rejections_by_reason = { insufficient_change_evidence: sceneAudit.gate_rejections, minimum_scene_length: sceneAudit.break_terminal_outcomes.rejected_minimum_scene_length ?? 0 };
-          const priorSceneAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.sceneDetection;
-          const comparablePriorRun = priorSceneAudit?.scene_detection_run_signature === sceneAudit.scene_detection_run_signature
-            && priorSceneAudit?.prompt_shape_hash === sceneAudit.prompt_shape_hash
+          const priorSceneAudits = [
+            ...(catchUpContext.chatMetadata?.[META_KEY]?.scene_stability_history ?? []),
+            catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.sceneDetection,
+          ].filter(Boolean);
+          const comparablePriorRun = [...priorSceneAudits].reverse().find((priorSceneAudit) => (
+            priorSceneAudit?.run_signature === sceneAudit.scene_detection_run_signature
+            || priorSceneAudit?.scene_detection_run_signature === sceneAudit.scene_detection_run_signature
+          ) && priorSceneAudit?.prompt_shape_hash === sceneAudit.prompt_shape_hash
             && priorSceneAudit?.model_identifier === sceneAudit.model_identifier
             && priorSceneAudit?.connection_profile_identifier === sceneAudit.connection_profile_identifier
-            && JSON.stringify(priorSceneAudit?.task_sampling_settings) === JSON.stringify(sceneAudit.task_sampling_settings)
-              ? priorSceneAudit
-              : null;
+            && JSON.stringify(priorSceneAudit?.task_sampling_settings) === JSON.stringify(sceneAudit.task_sampling_settings)) ?? null;
           sceneAudit.boundary_comparison = compareSceneBoundaryRuns(
             comparablePriorRun,
             sceneAudit,
@@ -4087,9 +4108,14 @@ export function bindSettingsUI(ctrl) {
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
+      const sceneStabilityHistory = catchUpContext.chatMetadata[META_KEY].scene_stability_history ?? [];
+      diagnostics.scene_stability_history = runResult.sceneDetection
+        ? [...sceneStabilityHistory, makeSceneStabilitySnapshot(runResult.sceneDetection)].slice(-3)
+        : sceneStabilityHistory.slice(-3);
       catchUpContext.chatMetadata[META_KEY].last_catchup_run_id = catchUpRunId;
       delete catchUpContext.chatMetadata[META_KEY].active_catchup_run_id;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
+      catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
       latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));

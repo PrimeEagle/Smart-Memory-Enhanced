@@ -480,6 +480,9 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /scene_comparison_tolerance/);
   assert.match(settings, /current_ai_decision/);
   assert.match(settings, /current_gate_result/);
+  assert.match(settings, /makeSceneStabilitySnapshot/);
+  assert.match(settings, /scene_stability_history/);
+  assert.match(settings, /slice\(-3\)/);
 });
 
 test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {
