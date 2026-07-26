@@ -170,6 +170,9 @@ function makeSceneStabilitySnapshot(audit = {}) {
     task_sampling_settings: audit.task_sampling_settings ?? {},
     candidate_context_hashes: audit.candidate_context_hashes ?? [],
     candidate_dispositions: audit.candidate_dispositions ?? [],
+    malformed_batches: audit.malformed_batches ?? 0,
+    fallback_boundaries: audit.fallback_boundaries ?? 0,
+    heuristic_fallback_candidates: audit.heuristic_fallback_candidates ?? 0,
     completed_at: Date.now(),
   };
 }

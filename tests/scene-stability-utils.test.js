@@ -12,6 +12,7 @@ test('scene comparison classifies exact, shifted, added, and removed boundaries'
   assert.equal(comparison.breaks_added, 0);
   assert.equal(comparison.breaks_shifted, 0);
   assert.equal(comparison.scene_count_stable, false);
+  assert.equal(comparison.decision_pipeline_stable, true);
   assert.deepEqual(comparison.removed_boundaries, [206, 276]);
 });
 
@@ -20,5 +21,6 @@ test('scene comparison matches nearest unmatched boundary within tolerance', () 
   const comparison = compareSceneBoundaryRuns({ ...base, final_break_indices: [100] }, { ...base, final_break_indices: [101] }, 2);
   assert.equal(comparison.breaks_shifted, 1);
   assert.equal(comparison.boundary_positions_materially_stable, true);
+  assert.equal(comparison.decision_pipeline_stable, true);
   assert.equal(comparison.marginal_boundary_comparison[0].classification, 'shifted');
 });

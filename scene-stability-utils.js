@@ -2,7 +2,7 @@
 export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
   const currentIndices = currentAudit.final_break_indices ?? [];
   const currentSceneCount = currentAudit.generated ?? null;
-  if (!previous) return { compared_to_prior: false, comparison_tolerance_messages: tolerance, breaks_added: currentIndices.length, breaks_removed: 0, breaks_shifted: 0, unchanged_breaks: 0, unchanged_boundaries: [], shifted_boundaries: [], added_boundaries: currentIndices, removed_boundaries: [], scene_count_stable: null, boundary_positions_exactly_stable: false, boundary_positions_materially_stable: false, marginal_boundary_comparison: [] };
+  if (!previous) return { compared_to_prior: false, comparison_tolerance_messages: tolerance, breaks_added: currentIndices.length, breaks_removed: 0, breaks_shifted: 0, unchanged_breaks: 0, unchanged_boundaries: [], shifted_boundaries: [], added_boundaries: currentIndices, removed_boundaries: [], scene_count_stable: null, boundary_positions_exactly_stable: false, boundary_positions_materially_stable: false, decision_pipeline_stable: null, marginal_boundary_comparison: [] };
   const remainingPrevious = new Set(previous.final_break_indices ?? []);
   const unchanged = [];
   const added = [];
@@ -60,6 +60,14 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
     scene_count_stable: Number.isInteger(currentSceneCount) && Number.isInteger(previous.generated) ? currentSceneCount === previous.generated : null,
     boundary_positions_exactly_stable: !shifted.length && !unmatchedAdded.length && !remainingPrevious.size,
     boundary_positions_materially_stable: !unmatchedAdded.length && !remainingPrevious.size,
+    decision_pipeline_stable: (previous.malformed_batches ?? 0) === 0
+      && (previous.fallback_boundaries ?? previous.heuristic_fallback_candidates ?? 0) === 0
+      && (currentAudit.malformed_batches ?? 0) === 0
+      && (currentAudit.fallback_boundaries ?? currentAudit.heuristic_fallback_candidates ?? 0) === 0
+      && previous.prompt_shape_hash === currentAudit.prompt_shape_hash
+      && previous.model_identifier === currentAudit.model_identifier
+      && previous.connection_profile_identifier === currentAudit.connection_profile_identifier
+      && JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),
     marginal_boundary_comparison: [
       ...shifted.map((shift) => ({ ...marginalRecord(shift.previous_index, shift.current_index, 'shifted'), offset: shift.offset })),
       ...unmatchedAdded.map((index) => marginalRecord(null, index, 'added')),
