@@ -1848,7 +1848,11 @@ export async function reconcileCanonicalEntities(characterName) {
     reobserved_previously_quarantined: 0,
     duplicate_observations_suppressed: 0,
     newly_created_invalid_links_this_run: 0,
+    invalid_links_created_current_run: 0,
+    invalid_links_prevented_upstream: 0,
+    invalid_links_repaired_final_stage: 0,
     preexisting_invalid_links_repaired: 0,
+    origin_unknown_invalid_links_repaired: 0,
     origin_unknown_links_repaired: 0,
   };
   const logicalRepairKeys = new Set();
@@ -1926,7 +1930,7 @@ export async function reconcileCanonicalEntities(characterName) {
             ? 'created_current_run'
             : priorRepair ? 'previously_quarantined'
             : record?.manual_link ? 'manual'
-            : record?.link_created_stage ? 'preexisting_confirmed'
+            : (linkProvenance.link_created_stage ?? record?.link_created_stage) ? 'preexisting_confirmed'
             : 'preexisting_origin_unknown';
           const repair = {
             store, record_id: record?.id ?? null, entity_id: entityId, entity_name: linkedName,
@@ -1939,6 +1943,14 @@ export async function reconcileCanonicalEntities(characterName) {
             source_candidate_id: linkProvenance.source_candidate_id ?? record?.source_candidate_id ?? null,
             source_chunk: linkProvenance.source_chunk_number ?? record?.source_chunk ?? null,
             source_extraction_type: linkProvenance.source_extraction_type ?? record?.source_extraction_type ?? null,
+            creation_method: linkProvenance.creation_method ?? record?.entity_creation_method ?? 'unknown_legacy',
+            entity_registry_id: linkProvenance.entity_registry_id_at_creation ?? entityId,
+            same_run_creation: createdThisRun,
+            detected_invalid_reason: 'text_contradicted',
+            current_run_stage_trace: [...new Set([
+              linkProvenance.link_created_stage ?? record?.link_created_stage ?? null,
+              'final_reconciliation',
+            ].filter(Boolean))],
             created_from_structured_entity_list: Boolean(record?.created_from_structured_entity_list),
             created_from_text_inference: Boolean(record?.created_from_text_inference),
             created_from_relationship_promotion: Boolean(record?.created_from_relationship_promotion),
@@ -1972,9 +1984,16 @@ export async function reconcileCanonicalEntities(characterName) {
           if (!logicalRepairKeys.has(`${logicalRepairKey}::mutated`)) {
             logicalRepairKeys.add(`${logicalRepairKey}::mutated`);
             entityLinkRepairs.actual_logical_mutations_this_run++;
-            if (originClassification === 'created_current_run') entityLinkRepairs.newly_created_invalid_links_this_run++;
+            entityLinkRepairs.invalid_links_repaired_final_stage++;
+            if (originClassification === 'created_current_run') {
+              entityLinkRepairs.newly_created_invalid_links_this_run++;
+              entityLinkRepairs.invalid_links_created_current_run++;
+            }
             else if (originClassification === 'preexisting_confirmed') entityLinkRepairs.preexisting_invalid_links_repaired++;
-            else if (originClassification === 'preexisting_origin_unknown') entityLinkRepairs.origin_unknown_links_repaired++;
+            else if (originClassification === 'preexisting_origin_unknown') {
+              entityLinkRepairs.origin_unknown_links_repaired++;
+              entityLinkRepairs.origin_unknown_invalid_links_repaired++;
+            }
           }
         }
       }

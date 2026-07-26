@@ -173,8 +173,35 @@ function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
     else { remainingPrevious.delete(nearby); shifted.push({ previous_index: nearby, current_index: index, offset: index - nearby }); }
   }
   const previousDispositions = new Map((previous.candidate_dispositions ?? []).map((item) => [item.message_index ?? item.candidate_id, item]));
+  const currentDispositions = new Map((currentAudit.candidate_dispositions ?? []).map((item) => [item.message_index ?? item.candidate_id, item]));
   const previousContextHashes = new Map((previous.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const currentContextHashes = new Map((currentAudit.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
+  const marginalRecord = (previousIndex, currentIndex, classification) => {
+    const prior = previousDispositions.get(previousIndex);
+    const current = currentDispositions.get(currentIndex);
+    return {
+      classification,
+      candidate_id: current?.candidate_id ?? prior?.candidate_id ?? currentIndex ?? previousIndex,
+      message_index: currentIndex ?? previousIndex,
+      previous_message_index: previousIndex,
+      current_message_index: currentIndex,
+      previous_ai_decision: prior?.decision ?? null,
+      current_ai_decision: current?.decision ?? null,
+      previous_ai_confidence: prior?.ai_confidence ?? null,
+      current_ai_confidence: current?.ai_confidence ?? null,
+      previous_gate_result: prior?.gate_result ?? null,
+      current_gate_result: current?.gate_result ?? null,
+      previous_gate_reason: prior?.gate_reason_code ?? null,
+      current_gate_reason: current?.gate_reason_code ?? null,
+      previous_terminal_break_disposition: prior?.terminal_break_disposition ?? null,
+      current_terminal_break_disposition: current?.terminal_break_disposition ?? null,
+      context_hash_equal: previousIndex !== null && currentIndex !== null && previousContextHashes.get(previousIndex) === currentContextHashes.get(currentIndex),
+      prompt_hash_equal: previous.prompt_shape_hash === currentAudit.prompt_shape_hash,
+      model_equal: previous.model_identifier === currentAudit.model_identifier
+        && previous.connection_profile_identifier === currentAudit.connection_profile_identifier,
+      settings_equal: JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),
+    };
+  };
   return {
     compared_to_prior: true,
     comparison_tolerance_messages: tolerance,
@@ -189,19 +216,11 @@ function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
     scene_count_stable: Number.isInteger(currentSceneCount) && Number.isInteger(previous.generated) ? currentSceneCount === previous.generated : null,
     boundary_positions_exactly_stable: !shifted.length && !unmatchedAdded.length && !remainingPrevious.size,
     boundary_positions_materially_stable: !unmatchedAdded.length && !remainingPrevious.size,
-    marginal_boundary_comparison: shifted.map((shift) => ({
-      previous_index: shift.previous_index,
-      current_index: shift.current_index,
-      offset: shift.offset,
-      previous_ai_decision: previousDispositions.get(shift.previous_index)?.decision ?? null,
-      previous_confidence: previousDispositions.get(shift.previous_index)?.ai_confidence ?? null,
-      previous_gate_outcome: previousDispositions.get(shift.previous_index)?.terminal_break_disposition ?? null,
-      context_hash_equal: previousContextHashes.get(shift.previous_index) === currentContextHashes.get(shift.current_index),
-      prompt_hash_equal: previous.prompt_shape_hash === currentAudit.prompt_shape_hash,
-      model_equal: previous.model_identifier === currentAudit.model_identifier
-        && previous.connection_profile_identifier === currentAudit.connection_profile_identifier,
-      settings_equal: JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),
-    })),
+    marginal_boundary_comparison: [
+      ...shifted.map((shift) => ({ ...marginalRecord(shift.previous_index, shift.current_index, 'shifted'), offset: shift.offset })),
+      ...unmatchedAdded.map((index) => marginalRecord(null, index, 'added')),
+      ...[...remainingPrevious].map((index) => marginalRecord(index, null, 'removed')),
+    ],
   };
 }
 
@@ -585,6 +604,9 @@ export const defaultSettings = {
   // Verbose logging - when false, operational extraction/migration logs are
   // suppressed. Errors (console.error) are always shown regardless of this flag.
   verbose_logging: false,
+  // Developer-only tolerance used when comparing bounded scene-boundary
+  // diagnostics from otherwise matching runs. It never changes scene output.
+  scene_comparison_tolerance: 2,
 
   // Experimental: merge all tier content into a single IN_PROMPT block instead
   // of injecting each tier into its own named slot at different depths/positions.
@@ -3578,6 +3600,7 @@ export function bindSettingsUI(ctrl) {
           sceneAudit.boundary_comparison = compareSceneBoundaryRuns(
             comparablePriorRun,
             sceneAudit,
+            Math.max(1, Math.min(4, Number(settings.scene_comparison_tolerance ?? 2))),
           );
           delete sceneAudit.ai_decisions;
           delete sceneAudit.ai_disposition_by_id;
@@ -4010,11 +4033,19 @@ export function bindSettingsUI(ctrl) {
         duplicate_wrapper_observations_suppressed: entityLinkRepairs.duplicate_observations_suppressed ?? 0,
         recreated_links_repaired: entityLinkRepairs.recreated_after_prior_repair ?? 0,
       };
+      const auditStatus = reconciliation.integrity_audit?.status ?? 'failed';
+      const finalIntegrityStatus = ['clean', 'repaired'].includes(auditStatus)
+        && (reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) === 0
+        ? 'clean'
+        : auditStatus;
       runResult.quality = {
         status: qualityReasons.length ? 'degraded' : 'clean',
         operational_status: projectedOperationalStatus,
+        final_integrity_status: finalIntegrityStatus,
         data_quality_status: qualityReasons.length ? 'degraded' : 'clean',
+        generation_quality_status: qualityReasons.length ? 'degraded' : 'clean',
         maintenance_actions: maintenanceActions,
+        maintenance_actions_performed: maintenanceActions.entity_links_repaired,
         reasons: qualityReasons,
       };
       await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
@@ -4111,9 +4142,14 @@ export function bindSettingsUI(ctrl) {
         const qualityDetail = runResult.quality.status === 'degraded'
           ? ` Data quality degraded: ${runResult.quality.reasons.map((reason) => reason.message).join(' ')}`
           : '';
-        setStatusMessage(`Catch-up complete.${qualityDetail}${sceneSummary}`);
+        const repairedLinks = runResult.quality.maintenance_actions_performed ?? 0;
+        const repairStores = runResult.quality.maintenance_actions?.entity_link_store_mutations ?? 0;
+        const maintenanceDetail = repairedLinks > 0
+          ? ` ${repairedLinks} entity link${repairedLinks === 1 ? '' : 's'} repaired${repairStores > 1 ? ` across ${repairStores} durable store mutations` : ''}.`
+          : '';
+        setStatusMessage(`Catch-up complete.${qualityDetail}${maintenanceDetail}${sceneSummary}`);
         const notifier = runResult.quality.status === 'degraded' ? toastr.warning : toastr.success;
-        notifier(`Full catch-up extraction finished.${qualityDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
+        notifier(`Full catch-up extraction finished.${qualityDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
           timeOut: runResult.quality.status === 'degraded' ? 8000 : 4000,
           positionClass: 'toast-bottom-right',
         });
@@ -4600,6 +4636,13 @@ export function bindSettingsUI(ctrl) {
     .prop('checked', s.verbose_logging)
     .on('change', function () {
       extension_settings[MODULE_NAME].verbose_logging = $(this).prop('checked');
+      saveSettingsDebounced();
+    });
+  $('#sme_scene_comparison_tolerance')
+    .val(s.scene_comparison_tolerance)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].scene_comparison_tolerance = Math.max(1, Math.min(4, parseInt($(this).val(), 10) || 2));
+      $(this).val(extension_settings[MODULE_NAME].scene_comparison_tolerance);
       saveSettingsDebounced();
     });
 

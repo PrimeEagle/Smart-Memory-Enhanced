@@ -469,6 +469,12 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('graph-migration.js'), /entity_link_provenance/);
   assert.match(read('graph-migration.js'), /link_created_run_id/);
   assert.match(read('graph-migration.js'), /creation_method/);
+  assert.match(ui, /invalid_links_created_current_run/);
+  assert.match(ui, /invalid_links_repaired_final_stage/);
+  assert.match(ui, /current_run_stage_trace/);
+  assert.match(settings, /scene_comparison_tolerance/);
+  assert.match(settings, /current_ai_decision/);
+  assert.match(settings, /current_gate_result/);
 });
 
 test('final diagnostics separate historic identity review items and report one truthful stale-reference reason', () => {

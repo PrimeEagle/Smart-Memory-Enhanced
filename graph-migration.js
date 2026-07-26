@@ -530,7 +530,7 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
   // creation metadata. Later mirrors and redirects retain this map unchanged.
   const sourceIndices = [...new Set([...(mem.source_message_indices ?? []).filter(Number.isInteger), ...(Number.isInteger(messageIndex) ? [messageIndex] : [])])];
   const requestedCreationMethod = mem.entity_creation_method ?? 'structured_entity_output';
-  const creationMethod = ['structured_entity_output', 'scene_participant', 'manual_entry', 'canonical_redirect'].includes(requestedCreationMethod)
+  const creationMethod = ['structured_entity_output', 'free_text_name_inference', 'scene_participant', 'arc_participant', 'relationship_promotion', 'profile_relationship', 'perspective_subject', 'state_ledger_subject', 'migration', 'manual_user_action', 'store_mirror', 'unknown_legacy'].includes(requestedCreationMethod)
     ? requestedCreationMethod
     : 'structured_entity_output';
   const existingLinks = mem.entity_link_provenance ?? {};
