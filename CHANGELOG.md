@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Added durable per-entity-link provenance for new extraction, scene, arc,
+  epistemic, and Relationship History promotions. Links now retain their
+  originating run, stage, store, source indices, extraction type, creation
+  method, and canonical identity across redirects.
+- Added an idempotent compatibility backfill for older links. Legacy links are
+  explicitly marked `unknown_legacy` with no fabricated run, stage, or time.
+- Separated operational completion, final integrity, generation quality, and
+  maintenance actions in catch-up diagnostics. Safe repairs no longer make a
+  clean final graph appear degraded.
+- Expanded profile relationship type recognition to retain sister, brother,
+  mother, and father alongside spouse types, including when a descriptive
+  profile field is rejected.
+- Made scene boundary comparison retain a bounded, text-free history of the
+  last three runs; changed boundaries now include both runs' AI decision,
+  confidence, gate reason, and terminal disposition.
+- Added adaptive batch diagnostics, optional-confidence preservation, explicit
+  root-versus-request terminal outcomes, and a decision-pipeline stability
+  classification.
+
+### Tests
+
+- Added direct pure-function tests for deterministic scene gating, retry-lineage
+  invariance, exact/shifted/added/removed boundary comparison, and the
+  10-boundary versus 8-boundary regression scenario.
+
 ## [0.8.36] - 2026-07-26
 
 ### Fixed
