@@ -120,6 +120,7 @@ import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import { evaluateDeterministicSceneGate } from './scene-gate-utils.js';
+import { compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
   PROMPT_TASK_LABELS,
@@ -155,7 +156,7 @@ function diagnosticFingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
+function compareSceneBoundaryRunsLegacy(previous, currentAudit = {}, tolerance = 2) {
   const currentIndices = currentAudit.final_break_indices ?? [];
   const currentSceneCount = currentAudit.generated ?? null;
   if (!previous) return { compared_to_prior: false, comparison_tolerance_messages: tolerance, breaks_added: currentIndices.length, breaks_removed: 0, breaks_shifted: 0, unchanged_breaks: 0, unchanged_boundaries: [], shifted_boundaries: [], added_boundaries: currentIndices, removed_boundaries: [], scene_count_stable: null, boundary_positions_exactly_stable: false, boundary_positions_materially_stable: false, marginal_boundary_comparison: [] };
