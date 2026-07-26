@@ -213,6 +213,8 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
             attempt.format_repair_succeeded = true; diagnostics.repair_requests_succeeded++; repairAttempt.terminal_outcome = 'parsed_full';
           } else { diagnostics.repair_failures++; repairAttempt.terminal_outcome = 'malformed'; }
         } catch (error) { diagnostics.repair_failures++; repairAttempt.provider_error = String(error?.message ?? error); repairAttempt.terminal_outcome = 'provider_error'; }
+        repairAttempt.attempt_terminal_outcome = repairAttempt.terminal_outcome;
+        repairAttempt.root_batch_terminal_outcome = repairAttempt.terminal_outcome;
         diagnostics.batch_attempts.push(repairAttempt);
       }
       if (!parsed.ok) throw new Error(parsed.parse_error_code);
@@ -258,6 +260,15 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       }
       options.onError?.(error, batch);
     }
+    // Keep the request's own terminal result distinct from the root batch's
+    // end-to-end result. A partial parent did not itself return all decisions;
+    // its children may have completed recovery afterwards.
+    attempt.attempt_terminal_outcome = attempt.terminal_outcome === 'recovered_after_smaller_batch_retry'
+      ? 'parsed_partial'
+      : attempt.terminal_outcome;
+    attempt.root_batch_terminal_outcome = attempt.terminal_outcome === 'recovered_after_smaller_batch_retry'
+      ? 'fully_recovered_by_children'
+      : attempt.terminal_outcome;
     diagnostics.batch_attempts.push(attempt);
     offset += batch.length;
     const wasPartial = Boolean(attempt.truncated_output_suspected || attempt.terminal_outcome === 'parsed_partial' || attempt.terminal_outcome === 'recovered_after_smaller_batch_retry');
