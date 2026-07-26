@@ -133,7 +133,8 @@ export async function detectSceneBreakAI(messageText, previousMessageText, onErr
 export async function detectSceneBreakAIBatch(candidates, options = {}) {
   const result = new Map();
   const batchSize = Math.max(1, Math.min(20, Number(options.batchSize ?? 12)));
-  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, boundary_confidences: {}, batch_attempts: [], candidate_dispositions: [] };
+  const lineage = options.lineage ?? { next_attempt_id: 1 };
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, boundary_confidences: {}, batch_attempts: [], candidate_dispositions: [] };
   const parseBatch = (raw, requestedIds) => {
     const original = String(raw ?? '');
     const codeFencePresent = /^\s*```/m.test(original);
@@ -170,9 +171,16 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
   };
   for (let offset = 0; offset < candidates.length; offset += batchSize) {
     const batch = candidates.slice(offset, offset + batchSize);
-    const attempt = { batch_number: Math.floor(offset / batchSize) + 1, candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false };
+    const attemptType = options.attempt_type ?? 'initial_batch';
+    const requestAttemptId = lineage.next_attempt_id++;
+    const attempt = { batch_number: Math.floor(offset / batchSize) + 1, request_attempt_id: requestAttemptId, root_batch_id: options.root_batch_id ?? requestAttemptId, parent_attempt_id: options.parent_attempt_id ?? null, attempt_type: attemptType, split_depth: Number(options.split_depth ?? 0), candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false };
     try {
       diagnostics.requests_sent++;
+      diagnostics.total_provider_requests++;
+      if (attemptType === 'initial_batch') diagnostics.initial_batch_requests++;
+      else if (attemptType === 'partial_missing_retry') diagnostics.partial_retry_requests++;
+      else if (attemptType === 'single_candidate_retry') diagnostics.single_candidate_retry_requests++;
+      if (batch.length > 1) diagnostics.multi_candidate_requests++;
       if (batch.length > 1) diagnostics.batched_requests++;
       // JSON needs enough space for every ID, boolean, and confidence. The
       // former 16-token allowance frequently cut off confidence fields or all
@@ -185,15 +193,18 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         // One formatting-only retry is intentionally bounded. It receives the
         // model's own malformed response and IDs, never the source chat again.
         attempt.format_repair_attempted = true;
-        diagnostics.retried_batches++; diagnostics.repair_requests_sent++; diagnostics.requests_sent++;
+        diagnostics.retried_batches++; diagnostics.repair_requests_sent++; diagnostics.requests_sent++; diagnostics.format_repair_requests++; diagnostics.total_provider_requests++;
+        const repairAttempt = { request_attempt_id: lineage.next_attempt_id++, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, attempt_type: 'format_repair', split_depth: attempt.split_depth, candidate_ids_requested: attempt.candidate_ids_requested, candidate_count_requested: batch.length, request_completed: false, provider_error: null, returned_none: false };
         try {
           const repaired = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchRepairPrompt(response, attempt.candidate_ids_requested), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
+          repairAttempt.request_completed = true;
           const repairedParsed = parseBatch(repaired, attempt.candidate_ids_requested);
           if (repairedParsed.ok) {
             parsed = repairedParsed; Object.assign(attempt, repairedParsed);
-            attempt.format_repair_succeeded = true; diagnostics.repair_requests_succeeded++;
-          } else diagnostics.repair_failures++;
-        } catch { diagnostics.repair_failures++; }
+            attempt.format_repair_succeeded = true; diagnostics.repair_requests_succeeded++; repairAttempt.terminal_outcome = 'parsed_full';
+          } else { diagnostics.repair_failures++; repairAttempt.terminal_outcome = 'malformed'; }
+        } catch (error) { diagnostics.repair_failures++; repairAttempt.provider_error = String(error?.message ?? error); repairAttempt.terminal_outcome = 'provider_error'; }
+        diagnostics.batch_attempts.push(repairAttempt);
       }
       if (!parsed.ok) throw new Error(parsed.parse_error_code);
       let smallerRetry = null;
@@ -202,11 +213,11 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         diagnostics.smaller_batch_retries++;
         // Retrying only the missing tail with a smaller batch limits extra work
         // and avoids discarding decisions already validated from this response.
-        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.max(1, Math.floor(batch.length / 2)), onError: options.onError });
+        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.max(1, Math.floor(batch.length / 2)), onError: options.onError, lineage, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, split_depth: attempt.split_depth + 1, attempt_type: missingCandidates.length === 1 ? 'single_candidate_retry' : 'partial_missing_retry' });
         for (const [candidateId, decision] of smallerRetry.decisions) parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, retried: true });
         parsed.missing_candidate_ids = parsed.missing_candidate_ids.filter((candidateId) => !parsed.valid.has(candidateId));
         parsed.valid_decision_count = parsed.valid.size;
-        for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
+        for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries', 'initial_batch_requests', 'partial_retry_requests', 'single_candidate_retry_requests', 'format_repair_requests', 'total_provider_requests', 'multi_candidate_requests']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
         Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
         diagnostics.batch_attempts.push(...smallerRetry.diagnostics.batch_attempts);
       }

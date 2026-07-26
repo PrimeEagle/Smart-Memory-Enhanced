@@ -1833,6 +1833,19 @@ export async function reconcileCanonicalEntities(characterName) {
     unique_logical_links_repaired: 0,
     unique_records_affected: 0,
   };
+  // Canonical current-run accounting. The legacy counters above are retained
+  // in exports for compatibility, but this object answers the user-facing
+  // question: what durable metadata actually changed in this run?
+  const entityLinkRepairs = {
+    actual_logical_mutations_this_run: 0,
+    physical_store_mutations_this_run: 0,
+    reobserved_already_repaired: 0,
+    reobserved_previously_quarantined: 0,
+    duplicate_observations_suppressed: 0,
+    newly_created_invalid_links_this_run: 0,
+    preexisting_invalid_links_repaired: 0,
+    origin_unknown_links_repaired: 0,
+  };
   const logicalRepairKeys = new Set();
   const repairedRecordIds = new Set();
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
@@ -1893,20 +1906,38 @@ export async function reconcileCanonicalEntities(characterName) {
           const logicalRepairKey = `${record?.id ?? 'unknown'}::${canonicalIdentity}::text_contradicted`;
           const repairKey = `${record?.id ?? 'unknown'}::${entityId}::text_contradicted`;
           const priorRepair = (record.identity_link_repair_audit ?? []).find((item) => item.logical_repair_key === logicalRepairKey || item.repair_key === repairKey);
+          const createdThisRun = Boolean(record?.link_created_run_id && String(record.link_created_run_id) === String(meta?.last_catchup_run_id ?? ''));
+          const originClassification = createdThisRun
+            ? 'created_current_run'
+            : priorRepair ? 'previously_quarantined'
+            : record?.manual_link ? 'manual'
+            : record?.link_created_stage ? 'preexisting_confirmed'
+            : 'preexisting_origin_unknown';
           const repair = {
             store, record_id: record?.id ?? null, entity_id: entityId, entity_name: linkedName,
             support_class: 'text_contradicted', removal_reason: 'Other canonical people are explicitly named while this link has no textual or structural support.',
             text_names_detected: namedPeople, structured_subject_ids: structuredSubjectIds,
             source_evidence_ids: record?.source_record_ids ?? record?.source_memory_ids ?? [],
             repair_key: repairKey, logical_repair_key: logicalRepairKey, canonical_entity_identity: canonicalIdentity, record_created_at: record?.created_at ?? record?.generated_at ?? null,
-            link_origin_stage: record?.link_origin_stage ?? 'unknown',
-            origin_classification: priorRepair ? 'previously_quarantined' : record?.manual_link ? 'manual_user_link' : 'preexisting_origin_unknown',
+            link_created_run_id: record?.link_created_run_id ?? null,
+            link_created_stage: record?.link_created_stage ?? record?.link_origin_stage ?? null,
+            source_candidate_id: record?.source_candidate_id ?? null,
+            source_chunk: record?.source_chunk ?? null,
+            source_extraction_type: record?.source_extraction_type ?? null,
+            created_from_structured_entity_list: Boolean(record?.created_from_structured_entity_list),
+            created_from_text_inference: Boolean(record?.created_from_text_inference),
+            created_from_relationship_promotion: Boolean(record?.created_from_relationship_promotion),
+            created_from_scene_participant: Boolean(record?.created_from_scene_participant),
+            origin_classification: originClassification,
             previously_quarantined: Boolean(priorRepair),
           };
           textLinkRepairCounters.physical_repair_observations++;
           if (priorRepair || logicalRepairKeys.has(logicalRepairKey)) {
             textLinkRepairCounters.previously_quarantined_links_seen++;
             textLinkRepairCounters.duplicate_repair_events_suppressed++;
+            entityLinkRepairs.reobserved_already_repaired++;
+            if (priorRepair) entityLinkRepairs.reobserved_previously_quarantined++;
+            entityLinkRepairs.duplicate_observations_suppressed++;
           } else {
             logicalRepairKeys.add(logicalRepairKey);
             repairedRecordIds.add(record?.id ?? 'unknown');
@@ -1914,6 +1945,18 @@ export async function reconcileCanonicalEntities(characterName) {
             textLinkRepairCounters.legacy_invalid_links_repaired++;
             textLinkRepairCounters.unique_logical_links_repaired++;
             record.identity_link_repair_audit = [...(record.identity_link_repair_audit ?? []), { ...repair, repaired_at: Date.now() }];
+          }
+          // The unsupported link is still present in this durable record, so
+          // removing it is a mutation even if its audit key was observed in a
+          // prior run. A repeated audit record without a present link never
+          // reaches this branch and is therefore not counted as a repair.
+          entityLinkRepairs.physical_store_mutations_this_run++;
+          if (!logicalRepairKeys.has(`${logicalRepairKey}::mutated`)) {
+            logicalRepairKeys.add(`${logicalRepairKey}::mutated`);
+            entityLinkRepairs.actual_logical_mutations_this_run++;
+            if (originClassification === 'created_current_run') entityLinkRepairs.newly_created_invalid_links_this_run++;
+            else if (originClassification === 'preexisting_confirmed') entityLinkRepairs.preexisting_invalid_links_repaired++;
+            else if (originClassification === 'preexisting_origin_unknown') entityLinkRepairs.origin_unknown_links_repaired++;
           }
         }
       }
@@ -2069,6 +2112,7 @@ export async function reconcileCanonicalEntities(characterName) {
     repaired_stale_entity_references: repairedStaleEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
     text_link_repair_counters: textLinkRepairCounters,
+    entity_link_repairs: entityLinkRepairs,
     card_identity_mismatches: cardIdentityMismatches,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,

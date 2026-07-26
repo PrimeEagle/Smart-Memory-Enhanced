@@ -495,6 +495,45 @@ test('profile disposition counters are derived once from field_validation', () =
   assert.match(profileStage, /prior_fields_preserved = runResult\.profiles\.fields\.preserved_prior/);
 });
 
+test('profile relationship diagnostics retain terminal descriptor and field outcomes separately', () => {
+  const profiles = read('profiles.js');
+  const settings = read('settings.js');
+  assert.match(profiles, /profile_descriptor_traces/);
+  assert.match(profiles, /profile_descriptor_terminal_outcomes/);
+  assert.match(profiles, /profile_field_terminal_outcomes/);
+  assert.match(profiles, /accepted_exact/);
+  assert.match(profiles, /accepted_normalized_synonym/);
+  assert.match(profiles, /saved_with_partial_descriptors/);
+  assert.match(profiles, /dropped_no_supported_descriptors/);
+  assert.match(settings, /unsupported model-generated relationship descriptor/);
+  assert.match(settings, /unsupported model-generated relationship field/);
+});
+
+test('entity repair status counts current durable mutations separately from repeated observations', () => {
+  const ui = read('ui.js');
+  const settings = read('settings.js');
+  assert.match(ui, /actual_logical_mutations_this_run/);
+  assert.match(ui, /physical_store_mutations_this_run/);
+  assert.match(ui, /reobserved_already_repaired/);
+  assert.match(ui, /reobserved_previously_quarantined/);
+  assert.match(ui, /link_created_run_id/);
+  assert.match(ui, /source_candidate_id/);
+  assert.match(settings, /entityLinkRepairs\.actual_logical_mutations_this_run/);
+});
+
+test('scene provider attempts use globally unique parented request lineage and reconciled counters', () => {
+  const scenes = read('scenes.js');
+  assert.match(scenes, /next_attempt_id/);
+  assert.match(scenes, /request_attempt_id/);
+  assert.match(scenes, /root_batch_id/);
+  assert.match(scenes, /parent_attempt_id/);
+  assert.match(scenes, /initial_batch_requests/);
+  assert.match(scenes, /partial_retry_requests/);
+  assert.match(scenes, /single_candidate_retry_requests/);
+  assert.match(scenes, /format_repair_requests/);
+  assert.match(scenes, /total_provider_requests/);
+});
+
 test('final reconciliation uses one cross-store entity merge operation before structured-store repair', () => {
   const graph = read('graph-migration.js');
   const ui = read('ui.js');

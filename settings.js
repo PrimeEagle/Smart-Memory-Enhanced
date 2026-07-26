@@ -3100,7 +3100,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       identity_review: { existing_at_start: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
@@ -3360,7 +3360,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
+          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
           let prevAiMsg = '';
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -3375,8 +3375,9 @@ export function bindSettingsUI(ctrl) {
             sceneAudit.boundary_candidates_evaluated = aiCandidates.length;
             sceneAudit.candidate_context_hashes = aiCandidates.map((candidate) => ({ candidate_id: candidate.candidate_index, context_hash: diagnosticFingerprint(`${candidate.previous_message}\n${candidate.message}`) }));
             sceneAudit.scene_detection_run_signature = diagnosticFingerprint(sceneAudit.candidate_context_hashes.map((candidate) => `${candidate.candidate_id}:${candidate.context_hash}`).join('|'));
-            sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.requests_sent;
+            sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.total_provider_requests;
             Object.assign(sceneAudit, batchResult.diagnostics);
+            sceneAudit.request_counters_reconciled = sceneAudit.total_provider_requests === (sceneAudit.initial_batch_requests + sceneAudit.partial_retry_requests + sceneAudit.single_candidate_retry_requests + sceneAudit.format_repair_requests);
             sceneAudit.ai_decisions = batchResult.decisions;
             sceneAudit.candidate_dispositions = batchResult.diagnostics.candidate_dispositions.map((item) => ({ ...item, message_index: item.candidate_id }));
             sceneAudit.ai_disposition_by_id = new Map(sceneAudit.candidate_dispositions.map((item) => [item.candidate_id, item]));
@@ -3634,6 +3635,8 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.prior_fields_preserved = runResult.profiles.fields.preserved_prior;
             runResult.profiles.relationship_conflicts_dropped = runResult.profiles.fields.dropped_conflict;
             runResult.profiles.relationship_conflict_details.push(...(profiles.relationship_field_details ?? []));
+            runResult.profiles.relationship_descriptor_rejections += (profiles.profile_descriptor_terminal_outcomes ?? []).filter((entry) => String(entry.disposition ?? '').startsWith('rejected_')).length;
+            runResult.profiles.relationship_field_rejections += (profiles.profile_field_terminal_outcomes ?? []).filter((entry) => entry.field_terminal_outcome === 'dropped_no_supported_descriptors').length;
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
@@ -3891,15 +3894,25 @@ export function bindSettingsUI(ctrl) {
         tier: 'scenes',
         message: `${runResult.sceneDetection.heuristic_fallback_candidates} scene-boundary candidate${runResult.sceneDetection.heuristic_fallback_candidates === 1 ? '' : 's'} required deterministic heuristic fallback${runResult.sceneDetection.malformed_batches ? ` after ${runResult.sceneDetection.malformed_batches} malformed batch${runResult.sceneDetection.malformed_batches === 1 ? '' : 'es'}` : ''}.`,
       });
+      if (runResult.sceneDetection?.request_counters_reconciled === false) qualityReasons.push({
+        code: 'scene_request_counters_unreconciled',
+        tier: 'scenes',
+        message: 'Scene provider request counters did not reconcile; scene records were preserved for diagnostics.',
+      });
       if (runResult.finalReconciliation.error) qualityReasons.push({
         code: 'final_reconciliation_failed',
         tier: 'identity',
         message: 'Final canonical reconciliation failed and was rolled back; validated tier data was preserved.',
       });
-      if (runResult.profiles.relationship_conflicts_dropped > 0) qualityReasons.push({
+      if (runResult.profiles.relationship_field_rejections > 0) qualityReasons.push({
         code: 'profile_relationship_conflicts_dropped',
         tier: 'profiles',
-        message: `${runResult.profiles.relationship_conflicts_dropped} unsupported profile relationship field${runResult.profiles.relationship_conflicts_dropped === 1 ? '' : 's'} dropped; canonical values were preserved.`,
+        message: `${runResult.profiles.relationship_field_rejections} unsupported model-generated relationship field${runResult.profiles.relationship_field_rejections === 1 ? '' : 's'} dropped; canonical profile values were preserved.`,
+      });
+      if (runResult.profiles.relationship_descriptor_rejections > 0) qualityReasons.push({
+        code: 'profile_relationship_descriptors_rejected',
+        tier: 'profiles',
+        message: `${runResult.profiles.relationship_descriptor_rejections} unsupported model-generated relationship descriptor${runResult.profiles.relationship_descriptor_rejections === 1 ? '' : 's'} dropped; supported and canonical values were preserved.`,
       });
       const identityFailures = runResult.identityResolution.logical_review_items?.length ?? 0;
       if (identityFailures > 0) qualityReasons.push({
@@ -3913,10 +3926,11 @@ export function bindSettingsUI(ctrl) {
         count: reconciliation.integrity_audit.stale_entity_references.length,
         message: `${reconciliation.integrity_audit.stale_entity_references.length} entity reference${reconciliation.integrity_audit.stale_entity_references.length === 1 ? '' : 's'} remain after reconciliation.`,
       });
-      if ((reconciliation.integrity_audit?.text_identity_mismatches?.length ?? 0) > 0) qualityReasons.push({
+      const entityLinkRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
+      if ((entityLinkRepairs.actual_logical_mutations_this_run ?? 0) > 0) qualityReasons.push({
         code: 'text_identity_links_quarantined',
         tier: 'identity',
-        message: `${reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length} preexisting entity link${(reconciliation.integrity_audit.text_link_repair_counters?.unique_logical_links_repaired ?? reconciliation.integrity_audit.text_identity_mismatches.length) === 1 ? '' : 's'} ${reconciliation.integrity_audit.text_link_repair_counters?.physical_repair_observations > 1 ? `were repaired across ${reconciliation.integrity_audit.text_link_repair_counters.physical_repair_observations} store observations.` : 'was repaired.'}`,
+        message: `${entityLinkRepairs.actual_logical_mutations_this_run} ${entityLinkRepairs.preexisting_invalid_links_repaired ? 'preexisting' : 'origin-unknown'} entity link${entityLinkRepairs.actual_logical_mutations_this_run === 1 ? '' : 's'} ${entityLinkRepairs.physical_store_mutations_this_run > 1 ? `were repaired across ${entityLinkRepairs.physical_store_mutations_this_run} store mutations.` : 'was repaired.'}`,
       });
       const repairs = runResult.sessionExtraction;
       const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
