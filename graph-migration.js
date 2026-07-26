@@ -212,7 +212,7 @@ export function recordIdentityReviewCandidate(result, details = {}) {
  * @returns {Object} New memory object with graph fields applied.
  */
 export function applyGraphDefaults(mem) {
-  return {
+  const normalized = {
     ...mem,
     id: mem.id ?? generateMemoryId(),
     source_messages: mem.source_messages ?? [],
@@ -227,6 +227,28 @@ export function applyGraphDefaults(mem) {
     confidence: mem.confidence ?? 1.0,
     unconfirmed_since: mem.unconfirmed_since ?? 0,
   };
+  // Old serialized records can already contain entity IDs but predate
+  // per-link creation provenance. Backfill only an honest, stable legacy
+  // marker: no current-run timestamp or stage is fabricated.
+  if (Array.isArray(normalized.entities) && normalized.entities.length) {
+    const existing = normalized.entity_link_provenance ?? {};
+    normalized.entity_link_provenance = Object.fromEntries(normalized.entities.map((entityId) => [entityId, existing[entityId] ?? {
+      link_id: `legacy:${normalized.id}:${entityId}`,
+      link_created_run_id: null,
+      link_created_at: null,
+      link_created_stage: null,
+      link_created_store: null,
+      underlying_record_id: normalized.id,
+      source_candidate_id: null,
+      source_chunk_number: null,
+      source_message_indices: [],
+      source_extraction_type: null,
+      creation_method: 'unknown_legacy',
+      canonical_identity_at_creation: null,
+      entity_registry_id_at_creation: entityId,
+    }]));
+  }
+  return normalized;
 }
 
 // ---- Entity registry: long-term (extension_settings) -------------------------

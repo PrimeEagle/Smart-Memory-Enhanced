@@ -470,6 +470,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /operational_status/);
   assert.match(settings, /maintenance_actions/);
   assert.match(read('graph-migration.js'), /entity_link_provenance/);
+  assert.match(read('graph-migration.js'), /legacy:\$\{normalized\.id\}/);
+  assert.match(read('graph-migration.js'), /creation_method: 'unknown_legacy'/);
   assert.match(read('graph-migration.js'), /link_created_run_id/);
   assert.match(read('graph-migration.js'), /creation_method/);
   assert.match(read('longterm.js'), /entity_link_stage \?\?= 'longterm_extraction'/);
