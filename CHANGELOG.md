@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.39] - 2026-07-26
+
+### Fixed
+
+- Derived `final_integrity_status` from the post-repair final audit rather
+  than repaired audit observations, so completed maintenance no longer masks a
+  clean graph as degraded.
+- Added directional card-fact parsing for canonical relationship types,
+  including possessive card wording and daughter/son vocabulary.
+- Corrected shifted scene-boundary diagnostics to compare each candidate with
+  the same candidate across runs; cross-candidate hash comparison is now
+  explicitly informational only.
+
 ## [0.8.38] - 2026-07-26
 
 ### Fixed
