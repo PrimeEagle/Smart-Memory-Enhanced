@@ -549,6 +549,16 @@ test('grounded relationship parsing accepts explicit named possessive facts with
   assert.match(profiles, /Do not resolve pronouns here/);
 });
 
+test('profile relationship validation can use bounded raw-chat speaker context', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /extractRawChatRelationshipFacts/);
+  assert.match(profiles, /grounded_raw_chat_evidence/);
+  assert.ok(profiles.includes("you\\\\s+are|you're|you've\\\\s+been"));
+  assert.match(profiles, /nearestNamedRosterPeople/);
+  assert.match(profiles, /rawChatMessages = profileContext\.chat \?\? \[\]/);
+  assert.match(profiles, /relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages/);
+});
+
 test('entity repair status counts current durable mutations separately from repeated observations', () => {
   const ui = read('ui.js');
   const settings = read('settings.js');

@@ -21,10 +21,12 @@
  * Stateful character and world profiles regenerated from graph state.
  *
  * Profiles are compact snapshots injected every turn at low token cost as stable
- * anchors for the AI. They are regenerated from stored memories on a schedule -
- * not from raw chat - so they stay coherent even after compaction removes older
- * messages. Profile generation is a single sequential model call that produces
- * all three sections at once to minimise round-trips on local hardware.
+ * anchors for the AI. They are regenerated from stored memories on a schedule
+ * so they stay coherent even after compaction removes older messages. A tightly
+ * bounded raw-chat check may additionally validate explicit speaker-relative
+ * relationship facts; raw prose is never otherwise used as profile content.
+ * Profile generation is a single sequential model call that produces all three
+ * sections at once to minimise round-trips on local hardware.
  *
  * Stored in chatMetadata.smartMemoryEnhanced.profiles as a per-character map:
  *   { [characterName]: { character_state, world_state, relationship_matrix, generated_at } }
@@ -272,7 +274,81 @@ function extractGroundedRelationshipFacts(records = [], roster = []) {
   return facts;
 }
 
-export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = [], groundedRecords = []) {
+/**
+ * Finds the nearest explicitly named roster people before a contextual
+ * reference. This is intentionally lexical and local: no model output or
+ * long-range pronoun inference is allowed to create a durable relationship.
+ */
+function nearestNamedRosterPeople(text, beforeIndex, roster = [], limit = 320) {
+  const windowStart = Math.max(0, beforeIndex - limit);
+  const window = String(text ?? '').slice(windowStart, beforeIndex);
+  const mentions = [];
+  for (const entry of rosterEntries(roster)) {
+    const references = [...new Set([entry.canonicalName, ...(entry.aliases ?? [])].map((value) => String(value ?? '').trim()).filter(Boolean))];
+    let nearest = -1;
+    for (const reference of references) {
+      const matcher = new RegExp(`(^|[^a-z])${escapeRegExp(reference)}(?=$|[^a-z])`, 'ig');
+      let match;
+      while ((match = matcher.exec(window))) nearest = Math.max(nearest, match.index + match[1].length);
+    }
+    if (nearest >= 0) mentions.push({ entry, index: windowStart + nearest });
+  }
+  return mentions.sort((left, right) => right.index - left.index);
+}
+
+/**
+ * Extracts a small class of explicit contextual facts from the live chat.
+ * "You are her husband" is accepted only when "you" is the active persona
+ * and the nearest preceding named roster person supplies an unambiguous
+ * antecedent.  This keeps direct source evidence available even if memory
+ * extraction rewrites the original dialogue without speaker metadata.
+ */
+function extractRawChatRelationshipFacts(messages = [], roster = []) {
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
+  const possessiveFamilyStatusPattern = 'sibling|sister|brother|mother|father|daughter|son';
+  const persona = rosterEntries(roster).find((entry) => entry.source === 'user-persona' || entry.source_type === 'user-persona');
+  if (!persona) return [];
+  const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const facts = [];
+  const addFact = (subjectName, targetName, relationshipType, sourceIndex) => {
+    const subject = resolve(subjectName);
+    const target = resolve(targetName);
+    if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) return;
+    facts.push({
+      subject: subject.canonicalName.toLowerCase(),
+      target: target.canonicalName.toLowerCase(),
+      relationship_type: relationshipType.toLowerCase(),
+      relationship_type_source: 'grounded_raw_chat_evidence',
+      relationship_type_confidence_class: 'grounded',
+      relationship_type_source_ids: [`chat-message:${sourceIndex}`],
+      descriptors: [relationshipType.toLowerCase()],
+    });
+  };
+  for (const [arrayIndex, message] of (messages ?? []).entries()) {
+    if (message?.is_system) continue;
+    const text = String(message?.mes ?? '');
+    if (!text.trim()) continue;
+    const sourceIndex = Number.isInteger(message?.__sme_original_index) ? message.__sme_original_index : arrayIndex;
+    // Speaker-relative spouse/family wording: resolve "you" only to the
+    // active persona, then resolve her/his to the nearest earlier named card.
+    for (const match of text.matchAll(new RegExp(`\\b(?:you\\s+are|you're|you've\\s+been)\\s+(?:her|his)\\s+(${statusPattern})\\b`, 'ig'))) {
+      const target = nearestNamedRosterPeople(text, match.index, roster)
+        .find((candidate) => candidate.entry.canonicalName !== persona.canonicalName)?.entry;
+      if (target) addFact(persona.canonicalName, target.canonicalName, match[1], sourceIndex);
+    }
+    // Narrative form: "Kyler ... Taylor ... her sister". Both people must
+    // occur before the possessive phrase in the same bounded text window;
+    // the nearest name is the possessive target and the next is the relation.
+    for (const match of text.matchAll(new RegExp(`\\b(?:her|his)\\s+(${possessiveFamilyStatusPattern})\\b`, 'ig'))) {
+      const people = nearestNamedRosterPeople(text, match.index, roster)
+        .filter((candidate) => candidate.entry.canonicalName !== persona.canonicalName);
+      if (people.length >= 2) addFact(people[1].entry.canonicalName, people[0].entry.canonicalName, match[1], sourceIndex);
+    }
+  }
+  return facts;
+}
+
+export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = [], groundedRecords = [], rawChatMessages = []) {
   const profiles = { ...parsed };
   const historyPairs = Object.values(relationshipHistory ?? {})
     .map((state) => ({
@@ -286,7 +362,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     .filter((pair) => pair.subject && pair.target && (pair.descriptors.length || pair.relationship_type));
   const cardPairs = extractCardRelationshipFacts(roster);
   const groundedPairs = extractGroundedRelationshipFacts(groundedRecords, roster);
-  if (!historyPairs.length && !cardPairs.length && !groundedPairs.length) {
+  const rawChatPairs = extractRawChatRelationshipFacts(rawChatMessages, roster);
+  if (!historyPairs.length && !cardPairs.length && !groundedPairs.length && !rawChatPairs.length) {
     const lines = String(profiles.relationship_matrix ?? '').split('\n').filter(Boolean);
     const descriptor_terminal_outcomes = lines.flatMap((line) => String(line).split(':').slice(1).join(':').split(',').map((value) => value.trim()).filter(Boolean).map((descriptor) => ({
       relationship_target: String(line).split(':')[0]?.trim().toLowerCase() || null,
@@ -324,7 +401,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
-    const pair = cardPair ?? historyPair ?? groundedPair;
+    const rawChatPair = rawChatPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
+    const pair = cardPair ?? historyPair ?? groundedPair ?? rawChatPair;
     if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
       rejected.push(line);
       const outcome = { relationship_target: entity, generated_descriptor: status, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: 'rejected_malformed', reason_code: 'invalid_relationship_label', normalization_rule: null };
@@ -405,7 +483,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   // A model may put a legally established relationship in the matrix but still
   // call it "unresolved" in the free-form state fields.  Do not preserve that
   // contradiction when the same counterpart has an exact spouse descriptor.
-  const establishedPartners = [cardPairs, historyPairs, groundedPairs]
+  const establishedPartners = [cardPairs, historyPairs, groundedPairs, rawChatPairs]
     .flat()
     .filter((pair) => pair.subject === self || pair.target === self)
     .filter((pair) => pair.descriptors.some((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor)))
@@ -489,7 +567,9 @@ export async function generateProfiles(characterName, abortCheck = null, options
     .filter((e) => e.type === 'character' || e.type === 'place')
     .map((e) => ({ name: e.name, type: e.type }));
 
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const profileContext = getContext();
+  const roster = buildCanonicalCharacterRoster(profileContext);
+  const rawChatMessages = profileContext.chat ?? [];
   const profileCardId = roster.characters?.find((entry) => entry.canonicalName === characterName)?.id ?? null;
   const emitTerminal = (detail = {}) => options.onTerminal?.({
     profile_identity: characterName,
@@ -657,10 +737,10 @@ export async function generateProfiles(characterName, abortCheck = null, options
     // authority for durable relationship labels such as spouse or ex-spouse.
     // Only directly grounded memory records, card facts, and Relationship
     // History may validate the profile relationship matrix.
-    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster, groundedRelationshipRecords);
+    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages);
     parsed = relationshipCheck.profiles;
     if (relationshipCheck.rejected.length) {
-      const priorRelationshipCheck = retainKnownProfileRelationships(priorProfiles ?? {}, characterName, relationshipHistory, roster, groundedRelationshipRecords);
+      const priorRelationshipCheck = retainKnownProfileRelationships(priorProfiles ?? {}, characterName, relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages);
       const priorMatrix = String(priorRelationshipCheck.profiles.relationship_matrix ?? '').trim();
       if (priorMatrix) {
         parsed.relationship_matrix = priorMatrix;
