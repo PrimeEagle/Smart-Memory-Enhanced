@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.40] - 2026-07-26
+
+### Fixed
+
+- Normalized both bracketed and inline relationship confidence annotations
+  before validating profile descriptors, preventing valid descriptors from
+  being rejected solely because a local model appended confidence text.
+- Expanded grounded relationship parsing for explicit named possessive facts,
+  such as “Kyler is Taylor's sister” and “Taylor's sister is Kyler,” while
+  retaining source-memory provenance for the resulting canonical type.
+- Added a bounded raw-chat relationship-evidence check for speaker-relative
+  statements such as “You're her husband.” It resolves “you” only to the
+  active persona and “her/his” only to nearby explicit roster names, records
+  the source message, and never uses broad pronoun guessing or raw chat as
+  general profile content.
+
+### Tests
+
+- Added regression coverage for named possessive facts and bounded
+  speaker-relative profile relationship validation.
+
 ## [0.8.39] - 2026-07-26
 
 ### Fixed
