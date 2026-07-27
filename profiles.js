@@ -304,16 +304,13 @@ function nearestNamedRosterPeople(text, beforeIndex, roster = [], limit = 320) {
  * extraction rewrites the original dialogue without speaker metadata.
  */
 function extractRawChatRelationshipFacts(messages = [], roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
-  const possessiveFamilyStatusPattern = 'sibling|sister|brother|mother|father|daughter|son';
+  // This speaker-relative form has an explicit subject (the active persona),
+  // but its possessive target can still be ambiguous in a group transcript.
+  // Limit it to spouse/partner roles; family roles require named evidence.
+  const speakerRelativeSpousePattern = 'husband|wife|ex-husband|ex-wife|partner';
   const persona = rosterEntries(roster).find((entry) => entry.source === 'user-persona' || entry.source_type === 'user-persona');
   if (!persona) return [];
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
-  const sharesCanonicalSurname = (left, right) => {
-    const leftParts = String(left ?? '').trim().toLowerCase().split(/\s+/);
-    const rightParts = String(right ?? '').trim().toLowerCase().split(/\s+/);
-    return leftParts.length > 1 && rightParts.length > 1 && leftParts.at(-1) === rightParts.at(-1);
-  };
   const facts = [];
   const addFact = (subjectName, targetName, relationshipType, sourceIndex) => {
     const subject = resolve(subjectName);
@@ -334,23 +331,18 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
     const text = String(message?.mes ?? '');
     if (!text.trim()) continue;
     const sourceIndex = Number.isInteger(message?.__sme_original_index) ? message.__sme_original_index : arrayIndex;
-    // Speaker-relative spouse/family wording: resolve "you" only to the
+    // Speaker-relative spouse wording: resolve "you" only to the
     // active persona, then resolve her/his to the nearest earlier named card.
-    for (const match of text.matchAll(new RegExp(`\\b(?:you\\s+are|you're|you've\\s+been)\\s+(?:her|his)\\s+(${statusPattern})\\b`, 'ig'))) {
+    for (const match of text.matchAll(new RegExp(`\\b(?:you\\s+are|you're|you've\\s+been)\\s+(?:her|his)\\s+(${speakerRelativeSpousePattern})\\b`, 'ig'))) {
       const target = nearestNamedRosterPeople(text, match.index, roster)
         .find((candidate) => candidate.entry.canonicalName !== persona.canonicalName)?.entry;
       if (target) addFact(persona.canonicalName, target.canonicalName, match[1], sourceIndex);
     }
-    // Narrative form: "Kyler ... Taylor ... her sister". Both people must
-    // occur before the possessive phrase in the same bounded text window;
-    // the nearest name is the possessive target and the next is the relation.
-    for (const match of text.matchAll(new RegExp(`\\b(?:her|his)\\s+(${possessiveFamilyStatusPattern})\\b`, 'ig'))) {
-      const people = nearestNamedRosterPeople(text, match.index, roster)
-        .filter((candidate) => candidate.entry.canonicalName !== persona.canonicalName);
-      if (people.length >= 2 && sharesCanonicalSurname(people[1].entry.canonicalName, people[0].entry.canonicalName)) {
-        addFact(people[1].entry.canonicalName, people[0].entry.canonicalName, match[1], sourceIndex);
-      }
-    }
+    // Do not turn possessive family pronouns (for example "her sister") into
+    // durable facts. Their antecedent can be clear to a reader yet still be
+    // ambiguous in a group transcript, especially across differing married
+    // surnames. Explicit named family statements are handled separately by
+    // the named grounded/card parsers above.
   }
   return facts;
 }
