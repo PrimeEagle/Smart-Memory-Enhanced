@@ -286,7 +286,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // Accept the complete valid confidence range, including 1.0. Leaving a
     // trailing annotation turns an otherwise exact descriptor (for example
     // "open [confidence: 1.0]") into a false mismatch.
-    const status = match[2].replace(/\[confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]/ig, '').trim().toLowerCase();
+    const status = match[2]
+      .replace(/\[confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]/ig, '')
+      .replace(/\s*;\s*confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)(?=\s*(?:,|$))/ig, '')
+      .trim().toLowerCase();
     const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
