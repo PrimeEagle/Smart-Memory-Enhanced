@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.44] - 2026-07-27
+
+### Added
+
+- Added **Allocate Budgets From Current Usage** in Advanced Configuration. It
+  sizes each currently injected memory tier to its visible token use plus 10%
+  headroom, rounds to 50-token steps, includes Short-Term Memory, and then
+  immediately re-injects the tiers.
+
+### Changed
+
+- Indented expanded memory-section contents so controls, summaries, and lists
+  are visually distinct from neighboring accordion headers.
+- Renamed Short-Term Memory's ambiguous **Response length** control to
+  **Summary token budget**, with an explanation of its generation and
+  injection-cap behavior.
+- Reset Budgets now also restores the Short-Term summary budget.
+
+### Fixed
+
+- Changing the Short-Term summary budget now re-injects the current summary
+  and refreshes its trim indicator immediately, rather than leaving a stale
+  red outline from the old budget.
+
+### Tests
+
+- Added regression coverage for immediate Short-Term trim refresh and manual
+  usage-based allocation.
+
 ## [0.8.43] - 2026-07-27
 
 ### Fixed
