@@ -230,12 +230,43 @@ function extractGroundedRelationshipFacts(records = [], roster = []) {
   const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
+  const addFact = (record, subjectName, targetName, relationshipType) => {
+    const subject = resolve(subjectName);
+    const target = resolve(targetName);
+    if (subject.status !== 'resolved' || target.status !== 'resolved') return;
+    // A grounded memory record can be traced back to its stored evidence.
+    // Do not resolve pronouns here: relationship types are durable facts and
+    // must have two explicitly named, unambiguous participants.
+    const sourceIds = [
+      ...(Array.isArray(record?.source_message_ids) ? record.source_message_ids : []),
+      ...(Array.isArray(record?.source_memory_ids) ? record.source_memory_ids : []),
+      record?.source_message_id,
+      record?.source_memory_id,
+      record?.id,
+    ].filter(Boolean).map(String);
+    facts.push({
+      subject: subject.canonicalName.toLowerCase(),
+      target: target.canonicalName.toLowerCase(),
+      relationship_type: relationshipType.toLowerCase(),
+      relationship_type_source: 'grounded_source_evidence',
+      relationship_type_confidence_class: 'grounded',
+      relationship_type_source_ids: [...new Set(sourceIds)],
+      descriptors: [relationshipType.toLowerCase()],
+    });
+  };
   for (const record of records) {
     const text = String(record?.content ?? record?.summary ?? '');
     for (const match of text.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
-      const subject = resolve(match[1]);
-      const target = resolve(match[3]);
-      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), descriptors: [match[2].toLowerCase()] });
+      addFact(record, match[1], match[3], match[2]);
+    }
+    // Direct possessive forms are equally explicit when both names appear:
+    // "Kyler is Taylor's sister" and "Taylor's sister is Kyler". These
+    // occur naturally in grounded extraction output from ordinary dialogue.
+    for (const match of text.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\b`, 'gi'))) {
+      addFact(record, match[1], match[2], match[3]);
+    }
+    for (const match of text.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\s+(?:is|was)\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
+      addFact(record, match[3], match[1], match[2]);
     }
   }
   return facts;

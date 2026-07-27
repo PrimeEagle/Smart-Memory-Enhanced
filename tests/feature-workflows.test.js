@@ -540,6 +540,15 @@ test('profile relationship diagnostics retain terminal descriptor and field outc
   assert.match(settings, /unsupported model-generated relationship field/);
 });
 
+test('grounded relationship parsing accepts explicit named possessive facts with provenance', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /grounded_source_evidence/);
+  assert.match(profiles, /relationship_type_source_ids/);
+  assert.match(profiles, /Kyler is Taylor's sister/);
+  assert.match(profiles, /Taylor's sister is Kyler/);
+  assert.match(profiles, /Do not resolve pronouns here/);
+});
+
 test('entity repair status counts current durable mutations separately from repeated observations', () => {
   const ui = read('ui.js');
   const settings = read('settings.js');
