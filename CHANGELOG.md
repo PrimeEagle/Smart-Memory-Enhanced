@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.43] - 2026-07-27
+
+### Fixed
+
+- Removed surname-based family-role inference. The extension no longer assumes
+  that relatives share a surname, so married couples and relatives who changed
+  names are handled without a brittle naming rule.
+- Stopped promoting possessive family pronouns such as `her sister` into
+  durable relationship facts. Family roles now require explicit named card or
+  grounded-memory evidence, preventing a pronoun in group-chat prose from
+  assigning a false family relationship to another participant.
+- Restricted the bounded speaker-relative raw-chat rule to spouse/partner
+  roles such as `You're her husband`; it continues to retain direct source
+  provenance while no longer inferring family roles from contextual pronouns.
+
+### Tests
+
+- Updated relationship-evidence coverage to enforce the no-pronoun-family-role
+  contract.
+
 ## [0.8.42] - 2026-07-27
 
 ### Fixed
