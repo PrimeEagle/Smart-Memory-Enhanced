@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.41] - 2026-07-27
+
+### Fixed
+
+- Merged same-pair relationship evidence during profile validation, so an
+  existing descriptor-only Relationship History record no longer hides a
+  grounded direct canonical type such as `husband` or `sister`.
+- Normalized inline confidence annotations per comma-separated descriptor,
+  preventing values such as `admiring; confidence: 0.98` from being rejected
+  when `admiring` is an approved descriptor.
+
+### Tests
+
+- Added regression coverage for merging typed direct evidence with
+  descriptor-only history and for token-level confidence cleanup.
+
 ## [0.8.40] - 2026-07-26
 
 ### Fixed
