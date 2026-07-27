@@ -355,15 +355,18 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     if (!pairs.length) return null;
     // A descriptor-only approved history must not hide a more specific direct
     // type from the same pair (for example raw chat proving "husband"). Keep
-    // all supported descriptors while preserving the strongest typed source.
+    // supported descriptors while preserving the strongest typed source.
     const typed = pairs.find((pair) => pair.relationship_type);
+    const relationshipRoleWords = new Set(['husband', 'wife', 'ex-husband', 'ex-wife', 'partner', 'sibling', 'sister', 'brother', 'mother', 'father', 'daughter', 'son', 'friend', 'roommate']);
+    const directRoleWords = new Set(pairs.map((pair) => pair.relationship_type).filter(Boolean));
     return {
       ...pairs[0],
       relationship_type: typed?.relationship_type ?? null,
       relationship_type_source: typed?.relationship_type_source ?? pairs[0].relationship_type_source ?? null,
       relationship_type_confidence_class: typed?.relationship_type_confidence_class ?? pairs[0].relationship_type_confidence_class ?? null,
       relationship_type_source_ids: typed?.relationship_type_source_ids ?? pairs[0].relationship_type_source_ids ?? [],
-      descriptors: [...new Set(pairs.flatMap((pair) => pair.descriptors ?? []))],
+      descriptors: [...new Set(pairs.flatMap((pair) => pair.descriptors ?? []))]
+        .filter((descriptor) => !relationshipRoleWords.has(descriptor) || directRoleWords.has(descriptor)),
     };
   };
   const historyPairs = Object.values(relationshipHistory ?? {})
@@ -473,7 +476,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
         // Profiles are a guarded projection, not a relationship-history
         // editor. Preserve the complete authoritative set and merely record
         // which model-proposed descriptors were accepted or rejected.
-        fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? pair.descriptors.find((descriptor) => ['husband', 'wife', 'sister', 'brother', 'mother', 'father'].includes(descriptor)) ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: accepted, rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: rejectedDescriptors.length ? 'saved_with_partial_descriptors' : 'saved_with_all_descriptors' });
+        // A descriptor such as "sister" emitted by the relationship model is
+        // not a canonical family type by itself. Only a typed card, grounded
+        // source, or explicitly typed approved record may establish that role.
+        fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: accepted, rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: rejectedDescriptors.length ? 'saved_with_partial_descriptors' : 'saved_with_all_descriptors' });
         return `${match[1].trim()}: ${pair.descriptors.join(', ')}`;
       }
       fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
@@ -483,7 +489,9 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // “Partner” is weaker than an established spouse status. Normalize the
     // generated synonym only when the canonical relationship evidence gives a
     // precise current descriptor; never infer a stronger relationship.
-    const precise = pair?.descriptors.find((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor));
+    const precise = ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(pair?.relationship_type)
+      ? pair.relationship_type
+      : null;
     if (precise && /\b(?:partner|family|character|person)\b/i.test(status)) {
       normalized++;
       const outcome = { relationship_target: entity, generated_descriptor: status, normalized_descriptor: precise, authoritative_descriptors: pair.descriptors, disposition: 'accepted_normalized_synonym', reason_code: 'controlled_relationship_type_synonym', normalization_rule: 'controlled_relationship_type_synonym' };
@@ -508,7 +516,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const establishedPartners = [cardPairs, historyPairs, groundedPairs, rawChatPairs]
     .flat()
     .filter((pair) => pair.subject === self || pair.target === self)
-    .filter((pair) => pair.descriptors.some((descriptor) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(descriptor)))
+    .filter((pair) => ['husband', 'wife', 'ex-husband', 'ex-wife'].includes(pair.relationship_type))
     .map((pair) => pair.subject === self ? pair.target : pair.subject);
   const contradictory = /\b(?:unresolved|uncertain|pending|unknown)\b/i;
   const relationshipIssue = /\b(?:divorc(?:e|ed|ing)|marri(?:age|ed)|spous(?:e|al)|husband|wife|partner)\b/i;

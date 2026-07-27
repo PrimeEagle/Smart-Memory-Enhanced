@@ -567,6 +567,15 @@ test('profile relationship validation merges a typed direct fact with descriptor
   assert.match(profiles, /Normalize per token/);
 });
 
+test('model-generated relationship descriptors cannot create a canonical family type', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /not a canonical family type by itself/);
+  assert.match(profiles, /canonical_relationship_type: pair\.relationship_type \?\? null/);
+  assert.match(profiles, /includes\(pair\?\.relationship_type\)/);
+  assert.match(profiles, /relationshipRoleWords/);
+  assert.match(profiles, /directRoleWords\.has\(descriptor\)/);
+});
+
 test('entity repair status counts current durable mutations separately from repeated observations', () => {
   const ui = read('ui.js');
   const settings = read('settings.js');
