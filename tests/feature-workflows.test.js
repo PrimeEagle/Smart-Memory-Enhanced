@@ -922,7 +922,19 @@ test('changing the Short-Term Memory budget reinjects the current summary before
     settings.indexOf("$('#sme_compaction_template')"),
   );
   assert.match(budgetHandler, /injectSummary\(\$\('#sme_current_summary'\)\.val\(\)\)/);
-  assert.ok(budgetHandler.indexOf('injectSummary') < budgetHandler.indexOf('updateTokenDisplay'));
+  assert.match(budgetHandler, /injectSummary\(\$\('#sme_current_summary'\)\.val\(\)\);\s*updateTokenDisplay\(\);/);
+});
+
+test('manual budget allocation uses visible injected usage plus headroom and includes Short-Term Memory', () => {
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  assert.match(settings, /function allocateBudgetsFromCurrentUsage/);
+  assert.match(settings, /getTierTrimStats\(tier\.promptKey\)\?\.injected/);
+  assert.match(settings, /roundToFifty\(injected \* 1\.1\)/);
+  assert.match(settings, /getTierTrimStats\(PROMPT_KEY_SHORT\)\?\.injected/);
+  assert.match(settings, /roundToFifty\(shortTermInjected \* 1\.1\)/);
+  assert.match(settings, /#sme_allocate_budgets_from_usage/);
+  assert.match(html, /Allocate Budgets From Current Usage/);
 });
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {

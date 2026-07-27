@@ -45,6 +45,7 @@ import {
   META_KEY,
   PROMPT_KEY_LONG,
   PROMPT_KEY_SESSION,
+  PROMPT_KEY_SHORT,
   PROMPT_KEY_SCENES,
   PROMPT_KEY_ARCS,
   PROMPT_KEY_PROFILES,
@@ -255,7 +256,7 @@ import {
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
-import { getTierHWStats, clearTierStats } from './trim-stats.js';
+import { getTierHWStats, getTierTrimStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
 import {
   setStatusMessage,
@@ -731,6 +732,59 @@ const TUNABLE_TIERS = [
 ];
 
 /**
+ * Sets each currently used injection tier to its visible current usage plus
+ * modest headroom. This is intentionally a one-shot manual action: unlike
+ * auto-tune it does not consult high-water marks or redistribute a total cap.
+ *
+ * @param {string|null} characterName - Active character (or group selection).
+ */
+function allocateBudgetsFromCurrentUsage(characterName) {
+  const settings = extension_settings[MODULE_NAME];
+  const roundToFifty = (value) => Math.ceil(value / 50) * 50;
+  let updatedTiers = 0;
+
+  for (const tier of TUNABLE_TIERS) {
+    // The token mix bar represents injected content, which is the amount the
+    // user asked to size from. Keep an unused tier's deliberate setting intact.
+    const injected = getTierTrimStats(tier.promptKey)?.injected ?? 0;
+    if (!injected) continue;
+    const budget = Math.min(4000, Math.max(100, roundToFifty(injected * 1.1)));
+    if (settings[tier.setting] === budget) continue;
+    settings[tier.setting] = budget;
+    $(`#${tier.slider}`).val(budget);
+    $(`#${tier.display}`).text(tier.fmt(budget));
+    updatedTiers++;
+  }
+
+  // Short-term is not one of the tunable memory tiers because it normally
+  // self-compacts, but its visible injected summary belongs in this explicit
+  // user-requested allocation action.
+  const shortTermInjected = getTierTrimStats(PROMPT_KEY_SHORT)?.injected ?? 0;
+  if (shortTermInjected) {
+    const budget = Math.min(3000, Math.max(500, roundToFifty(shortTermInjected * 1.1)));
+    if (settings.compaction_response_length !== budget) {
+      settings.compaction_response_length = budget;
+      $('#sme_compaction_response_length').val(budget);
+      $('#sme_compaction_response_length_value').text(budget);
+      updatedTiers++;
+    }
+  }
+
+  if (!updatedTiers) {
+    toastr.info('No currently injected memory tiers needed a budget update.', 'Smart Memory Enhanced');
+    return;
+  }
+
+  // Keep the simple-mode slider truthful if the user switches modes later.
+  const total = totalBudgetFromSettings(settings);
+  $('#sme_total_budget').val(total);
+  $('#sme_total_budget_value').text(total);
+  saveSettingsDebounced();
+  reinjectAfterBudgetChange(characterName);
+  toastr.success(`Allocated ${updatedTiers} budget${updatedTiers === 1 ? '' : 's'} from current usage + 10%.`, 'Smart Memory Enhanced');
+}
+
+/**
  * Redistributes the per-tier token budget based on observed demand.
  * Tiers reporting unused headroom give it to tiers that are trimming.
  * The sum of all tier budgets never exceeds the current configured total.
@@ -1083,6 +1137,7 @@ export function bindSettingsUI(ctrl) {
   $('#sme_reset_budgets').on('click', function () {
     const cur = extension_settings[MODULE_NAME];
     const budgetKeys = [
+      'compaction_response_length',
       'longterm_inject_budget',
       'session_inject_budget',
       'scene_inject_budget',
@@ -1101,12 +1156,18 @@ export function bindSettingsUI(ctrl) {
       $(`#${slider}`).val(cur[setting]);
       $(`#${display}`).text(fmt(cur[setting]));
     }
+    $('#sme_compaction_response_length').val(cur.compaction_response_length);
+    $('#sme_compaction_response_length_value').text(cur.compaction_response_length);
     // Sync the simple-mode total slider.
     const total = totalBudgetFromSettings(cur);
     $('#sme_total_budget').val(total);
     $('#sme_total_budget_value').text(total);
     saveSettingsDebounced();
     reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
+  });
+
+  $('#sme_allocate_budgets_from_usage').on('click', function () {
+    allocateBudgetsFromCurrentUsage(ctrl.getSelectedCharacterName());
   });
 
   // Apply initial mode on load.
