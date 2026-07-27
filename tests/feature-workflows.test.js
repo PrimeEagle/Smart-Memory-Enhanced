@@ -555,6 +555,7 @@ test('profile relationship validation can use bounded raw-chat speaker context',
   assert.match(profiles, /grounded_raw_chat_evidence/);
   assert.ok(profiles.includes("you\\\\s+are|you're|you've\\\\s+been"));
   assert.match(profiles, /nearestNamedRosterPeople/);
+  assert.match(profiles, /sharesCanonicalSurname/);
   assert.match(profiles, /rawChatMessages = profileContext\.chat \?\? \[\]/);
   assert.match(profiles, /relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages/);
 });

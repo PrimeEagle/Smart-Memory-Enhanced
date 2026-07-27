@@ -309,6 +309,11 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
   const persona = rosterEntries(roster).find((entry) => entry.source === 'user-persona' || entry.source_type === 'user-persona');
   if (!persona) return [];
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const sharesCanonicalSurname = (left, right) => {
+    const leftParts = String(left ?? '').trim().toLowerCase().split(/\s+/);
+    const rightParts = String(right ?? '').trim().toLowerCase().split(/\s+/);
+    return leftParts.length > 1 && rightParts.length > 1 && leftParts.at(-1) === rightParts.at(-1);
+  };
   const facts = [];
   const addFact = (subjectName, targetName, relationshipType, sourceIndex) => {
     const subject = resolve(subjectName);
@@ -342,7 +347,9 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
     for (const match of text.matchAll(new RegExp(`\\b(?:her|his)\\s+(${possessiveFamilyStatusPattern})\\b`, 'ig'))) {
       const people = nearestNamedRosterPeople(text, match.index, roster)
         .filter((candidate) => candidate.entry.canonicalName !== persona.canonicalName);
-      if (people.length >= 2) addFact(people[1].entry.canonicalName, people[0].entry.canonicalName, match[1], sourceIndex);
+      if (people.length >= 2 && sharesCanonicalSurname(people[1].entry.canonicalName, people[0].entry.canonicalName)) {
+        addFact(people[1].entry.canonicalName, people[0].entry.canonicalName, match[1], sourceIndex);
+      }
     }
   }
   return facts;
