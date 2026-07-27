@@ -40,7 +40,22 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
       current_gate_reason: current?.gate_reason_code ?? null,
       previous_terminal_break_disposition: prior?.terminal_break_disposition ?? null,
       current_terminal_break_disposition: current?.terminal_break_disposition ?? null,
-      context_hash_equal: previousIndex !== null && currentIndex !== null && previousContextHashes.get(previousIndex) === currentContextHashes.get(currentIndex),
+      // For shifted boundaries, compare each candidate to itself across runs;
+      // comparing previous index 70 directly to current index 72 is not a
+      // stability signal because they represent different candidate windows.
+      previous_candidate_context_stable_across_runs: previousIndex !== null
+        && previousContextHashes.has(previousIndex)
+        && currentContextHashes.has(previousIndex)
+        && previousContextHashes.get(previousIndex) === currentContextHashes.get(previousIndex),
+      current_candidate_context_stable_across_runs: currentIndex !== null
+        && previousContextHashes.has(currentIndex)
+        && currentContextHashes.has(currentIndex)
+        && previousContextHashes.get(currentIndex) === currentContextHashes.get(currentIndex),
+      previous_candidate_prompt_stable_across_runs: previousIndex !== null && previous.prompt_shape_hash === currentAudit.prompt_shape_hash,
+      current_candidate_prompt_stable_across_runs: currentIndex !== null && previous.prompt_shape_hash === currentAudit.prompt_shape_hash,
+      cross_candidate_context_equal: previousIndex !== null && currentIndex !== null
+        && previousContextHashes.has(previousIndex) && currentContextHashes.has(currentIndex)
+        && previousContextHashes.get(previousIndex) === currentContextHashes.get(currentIndex),
       prompt_hash_equal: previous.prompt_shape_hash === currentAudit.prompt_shape_hash,
       model_equal: previous.model_identifier === currentAudit.model_identifier && previous.connection_profile_identifier === currentAudit.connection_profile_identifier,
       settings_equal: JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),

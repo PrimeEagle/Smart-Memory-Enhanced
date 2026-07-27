@@ -23,4 +23,6 @@ test('scene comparison matches nearest unmatched boundary within tolerance', () 
   assert.equal(comparison.boundary_positions_materially_stable, true);
   assert.equal(comparison.decision_pipeline_stable, true);
   assert.equal(comparison.marginal_boundary_comparison[0].classification, 'shifted');
+  assert.equal(comparison.marginal_boundary_comparison[0].cross_candidate_context_equal, false);
+  assert.equal(comparison.marginal_boundary_comparison[0].previous_candidate_context_stable_across_runs, false);
 });
