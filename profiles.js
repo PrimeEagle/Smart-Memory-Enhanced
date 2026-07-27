@@ -350,6 +350,22 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
 
 export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = [], groundedRecords = [], rawChatMessages = []) {
   const profiles = { ...parsed };
+  const mergePairEvidence = (...candidates) => {
+    const pairs = candidates.filter(Boolean);
+    if (!pairs.length) return null;
+    // A descriptor-only approved history must not hide a more specific direct
+    // type from the same pair (for example raw chat proving "husband"). Keep
+    // all supported descriptors while preserving the strongest typed source.
+    const typed = pairs.find((pair) => pair.relationship_type);
+    return {
+      ...pairs[0],
+      relationship_type: typed?.relationship_type ?? null,
+      relationship_type_source: typed?.relationship_type_source ?? pairs[0].relationship_type_source ?? null,
+      relationship_type_confidence_class: typed?.relationship_type_confidence_class ?? pairs[0].relationship_type_confidence_class ?? null,
+      relationship_type_source_ids: typed?.relationship_type_source_ids ?? pairs[0].relationship_type_source_ids ?? [],
+      descriptors: [...new Set(pairs.flatMap((pair) => pair.descriptors ?? []))],
+    };
+  };
   const historyPairs = Object.values(relationshipHistory ?? {})
     .map((state) => ({
       subject: String(state?.subject_name ?? '').toLowerCase(),
@@ -402,7 +418,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const rawChatPair = rawChatPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
-    const pair = cardPair ?? historyPair ?? groundedPair ?? rawChatPair;
+    const pair = mergePairEvidence(cardPair, historyPair, rawChatPair, groundedPair);
     if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
       rejected.push(line);
       const outcome = { relationship_target: entity, generated_descriptor: status, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: 'rejected_malformed', reason_code: 'invalid_relationship_label', normalization_rule: null };
@@ -417,7 +433,13 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // wording without permitting fuzzy semantic approval. Every replacement
     // must still be present in the authoritative pair vocabulary.
     const descriptorSynonyms = { appreciative: 'grateful', trusting: 'open', caring: 'affectionate', reassuring: 'supportive' };
-    const descriptorTokens = status.split(',').map((value) => value.trim()).filter(Boolean);
+    const descriptorTokens = status.split(',').map((value) => value
+      // Local models often attach a confidence score to only the final
+      // comma-separated descriptor. Normalize per token so the annotation
+      // cannot survive a whole-line formatting variation.
+      .replace(/\s*;\s*confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\s*$/ig, '')
+      .replace(/\s*\[confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]\s*$/ig, '')
+      .trim()).filter(Boolean);
     // Exact authoritative vocabulary always wins. A synonym is only a fallback
     // for a token that is not already an approved descriptor (for example,
     // authoritative "trusting" must never be rewritten to "open").

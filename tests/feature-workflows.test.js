@@ -256,7 +256,7 @@ test('profile relationship descriptors are independently validated against estab
   assert.match(profiles, /pair\.descriptors\.join\(', '\)/);
   assert.match(profiles, /extractCardRelationshipFacts/);
   assert.match(profiles, /extractGroundedRelationshipFacts/);
-  assert.match(profiles, /const pair = cardPair \?\? historyPair \?\? groundedPair/);
+  assert.match(profiles, /mergePairEvidence\(cardPair, historyPair, rawChatPair, groundedPair\)/);
   assert.match(profiles, /priorRelationshipCheck/);
   assert.match(profiles, /relationship_matrix: ''/);
   assert.match(profiles, /never an\s+\/\/ authority for durable relationship labels/);
@@ -557,6 +557,14 @@ test('profile relationship validation can use bounded raw-chat speaker context',
   assert.match(profiles, /nearestNamedRosterPeople/);
   assert.match(profiles, /rawChatMessages = profileContext\.chat \?\? \[\]/);
   assert.match(profiles, /relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages/);
+});
+
+test('profile relationship validation merges a typed direct fact with descriptor-only history', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /mergePairEvidence/);
+  assert.match(profiles, /descriptor-only approved history must not hide/);
+  assert.match(profiles, /cardPair, historyPair, rawChatPair, groundedPair/);
+  assert.match(profiles, /Normalize per token/);
 });
 
 test('entity repair status counts current durable mutations separately from repeated observations', () => {
