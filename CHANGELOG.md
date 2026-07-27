@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.42] - 2026-07-27
+
+### Fixed
+
+- Prevented descriptor-only Relationship History terms such as `sister` or
+  `husband` from being treated as canonical family/spouse roles. Those roles
+  now require a direct typed card, grounded-memory, raw-chat, or explicitly
+  typed approved source for the same pair.
+- Preserved ordinary supported relationship descriptors while filtering
+  ungrounded role words, preventing false family labels from being saved into
+  profile relationship matrices.
+
+### Tests
+
+- Added regression coverage ensuring model-generated relationship descriptors
+  cannot create canonical relationship roles.
+
 ## [0.8.41] - 2026-07-27
 
 ### Fixed
