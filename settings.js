@@ -1847,6 +1847,11 @@ export function bindSettingsUI(ctrl) {
       const val = parseInt($(this).val(), 10);
       extension_settings[MODULE_NAME].compaction_response_length = val;
       $('#sme_compaction_response_length_value').text(val);
+      // The response length is also the injected-summary budget. Reapply the
+      // already-saved summary immediately so its trim state and token bar do
+      // not continue showing the previous slider value.
+      injectSummary($('#sme_current_summary').val());
+      updateTokenDisplay();
       saveSettingsDebounced();
     });
   $('#sme_compaction_response_length_value').text(s.compaction_response_length);

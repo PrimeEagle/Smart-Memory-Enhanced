@@ -915,6 +915,16 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.ok(freshStart.indexOf('injectRelationshipHistory(characterName)') < freshStart.indexOf('updateTokenDisplay()'));
 });
 
+test('changing the Short-Term Memory budget reinjects the current summary before refreshing token usage', () => {
+  const settings = read('settings.js');
+  const budgetHandler = settings.slice(
+    settings.indexOf("$('#sme_compaction_response_length')"),
+    settings.indexOf("$('#sme_compaction_template')"),
+  );
+  assert.match(budgetHandler, /injectSummary\(\$\('#sme_current_summary'\)\.val\(\)\)/);
+  assert.ok(budgetHandler.indexOf('injectSummary') < budgetHandler.indexOf('updateTokenDisplay'));
+});
+
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
   assert.match(graph, /rejected_unsafe_merges/);
