@@ -662,6 +662,17 @@ test('entity repair status counts current durable mutations separately from repe
   assert.match(settings, /entityLinkRepairs\.actual_logical_mutations_this_run/);
 });
 
+test('developer tooling exposes a provider-free canonical idempotence check', () => {
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  assert.match(settings, /forceIdempotenceCheck/);
+  assert.match(settings, /developer_manual_command/);
+  assert.match(settings, /#sme_run_idempotence_check/);
+  assert.match(settings, /developer_idempotence_check/);
+  assert.match(html, /id="sme_run_idempotence_check"/);
+  assert.match(html, /without provider calls/);
+});
+
 test('scene provider attempts use globally unique parented request lineage and reconciled counters', () => {
   const scenes = read('scenes.js');
   assert.match(scenes, /next_attempt_id/);

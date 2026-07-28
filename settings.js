@@ -241,7 +241,7 @@ async function runStagedChatCleanup(context, mutate) {
  * before diagnostics and the one final chat save, so a failure rolls the full
  * final phase back rather than committing a partly reconciled graph.
  */
-async function runFinalIntegrityReconciliation(characterName) {
+async function runFinalIntegrityReconciliation(characterName, { forceIdempotenceCheck = false } = {}) {
   const startedAt = performance.now();
   const firstPassInputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
   const reconciliation = await reconcileCanonicalEntities(characterName);
@@ -267,9 +267,9 @@ async function runFinalIntegrityReconciliation(characterName) {
   const firstPassOutputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
   result.idempotence = {
     available: true,
-    attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging),
-    enabled_by: extension_settings[MODULE_NAME]?.verbose_logging ? 'developer_verbose_logging' : null,
-    not_attempted_reason: extension_settings[MODULE_NAME]?.verbose_logging ? null : 'developer_check_disabled',
+    attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck),
+    enabled_by: forceIdempotenceCheck ? 'developer_manual_command' : extension_settings[MODULE_NAME]?.verbose_logging ? 'developer_verbose_logging' : null,
+    not_attempted_reason: extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck ? null : 'developer_check_disabled',
     pass_count: 1,
     first_pass_input_hash: firstPassInputHash,
     first_pass_output_hash: firstPassOutputHash,
@@ -286,7 +286,7 @@ async function runFinalIntegrityReconciliation(characterName) {
   // Developer-only exact-state idempotence check. It intentionally runs on
   // the already-finalized serialized metadata; it does not regenerate records
   // or introduce new IDs.
-  if (extension_settings[MODULE_NAME]?.verbose_logging) {
+  if (extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck) {
     const inputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
     const secondPass = await reconcileCanonicalEntities(characterName);
     const outputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
@@ -4835,6 +4835,32 @@ export function bindSettingsUI(ctrl) {
       $('#sme_scene_stability').toggle($(this).prop('checked'));
       saveSettingsDebounced();
     });
+  $('#sme_run_idempotence_check').on('click', async function () {
+    const button = $(this);
+    const characterName = ctrl.getSelectedCharacterName();
+    if (!characterName) {
+      setStatusMessage('Select a character before running the integrity check.');
+      return;
+    }
+    button.prop('disabled', true);
+    setStatusMessage('Running developer idempotence check...');
+    try {
+      const reconciliation = await runFinalIntegrityReconciliation(characterName, { forceIdempotenceCheck: true });
+      const context = getContext();
+      if (context.chatMetadata) {
+        context.chatMetadata[META_KEY] ??= {};
+        context.chatMetadata[META_KEY].developer_idempotence_check = reconciliation.idempotence;
+        await saveChatMetadata(context);
+      }
+      const result = reconciliation.idempotence?.idempotent === true ? 'passed' : 'found remaining changes';
+      setStatusMessage(`Developer idempotence check ${result}.`);
+    } catch (error) {
+      smLog('[Smart Memory Enhanced] Developer idempotence check failed:', error);
+      setStatusMessage('Developer idempotence check failed. See the browser console.');
+    } finally {
+      button.prop('disabled', false);
+    }
+  });
   $('#sme_scene_comparison_tolerance')
     .val(s.scene_comparison_tolerance)
     .on('change', function () {
