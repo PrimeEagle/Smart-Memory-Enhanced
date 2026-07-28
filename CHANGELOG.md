@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.50] - 2026-07-28
+
+### Fixed
+
+- Fixed a startup-blocking JavaScript syntax error in `settings.js`. Final
+  diagnostics now use a distinct integrity-repair counter name instead of
+  redeclaring the session-repair counter in the same catch-up scope.
+
+### Tests
+
+- Added regression coverage for the distinct integrity-repair diagnostics
+  binding and verified the extension module with a direct syntax check.
+
 ## [0.8.49] - 2026-07-28
 
 ### Added
