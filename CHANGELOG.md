@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.49] - 2026-07-28
+
+### Added
+
+- Added privacy-safe multi-run scene-history accounting. Stability diagnostics
+  now identify duplicate runtime, migration, and fingerprint-equivalent runs;
+  normalize exact duplicate boundaries within each run; and report the
+  discarded records before calculating consensus, variance, or scene counts.
+- Added compact candidate-history coverage and gate-determinism reporting.
+  Exports now distinguish complete measurements from unavailable historical
+  candidate detail, preventing false zero-variance or conclusive claims.
+- Added repair-origin, recurrence, and bounded cross-run repair-volume
+  diagnostics, separating new durable changes from re-observed historical
+  repairs.
+- Added a Developer **Run Idempotence Check** control. It runs canonical
+  reconciliation twice locally, makes no provider calls, and saves only the
+  compact pass/fail result in chat metadata.
+
+### Changed
+
+- Relationship-role provenance now distinguishes character-card facts from
+  active-persona facts, approved Relationship History, grounded memories, and
+  bounded raw-chat evidence. Exports include compact source coverage and the
+  precedence used for role decisions without exposing source text.
+- Restored explicitly named coordinated sibling and parent facts from raw chat
+  and preserved them as directed, grounded relationships. No surname,
+  pronoun-only, cross-message, or gender-based inference is introduced.
+
+### Fixed
+
+- Fixed repeated or equivalent scene-run snapshots inflating stability and
+  gate statistics.
+- Fixed compact snapshots incorrectly losing gate-determinism checks solely
+  because they omit raw output hashes.
+- Clarified idempotence diagnostics when the optional second pass was not
+  requested, rather than implying it was attempted.
+
+### Tests
+
+- Added regression coverage for run deduplication, boundary normalization,
+  incomplete candidate history, compact gate-result determinism, explicit
+  coordinated-family parsing, repair-volume history, relationship-source
+  coverage, and the manual idempotence control.
+
 ## [0.8.48] - 2026-07-28
 
 ### Fixed
