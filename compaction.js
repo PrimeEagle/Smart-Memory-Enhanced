@@ -78,16 +78,19 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
   const inputBudget = getMemoryInputBudget(responseLength);
   let rollingSummary = initialSummary || 'No earlier events have been summarized yet.';
   let chunk = [];
-
-  const summarizeChunk = async () => {
-    if (!chunk.length) return;
-    const events = chunk.map((message) => `${message.name}: ${message.mes}`).join('\n\n');
-    const prompt = applyPromptOverride(
+  const buildPromptFor = (items) => {
+    const events = items.map((message) => `${message.name}: ${message.mes}`).join('\n\n');
+    return applyPromptOverride(
       buildUpdateSummaryPrompt(storedMemories)
         .replace('{{existing_summary}}', rollingSummary)
         .replace('{{new_events}}', events),
       PROMPT_TASKS.COMPACTION,
     );
+  };
+
+  const summarizeChunk = async () => {
+    if (!chunk.length) return;
+    const prompt = buildPromptFor(chunk);
     // The caller only appends a message after testing this exact prompt. This
     // check protects against a custom prompt override changing between passes.
     if (estimateTokens(prompt) > inputBudget) {
@@ -99,23 +102,43 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     chunk = [];
   };
 
-  for (const message of messages) {
+  const pending = [...messages];
+  while (pending.length) {
+    const message = pending.shift();
     const candidate = [...chunk, message];
-    const candidateEvents = candidate.map((item) => `${item.name}: ${item.mes}`).join('\n\n');
-    const candidatePrompt = applyPromptOverride(
-      buildUpdateSummaryPrompt(storedMemories)
-        .replace('{{existing_summary}}', rollingSummary)
-        .replace('{{new_events}}', candidateEvents),
-      PROMPT_TASKS.COMPACTION,
-    );
+    const candidatePrompt = buildPromptFor(candidate);
     if (chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
       await summarizeChunk();
+      pending.unshift(message);
+      continue;
     }
     if (!chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
-      // A single pathological chat message cannot be safely sent as-is. Do
-      // not issue a request the provider is guaranteed to reject; the caller
-      // can surface this precise local failure instead of a misleading 400.
-      throw new Error(`One compaction message exceeds the ${inputBudget}-token input budget.`);
+      // Preserve an exceptionally long message by splitting it into the
+      // largest safe prefix and an ordered remainder. This avoids both a
+      // provider context overflow and silently discarding part of the chat.
+      const text = String(message.mes ?? '');
+      let low = 1;
+      let high = text.length;
+      let safeLength = 0;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        const partial = { ...message, mes: text.slice(0, middle) };
+        if (estimateTokens(buildPromptFor([partial])) <= inputBudget) {
+          safeLength = middle;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      if (!safeLength) {
+        throw new Error(`Compaction instructions exceed the ${inputBudget}-token input budget.`);
+      }
+      const head = { ...message, mes: text.slice(0, safeLength) };
+      const remainder = text.slice(safeLength);
+      chunk.push(head);
+      if (remainder) pending.unshift({ ...message, mes: remainder });
+      await summarizeChunk();
+      continue;
     }
     chunk.push(message);
   }

@@ -22,7 +22,9 @@ test('compaction uses the context-window guard for both first and incremental su
   assert.match(compaction, /async function summarizeInBoundedPasses/);
   assert.match(compaction, /const inputBudget = getMemoryInputBudget\(responseLength\)/);
   assert.match(compaction, /estimateTokens\(candidatePrompt\) > inputBudget/);
-  assert.match(compaction, /One compaction message exceeds/);
+  assert.match(compaction, /Preserve an exceptionally long message by splitting it/);
+  assert.match(compaction, /let low = 1/);
+  assert.match(compaction, /pending\.unshift\(\{ \.\.\.message, mes: remainder \}\)/);
   const incremental = compaction.slice(
     compaction.indexOf('if (existingSummary && summaryEnd > 0'),
     compaction.indexOf('// Full compaction:'),
