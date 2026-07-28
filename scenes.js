@@ -347,10 +347,31 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     invalid: diagnostics.confidence_outcomes.confidence_invalid ?? 0,
     removed_during_repair: diagnostics.confidence_outcomes.confidence_removed_during_repair ?? 0,
   };
+  // Retain the older name for compatibility, but make its non-terminal scope
+  // explicit so consumers do not compare it directly to candidate totals.
+  diagnostics.confidence_outcomes_scope = 'attempt_level_observations';
+  diagnostics.terminal_candidate_confidence_outcomes_scope = 'terminal_candidate_outcomes';
   diagnostics.terminal_confidence_reconciled = [...terminalByCandidate.keys()].length === candidates.length
     && Object.values(diagnostics.terminal_candidate_confidence_outcomes).reduce((total, count) => total + count, 0) === candidates.length;
   diagnostics.adaptive_root_requests = diagnostics.initial_batch_requests;
   diagnostics.multi_candidate_provider_requests = diagnostics.multi_candidate_requests;
+  diagnostics.adaptive_request_summary = {
+    adaptive_root_requests: diagnostics.adaptive_root_requests,
+    root_requests_full_first_try: diagnostics.full_root_batches,
+    root_requests_partial: diagnostics.partial_root_batches,
+    root_requests_format_repaired: diagnostics.format_repaired_root_batches,
+    partial_retry_requests: diagnostics.partial_retry_requests,
+    single_candidate_retry_requests: diagnostics.single_candidate_retry_requests,
+    format_repair_requests: diagnostics.format_repair_requests,
+    total_provider_requests: diagnostics.total_provider_requests,
+    starting_batch_size: diagnostics.starting_batch_size,
+    ending_batch_size: diagnostics.ending_batch_size,
+    minimum_batch_size_used: diagnostics.minimum_batch_size_used,
+    maximum_batch_size_used: diagnostics.maximum_batch_size_used,
+    batch_size_history: diagnostics.batch_size_history,
+    average_candidates_per_root_request: diagnostics.average_candidates_per_root_request,
+    average_candidates_per_total_request: diagnostics.average_candidates_per_total_request,
+  };
   return { decisions: result, diagnostics };
 }
 

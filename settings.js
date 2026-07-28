@@ -161,24 +161,33 @@ function diagnosticFingerprint(value) {
 // detection runs. This deliberately excludes prompts, chat messages, and raw
 // provider responses.
 function makeSceneStabilitySnapshot(audit = {}) {
+  const finalBreakIndices = [...(audit.final_break_indices ?? [])];
+  const createdAt = Date.now();
+  const taskSettings = audit.task_sampling_settings ?? {};
   return {
-    run_id: audit.run_id ?? null,
-    created_at: Date.now(),
+    run_id: audit.run_id ?? `unavailable-scene-run-${createdAt}`,
+    run_id_source: audit.run_id ? 'runtime' : 'unavailable',
+    created_at: createdAt,
+    created_at_source: 'runtime',
     run_signature: audit.scene_detection_run_signature ?? null,
-    final_break_indices: [...(audit.final_break_indices ?? [])],
-    boundary_count: (audit.final_break_indices ?? []).length,
-    scene_count: audit.generated ?? null,
+    scene_detection_run_signature: audit.scene_detection_run_signature ?? null,
+    final_break_indices: finalBreakIndices,
+    boundary_count: finalBreakIndices.length,
+    scene_count: finalBreakIndices.length + 1,
     generated: audit.generated ?? null,
     prompt_shape_hash: audit.prompt_shape_hash ?? null,
     model_identifier: audit.model_identifier ?? null,
     connection_profile_identifier: audit.connection_profile_identifier ?? null,
-    task_sampling_settings: audit.task_sampling_settings ?? {},
+    task_sampling_settings: taskSettings,
+    task_settings_hash: diagnosticFingerprint(JSON.stringify(taskSettings)),
     candidate_context_hashes: audit.candidate_context_hashes ?? [],
+    candidate_context_hash_summary: diagnosticFingerprint(JSON.stringify(audit.candidate_context_hashes ?? [])),
     candidate_dispositions: audit.candidate_dispositions ?? [],
     malformed_batches: audit.malformed_batches ?? 0,
     fallback_boundaries: audit.fallback_boundaries ?? 0,
     heuristic_fallback_candidates: audit.heuristic_fallback_candidates ?? 0,
-    completed_at: Date.now(),
+    pipeline_status: audit.pipeline_status ?? ((audit.malformed_batches ?? 0) || (audit.fallback_boundaries ?? 0) ? 'degraded' : 'clean'),
+    completed_at: createdAt,
   };
 }
 
@@ -209,6 +218,7 @@ async function runStagedChatCleanup(context, mutate) {
  */
 async function runFinalIntegrityReconciliation(characterName) {
   const startedAt = performance.now();
+  const firstPassInputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
   const reconciliation = await reconcileCanonicalEntities(characterName);
   const summaries = loadArcSummaries();
   let quarantinedSummaries = 0;
@@ -228,6 +238,23 @@ async function runFinalIntegrityReconciliation(characterName) {
     quarantined_arc_summaries: quarantinedSummaries,
     duration_ms: Math.round(performance.now() - startedAt),
   };
+  const firstPassRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
+  const firstPassOutputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+  result.idempotence = {
+    attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging),
+    pass_count: 1,
+    first_pass_input_hash: firstPassInputHash,
+    first_pass_output_hash: firstPassOutputHash,
+    first_pass_logical_mutations: firstPassRepairs.actual_logical_mutations_this_run ?? 0,
+    first_pass_physical_mutations: firstPassRepairs.actual_physical_store_mutations_this_run ?? 0,
+    second_pass_input_hash: null,
+    second_pass_output_hash: null,
+    second_pass_logical_mutations: null,
+    second_pass_physical_mutations: null,
+    recreated_after_prior_repair: firstPassRepairs.recreated_after_prior_repair ?? 0,
+    stale_references_after_second_pass: null,
+    idempotent: null,
+  };
   // Developer-only exact-state idempotence check. It intentionally runs on
   // the already-finalized serialized metadata; it does not regenerate records
   // or introduce new IDs.
@@ -244,6 +271,21 @@ async function runFinalIntegrityReconciliation(characterName) {
       physical_mutation_count: repairs.actual_physical_store_mutations_this_run ?? 0,
       recreated_link_count: repairs.recreated_after_prior_repair ?? 0,
       stale_entity_references: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
+    };
+    result.idempotence = {
+      ...result.idempotence,
+      pass_count: 2,
+      second_pass_input_hash: inputMetadataHash,
+      second_pass_output_hash: outputMetadataHash,
+      second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
+      second_pass_physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
+      recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
+      stale_references_after_second_pass: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
+      idempotent: inputMetadataHash === outputMetadataHash
+        && (repairs.actual_logical_mutations_this_run ?? 0) === 0
+        && (repairs.actual_physical_store_mutations_this_run ?? 0) === 0
+        && (repairs.recreated_after_prior_repair ?? 0) === 0
+        && (secondPass.integrity_audit?.stale_entity_references?.length ?? 0) === 0,
     };
   }
   if (extension_settings[MODULE_NAME]?.verbose_logging) {
@@ -1415,7 +1457,7 @@ export function bindSettingsUI(ctrl) {
     if (!stability) return toastr.info('No comparable scene-run history is available for this chat yet.', 'Smart Memory Enhanced');
     const yesNo = (value) => value ? 'yes' : 'no';
     callGenericPopup(
-      `Comparable runs: ${stability.comparable_run_count}\nScene counts: ${(stability.scene_counts ?? []).join(', ') || 'none'}\nScene-count mode: ${stability.scene_count_mode ?? 'n/a'}\nScene-count range: ${stability.scene_count_range ?? 'n/a'}\nConsensus boundaries: ${(stability.stable_consensus_boundaries ?? []).length}\nMajority boundaries: ${(stability.majority_boundaries ?? []).length}\nMarginal boundaries: ${(stability.marginal_boundaries ?? []).length}\nOne-off boundaries: ${(stability.one_off_boundaries ?? []).length}\nShifted clusters: ${(stability.shifted_boundary_clusters ?? []).length}\nPipeline stable: ${yesNo(stability.pipeline_stable)}\nScene count materially stable: ${yesNo(stability.scene_count_materially_stable)}\nBoundary positions materially stable: ${yesNo(stability.boundary_positions_materially_stable)}`,
+      `Comparable runs: ${stability.total_comparable_run_count ?? stability.comparable_run_count}\nPrior retained runs: ${stability.prior_comparable_run_count ?? stability.comparable_prior_run_count ?? 0}\nCurrent run included: ${yesNo(stability.current_run_included)}\nScene counts: ${(stability.scene_counts ?? []).join(', ') || 'none'}\nUnique mode: ${stability.scene_count_mode_is_unique ? stability.scene_count_mode : 'none'}\nScene-count range: ${stability.scene_count_range ?? 'n/a'}\nExact consensus boundaries: ${(stability.exact_consensus_boundaries ?? stability.stable_consensus_boundaries ?? []).length}\nShift-tolerant consensus transitions: ${(stability.clustered_consensus_transitions ?? []).length}\nExact majority boundaries: ${(stability.exact_majority_boundaries ?? stability.majority_boundaries ?? []).length}\nClustered majority transitions: ${(stability.clustered_majority_transitions ?? []).length}\nMarginal transitions: ${(stability.clustered_marginal_transitions ?? stability.marginal_boundaries ?? []).length}\nShifted clusters: ${(stability.shifted_boundary_clusters ?? []).length}\nPipeline stable: ${yesNo(stability.pipeline_stable)}\nScene count materially stable: ${yesNo(stability.scene_count_materially_stable)}\nBoundary positions materially stable: ${yesNo(stability.boundary_positions_materially_stable)}`,
       POPUP_TYPE.DISPLAY,
     );
   };
@@ -3447,7 +3489,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
+          const sceneAudit = { run_id: catchUpRunId, candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
           let prevAiMsg = '';
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -3611,16 +3653,59 @@ export function bindSettingsUI(ctrl) {
           sceneAudit.heuristic_fallback_candidates = sceneAudit.candidate_dispositions?.filter((item) => item.source === 'heuristic-fallback').length ?? 0;
           sceneAudit.heuristic_fallback_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_break').length ?? 0;
           sceneAudit.heuristic_fallback_no_breaks = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_disposition === 'fallback_no_break').length ?? 0;
-          const initialAiBreaks = sceneAudit.candidate_dispositions?.filter((item) => item.decision === true && item.source !== 'heuristic-fallback') ?? [];
-          sceneAudit.initial_ai_breaks = initialAiBreaks.length;
-          sceneAudit.break_terminal_outcomes = initialAiBreaks.reduce((counts, item) => {
+          // Aggregate from the terminal gate disposition, never from a
+          // speculative/request-time counter. A minimum-length rejection is a
+          // separate safety constraint, not evidence that the deterministic
+          // continuity gate rejected the candidate.
+          const gatedCandidates = sceneAudit.candidate_dispositions?.filter((item) => item.terminal_break_disposition) ?? [];
+          sceneAudit.initial_ai_breaks = gatedCandidates.filter((item) => item.decision === true && item.source !== 'heuristic-fallback').length;
+          sceneAudit.break_terminal_outcomes = gatedCandidates.reduce((counts, item) => {
             const key = item.terminal_break_disposition ?? 'removed_during_scene_assembly';
             counts[key] = (counts[key] ?? 0) + 1;
             return counts;
           }, {});
           sceneAudit.gate_acceptances = sceneAudit.break_terminal_outcomes.accepted_final_break ?? 0;
           sceneAudit.gate_rejections = sceneAudit.break_terminal_outcomes.rejected_deterministic_gate ?? 0;
-          sceneAudit.gate_rejections_by_reason = { insufficient_change_evidence: sceneAudit.gate_rejections, minimum_scene_length: sceneAudit.break_terminal_outcomes.rejected_minimum_scene_length ?? 0 };
+          sceneAudit.gate_rejections_by_reason = gatedCandidates
+            .filter((item) => item.terminal_break_disposition === 'rejected_deterministic_gate')
+            .reduce((counts, item) => {
+              const reason = item.gate_reason_code ?? 'unspecified_deterministic_gate_reason';
+              counts[reason] = (counts[reason] ?? 0) + 1;
+              return counts;
+            }, {});
+          sceneAudit.minimum_length_rejections = sceneAudit.break_terminal_outcomes.rejected_minimum_scene_length ?? 0;
+          sceneAudit.initial_ai_break_proposals = gatedCandidates.length;
+          sceneAudit.deterministic_gate_rejections = sceneAudit.gate_rejections;
+          sceneAudit.post_gate_minimum_length_rejections = sceneAudit.minimum_length_rejections;
+          sceneAudit.post_gate_coalescing_rejections = sceneAudit.break_terminal_outcomes.coalesced_with_nearby_boundary ?? 0;
+          sceneAudit.coalescing_rejections = sceneAudit.post_gate_coalescing_rejections;
+          sceneAudit.accepted_final_breaks = sceneAudit.break_terminal_outcomes.accepted_final_break ?? 0;
+          sceneAudit.final_breaks_accepted = sceneAudit.accepted_final_breaks;
+          sceneAudit.gate_acceptances_by_reason = gatedCandidates
+            .filter((item) => item.terminal_break_disposition === 'accepted_final_break')
+            .reduce((counts, item) => {
+              const reason = item.gate_reason_code ?? 'accepted_without_reason';
+              counts[reason] = (counts[reason] ?? 0) + 1;
+              return counts;
+            }, {});
+          sceneAudit.gate_signal_counts = gatedCandidates.reduce((counts, item) => {
+            for (const [signal, active] of Object.entries(item.gate_evidence ?? {})) {
+              if (active === true) counts[signal] = (counts[signal] ?? 0) + 1;
+            }
+            return counts;
+          }, {});
+          sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
+            + sceneAudit.post_gate_minimum_length_rejections
+            + sceneAudit.post_gate_coalescing_rejections
+            + (sceneAudit.break_terminal_outcomes.removed_duplicate ?? 0)
+            + (sceneAudit.break_terminal_outcomes.removed_during_final_assembly ?? 0);
+          sceneAudit.terminal_break_accounting_reconciled = sceneAudit.initial_ai_break_proposals === Object.values(sceneAudit.break_terminal_outcomes)
+            .reduce((total, count) => total + Number(count ?? 0), 0);
+          // New history records use the structural definition of scene count;
+          // `generated` remains a separate count of successfully saved scene
+          // summaries for backwards-compatible diagnostics.
+          sceneAudit.boundary_count = sceneAudit.final_break_indices.length;
+          sceneAudit.scene_count = sceneAudit.boundary_count + 1;
           const priorSceneAudits = [
             ...(catchUpContext.chatMetadata?.[META_KEY]?.scene_stability_history ?? []),
             catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.sceneDetection,
@@ -3936,6 +4021,7 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.participant_lists_rewritten = reconciliation.participant_lists_rewritten ?? 0;
       runResult.finalReconciliation.resolved_review_items_removed = reconciliation.resolved_review_items_removed ?? 0;
       runResult.finalReconciliation.integrity_audit = reconciliation.integrity_audit ?? null;
+      runResult.finalReconciliation.idempotence = reconciliation.idempotence ?? null;
       runResult.finalReconciliation.duration_ms = reconciliation.duration_ms ?? null;
       runResult.finalReconciliation.stale_entity_references = reconciliation.integrity_audit?.stale_entity_references?.length ?? 0;
       runResult.finalReconciliation.unsafe_merge_candidates = reconciliation.integrity_audit?.unsafe_merge_candidates ?? 0;

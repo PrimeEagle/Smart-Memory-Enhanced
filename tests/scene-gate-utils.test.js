@@ -17,6 +17,8 @@ test('deterministic scene gate is invariant to request lineage and repeated eval
   assert.deepEqual(fromPartialRetry, direct);
   assert.deepEqual(fromSingleRetry, direct);
   assert.deepEqual(evaluateDeterministicSceneGate(stableInput), direct);
+  assert.match(direct.gate_input_hash, /^scene-gate-/);
+  assert.match(direct.gate_output_hash, /^scene-gate-/);
 });
 
 test('deterministic scene gate emits stable evidence for each rejection class', () => {

@@ -38,7 +38,78 @@ test('multi-run stability reports consensus, marginal boundaries, and shifts', (
   assert.deepEqual(result.stable_consensus_boundaries, [20]);
   assert.deepEqual(result.majority_boundaries, [20, 50]);
   assert.deepEqual(result.one_off_boundaries, [48, 80, 90, 92]);
+  assert.deepEqual(result.exact_consensus_boundary_details, [{ boundary_index: 20, runs_present: ['one', 'two', 'three'], distinct_run_count: 3, exact_observation_count: 3 }]);
   assert.equal(result.scene_count_range, 1);
   assert.equal(result.scene_count_materially_stable, true);
   assert.ok(result.shifted_boundary_clusters.some((cluster) => cluster.member_indices.includes(48) && cluster.member_indices.includes(50)));
+});
+
+test('scene-count ties are reported as ties instead of choosing the smallest count', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {} };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', generated: 7, final_break_indices: [] },
+    { ...shared, run_id: 'two', generated: 13, final_break_indices: [] },
+    { ...shared, run_id: 'three', generated: 10, final_break_indices: [] },
+  ], { ...shared, run_id: 'four', generated: 9, final_break_indices: [] });
+  assert.deepEqual(result.scene_count_modes, [7, 9, 10, 13]);
+  assert.equal(result.scene_count_mode, null);
+  assert.equal(result.scene_count_mode_frequency, 1);
+  assert.equal(result.scene_count_mode_is_unique, false);
+});
+
+test('shift clusters count distinct contributing runs, not duplicate observations', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {} };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', generated: 2, final_break_indices: [48, 49] },
+    { ...shared, run_id: 'two', generated: 2, final_break_indices: [50] },
+  ], { ...shared, run_id: 'three', generated: 2, final_break_indices: [50] }, 2);
+  const cluster = result.shifted_boundary_clusters.find((item) => item.member_indices.includes(48));
+  assert.equal(cluster.observation_count, 4);
+  assert.equal(cluster.distinct_run_count, 3);
+  assert.deepEqual(cluster.runs_present, ['one', 'two', 'three']);
+  assert.deepEqual(cluster.duplicate_observations_in_run, ['one']);
+  assert.equal(result.clustered_stable_consensus_boundaries.length, 1);
+  assert.equal(cluster.minimum_index, 48);
+  assert.equal(cluster.maximum_index, 50);
+  assert.deepEqual(result.clustered_consensus_transitions, result.clustered_stable_consensus_boundaries);
+});
+
+test('scene-count mode reports a unique winner and current-run accounting is explicit', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {} };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', generated: 9, final_break_indices: Array(8).fill(0).map((_, index) => index) },
+    { ...shared, run_id: 'two', generated: 10, final_break_indices: Array(9).fill(0).map((_, index) => index) },
+    { ...shared, run_id: 'three', generated: 10, final_break_indices: Array(9).fill(0).map((_, index) => index) },
+  ], { ...shared, run_id: 'four', generated: 11, final_break_indices: Array(10).fill(0).map((_, index) => index) });
+  assert.deepEqual(result.scene_count_modes, [10]);
+  assert.equal(result.scene_count_mode, 10);
+  assert.equal(result.scene_count_mode_frequency, 2);
+  assert.equal(result.scene_count_mode_is_unique, true);
+  assert.equal(result.prior_comparable_run_count, 3);
+  assert.equal(result.total_comparable_run_count, 4);
+  assert.equal(result.current_run_included, true);
+  assert.equal(result.current_run_id, 'four');
+});
+
+test('all-run candidate analysis separates AI, gate, and final-assembly variance', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [] };
+  const run = (run_id, candidates) => ({ ...shared, run_id, candidate_context_hashes: candidates.map((candidate) => ({ candidate_id: candidate.candidate_id, context_hash: 'same-context' })), candidate_dispositions: candidates });
+  const result = analyzeSceneStabilityHistory([
+    run('one', [
+      { candidate_id: 10, decision: true, gate_result: 'accepted', terminal_break_disposition: 'accepted_final_break', gate_input_hash: 'a', gate_output_hash: 'a1' },
+      { candidate_id: 20, decision: true, gate_result: 'rejected', terminal_break_disposition: 'rejected_deterministic_gate', gate_input_hash: 'b', gate_output_hash: 'b1' },
+      { candidate_id: 30, decision: true, gate_result: 'accepted', terminal_break_disposition: 'accepted_final_break', gate_input_hash: 'c', gate_output_hash: 'c1' },
+    ]),
+  ], run('two', [
+    { candidate_id: 10, decision: false, gate_result: 'not_requested', terminal_break_disposition: null, gate_input_hash: 'a2', gate_output_hash: 'a21' },
+    { candidate_id: 20, decision: true, gate_result: 'accepted', terminal_break_disposition: 'accepted_final_break', gate_input_hash: 'b2', gate_output_hash: 'b21' },
+    { candidate_id: 30, decision: true, gate_result: 'accepted', terminal_break_disposition: 'coalesced_with_nearby_boundary', gate_input_hash: 'c', gate_output_hash: 'c1' },
+  ]));
+  const byId = new Map(result.all_run_candidate_stability.map((candidate) => [candidate.candidate_id, candidate]));
+  assert.equal(byId.get('10').classification, 'ai_marginal');
+  assert.equal(byId.get('20').classification, 'gate_marginal');
+  assert.equal(byId.get('30').classification, 'final_assembly_marginal');
+  assert.equal(byId.get('30').gate_determinism_violation, false);
+  assert.equal(result.gate_determinism_violation_count, 0);
+  assert.deepEqual(result.gate_determinism_violations, []);
 });

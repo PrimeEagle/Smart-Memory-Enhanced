@@ -256,7 +256,7 @@ test('profile relationship descriptors are independently validated against estab
   assert.match(profiles, /pair\.descriptors\.join\(', '\)/);
   assert.match(profiles, /extractCardRelationshipFacts/);
   assert.match(profiles, /extractGroundedRelationshipFacts/);
-  assert.match(profiles, /mergePairEvidence\(cardPair, historyPair, rawChatPair, groundedPair\)/);
+  assert.match(profiles, /mergeRelationshipPairEvidence\(cardPair, historyPair, rawChatPair, groundedPair\)/);
   assert.match(profiles, /priorRelationshipCheck/);
   assert.match(profiles, /relationship_matrix: ''/);
   assert.match(profiles, /never an\s+\/\/ authority for durable relationship labels/);
@@ -453,6 +453,15 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /ai_breaks_rejected_by_deterministic_gate/);
   assert.match(settings, /evaluateDeterministicSceneGate/);
   assert.match(read('scene-gate-utils.js'), /gate_evidence/);
+  assert.match(read('scene-gate-utils.js'), /gate_input_hash/);
+  assert.match(settings, /minimum_length_rejections/);
+  assert.match(settings, /terminal_break_disposition === 'rejected_deterministic_gate'/);
+  assert.match(settings, /initial_ai_break_proposals/);
+  assert.match(settings, /terminal_break_accounting_reconciled/);
+  assert.match(settings, /gate_signal_counts/);
+  assert.match(settings, /first_pass_logical_mutations/);
+  assert.match(settings, /second_pass_logical_mutations/);
+  assert.match(settings, /stale_references_after_second_pass/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /boundary_comparison/);
   assert.match(read('scene-stability-utils.js'), /shifted_boundaries/);
@@ -464,6 +473,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('scenes.js'), /adaptive_batch_adjustments/);
   assert.match(read('scenes.js'), /root_batch_summary/);
   assert.match(read('scenes.js'), /confidence_outcomes/);
+  assert.match(read('scenes.js'), /confidence_outcomes_scope/);
+  assert.match(read('scenes.js'), /adaptive_request_summary/);
   assert.match(read('scenes.js'), /confidence_invalid/);
   assert.match(read('scenes.js'), /confidence_not_returned/);
   assert.match(settings, /data_quality_status/);
@@ -549,21 +560,49 @@ test('grounded relationship parsing accepts explicit named possessive facts with
   assert.match(profiles, /Do not resolve pronouns here/);
 });
 
+test('explicit card-owner family facts retain source provenance and target-relative role direction', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /Mother of Alex Rivera and Jamie Rivera/);
+  assert.match(profiles, /relationship_type_source_ids: \[`card:/);
+  assert.match(profiles, /relationshipTypeForProfileTarget/);
+  assert.match(profiles, /profile_to_target_inverted/);
+  assert.match(profiles, /candidate_evidence/);
+  assert.match(profiles, /rejected_evidence/);
+  assert.match(profiles, /terminal_outcome/);
+  assert.match(profiles, /relationship_type_candidate_evidence/);
+  assert.match(profiles, /relationship_type_rejected_evidence/);
+  assert.match(profiles, /explicit_named_chat_participant/);
+  assert.match(profiles, /explicit_grounded_participant/);
+  assert.match(profiles, /same bounded message/);
+  assert.match(profiles, /const parentPair/);
+  assert.doesNotMatch(profiles, /sharedSurname/);
+  assert.match(profiles, /Never complete one parent's name from the other's surname/);
+  assert.match(profiles, /same-message possessive kinship/);
+  assert.match(profiles, /nearest explicit name supplies the antecedent/);
+  assert.match(profiles, /grounded-entity-registry/);
+  assert.match(profiles, /relationshipRoster/);
+  assert.match(profiles, /return stored \? migrateProfileRoleDescriptorSeparation/);
+  assert.match(profiles, /profiles\[characterName\] = migrateProfileRoleDescriptorSeparation/);
+  assert.match(profiles, /rejected_placeholder/);
+  assert.match(profiles, /placeholder_relationship_descriptor/);
+});
+
 test('profile relationship validation can use bounded raw-chat speaker context', () => {
   const profiles = read('profiles.js');
   assert.match(profiles, /extractRawChatRelationshipFacts/);
   assert.match(profiles, /grounded_raw_chat_evidence/);
   assert.ok(profiles.includes("you\\\\s+are|you're|you've\\\\s+been"));
   assert.match(profiles, /nearestNamedRosterPeople/);
-  assert.match(profiles, /Do not turn possessive family pronouns/);
+  assert.match(profiles, /Do not turn \*ungrounded\* possessive family pronouns/);
+  assert.match(profiles, /named subject and a same-message, explicit named antecedent/);
   assert.match(profiles, /rawChatMessages = profileContext\.chat \?\? \[\]/);
-  assert.match(profiles, /relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages/);
+  assert.match(profiles, /relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages/);
 });
 
 test('profile relationship validation merges a typed direct fact with descriptor-only history', () => {
   const profiles = read('profiles.js');
-  assert.match(profiles, /mergePairEvidence/);
-  assert.match(profiles, /descriptor-only approved history must not hide/);
+  assert.match(profiles, /mergeRelationshipPairEvidence/);
+  assert.match(read('profile-role-utils.js'), /without letting descriptors hide a role/);
   assert.match(profiles, /cardPair, historyPair, rawChatPair, groundedPair/);
   assert.match(profiles, /Normalize per token/);
 });
@@ -571,9 +610,9 @@ test('profile relationship validation merges a typed direct fact with descriptor
 test('model-generated relationship descriptors cannot create a canonical family type', () => {
   const profiles = read('profiles.js');
   assert.match(profiles, /not a canonical family type by itself/);
-  assert.match(profiles, /canonical_relationship_type: pair\.relationship_type \?\? null/);
+  assert.match(profiles, /relationshipTypeForProfileTarget/);
   assert.match(profiles, /includes\(pair\?\.relationship_type\)/);
-  assert.match(profiles, /relationshipRoleWords/);
+  assert.match(read('profile-role-utils.js'), /CANONICAL_RELATIONSHIP_ROLE_TOKENS/);
   assert.match(profiles, /CANONICAL_RELATIONSHIP_ROLE_TOKENS/);
 });
 

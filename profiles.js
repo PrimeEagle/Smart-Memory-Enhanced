@@ -65,55 +65,21 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { validateCitationSemanticSupport } from './grounding.js';
+import {
+  CANONICAL_RELATIONSHIP_ROLE_TOKENS,
+  extractExplicitNamedFamilyCandidates,
+  migrateProfileRoleDescriptorSeparation,
+  mergeRelationshipPairEvidence,
+  normalizeRelationshipDescriptors,
+  relationshipTypeForProfileTarget,
+  renderRelationshipMatrixLine,
+} from './profile-role-utils.js';
+
+export { CANONICAL_RELATIONSHIP_ROLE_TOKENS, migrateProfileRoleDescriptorSeparation };
 
 // Default staleness threshold: 30 minutes. Profiles generated within this
 // window are considered current and will not be regenerated on chat load.
 const DEFAULT_STALE_THRESHOLD_MS = 30 * 60 * 1000;
-// Relationship roles are structural facts, never descriptive state. Keep this
-// list deliberately shared by validation, migration, serialization, and
-// diagnostics so a role cannot leak through one representation.
-export const CANONICAL_RELATIONSHIP_ROLE_TOKENS = new Set([
-  'husband', 'wife', 'spouse', 'ex-husband', 'ex-wife', 'partner',
-  'sister', 'brother', 'sibling', 'mother', 'father', 'parent',
-  'daughter', 'son', 'sister-in-law', 'brother-in-law', 'sibling-in-law',
-]);
-
-function normalizeRelationshipDescriptors(descriptors = [], canonicalRelationshipType = null) {
-  const tokens = descriptors
-    .map((value) => String(typeof value === 'string' ? value : value?.word ?? '').trim().toLowerCase())
-    .filter(Boolean);
-  const removed = canonicalRelationshipType
-    ? tokens.filter((token) => CANONICAL_RELATIONSHIP_ROLE_TOKENS.has(token))
-    : [];
-  return { descriptors: [...new Set(tokens.filter((token) => !removed.includes(token)))], removed };
-}
-
-function renderRelationshipMatrixLine(target, pair, descriptors = pair?.descriptors ?? []) {
-  const normalized = normalizeRelationshipDescriptors(descriptors, pair?.relationship_type);
-  const role = pair?.relationship_type ? ` [${pair.relationship_type}]` : '';
-  return `${target}${role}: ${normalized.descriptors.join(', ')}`;
-}
-
-/** Idempotently separates known roles from legacy structured profile entries. */
-export function migrateProfileRoleDescriptorSeparation(profile = {}) {
-  const entries = Array.isArray(profile.relationship_matrix_structured)
-    ? profile.relationship_matrix_structured
-    : [];
-  let removed = 0;
-  let migrated = 0;
-  const relationship_matrix_structured = entries.map((entry) => {
-    const role = String(entry?.canonical_relationship_type ?? '').trim().toLowerCase() || null;
-    const cleaned = normalizeRelationshipDescriptors(entry?.relationship_descriptors ?? entry?.descriptors ?? [], role);
-    removed += cleaned.removed.length;
-    if (cleaned.removed.length) migrated++;
-    return { ...entry, canonical_relationship_type: role, relationship_descriptors: cleaned.descriptors };
-  });
-  const relationship_matrix = relationship_matrix_structured.length
-    ? relationship_matrix_structured.map((entry) => renderRelationshipMatrixLine(entry.target, { relationship_type: entry.canonical_relationship_type }, entry.relationship_descriptors)).join('\n')
-    : profile.relationship_matrix;
-  return { profile: { ...profile, relationship_matrix, relationship_matrix_structured }, profile_role_tokens_removed: removed, profile_fields_migrated_for_role_separation: migrated };
-}
-
 // ---- Storage ------------------------------------------------------------
 
 /**
@@ -124,7 +90,8 @@ export function migrateProfileRoleDescriptorSeparation(profile = {}) {
 export function loadProfiles(characterName) {
   if (!characterName) return null;
   const context = getContext();
-  return context.chatMetadata?.[META_KEY]?.profiles?.[characterName] ?? null;
+  const stored = context.chatMetadata?.[META_KEY]?.profiles?.[characterName] ?? null;
+  return stored ? migrateProfileRoleDescriptorSeparation(stored).profile : null;
 }
 
 /**
@@ -139,7 +106,7 @@ async function saveProfiles(profiles, characterName) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   if (!context.chatMetadata[META_KEY].profiles) context.chatMetadata[META_KEY].profiles = {};
-  context.chatMetadata[META_KEY].profiles[characterName] = profiles;
+  context.chatMetadata[META_KEY].profiles[characterName] = migrateProfileRoleDescriptorSeparation(profiles).profile;
   await saveChatMetadata(context);
 }
 
@@ -163,7 +130,10 @@ export async function reconcileProfileCanonicalNames(characterName) {
   next.relationship_matrix = matrix;
   const migrated = migrateProfileRoleDescriptorSeparation(next);
   Object.assign(next, migrated.profile);
-  if (next.character_state === profiles.character_state && next.world_state === profiles.world_state && next.relationship_matrix === profiles.relationship_matrix) return false;
+  if (next.character_state === profiles.character_state
+    && next.world_state === profiles.world_state
+    && next.relationship_matrix === profiles.relationship_matrix
+    && JSON.stringify(next.relationship_matrix_structured ?? []) === JSON.stringify(profiles.relationship_matrix_structured ?? [])) return false;
   next.identity_replacements = deduplicateIdentityDecisions(replacements, 'profile');
   await saveProfiles(next, characterName);
   return true;
@@ -246,29 +216,46 @@ function rosterEntries(roster) {
   return getCanonicalRosterPeople(roster);
 }
 
-function extractCardRelationshipFacts(roster = []) {
+export function extractCardRelationshipFacts(roster = []) {
   const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|mother|father|parent|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
+  const addFact = (entry, subjectName, targetName, relationshipType) => {
+    const subject = resolve(subjectName);
+    const target = resolve(targetName);
+    if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) return;
+    facts.push({
+      subject: subject.canonicalName.toLowerCase(),
+      target: target.canonicalName.toLowerCase(),
+      relationship_type: relationshipType.toLowerCase(),
+      relationship_type_source: 'card_fact',
+      relationship_type_confidence_class: 'authoritative',
+      relationship_type_source_ids: [`card:${entry?.canonical_id ?? entry?.canonical_card_id ?? entry?.canonicalName ?? 'unknown'}`],
+      relationship_type_direction: 'subject_to_target',
+      descriptors: [relationshipType.toLowerCase()],
+    });
+  };
   for (const entry of rosterEntries(roster)) {
     const description = String(entry?.relationshipFactExcerpt ?? entry?.descriptionExcerpt ?? '');
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s+(?:is|was)\\s+(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
-      const subject = resolve(match[1]);
-      const target = resolve(match[3]);
-      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), relationship_type_source: 'card_fact', relationship_type_confidence_class: 'authoritative', descriptors: [match[2].toLowerCase()] });
+      addFact(entry, match[1], match[3], match[2]);
     }
-    // Common card phrasing: "Taylor Covington, Aaron Holland's wife" or
-    // "Taylor Covington is Aaron Holland's daughter". These are explicit
+      // Common card phrasing: "Alex Rivera, Morgan Lee's wife" or
+      // "Alex Rivera is Morgan Lee's daughter". These are explicit
     // directional facts, not descriptive inference.
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)\\s*(?:,|is)\\s*([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\b`, 'gi'))) {
-      const subject = resolve(match[1]);
-      const target = resolve(match[2]);
-      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[3].toLowerCase(), relationship_type_source: 'card_fact', relationship_type_confidence_class: 'authoritative', descriptors: [match[3].toLowerCase()] });
+      addFact(entry, match[1], match[2], match[3]);
     }
     for (const match of description.matchAll(new RegExp(`\\b([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\s+is\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)`, 'gi'))) {
-      const subject = resolve(match[3]);
-      const target = resolve(match[1]);
-      if (subject.status === 'resolved' && target.status === 'resolved') facts.push({ subject: subject.canonicalName.toLowerCase(), target: target.canonicalName.toLowerCase(), relationship_type: match[2].toLowerCase(), relationship_type_source: 'card_fact', relationship_type_confidence_class: 'authoritative', descriptors: [match[2].toLowerCase()] });
+      addFact(entry, match[3], match[1], match[2]);
+    }
+    // Card descriptions commonly state the owner role without repeating the
+    // owner's name, e.g. "Mother of Alex Rivera and Jamie Rivera."
+    // The owner is an authoritative participant; the named target remains
+    // explicit, so this is safe and does not use surname or pronoun inference.
+    for (const match of description.matchAll(new RegExp(`(?:^|[.\\n;])\\s*(?:relationship(?:s)?\\s*:\\s*)?(?:the\\s+)?(${statusPattern})\\s+of\\s+([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)(?:\\s+(?:and|,)\\s*([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*))?`, 'gi'))) {
+      addFact(entry, entry.canonicalName, match[2], match[1]);
+      if (match[3]) addFact(entry, entry.canonicalName, match[3], match[1]);
     }
   }
   return facts;
@@ -277,11 +264,21 @@ function extractCardRelationshipFacts(roster = []) {
 function extractGroundedRelationshipFacts(records = [], roster = []) {
   const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|mother|father|parent|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const resolveExplicitParticipant = (name) => {
+    const resolved = resolve(name);
+    if (resolved.status === 'resolved') return resolved;
+    const explicit = String(name ?? '').trim();
+    return /^[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)+$/.test(explicit)
+      ? { status: 'explicit_grounded_participant', canonicalName: explicit }
+      : resolved;
+  };
   const facts = [];
   const addFact = (record, subjectName, targetName, relationshipType) => {
-    const subject = resolve(subjectName);
-    const target = resolve(targetName);
-    if (subject.status !== 'resolved' || target.status !== 'resolved') return;
+    const subject = resolveExplicitParticipant(subjectName);
+    const target = resolveExplicitParticipant(targetName);
+    if (!['resolved', 'explicit_grounded_participant'].includes(subject.status)
+      || !['resolved', 'explicit_grounded_participant'].includes(target.status)
+      || subject.canonicalName === target.canonicalName) return;
     // A grounded memory record can be traced back to its stored evidence.
     // Do not resolve pronouns here: relationship types are durable facts and
     // must have two explicitly named, unambiguous participants.
@@ -357,11 +354,25 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
   const persona = rosterEntries(roster).find((entry) => entry.source === 'user-persona' || entry.source_type === 'user-persona');
   if (!persona) return [];
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const resolveExplicitParticipant = (name) => {
+    const resolved = resolve(name);
+    if (resolved.status === 'resolved') return resolved;
+    // A direct, full proper name in the chat can be relationship evidence even
+    // when the person has no active character card. This does not create an
+    // alias or merge an identity; it merely preserves the explicitly named
+    // relationship target in this profile projection.
+    const explicit = String(name ?? '').trim();
+    return /^[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)+$/.test(explicit)
+      ? { status: 'explicit_named_chat_participant', canonicalName: explicit }
+      : resolved;
+  };
   const facts = [];
   const addFact = (subjectName, targetName, relationshipType, sourceIndex) => {
-    const subject = resolve(subjectName);
-    const target = resolve(targetName);
-    if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) return;
+    const subject = resolveExplicitParticipant(subjectName);
+    const target = resolveExplicitParticipant(targetName);
+    if (!['resolved', 'explicit_named_chat_participant'].includes(subject.status)
+      || !['resolved', 'explicit_named_chat_participant'].includes(target.status)
+      || subject.canonicalName === target.canonicalName) return;
     facts.push({
       subject: subject.canonicalName.toLowerCase(),
       target: target.canonicalName.toLowerCase(),
@@ -372,6 +383,9 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
       descriptors: [relationshipType.toLowerCase()],
     });
   };
+  for (const candidate of extractExplicitNamedFamilyCandidates(messages)) {
+    addFact(candidate.subject, candidate.target, candidate.relationship_type, candidate.source_index);
+  }
   for (const [arrayIndex, message] of (messages ?? []).entries()) {
     if (message?.is_system) continue;
     const text = String(message?.mes ?? '');
@@ -384,35 +398,67 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
         .find((candidate) => candidate.entry.canonicalName !== persona.canonicalName)?.entry;
       if (target) addFact(persona.canonicalName, target.canonicalName, match[1], sourceIndex);
     }
-    // Do not turn possessive family pronouns (for example "her sister") into
-    // durable facts. Their antecedent can be clear to a reader yet still be
-    // ambiguous in a group transcript, especially across differing married
-    // surnames. Explicit named family statements are handled separately by
-    // the named grounded/card parsers above.
+    // Named family statements are safe when every participant is named in the
+    // same bounded message. Do not generalize this to pronouns, surnames, or
+    // scene summaries: those remain intentionally non-authoritative.
+    // Explicit fully named statements were parsed above. Contextual forms
+    // below remain tightly bounded to this individual message.
+    // A tightly bounded dialogue form used by imported group chats: a single
+    // message introduces exactly two explicit names as a pair, then explicitly
+    // addresses them as Mom and Dad while naming the child speaker. The order
+    // is anchored by the named introduction ("Morgan and Casey ..."); no
+    // pronoun resolution, surname matching, or cross-message carry-over is
+    // allowed. This preserves an explicit raw-chat fact when the parents are
+    // not represented by active character cards.
+    const parentPair = text.match(/\b([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\s+and\s+([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\s+(?:were|are|stood|arrived|entered)\b/i);
+    const namedMom = text.match(/["\u201C](?:Mom|Mother)[,!]?[\u201D"]\s*,?\s*([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\s+(?:said|asked|called|replied)/i);
+    const namedDad = text.match(/["\u201C](?:Dad|Father)[,.!]?[\u201D"]\s*,?\s*(?:we\s+)?(?:weren't|were|are|said|asked|replied)/i);
+    if (parentPair && namedMom && namedDad) {
+      // Never complete one parent's name from the other's surname. A unique
+      // roster alias may resolve a first name, but married or family names are
+      // not evidence of identity or relationship by themselves.
+      const namedMother = parentPair[1];
+      addFact(namedMother, namedMom[1], 'mother', sourceIndex);
+      addFact(parentPair[2], namedMom[1], 'father', sourceIndex);
+      // A named subject plus a same-message possessive kinship term has an
+      // explicit local antecedent here: the previously introduced parent
+      // pair. This is deliberately not a general cross-message pronoun rule.
+      for (const match of text.matchAll(/\b([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\b[^.!?]{0,180}\b(?:her|his)\s+(mother|father)\b/gi)) {
+        const relation = match[2].toLowerCase();
+        addFact(relation === 'mother' ? namedMother : parentPair[2], match[1], relation, sourceIndex);
+      }
+    }
+    // Likewise, a named person referring to "her/his sister" or brother is
+    // accepted only when another named roster person appears earlier in that
+    // same message. The nearest explicit name supplies the antecedent; no
+    // global pronoun memory or surname heuristic is involved.
+    for (const match of text.matchAll(/\b([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\b[^.!?]{0,180}\b(?:her|his)\s+(sister|brother|sibling)\b/gi)) {
+      const subject = resolveExplicitParticipant(match[1]);
+      if (!['resolved', 'explicit_named_chat_participant'].includes(subject.status)) continue;
+      const antecedent = nearestNamedRosterPeople(text, match.index, roster, 240)
+        .find((candidate) => candidate.entry.canonicalName !== subject.canonicalName)?.entry;
+      if (antecedent) addFact(subject.canonicalName, antecedent.canonicalName, match[2], sourceIndex);
+    }
+    for (const match of text.matchAll(/\b([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\b[^.!?]{0,180}\b(?:her|his)\s+(mother|father)\b/gi)) {
+      const subject = resolveExplicitParticipant(match[1]);
+      if (!['resolved', 'explicit_named_chat_participant'].includes(subject.status)) continue;
+      const antecedent = nearestNamedRosterPeople(text, match.index, roster, 240)
+        .find((candidate) => candidate.entry.canonicalName !== subject.canonicalName)?.entry;
+      if (antecedent) addFact(antecedent.canonicalName, subject.canonicalName, match[2], sourceIndex);
+    }
+    // Do not turn *ungrounded* possessive family pronouns (for example "her
+    // sister") into durable facts. The two bounded forms above require a
+    // named subject and a same-message, explicit named antecedent; anything
+    // else can be clear to a reader yet still be ambiguous in a group
+    // transcript, especially across differing married surnames. Explicit
+    // named family statements are handled separately by the named
+    // grounded/card parsers above.
   }
   return facts;
 }
 
 export function retainKnownProfileRelationships(parsed, characterName, relationshipHistory = {}, roster = [], groundedRecords = [], rawChatMessages = []) {
   const profiles = { ...parsed };
-  const mergePairEvidence = (...candidates) => {
-    const pairs = candidates.filter(Boolean);
-    if (!pairs.length) return null;
-    // A descriptor-only approved history must not hide a more specific direct
-    // type from the same pair (for example raw chat proving "husband"). Keep
-    // supported descriptors while preserving the strongest typed source.
-    const typed = pairs.find((pair) => pair.relationship_type);
-    const relationshipRoleWords = CANONICAL_RELATIONSHIP_ROLE_TOKENS;
-    return {
-      ...pairs[0],
-      relationship_type: typed?.relationship_type ?? null,
-      relationship_type_source: typed?.relationship_type_source ?? pairs[0].relationship_type_source ?? null,
-      relationship_type_confidence_class: typed?.relationship_type_confidence_class ?? pairs[0].relationship_type_confidence_class ?? null,
-      relationship_type_source_ids: typed?.relationship_type_source_ids ?? pairs[0].relationship_type_source_ids ?? [],
-      descriptors: [...new Set(pairs.flatMap((pair) => pair.descriptors ?? []))]
-        .filter((descriptor) => !relationshipRoleWords.has(descriptor)),
-    };
-  };
   const historyPairs = Object.values(relationshipHistory ?? {})
     .map((state) => ({
       subject: String(state?.subject_name ?? '').toLowerCase(),
@@ -450,6 +496,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const descriptorTraces = [];
   const descriptorTerminalOutcomes = [];
   const fieldTerminalOutcomes = [];
+  let rejectedPlaceholder = 0;
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
@@ -465,13 +512,14 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const rawChatPair = rawChatPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
-    const pair = mergePairEvidence(cardPair, historyPair, rawChatPair, groundedPair);
+    const pair = mergeRelationshipPairEvidence(cardPair, historyPair, rawChatPair, groundedPair);
+    const profileRelationshipType = relationshipTypeForProfileTarget(pair, self, entity);
     if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
       rejected.push(line);
       const outcome = { relationship_target: entity, generated_descriptor: status, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: 'rejected_malformed', reason_code: 'invalid_relationship_label', normalization_rule: null };
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
-      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair?.relationship_type ?? null, generated_descriptors: [status], accepted_descriptors: [], rejected_descriptors: [status], preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
+      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType, generated_descriptors: [status], accepted_descriptors: [], rejected_descriptors: [status], preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
       rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'invalid_relationship_label' });
       invalidLabel++;
       return '';
@@ -487,6 +535,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       .replace(/\s*;\s*confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\s*$/ig, '')
       .replace(/\s*\[confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]\s*$/ig, '')
       .trim()).filter(Boolean);
+    const placeholderDescriptors = new Set(['unknown', 'none', 'n/a', 'not specified', 'unsure', 'unclear']);
     // Exact authoritative vocabulary always wins. A synonym is only a fallback
     // for a token that is not already an approved descriptor (for example,
     // authoritative "trusting" must never be rewritten to "open").
@@ -511,10 +560,12 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
           }
           return;
         }
-        const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair.descriptors, disposition: 'rejected_unsupported', reason_code: 'unsupported_relationship_descriptor', normalization_rule: null };
+        const placeholder = placeholderDescriptors.has(token);
+        const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair.descriptors, disposition: placeholder ? 'rejected_placeholder' : 'rejected_unsupported', reason_code: placeholder ? 'placeholder_relationship_descriptor' : 'unsupported_relationship_descriptor', normalization_rule: null };
         descriptorTraces.push(outcome);
         descriptorTerminalOutcomes.push(outcome);
         rejectedDescriptors.push(token);
+        if (placeholder) rejectedPlaceholder++;
       });
       if (accepted.length) {
         // Profiles are a guarded projection, not a relationship-history
@@ -523,10 +574,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
         // A descriptor such as "sister" emitted by the relationship model is
         // not a canonical family type by itself. Only a typed card, grounded
         // source, or explicitly typed approved record may establish that role.
-        fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: accepted, rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: rejectedDescriptors.length ? 'saved_with_partial_descriptors' : 'saved_with_all_descriptors' });
+        fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType, generated_descriptors: descriptorTokens, accepted_descriptors: accepted, rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: rejectedDescriptors.length ? 'saved_with_partial_descriptors' : 'saved_with_all_descriptors' });
         return `${match[1].trim()}: ${pair.descriptors.join(', ')}`;
       }
-      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
+      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: rejectedDescriptors, preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
       rejected.push(line);
       return '';
     }
@@ -541,16 +592,18 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       const outcome = { relationship_target: entity, generated_descriptor: status, normalized_descriptor: precise, authoritative_descriptors: pair.descriptors, disposition: 'accepted_normalized_synonym', reason_code: 'controlled_relationship_type_synonym', normalization_rule: 'controlled_relationship_type_synonym' };
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
-      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair.relationship_type ?? precise, generated_descriptors: [status], accepted_descriptors: [precise], rejected_descriptors: [], preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: 'saved_with_all_descriptors' });
+      fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType ?? precise, generated_descriptors: [status], accepted_descriptors: [precise], rejected_descriptors: [], preserved_authoritative_descriptors: pair.descriptors, final_saved_descriptors: pair.descriptors, field_terminal_outcome: 'saved_with_all_descriptors' });
       return line.replace(/\b(?:partner|family|character|person)\b/i, precise);
     }
     rejected.push(line);
     for (const token of descriptorTokens) {
-      const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: pair ? 'rejected_conflict' : 'rejected_unsupported', reason_code: pair ? 'unsupported_relationship_descriptor' : 'no_authoritative_relationship_pair', normalization_rule: null };
+      const placeholder = placeholderDescriptors.has(token);
+      const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: placeholder ? 'rejected_placeholder' : (pair ? 'rejected_conflict' : 'rejected_unsupported'), reason_code: placeholder ? 'placeholder_relationship_descriptor' : (pair ? 'unsupported_relationship_descriptor' : 'no_authoritative_relationship_pair'), normalization_rule: null };
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
+      if (placeholder) rejectedPlaceholder++;
     }
-    fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: pair?.relationship_type ?? null, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: descriptorTokens, preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
+    fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: descriptorTokens, preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
     rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'unsupported_relationship_descriptor' });
     return '';
   }).filter(Boolean).join('\n');
@@ -578,14 +631,14 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  // text matrix. A role is emitted only from independently grounded pair
  // evidence; descriptor words never establish one.
  const evidencePairs = [cardPairs, historyPairs, groundedPairs, rawChatPairs].flat();
- const evidenceForTarget = (target) => mergePairEvidence(...evidencePairs.filter((pair) =>
+ const evidenceForTarget = (target) => mergeRelationshipPairEvidence(...evidencePairs.filter((pair) =>
  (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)));
  const structuredByTarget = new Map();
  for (const outcome of fieldTerminalOutcomes) {
  const target = String(outcome.relationship_target ?? '').trim().toLowerCase();
  if (!target || structuredByTarget.has(target)) continue;
  const evidence = evidenceForTarget(target);
- const relationshipType = outcome.canonical_relationship_type ?? evidence?.relationship_type ?? null;
+ const relationshipType = outcome.canonical_relationship_type ?? relationshipTypeForProfileTarget(evidence, self, target) ?? null;
  const cleaned = normalizeRelationshipDescriptors(
  outcome.final_saved_descriptors?.length ? outcome.final_saved_descriptors : evidence?.descriptors ?? [],
  relationshipType,
@@ -595,6 +648,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  canonical_relationship_type: relationshipType,
  relationship_type_source: relationshipType ? (evidence?.relationship_type_source ?? 'unresolved') : 'unresolved',
  relationship_type_source_id: relationshipType ? (evidence?.relationship_type_source_ids?.[0] ?? null) : null,
+ relationship_type_direction: relationshipType ? (evidence?.subject === target ? 'target_to_profile' : 'profile_to_target_inverted') : null,
  relationship_type_confidence_class: relationshipType ? (evidence?.relationship_type_confidence_class ?? 'unresolved') : 'unresolved',
  relationship_descriptors: cleaned.descriptors,
  role_tokens_removed_from_descriptors: cleaned.removed,
@@ -609,9 +663,38 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  const profile_role_tokens_removed = relationship_matrix_structured.reduce((count, entry) => count + entry.role_tokens_removed_from_descriptors.length, 0);
  const profile_fields_migrated_for_role_separation = relationship_matrix_structured.filter((entry) => entry.role_tokens_removed_from_descriptors.length).length;
  return { profiles: { ...profiles, relationship_matrix_structured }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
- const entry = structuredByTarget.get(String(outcome.relationship_target ?? '').toLowerCase());
- return entry ? { ...outcome, canonical_relationship_type: entry.canonical_relationship_type, relationship_type_source: entry.relationship_type_source, relationship_type_source_id: entry.relationship_type_source_id, relationship_type_confidence_class: entry.relationship_type_confidence_class, role_tokens_removed_from_descriptors: entry.role_tokens_removed_from_descriptors, final_saved_descriptors: entry.relationship_descriptors } : outcome;
- }), normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_migrated_for_role_separation };
+ const target = String(outcome.relationship_target ?? '').toLowerCase();
+ const entry = structuredByTarget.get(target);
+ const evidence = evidenceForTarget(target);
+ const terminal = entry?.canonical_relationship_type
+   ? 'resolved'
+   : evidence ? 'unresolved_ambiguous'
+     : outcome.field_terminal_outcome === 'dropped_no_supported_descriptors' ? 'unresolved_no_evidence' : 'rejected_unsafe_inference';
+ const candidateEvidence = evidence ? [{
+   canonical_relationship_type: relationshipTypeForProfileTarget(evidence, self, target) ?? null,
+   relationship_type_source: evidence.relationship_type_source ?? null,
+   relationship_type_source_id: evidence.relationship_type_source_ids?.[0] ?? null,
+   relationship_type_direction: evidence.subject === target ? 'target_to_profile' : 'profile_to_target_inverted',
+   relationship_descriptors: evidence.descriptors ?? [],
+ }] : [];
+ const rejectedEvidence = (outcome.rejected_descriptors ?? []).map((descriptor) => ({ descriptor, reason_code: terminal === 'unresolved_no_evidence' ? 'no_authoritative_relationship_pair' : 'unsupported_relationship_descriptor' }));
+ return {
+   ...outcome,
+   canonical_relationship_type: entry?.canonical_relationship_type ?? outcome.canonical_relationship_type ?? null,
+   relationship_type_source: entry?.relationship_type_source ?? (evidence?.relationship_type_source ?? null),
+   relationship_type_source_id: entry?.relationship_type_source_id ?? (evidence?.relationship_type_source_ids?.[0] ?? null),
+   relationship_type_direction: entry?.relationship_type_direction ?? (evidence ? (evidence.subject === target ? 'target_to_profile' : 'profile_to_target_inverted') : null),
+   relationship_type_confidence_class: entry?.relationship_type_confidence_class ?? (evidence?.relationship_type_confidence_class ?? null),
+   candidate_evidence: candidateEvidence,
+   rejected_evidence: rejectedEvidence,
+   terminal_outcome: terminal,
+   relationship_type_candidate_evidence: candidateEvidence,
+   relationship_type_rejected_evidence: rejectedEvidence,
+   relationship_type_terminal_outcome: terminal,
+   role_tokens_removed_from_descriptors: entry?.role_tokens_removed_from_descriptors ?? [],
+   final_saved_descriptors: entry?.relationship_descriptors ?? outcome.final_saved_descriptors,
+ };
+ }), normalized, invalid_label: invalidLabel, rejected_placeholder: rejectedPlaceholder, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_migrated_for_role_separation };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
@@ -680,6 +763,17 @@ export async function generateProfiles(characterName, abortCheck = null, options
 
   const profileContext = getContext();
   const roster = buildCanonicalCharacterRoster(profileContext);
+  // The active group roster deliberately excludes inactive cards, but an
+  // already-grounded character entity may still be a named relationship
+  // target. Add it only as reference evidence; it never changes group-card
+  // injection, policy, or identity ownership.
+  const relationshipRoster = {
+    ...roster,
+    characters: [...(roster.characters ?? []), ...entityRegistry
+      .filter((entry) => entry?.type === 'character' && entry?.name)
+      .filter((entry) => !(roster.characters ?? []).some((card) => card.canonicalName?.toLowerCase() === String(entry.name).toLowerCase()))
+      .map((entry) => ({ canonicalName: String(entry.name), canonical_id: entry.canonical_id ?? entry.canonical_card_id ?? `grounded:${String(entry.name).toLowerCase()}`, aliases: [], source: 'grounded-entity-registry', source_type: 'grounded-entity-registry' }))],
+  };
   const rawChatMessages = profileContext.chat ?? [];
   const profileCardId = roster.characters?.find((entry) => entry.canonicalName === characterName)?.id ?? null;
   const emitTerminal = (detail = {}) => options.onTerminal?.({
@@ -848,10 +942,10 @@ export async function generateProfiles(characterName, abortCheck = null, options
     // authority for durable relationship labels such as spouse or ex-spouse.
     // Only directly grounded memory records, card facts, and Relationship
     // History may validate the profile relationship matrix.
-    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages);
+    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
     parsed = relationshipCheck.profiles;
     if (relationshipCheck.rejected.length) {
-      const priorRelationshipCheck = retainKnownProfileRelationships(priorProfiles ?? {}, characterName, relationshipHistory, roster, groundedRelationshipRecords, rawChatMessages);
+      const priorRelationshipCheck = retainKnownProfileRelationships(priorProfiles ?? {}, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
       const priorMatrix = String(priorRelationshipCheck.profiles.relationship_matrix ?? '').trim();
       if (priorMatrix) {
         parsed.relationship_matrix = priorMatrix;

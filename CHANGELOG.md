@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.46] - 2026-07-28
+
+### Added
+
+- Added bounded multi-run scene diagnostics for exact and shift-tolerant
+  consensus, run-presence accounting, scene-count mode ties, terminal gate
+  accounting, all-run candidate stability, and reconciliation idempotence.
+- Added dependency-free structured profile-role utilities with direct coverage
+  for role persistence, descriptor separation, directional role handling, and
+  typed-evidence precedence.
+
+### Fixed
+
+- Restored canonical profile relationship types from supported card,
+  Relationship History, grounded-memory, and bounded raw-chat evidence while
+  retaining source, direction, candidate, rejection, and terminal diagnostics.
+- Preserved explicit named family facts from raw chat without allowing
+  pronoun-only, cross-message, or surname-based family inference.
+- Fixed coordinated named-family parsing so two explicitly named people are
+  stored as separate participants rather than a combined false identity.
+- Stopped bounded parent-pair handling from completing one person's name with
+  another person's surname, protecting couples and relatives with different
+  surnames.
+
+### Tests
+
+- Added regression coverage for scene-stability diagnostics, deterministic
+  gate hashing, structured profile-role migration, explicit family statements,
+  possessive family forms, coordinated participants, and unsafe inference
+  rejection.
+
 ## [0.8.45] - 2026-07-27
 
 ### Added
