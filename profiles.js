@@ -472,6 +472,18 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const cardPairs = extractCardRelationshipFacts(roster);
   const groundedPairs = extractGroundedRelationshipFacts(groundedRecords, roster);
   const rawChatPairs = extractRawChatRelationshipFacts(rawChatMessages, roster);
+  // Keep the diagnostic compact and privacy-safe: counts and source classes
+  // explain why a role may be accepted without exporting card text, memory
+  // text, or raw chat.  This also makes an absence of usable evidence
+  // distinguishable from a parser/model omission.
+  const relationship_evidence_coverage = {
+    card_fact_pairs: cardPairs.length,
+    approved_history_pairs: historyPairs.length,
+    grounded_memory_pairs: groundedPairs.length,
+    bounded_raw_chat_pairs: rawChatPairs.length,
+    total_pairs: cardPairs.length + historyPairs.length + groundedPairs.length + rawChatPairs.length,
+    source_precedence: ['card_fact', 'approved_relationship_history', 'grounded_source_evidence', 'grounded_raw_chat_evidence'],
+  };
   if (!historyPairs.length && !cardPairs.length && !groundedPairs.length && !rawChatPairs.length) {
     const lines = String(profiles.relationship_matrix ?? '').split('\n').filter(Boolean);
     const descriptor_terminal_outcomes = lines.flatMap((line) => String(line).split(':').slice(1).join(':').split(',').map((value) => value.trim()).filter(Boolean).map((descriptor) => ({
@@ -486,7 +498,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       accepted_descriptors: [], rejected_descriptors: [], preserved_authoritative_descriptors: [], final_saved_descriptors: [],
       field_terminal_outcome: 'dropped_no_supported_descriptors',
     }));
-    return { profiles: { ...profiles, relationship_matrix: '' }, rejected: lines, rejection_details: [], descriptor_traces: descriptor_terminal_outcomes, descriptor_terminal_outcomes, field_terminal_outcomes };
+    return { profiles: { ...profiles, relationship_matrix: '' }, rejected: lines, rejection_details: [], descriptor_traces: descriptor_terminal_outcomes, descriptor_terminal_outcomes, field_terminal_outcomes, relationship_evidence_coverage };
   }
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
@@ -697,7 +709,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    role_tokens_removed_from_descriptors: entry?.role_tokens_removed_from_descriptors ?? [],
    final_saved_descriptors: entry?.relationship_descriptors ?? outcome.final_saved_descriptors,
  };
- }), normalized, invalid_label: invalidLabel, rejected_placeholder: rejectedPlaceholder, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_migrated_for_role_separation };
+ }), normalized, invalid_label: invalidLabel, rejected_placeholder: rejectedPlaceholder, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_migrated_for_role_separation, relationship_evidence_coverage };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
