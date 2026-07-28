@@ -967,6 +967,23 @@
 
 /* ── Model test ──────────────────────────────────────────────────────────── */
 
+#smart_memory_enhanced_settings .sme_idempotence_result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--SmartReplyColor, #777);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--black30a, #222) 88%, transparent);
+  line-height: 1.45;
+}
+
+#smart_memory_enhanced_settings .sme_idempotence_result.sme_idempotence_pass {
+  border-color: #4d9b68;
+}
+
+#smart_memory_enhanced_settings .sme_idempotence_result.sme_idempotence_attention {
+  border-color: #c18a36;
+}
+
 #smart_memory_enhanced_settings .sme_model_test_result {
   display: flex;
   flex-direction: column;

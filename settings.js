@@ -4838,6 +4838,33 @@ export function bindSettingsUI(ctrl) {
       $('#sme_scene_stability').toggle($(this).prop('checked'));
       saveSettingsDebounced();
     });
+  const renderIdempotenceResult = (result) => {
+    const panel = $('#sme_idempotence_result');
+    if (!result || typeof result !== 'object') {
+      panel.hide().empty();
+      return;
+    }
+    const passed = result.idempotent === true;
+    const unresolved = result.idempotent === false;
+    const firstLogical = Number(result.first_pass_logical_mutations ?? 0);
+    const firstPhysical = Number(result.first_pass_physical_mutations ?? 0);
+    const secondLogical = Number(result.second_pass_logical_mutations ?? 0);
+    const secondPhysical = Number(result.second_pass_physical_mutations ?? 0);
+    const stale = Number(result.stale_references_after_second_pass ?? 0);
+    const recreated = Number(result.recreated_after_prior_repair ?? 0);
+    panel
+      .removeClass('sme_idempotence_pass sme_idempotence_attention')
+      .addClass(passed ? 'sme_idempotence_pass' : 'sme_idempotence_attention')
+      .empty()
+      .append($('<strong>').text(passed ? 'Idempotence check passed' : unresolved ? 'Idempotence check needs attention' : 'Idempotence check incomplete'))
+      .append($('<div>').text(`First pass: ${firstLogical} logical and ${firstPhysical} physical changes.`))
+      .append($('<div>').text(`Second pass: ${secondLogical} logical and ${secondPhysical} physical changes; ${stale} stale references; ${recreated} recreated links.`))
+      .append($('<small>').text(passed
+        ? 'The second pass made no changes, so canonical reconciliation is stable for the current chat state.'
+        : 'Do not start a long generation yet. Export diagnostics or inspect the current chat state before retrying.'))
+      .show();
+  };
+  renderIdempotenceResult(getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check);
   $('#sme_run_idempotence_check').on('click', async function () {
     const button = $(this);
     const characterName = ctrl.getSelectedCharacterName();
@@ -4855,10 +4882,12 @@ export function bindSettingsUI(ctrl) {
         context.chatMetadata[META_KEY].developer_idempotence_check = reconciliation.idempotence;
         await saveChatMetadata(context);
       }
+      renderIdempotenceResult(reconciliation.idempotence);
       const result = reconciliation.idempotence?.idempotent === true ? 'passed' : 'found remaining changes';
       setStatusMessage(`Developer idempotence check ${result}.`);
     } catch (error) {
       smLog('[Smart Memory Enhanced] Developer idempotence check failed:', error);
+      renderIdempotenceResult({ idempotent: null });
       setStatusMessage('Developer idempotence check failed. See the browser console.');
     } finally {
       button.prop('disabled', false);
