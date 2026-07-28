@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.47] - 2026-07-28
+
+### Fixed
+
+- Fixed incremental Short-Term Memory compaction bypassing the configured
+  connection-profile context-window budget. Long updates are now summarized in
+  bounded rolling passes, just like an initial full-chat compaction, so a
+  request never intentionally exceeds the configured context window.
+- Improved connection-profile failure handling. Wrapped provider errors now
+  retain bounded nested cause and HTTP-status information in exported
+  diagnostics, and opaque request failures are retried while explicit bad
+  requests and context-limit errors remain non-retryable.
+
+### Tests
+
+- Added regression coverage that verifies context-window enforcement for both
+  initial and incremental compaction, plus nested provider-error diagnostics
+  and opaque-request retry handling.
+
 ## [0.8.46] - 2026-07-28
 
 ### Added
