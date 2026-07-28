@@ -266,7 +266,10 @@ async function runFinalIntegrityReconciliation(characterName) {
   const firstPassRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
   const firstPassOutputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
   result.idempotence = {
+    available: true,
     attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging),
+    enabled_by: extension_settings[MODULE_NAME]?.verbose_logging ? 'developer_verbose_logging' : null,
+    not_attempted_reason: extension_settings[MODULE_NAME]?.verbose_logging ? null : 'developer_check_disabled',
     pass_count: 1,
     first_pass_input_hash: firstPassInputHash,
     first_pass_output_hash: firstPassOutputHash,
