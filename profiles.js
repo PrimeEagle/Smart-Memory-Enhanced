@@ -224,13 +224,14 @@ export function extractCardRelationshipFacts(roster = []) {
     const subject = resolve(subjectName);
     const target = resolve(targetName);
     if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) return;
+    const isPersonaFact = entry?.source === 'user-persona' || entry?.source_type === 'user-persona';
     facts.push({
       subject: subject.canonicalName.toLowerCase(),
       target: target.canonicalName.toLowerCase(),
       relationship_type: relationshipType.toLowerCase(),
-      relationship_type_source: 'card_fact',
+      relationship_type_source: isPersonaFact ? 'persona_fact' : 'card_fact',
       relationship_type_confidence_class: 'authoritative',
-      relationship_type_source_ids: [`card:${entry?.canonical_id ?? entry?.canonical_card_id ?? entry?.canonicalName ?? 'unknown'}`],
+      relationship_type_source_ids: [`${isPersonaFact ? 'persona' : 'card'}:${entry?.canonical_id ?? entry?.canonical_card_id ?? entry?.canonicalName ?? 'unknown'}`],
       relationship_type_direction: 'subject_to_target',
       descriptors: [relationshipType.toLowerCase()],
     });
@@ -477,12 +478,13 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   // text, or raw chat.  This also makes an absence of usable evidence
   // distinguishable from a parser/model omission.
   const relationship_evidence_coverage = {
-    card_fact_pairs: cardPairs.length,
+    card_fact_pairs: cardPairs.filter((pair) => pair.relationship_type_source === 'card_fact').length,
+    persona_fact_pairs: cardPairs.filter((pair) => pair.relationship_type_source === 'persona_fact').length,
     approved_history_pairs: historyPairs.length,
     grounded_memory_pairs: groundedPairs.length,
     bounded_raw_chat_pairs: rawChatPairs.length,
     total_pairs: cardPairs.length + historyPairs.length + groundedPairs.length + rawChatPairs.length,
-    source_precedence: ['card_fact', 'approved_relationship_history', 'grounded_source_evidence', 'grounded_raw_chat_evidence'],
+    source_precedence: ['card_fact', 'persona_fact', 'approved_relationship_history', 'grounded_source_evidence', 'grounded_raw_chat_evidence'],
   };
   if (!historyPairs.length && !cardPairs.length && !groundedPairs.length && !rawChatPairs.length) {
     const lines = String(profiles.relationship_matrix ?? '').split('\n').filter(Boolean);

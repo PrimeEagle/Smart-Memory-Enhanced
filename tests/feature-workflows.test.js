@@ -582,7 +582,7 @@ test('grounded relationship parsing accepts explicit named possessive facts with
 test('explicit card-owner family facts retain source provenance and target-relative role direction', () => {
   const profiles = read('profiles.js');
   assert.match(profiles, /Mother of Alex Rivera and Jamie Rivera/);
-  assert.match(profiles, /relationship_type_source_ids: \[`card:/);
+  assert.match(profiles, /isPersonaFact \? 'persona' : 'card'/);
   assert.match(profiles, /relationshipTypeForProfileTarget/);
   assert.match(profiles, /profile_to_target_inverted/);
   assert.match(profiles, /candidate_evidence/);
@@ -610,8 +610,9 @@ test('profile relationship validation can use bounded raw-chat speaker context',
   const profiles = read('profiles.js');
   assert.match(profiles, /extractRawChatRelationshipFacts/);
   assert.match(profiles, /grounded_raw_chat_evidence/);
+  assert.match(profiles, /persona_fact/);
   assert.match(profiles, /relationship_evidence_coverage/);
-  assert.match(profiles, /source_precedence: \['card_fact', 'approved_relationship_history', 'grounded_source_evidence', 'grounded_raw_chat_evidence'\]/);
+  assert.match(profiles, /source_precedence: \['card_fact', 'persona_fact', 'approved_relationship_history', 'grounded_source_evidence', 'grounded_raw_chat_evidence'\]/);
   assert.ok(profiles.includes("you\\\\s+are|you're|you've\\\\s+been"));
   assert.match(profiles, /nearestNamedRosterPeople/);
   assert.match(profiles, /Do not turn \*ungrounded\* possessive family pronouns/);
