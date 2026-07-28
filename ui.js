@@ -2144,12 +2144,36 @@ export async function reconcileCanonicalEntities(characterName) {
       : crossStoreEntityMerges || localRelationshipPairsMerged || persistentRelationshipPairsMerged
         ? 'repaired'
         : 'clean';
+  const repairOriginSummary = textIdentityMismatches.reduce((summary, repair) => {
+    if (repair.origin_classification === 'created_current_run') summary.current_run_generated++;
+    else if (repair.origin_classification === 'preexisting_confirmed') summary.known_legacy++;
+    else if (repair.origin_classification === 'preexisting_origin_unknown') summary.preexisting_origin_unknown++;
+    else if (repair.origin_classification === 'previously_quarantined') summary.reobserved_no_mutation++;
+    return summary;
+  }, {
+    current_run_generated: 0,
+    preexisting_origin_unknown: 0,
+    known_legacy: 0,
+    new_records_same_logical_issue: 0,
+    reobserved_no_mutation: entityLinkRepairs.reobserved_already_repaired,
+    cross_store_only_mutations: 0,
+  });
+  const repairRecurrenceGroups = Object.values(textIdentityMismatches.reduce((groups, repair) => {
+    const key = [repair.canonical_entity_identity, repair.store, repair.reference_field_path ?? 'entities', repair.detected_invalid_reason, repair.link_created_stage ?? 'unknown'].join('|');
+    const group = groups[key] ?? { recurrence_key: key, canonical_entity_identity: repair.canonical_entity_identity, record_type: repair.store, reference_field_path: repair.reference_field_path ?? 'entities', repair_reason: repair.detected_invalid_reason, source_creation_stage: repair.link_created_stage ?? 'unknown', repair_count: 0, record_ids: [] };
+    group.repair_count++;
+    if (repair.record_id && !group.record_ids.includes(repair.record_id)) group.record_ids.push(repair.record_id);
+    groups[key] = group;
+    return groups;
+  }, {}));
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
     repaired_stale_entity_references: repairedStaleEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
     text_link_repair_counters: textLinkRepairCounters,
     entity_link_repairs: entityLinkRepairs,
+    repair_origin_summary: repairOriginSummary,
+    repair_recurrence_groups: repairRecurrenceGroups,
     card_identity_mismatches: cardIdentityMismatches,
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,

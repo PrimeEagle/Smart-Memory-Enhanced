@@ -645,6 +645,9 @@ test('entity repair status counts current durable mutations separately from repe
   const ui = read('ui.js');
   const settings = read('settings.js');
   assert.match(ui, /actual_logical_mutations_this_run/);
+  assert.match(ui, /repair_origin_summary/);
+  assert.match(ui, /repair_recurrence_groups/);
+  assert.match(ui, /origin_classification/);
   assert.match(ui, /physical_store_mutations_this_run/);
   assert.match(ui, /reobserved_already_repaired/);
   assert.match(ui, /reobserved_previously_quarantined/);
