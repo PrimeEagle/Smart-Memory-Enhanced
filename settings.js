@@ -4259,10 +4259,33 @@ export function bindSettingsUI(ctrl) {
       diagnostics.scene_stability_history = runResult.sceneDetection
         ? updateSceneStabilityHistory(sceneStabilityHistory, runResult.sceneDetection)
         : sceneStabilityHistory.slice(-5);
+      const repairs = runResult.finalReconciliation?.integrity_audit?.entity_link_repairs ?? {};
+      const priorRepairHistory = catchUpContext.chatMetadata[META_KEY].repair_history ?? [];
+      const currentRepairSummary = {
+        run_id: catchUpRunId,
+        logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
+        physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
+        current_run_generated_invalid_links: repairs.invalid_links_created_current_run ?? 0,
+        origin_unknown_repairs: repairs.origin_unknown_invalid_links_repaired ?? 0,
+        recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
+      };
+      const previousRepairSummary = priorRepairHistory.at(-1) ?? null;
+      const repairVolumeDelta = previousRepairSummary
+        ? currentRepairSummary.logical_mutations - Number(previousRepairSummary.logical_mutations ?? 0)
+        : null;
+      diagnostics.repair_history = [...priorRepairHistory.filter((entry) => entry?.run_id !== catchUpRunId), currentRepairSummary].slice(-5);
+      diagnostics.repair_volume_changed = repairVolumeDelta !== null && repairVolumeDelta !== 0;
+      diagnostics.repair_volume_delta = repairVolumeDelta;
+      diagnostics.repair_volume_change_reason = repairVolumeDelta === null
+        ? 'no_prior_comparable_repair_summary'
+        : repairVolumeDelta === 0 ? 'unchanged_logical_repair_volume'
+          : repairVolumeDelta > 0 ? 'increased_logical_repair_volume'
+            : 'decreased_logical_repair_volume';
       catchUpContext.chatMetadata[META_KEY].last_catchup_run_id = catchUpRunId;
       delete catchUpContext.chatMetadata[META_KEY].active_catchup_run_id;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
+      catchUpContext.chatMetadata[META_KEY].repair_history = diagnostics.repair_history;
       latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
