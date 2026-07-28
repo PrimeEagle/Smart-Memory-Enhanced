@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.48] - 2026-07-28
+
+### Fixed
+
+- Fixed a late-stage compaction failure when a single chat message was larger
+  than the safe connection-profile input budget. Oversized messages are now
+  split at verified safe boundaries and summarized sequentially, preserving
+  their complete ordered content without issuing an over-limit request.
+
+### Tests
+
+- Extended compaction budget regression coverage for safe splitting of one
+  oversized message.
+
 ## [0.8.47] - 2026-07-28
 
 ### Fixed
