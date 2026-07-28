@@ -256,7 +256,11 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
        gate_reason_code: candidate.gate_reason_code ?? null,
        ai_confidence: candidate.ai_confidence ?? null,
        gate_input_hash: candidate.gate_input_hash ?? null,
-       gate_output_hash: candidate.gate_output_hash ?? null,
+       // New privacy-safe snapshots retain the gate result/reason rather than
+       // an implementation-specific output hash. Derive the same stable
+       // comparison value when the legacy hash is absent.
+       gate_output_hash: candidate.gate_output_hash
+         ?? JSON.stringify([candidate.gate_result ?? null, candidate.gate_reason_code ?? null, candidate.terminal_break_disposition ?? null]),
        context_hash: contextByCandidate.get(candidateId) ?? null,
      });
    }

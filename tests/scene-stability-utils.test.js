@@ -152,3 +152,13 @@ test('missing candidate snapshots leave variance and gate determinism explicitly
   assert.equal(result.gate_determinism_coverage.result_conclusive, false);
   assert.deepEqual(result.scene_stability_incomplete_reasons, ['missing_candidate_history']);
 });
+
+test('compact snapshots verify gate determinism from retained result fields', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [], candidate_detail_available: true };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }] },
+  ], { ...shared, run_id: 'two', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_result: 'rejected', gate_reason_code: 'same_continuous_interaction', terminal_break_disposition: 'rejected_deterministic_gate' }] });
+  assert.equal(result.gate_determinism_coverage.comparisons_completed, 1);
+  assert.equal(result.gate_determinism_coverage.result_conclusive, true);
+  assert.equal(result.gate_determinism_violation_count, 1);
+});
