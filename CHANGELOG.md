@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.51] - 2026-07-28
+
+### Added
+
+- Added a persistent, in-panel result card for the Developer idempotence
+  check. It reports first- and second-pass logical/physical mutations, stale
+  references, recreated links, and a clear pass/attention interpretation.
+- The most recent compact idempotence result is restored when reopening the
+  extension panel.
+
+### Tests
+
+- Added coverage for the result renderer and its Developer-panel markup.
+
 ## [0.8.50] - 2026-07-28
 
 ### Fixed
