@@ -4259,15 +4259,18 @@ export function bindSettingsUI(ctrl) {
       diagnostics.scene_stability_history = runResult.sceneDetection
         ? updateSceneStabilityHistory(sceneStabilityHistory, runResult.sceneDetection)
         : sceneStabilityHistory.slice(-5);
-      const repairs = runResult.finalReconciliation?.integrity_audit?.entity_link_repairs ?? {};
+      // `repairs` is already used above for the session repair counters in
+      // this catch-up scope. Keep integrity repair accounting distinct so the
+      // module remains parseable during extension activation.
+      const integrityRepairs = runResult.finalReconciliation?.integrity_audit?.entity_link_repairs ?? {};
       const priorRepairHistory = catchUpContext.chatMetadata[META_KEY].repair_history ?? [];
       const currentRepairSummary = {
         run_id: catchUpRunId,
-        logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
-        physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
-        current_run_generated_invalid_links: repairs.invalid_links_created_current_run ?? 0,
-        origin_unknown_repairs: repairs.origin_unknown_invalid_links_repaired ?? 0,
-        recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
+        logical_mutations: integrityRepairs.actual_logical_mutations_this_run ?? 0,
+        physical_mutations: integrityRepairs.actual_physical_store_mutations_this_run ?? 0,
+        current_run_generated_invalid_links: integrityRepairs.invalid_links_created_current_run ?? 0,
+        origin_unknown_repairs: integrityRepairs.origin_unknown_invalid_links_repaired ?? 0,
+        recreated_after_prior_repair: integrityRepairs.recreated_after_prior_repair ?? 0,
       };
       const previousRepairSummary = priorRepairHistory.at(-1) ?? null;
       const repairVolumeDelta = previousRepairSummary

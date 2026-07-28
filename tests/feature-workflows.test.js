@@ -660,6 +660,7 @@ test('entity repair status counts current durable mutations separately from repe
   assert.match(ui, /link_created_run_id/);
   assert.match(ui, /source_candidate_id/);
   assert.match(settings, /entityLinkRepairs\.actual_logical_mutations_this_run/);
+  assert.match(settings, /const integrityRepairs = runResult\.finalReconciliation/);
 });
 
 test('developer tooling exposes a provider-free canonical idempotence check', () => {
