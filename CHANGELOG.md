@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.45] - 2026-07-27
+
+### Added
+
+- Added bounded multi-run scene stability diagnostics with consensus,
+  majority, marginal, one-off, and shifted-boundary reporting.
+- Added terminal confidence accounting separate from retry-attempt observations,
+  plus developer-only finalized-state reconciliation idempotence diagnostics.
+
+### Changed
+
+- Canonical relationship roles are now serialized separately from descriptive
+  relationship state in structured profile data and compatibility text.
+- Scene batch adaptation now backs off and recovers in smaller, less
+  oscillatory steps, with expanded format-repair and batch-history diagnostics.
+
 ## [0.8.44] - 2026-07-27
 
 ### Added

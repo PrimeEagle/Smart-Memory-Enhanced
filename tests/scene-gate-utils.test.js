@@ -22,8 +22,10 @@ test('deterministic scene gate is invariant to request lineage and repeated eval
 test('deterministic scene gate emits stable evidence for each rejection class', () => {
   const insufficient = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40 });
   const tooShort = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 2, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40 });
-  assert.equal(insufficient.gate_reason_code, 'insufficient_change_evidence');
+  assert.equal(insufficient.gate_reason_code, 'same_continuous_interaction');
   assert.equal(insufficient.gate_evidence.continuity_overlap_score, 1);
+  assert.equal(insufficient.gate_evidence.same_continuous_interaction, true);
   assert.equal(tooShort.gate_reason_code, 'minimum_scene_length');
   assert.equal(tooShort.gate_evidence.time_change_detected, true);
+  assert.equal(tooShort.gate_evidence.minimum_scene_length_satisfied, false);
 });

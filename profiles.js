@@ -69,6 +69,50 @@ import { validateCitationSemanticSupport } from './grounding.js';
 // Default staleness threshold: 30 minutes. Profiles generated within this
 // window are considered current and will not be regenerated on chat load.
 const DEFAULT_STALE_THRESHOLD_MS = 30 * 60 * 1000;
+// Relationship roles are structural facts, never descriptive state. Keep this
+// list deliberately shared by validation, migration, serialization, and
+// diagnostics so a role cannot leak through one representation.
+export const CANONICAL_RELATIONSHIP_ROLE_TOKENS = new Set([
+  'husband', 'wife', 'spouse', 'ex-husband', 'ex-wife', 'partner',
+  'sister', 'brother', 'sibling', 'mother', 'father', 'parent',
+  'daughter', 'son', 'sister-in-law', 'brother-in-law', 'sibling-in-law',
+]);
+
+function normalizeRelationshipDescriptors(descriptors = [], canonicalRelationshipType = null) {
+  const tokens = descriptors
+    .map((value) => String(typeof value === 'string' ? value : value?.word ?? '').trim().toLowerCase())
+    .filter(Boolean);
+  const removed = canonicalRelationshipType
+    ? tokens.filter((token) => CANONICAL_RELATIONSHIP_ROLE_TOKENS.has(token))
+    : [];
+  return { descriptors: [...new Set(tokens.filter((token) => !removed.includes(token)))], removed };
+}
+
+function renderRelationshipMatrixLine(target, pair, descriptors = pair?.descriptors ?? []) {
+  const normalized = normalizeRelationshipDescriptors(descriptors, pair?.relationship_type);
+  const role = pair?.relationship_type ? ` [${pair.relationship_type}]` : '';
+  return `${target}${role}: ${normalized.descriptors.join(', ')}`;
+}
+
+/** Idempotently separates known roles from legacy structured profile entries. */
+export function migrateProfileRoleDescriptorSeparation(profile = {}) {
+  const entries = Array.isArray(profile.relationship_matrix_structured)
+    ? profile.relationship_matrix_structured
+    : [];
+  let removed = 0;
+  let migrated = 0;
+  const relationship_matrix_structured = entries.map((entry) => {
+    const role = String(entry?.canonical_relationship_type ?? '').trim().toLowerCase() || null;
+    const cleaned = normalizeRelationshipDescriptors(entry?.relationship_descriptors ?? entry?.descriptors ?? [], role);
+    removed += cleaned.removed.length;
+    if (cleaned.removed.length) migrated++;
+    return { ...entry, canonical_relationship_type: role, relationship_descriptors: cleaned.descriptors };
+  });
+  const relationship_matrix = relationship_matrix_structured.length
+    ? relationship_matrix_structured.map((entry) => renderRelationshipMatrixLine(entry.target, { relationship_type: entry.canonical_relationship_type }, entry.relationship_descriptors)).join('\n')
+    : profile.relationship_matrix;
+  return { profile: { ...profile, relationship_matrix, relationship_matrix_structured }, profile_role_tokens_removed: removed, profile_fields_migrated_for_role_separation: migrated };
+}
 
 // ---- Storage ------------------------------------------------------------
 
@@ -117,6 +161,8 @@ export async function reconcileProfileCanonicalNames(characterName) {
     return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
   }).join('\n');
   next.relationship_matrix = matrix;
+  const migrated = migrateProfileRoleDescriptorSeparation(next);
+  Object.assign(next, migrated.profile);
   if (next.character_state === profiles.character_state && next.world_state === profiles.world_state && next.relationship_matrix === profiles.relationship_matrix) return false;
   next.identity_replacements = deduplicateIdentityDecisions(replacements, 'profile');
   await saveProfiles(next, characterName);
@@ -201,7 +247,7 @@ function rosterEntries(roster) {
 }
 
 function extractCardRelationshipFacts(roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|mother|father|parent|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   for (const entry of rosterEntries(roster)) {
@@ -229,7 +275,7 @@ function extractCardRelationshipFacts(roster = []) {
 }
 
 function extractGroundedRelationshipFacts(records = [], roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sibling|sister|brother|mother|father|daughter|son|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|mother|father|parent|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const facts = [];
   const addFact = (record, subjectName, targetName, relationshipType) => {
@@ -356,8 +402,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // type from the same pair (for example raw chat proving "husband"). Keep
     // supported descriptors while preserving the strongest typed source.
     const typed = pairs.find((pair) => pair.relationship_type);
-    const relationshipRoleWords = new Set(['husband', 'wife', 'ex-husband', 'ex-wife', 'partner', 'sibling', 'sister', 'brother', 'mother', 'father', 'daughter', 'son', 'friend', 'roommate']);
-    const directRoleWords = new Set(pairs.map((pair) => pair.relationship_type).filter(Boolean));
+    const relationshipRoleWords = CANONICAL_RELATIONSHIP_ROLE_TOKENS;
     return {
       ...pairs[0],
       relationship_type: typed?.relationship_type ?? null,
@@ -365,7 +410,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       relationship_type_confidence_class: typed?.relationship_type_confidence_class ?? pairs[0].relationship_type_confidence_class ?? null,
       relationship_type_source_ids: typed?.relationship_type_source_ids ?? pairs[0].relationship_type_source_ids ?? [],
       descriptors: [...new Set(pairs.flatMap((pair) => pair.descriptors ?? []))]
-        .filter((descriptor) => !relationshipRoleWords.has(descriptor) || directRoleWords.has(descriptor)),
+        .filter((descriptor) => !relationshipRoleWords.has(descriptor)),
     };
   };
   const historyPairs = Object.values(relationshipHistory ?? {})
@@ -529,7 +574,44 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       return false;
     }).join('\n').trim();
   }
-  return { profiles, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, field_terminal_outcomes: fieldTerminalOutcomes, normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines };
+  // Persist a structured, role-separated projection alongside the compatible
+ // text matrix. A role is emitted only from independently grounded pair
+ // evidence; descriptor words never establish one.
+ const evidencePairs = [cardPairs, historyPairs, groundedPairs, rawChatPairs].flat();
+ const evidenceForTarget = (target) => mergePairEvidence(...evidencePairs.filter((pair) =>
+ (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)));
+ const structuredByTarget = new Map();
+ for (const outcome of fieldTerminalOutcomes) {
+ const target = String(outcome.relationship_target ?? '').trim().toLowerCase();
+ if (!target || structuredByTarget.has(target)) continue;
+ const evidence = evidenceForTarget(target);
+ const relationshipType = outcome.canonical_relationship_type ?? evidence?.relationship_type ?? null;
+ const cleaned = normalizeRelationshipDescriptors(
+ outcome.final_saved_descriptors?.length ? outcome.final_saved_descriptors : evidence?.descriptors ?? [],
+ relationshipType,
+ );
+ structuredByTarget.set(target, {
+ target,
+ canonical_relationship_type: relationshipType,
+ relationship_type_source: relationshipType ? (evidence?.relationship_type_source ?? 'unresolved') : 'unresolved',
+ relationship_type_source_id: relationshipType ? (evidence?.relationship_type_source_ids?.[0] ?? null) : null,
+ relationship_type_confidence_class: relationshipType ? (evidence?.relationship_type_confidence_class ?? 'unresolved') : 'unresolved',
+ relationship_descriptors: cleaned.descriptors,
+ role_tokens_removed_from_descriptors: cleaned.removed,
+ });
+ }
+ const relationship_matrix_structured = [...structuredByTarget.values()];
+ if (relationship_matrix_structured.length) {
+ profiles.relationship_matrix = relationship_matrix_structured
+ .map((entry) => renderRelationshipMatrixLine(entry.target, { relationship_type: entry.canonical_relationship_type }, entry.relationship_descriptors))
+ .join('\n');
+ }
+ const profile_role_tokens_removed = relationship_matrix_structured.reduce((count, entry) => count + entry.role_tokens_removed_from_descriptors.length, 0);
+ const profile_fields_migrated_for_role_separation = relationship_matrix_structured.filter((entry) => entry.role_tokens_removed_from_descriptors.length).length;
+ return { profiles: { ...profiles, relationship_matrix_structured }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
+ const entry = structuredByTarget.get(String(outcome.relationship_target ?? '').toLowerCase());
+ return entry ? { ...outcome, canonical_relationship_type: entry.canonical_relationship_type, relationship_type_source: entry.relationship_type_source, relationship_type_source_id: entry.relationship_type_source_id, relationship_type_confidence_class: entry.relationship_type_confidence_class, role_tokens_removed_from_descriptors: entry.role_tokens_removed_from_descriptors, final_saved_descriptors: entry.relationship_descriptors } : outcome;
+ }), normalized, invalid_label: invalidLabel, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_migrated_for_role_separation };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */

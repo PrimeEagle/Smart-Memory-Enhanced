@@ -182,7 +182,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     const batch = candidates.slice(offset, offset + adaptiveBatchSize);
     const attemptType = options.attempt_type ?? 'initial_batch';
     const requestAttemptId = lineage.next_attempt_id++;
-    const attempt = { batch_number: diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').length + 1, request_attempt_id: requestAttemptId, root_batch_id: options.root_batch_id ?? requestAttemptId, parent_attempt_id: options.parent_attempt_id ?? null, attempt_type: attemptType, split_depth: Number(options.split_depth ?? 0), candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, requested_output_budget: Math.max(128, batch.length * 32), estimated_required_output_tokens: 32 + (batch.length * 24), request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false };
+    const attempt = { batch_number: diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').length + 1, request_attempt_id: requestAttemptId, root_batch_id: options.root_batch_id ?? requestAttemptId, parent_attempt_id: options.parent_attempt_id ?? null, attempt_type: attemptType, split_depth: Number(options.split_depth ?? 0), candidate_ids_requested: batch.map((candidate) => candidate.candidate_index), candidate_count_requested: batch.length, requested_output_budget: Math.max(128, batch.length * 32), estimated_required_output_tokens: 32 + (batch.length * 24), request_completed: false, provider_error: null, returned_none: false, format_repair_attempted: false, format_repair_succeeded: false, local_normalization_attempts: 0, local_normalization_succeeded: false, provider_repair_required: false, provider_repair_succeeded: false, format_repair_reason: null, original_structural_shape: null, repaired_structural_shape: null, candidate_count_recovered: 0 };
     try {
       diagnostics.requests_sent++;
       diagnostics.total_provider_requests++;
@@ -198,10 +198,15 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
       attempt.request_completed = true; if (!response) { attempt.returned_none = true; throw new Error('Empty scene-boundary batch response.'); }
       let parsed = parseBatch(response, attempt.candidate_ids_requested); Object.assign(attempt, parsed);
+      attempt.local_normalization_attempts = 1;
+      attempt.local_normalization_succeeded = parsed.ok;
+      attempt.original_structural_shape = parsed.top_level_shape ?? null;
       if (!parsed.ok) {
         // One formatting-only retry is intentionally bounded. It receives the
         // model's own malformed response and IDs, never the source chat again.
         attempt.format_repair_attempted = true;
+        attempt.provider_repair_required = true;
+        attempt.format_repair_reason = parsed.parse_error_code ?? 'invalid_structured_output';
         diagnostics.retried_batches++; diagnostics.repair_requests_sent++; diagnostics.requests_sent++; diagnostics.format_repair_requests++; diagnostics.total_provider_requests++;
         const repairAttempt = { request_attempt_id: lineage.next_attempt_id++, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, attempt_type: 'format_repair', split_depth: attempt.split_depth, candidate_ids_requested: attempt.candidate_ids_requested, candidate_count_requested: batch.length, request_completed: false, provider_error: null, returned_none: false };
         try {
@@ -210,7 +215,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
           const repairedParsed = parseBatch(repaired, attempt.candidate_ids_requested);
           if (repairedParsed.ok) {
             parsed = repairedParsed; Object.assign(attempt, repairedParsed);
-            attempt.format_repair_succeeded = true; diagnostics.repair_requests_succeeded++; repairAttempt.terminal_outcome = 'parsed_full';
+            attempt.format_repair_succeeded = true; attempt.provider_repair_succeeded = true; attempt.repaired_structural_shape = repairedParsed.top_level_shape ?? null; attempt.candidate_count_recovered = repairedParsed.valid_decision_count ?? 0; diagnostics.repair_requests_succeeded++; repairAttempt.terminal_outcome = 'parsed_full';
           } else { diagnostics.repair_failures++; repairAttempt.terminal_outcome = 'malformed'; }
         } catch (error) { diagnostics.repair_failures++; repairAttempt.provider_error = String(error?.message ?? error); repairAttempt.terminal_outcome = 'provider_error'; }
         repairAttempt.attempt_terminal_outcome = repairAttempt.terminal_outcome;
@@ -274,16 +279,18 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     const wasPartial = Boolean(attempt.truncated_output_suspected || attempt.terminal_outcome === 'parsed_partial' || attempt.terminal_outcome === 'recovered_after_smaller_batch_retry');
     if (wasPartial && adaptiveBatchSize > 4) {
       const previous = adaptiveBatchSize;
-      adaptiveBatchSize = Math.max(4, Math.min(8, Math.floor(adaptiveBatchSize / 2)));
+      // Back off predictably rather than halving and immediately bouncing
+      // through several sizes on local providers with borderline output caps.
+      adaptiveBatchSize = Math.max(4, adaptiveBatchSize - 2);
       consecutiveFullBatches = 0;
       diagnostics.adaptive_batch_adjustments.push({ reason: 'partial_or_truncated_response', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
     } else if (!wasPartial && attempt.terminal_outcome === 'parsed_full') {
       consecutiveFullBatches++;
       if (consecutiveFullBatches >= 3 && adaptiveBatchSize < batchSize) {
         const previous = adaptiveBatchSize;
-        adaptiveBatchSize = Math.min(batchSize, adaptiveBatchSize + 2);
+        adaptiveBatchSize = Math.min(batchSize, adaptiveBatchSize + 1);
         consecutiveFullBatches = 0;
-        diagnostics.adaptive_batch_adjustments.push({ reason: 'three_full_batches', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
+        diagnostics.adaptive_batch_adjustments.push({ reason: 'three_full_batches_conservative_increase', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
       }
     }
   }
@@ -300,6 +307,50 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     maximum_split_depth: Math.max(0, ...diagnostics.batch_attempts.map((item) => Number(item.split_depth ?? 0))),
     average_attempts_per_root_batch: rootAttempts.length ? Number((diagnostics.total_provider_requests / rootAttempts.length).toFixed(2)) : 0,
   };
+  const rootRequestSizes = rootAttempts.map((item) => item.candidate_count_requested).filter(Boolean);
+  const allRequestSizes = diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').map((item) => item.candidate_count_requested).filter(Boolean);
+  const sizeHistory = [batchSize, ...diagnostics.adaptive_batch_adjustments.map((item) => item.next_batch_size)];
+  diagnostics.starting_batch_size = batchSize;
+  diagnostics.ending_batch_size = adaptiveBatchSize;
+  diagnostics.minimum_batch_size_used = sizeHistory.length ? Math.min(...sizeHistory) : batchSize;
+  diagnostics.maximum_batch_size_used = sizeHistory.length ? Math.max(...sizeHistory) : batchSize;
+  diagnostics.full_root_batches = diagnostics.root_batch_summary.root_batches_full_first_try;
+  diagnostics.partial_root_batches = diagnostics.root_batch_summary.root_batches_partial;
+  diagnostics.format_repaired_root_batches = diagnostics.root_batch_summary.root_batches_repaired;
+  diagnostics.average_candidates_per_root_request = rootRequestSizes.length ? Number((rootRequestSizes.reduce((sum, size) => sum + size, 0) / rootRequestSizes.length).toFixed(2)) : 0;
+  diagnostics.average_candidates_per_total_request = allRequestSizes.length ? Number((allRequestSizes.reduce((sum, size) => sum + size, 0) / diagnostics.total_provider_requests).toFixed(2)) : 0;
+  diagnostics.batch_size_change_count = diagnostics.adaptive_batch_adjustments.length;
+  diagnostics.batch_size_history = sizeHistory;
+  // Attempts may observe the same candidate several times during recovery.
+  // Terminal outcomes intentionally collapse that lineage so every candidate
+  // contributes exactly once to the exported confidence accounting.
+  const terminalByCandidate = new Map();
+  for (const disposition of diagnostics.candidate_dispositions) {
+    terminalByCandidate.set(disposition.candidate_id, disposition);
+  }
+  diagnostics.terminal_candidate_confidence_outcomes = {
+    available: 0,
+    not_returned: 0,
+    invalid: 0,
+  };
+  for (const disposition of terminalByCandidate.values()) {
+    const key = disposition.confidence_status === 'confidence_available'
+      ? 'available'
+      : disposition.confidence_status === 'confidence_invalid'
+        ? 'invalid'
+        : 'not_returned';
+    diagnostics.terminal_candidate_confidence_outcomes[key]++;
+  }
+  diagnostics.attempt_level_confidence_observations = {
+    available: diagnostics.confidence_outcomes.confidence_available ?? 0,
+    not_returned: diagnostics.confidence_outcomes.confidence_not_returned ?? 0,
+    invalid: diagnostics.confidence_outcomes.confidence_invalid ?? 0,
+    removed_during_repair: diagnostics.confidence_outcomes.confidence_removed_during_repair ?? 0,
+  };
+  diagnostics.terminal_confidence_reconciled = [...terminalByCandidate.keys()].length === candidates.length
+    && Object.values(diagnostics.terminal_candidate_confidence_outcomes).reduce((total, count) => total + count, 0) === candidates.length;
+  diagnostics.adaptive_root_requests = diagnostics.initial_batch_requests;
+  diagnostics.multi_candidate_provider_requests = diagnostics.multi_candidate_requests;
   return { decisions: result, diagnostics };
 }
 

@@ -574,7 +574,13 @@ test('model-generated relationship descriptors cannot create a canonical family 
   assert.match(profiles, /canonical_relationship_type: pair\.relationship_type \?\? null/);
   assert.match(profiles, /includes\(pair\?\.relationship_type\)/);
   assert.match(profiles, /relationshipRoleWords/);
-  assert.match(profiles, /directRoleWords\.has\(descriptor\)/);
+  assert.match(profiles, /CANONICAL_RELATIONSHIP_ROLE_TOKENS/);
+});
+
+test('explicit grounded in-law types are supported without family-graph inference', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /sister-in-law\|brother-in-law\|sibling-in-law/);
+  assert.match(profiles, /grounded_source_evidence/);
 });
 
 test('entity repair status counts current durable mutations separately from repeated observations', () => {

@@ -121,7 +121,7 @@ import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import { evaluateDeterministicSceneGate } from './scene-gate-utils.js';
-import { compareSceneBoundaryRuns } from './scene-stability-utils.js';
+import { analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
   PROMPT_TASK_LABELS,
@@ -162,8 +162,12 @@ function diagnosticFingerprint(value) {
 // provider responses.
 function makeSceneStabilitySnapshot(audit = {}) {
   return {
+    run_id: audit.run_id ?? null,
+    created_at: Date.now(),
     run_signature: audit.scene_detection_run_signature ?? null,
     final_break_indices: [...(audit.final_break_indices ?? [])],
+    boundary_count: (audit.final_break_indices ?? []).length,
+    scene_count: audit.generated ?? null,
     generated: audit.generated ?? null,
     prompt_shape_hash: audit.prompt_shape_hash ?? null,
     model_identifier: audit.model_identifier ?? null,
@@ -224,6 +228,24 @@ async function runFinalIntegrityReconciliation(characterName) {
     quarantined_arc_summaries: quarantinedSummaries,
     duration_ms: Math.round(performance.now() - startedAt),
   };
+  // Developer-only exact-state idempotence check. It intentionally runs on
+  // the already-finalized serialized metadata; it does not regenerate records
+  // or introduce new IDs.
+  if (extension_settings[MODULE_NAME]?.verbose_logging) {
+    const inputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+    const secondPass = await reconcileCanonicalEntities(characterName);
+    const outputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+    const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
+    result.idempotence_check = {
+      idempotence_pass_number: 2,
+      input_metadata_hash: inputMetadataHash,
+      output_metadata_hash: outputMetadataHash,
+      logical_mutation_count: repairs.actual_logical_mutations_this_run ?? 0,
+      physical_mutation_count: repairs.actual_physical_store_mutations_this_run ?? 0,
+      recreated_link_count: repairs.recreated_after_prior_repair ?? 0,
+      stale_entity_references: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
+    };
+  }
   if (extension_settings[MODULE_NAME]?.verbose_logging) {
     console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
       duration_ms: result.duration_ms,
@@ -1387,6 +1409,17 @@ export function bindSettingsUI(ctrl) {
     URL.revokeObjectURL(link.href);
   };
   $('#sme_export_diagnostics').prop('disabled', !getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics).on('click', exportCatchUpDiagnostics);
+  const showSceneStability = () => {
+    const report = latestExportDiagnostics ?? getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
+    const stability = report?.sceneDetection?.scene_stability_history;
+    if (!stability) return toastr.info('No comparable scene-run history is available for this chat yet.', 'Smart Memory Enhanced');
+    const yesNo = (value) => value ? 'yes' : 'no';
+    callGenericPopup(
+      `Comparable runs: ${stability.comparable_run_count}\nScene counts: ${(stability.scene_counts ?? []).join(', ') || 'none'}\nScene-count mode: ${stability.scene_count_mode ?? 'n/a'}\nScene-count range: ${stability.scene_count_range ?? 'n/a'}\nConsensus boundaries: ${(stability.stable_consensus_boundaries ?? []).length}\nMajority boundaries: ${(stability.majority_boundaries ?? []).length}\nMarginal boundaries: ${(stability.marginal_boundaries ?? []).length}\nOne-off boundaries: ${(stability.one_off_boundaries ?? []).length}\nShifted clusters: ${(stability.shifted_boundary_clusters ?? []).length}\nPipeline stable: ${yesNo(stability.pipeline_stable)}\nScene count materially stable: ${yesNo(stability.scene_count_materially_stable)}\nBoundary positions materially stable: ${yesNo(stability.boundary_positions_materially_stable)}`,
+      POPUP_TYPE.DISPLAY,
+    );
+  };
+  $('#sme_scene_stability').toggle(Boolean(extension_settings[MODULE_NAME]?.verbose_logging)).on('click', showSceneStability);
   $('#sme_preview_catch_up').on('click', async () => {
     const context = getContext();
     const messages = (context.chat ?? []).filter((message) => message.mes && !message.is_system);
@@ -3599,10 +3632,16 @@ export function bindSettingsUI(ctrl) {
             && priorSceneAudit?.model_identifier === sceneAudit.model_identifier
             && priorSceneAudit?.connection_profile_identifier === sceneAudit.connection_profile_identifier
             && JSON.stringify(priorSceneAudit?.task_sampling_settings) === JSON.stringify(sceneAudit.task_sampling_settings)) ?? null;
+          const stabilityTolerance = Math.max(1, Math.min(4, Number(settings.scene_comparison_tolerance ?? 2)));
           sceneAudit.boundary_comparison = compareSceneBoundaryRuns(
             comparablePriorRun,
             sceneAudit,
-            Math.max(1, Math.min(4, Number(settings.scene_comparison_tolerance ?? 2))),
+            stabilityTolerance,
+          );
+          sceneAudit.scene_stability_history = analyzeSceneStabilityHistory(
+            priorSceneAudits,
+            sceneAudit,
+            stabilityTolerance,
           );
           delete sceneAudit.ai_decisions;
           delete sceneAudit.ai_disposition_by_id;
@@ -4036,7 +4075,18 @@ export function bindSettingsUI(ctrl) {
         recreated_links_repaired: entityLinkRepairs.recreated_after_prior_repair ?? 0,
       };
       const auditStatus = reconciliation.integrity_audit?.status ?? 'failed';
-      const finalState = reconciliation.integrity_audit?.final_state ?? {};
+      const finalState = reconciliation.integrity_audit?.final_state ?? {
+        stale_references: reconciliation.integrity_audit?.stale_entity_references?.length ?? 0,
+        unsafe_merges: reconciliation.integrity_audit?.blocked_unsafe_identity_merges?.length ?? 0,
+        duplicate_canonical_entities: reconciliation.integrity_audit?.duplicate_canonical_entities?.length ?? 0,
+        relationship_integrity_errors: reconciliation.integrity_audit?.relationship_integrity_errors?.length ?? 0,
+        unresolved_review_items_created_this_run: reconciliation.integrity_audit?.review_items_created ?? 0,
+      };
+      finalState.integrity_clean ??= finalState.stale_references === 0
+        && finalState.unsafe_merges === 0
+        && finalState.duplicate_canonical_entities === 0
+        && finalState.relationship_integrity_errors === 0;
+      runResult.finalReconciliation.final_state = finalState;
       const finalIntegrityStatus = finalState.integrity_clean === true
         || (['clean', 'repaired'].includes(auditStatus)
         && (reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) === 0)
@@ -4645,6 +4695,7 @@ export function bindSettingsUI(ctrl) {
     .prop('checked', s.verbose_logging)
     .on('change', function () {
       extension_settings[MODULE_NAME].verbose_logging = $(this).prop('checked');
+      $('#sme_scene_stability').toggle($(this).prop('checked'));
       saveSettingsDebounced();
     });
   $('#sme_scene_comparison_tolerance')

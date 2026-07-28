@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compareSceneBoundaryRuns } from '../scene-stability-utils.js';
+import { analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from '../scene-stability-utils.js';
 
 test('scene comparison classifies exact, shifted, added, and removed boundaries', () => {
   const common = { prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: { temperature: 0 } };
@@ -25,4 +25,20 @@ test('scene comparison matches nearest unmatched boundary within tolerance', () 
   assert.equal(comparison.marginal_boundary_comparison[0].classification, 'shifted');
   assert.equal(comparison.marginal_boundary_comparison[0].cross_candidate_context_equal, false);
   assert.equal(comparison.marginal_boundary_comparison[0].previous_candidate_context_stable_across_runs, false);
+});
+
+test('multi-run stability reports consensus, marginal boundaries, and shifts', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: { temperature: 0 }, malformed_batches: 0, fallback_boundaries: 0 };
+  const current = { ...shared, run_id: 'three', generated: 10, final_break_indices: [20, 50, 80] };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', generated: 9, final_break_indices: [20, 48, 90] },
+    { ...shared, run_id: 'two', generated: 10, final_break_indices: [20, 50, 92] },
+  ], current, 2);
+  assert.equal(result.comparable_run_count, 3);
+  assert.deepEqual(result.stable_consensus_boundaries, [20]);
+  assert.deepEqual(result.majority_boundaries, [20, 50]);
+  assert.deepEqual(result.one_off_boundaries, [48, 80, 90, 92]);
+  assert.equal(result.scene_count_range, 1);
+  assert.equal(result.scene_count_materially_stable, true);
+  assert.ok(result.shifted_boundary_clusters.some((cluster) => cluster.member_indices.includes(48) && cluster.member_indices.includes(50)));
 });

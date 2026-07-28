@@ -90,3 +90,43 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
     ],
   };
 }
+
+/** Analyze every retained run that is comparable to the current scene pass. */
+export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, tolerance = 2) {
+ const compatible = [...runs, currentAudit].filter((run) => run
+ && (run.run_signature ?? run.scene_detection_run_signature) === currentAudit.scene_detection_run_signature
+ && run.prompt_shape_hash === currentAudit.prompt_shape_hash
+ && run.model_identifier === currentAudit.model_identifier
+ && run.connection_profile_identifier === currentAudit.connection_profile_identifier
+ && JSON.stringify(run.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}));
+ const counts = compatible.map((run) => Number(run.scene_count ?? run.generated ?? 0));
+ const frequency = new Map();
+ for (const run of compatible) for (const index of new Set(run.final_break_indices ?? [])) frequency.set(index, (frequency.get(index) ?? 0) + 1);
+ const entries = [...frequency.entries()].sort((a, b) => a[0] - b[0]);
+ const runCount = compatible.length;
+ const boundaries = (predicate) => entries.filter(([, count]) => predicate(count)).map(([index]) => index);
+ const clusters = [];
+ for (const [index, count] of entries) {
+ const cluster = clusters.find((item) => index - item.member_indices.at(-1) <= tolerance);
+ if (cluster) { cluster.member_indices.push(index); cluster.frequency += count; cluster.maximum_offset = cluster.member_indices.at(-1) - cluster.member_indices[0]; }
+ else clusters.push({ cluster_id: `shift-${clusters.length + 1}`, member_indices: [index], representative_index: index, frequency: count, run_presence: count, maximum_offset: 0 });
+ }
+ const mode = counts.length ? [...new Set(counts)].sort((a, b) => counts.filter((x) => x === b).length - counts.filter((x) => x === a).length || a - b)[0] : null;
+ const pipelinesStable = compatible.every((run) => !(run.malformed_batches ?? 0) && !(run.fallback_boundaries ?? run.heuristic_fallback_candidates ?? 0));
+ return {
+ comparable_run_count: runCount,
+ retained_run_ids: compatible.map((run) => run.run_id ?? null), retained_created_at: compatible.map((run) => run.created_at ?? run.completed_at ?? null),
+ scene_counts: counts, boundary_counts: compatible.map((run) => (run.final_break_indices ?? []).length), scene_count_mode: mode,
+ scene_count_min: counts.length ? Math.min(...counts) : null, scene_count_max: counts.length ? Math.max(...counts) : null,
+ scene_count_range: counts.length ? Math.max(...counts) - Math.min(...counts) : null,
+ boundary_frequency_by_index: Object.fromEntries(entries), stable_consensus_boundaries: boundaries((count) => count === runCount),
+ majority_boundaries: boundaries((count) => count > runCount / 2), marginal_boundaries: boundaries((count) => count > 0 && count <= runCount / 2),
+ one_off_boundaries: boundaries((count) => count === 1), shifted_boundary_clusters: clusters.filter((cluster) => cluster.member_indices.length > 1),
+ pipeline_stable: pipelinesStable, scene_count_exactly_stable: new Set(counts).size <= 1,
+ scene_count_materially_stable: counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false,
+ boundary_positions_exactly_stable: entries.every(([, count]) => count === runCount),
+  boundary_positions_materially_stable: entries.every(([index, count]) => count === runCount
+    || clusters.some((cluster) => cluster.member_indices.length > 1 && cluster.member_indices.includes(index))),
+ decision_pipeline_stable: pipelinesStable,
+ };
+}
