@@ -84,3 +84,18 @@ test('named family parser preserves direction for possessive and reverse-possess
     { subject: 'Jamie Rivera', target: 'Alex Rivera', relationship_type: 'brother', source_index: 2 },
   ]);
 });
+
+test('named family parser retains explicit coordinated siblings and generic parents without gender inference', () => {
+  const facts = extractExplicitNamedFamilyCandidates([
+    { mes: 'Taylor Covington and Kyler Covington are sisters.' },
+    { mes: "Margaret Covington and Richard Covington are Taylor Covington and Kyler Covington's parents." },
+  ]);
+  assert.deepEqual(facts, [
+    { subject: 'Taylor Covington', target: 'Kyler Covington', relationship_type: 'sister', source_index: 0 },
+    { subject: 'Kyler Covington', target: 'Taylor Covington', relationship_type: 'sister', source_index: 0 },
+    { subject: 'Margaret Covington', target: 'Taylor Covington', relationship_type: 'parent', source_index: 1 },
+    { subject: 'Richard Covington', target: 'Taylor Covington', relationship_type: 'parent', source_index: 1 },
+    { subject: 'Margaret Covington', target: 'Kyler Covington', relationship_type: 'parent', source_index: 1 },
+    { subject: 'Richard Covington', target: 'Kyler Covington', relationship_type: 'parent', source_index: 1 },
+  ]);
+});

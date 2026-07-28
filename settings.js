@@ -182,13 +182,38 @@ function makeSceneStabilitySnapshot(audit = {}) {
     task_settings_hash: diagnosticFingerprint(JSON.stringify(taskSettings)),
     candidate_context_hashes: audit.candidate_context_hashes ?? [],
     candidate_context_hash_summary: diagnosticFingerprint(JSON.stringify(audit.candidate_context_hashes ?? [])),
-    candidate_dispositions: audit.candidate_dispositions ?? [],
+    // Keep only bounded, privacy-safe terminal facts needed for subsequent
+    // variance and deterministic-gate comparison. No chat or prompt text is
+    // retained in scene history.
+    candidate_detail_available: Array.isArray(audit.candidate_dispositions),
+    candidate_dispositions: (audit.candidate_dispositions ?? []).map((candidate) => ({
+      candidate_id: candidate.candidate_id,
+      message_index: candidate.message_index ?? candidate.candidate_id,
+      decision: typeof candidate.decision === 'boolean' ? candidate.decision : null,
+      ai_confidence: candidate.ai_confidence ?? null,
+      gate_input_hash: candidate.gate_input_hash ?? null,
+      gate_result: candidate.gate_result ?? null,
+      gate_reason_code: candidate.gate_reason_code ?? null,
+      terminal_break_disposition: candidate.terminal_break_disposition ?? null,
+      final_boundary: candidate.terminal_break_disposition === 'accepted_final_break',
+    })),
+    record_source: 'runtime',
+    written_at: createdAt,
+    writer_stage: 'catch_up_finalization',
+    history_schema_version: 2,
     malformed_batches: audit.malformed_batches ?? 0,
     fallback_boundaries: audit.fallback_boundaries ?? 0,
     heuristic_fallback_candidates: audit.heuristic_fallback_candidates ?? 0,
     pipeline_status: audit.pipeline_status ?? ((audit.malformed_batches ?? 0) || (audit.fallback_boundaries ?? 0) ? 'degraded' : 'clean'),
     completed_at: createdAt,
   };
+}
+
+/** Persist one unique finalized scene run; refreshes must not append it twice. */
+function updateSceneStabilityHistory(history = [], audit = {}) {
+  const snapshot = makeSceneStabilitySnapshot(audit);
+  const uniquePrior = (history ?? []).filter((record) => record?.run_id !== snapshot.run_id);
+  return [...uniquePrior, snapshot].slice(-5);
 }
 
 /**
@@ -4229,8 +4254,8 @@ export function bindSettingsUI(ctrl) {
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
       const sceneStabilityHistory = catchUpContext.chatMetadata[META_KEY].scene_stability_history ?? [];
       diagnostics.scene_stability_history = runResult.sceneDetection
-        ? [...sceneStabilityHistory, makeSceneStabilitySnapshot(runResult.sceneDetection)].slice(-3)
-        : sceneStabilityHistory.slice(-3);
+        ? updateSceneStabilityHistory(sceneStabilityHistory, runResult.sceneDetection)
+        : sceneStabilityHistory.slice(-5);
       catchUpContext.chatMetadata[META_KEY].last_catchup_run_id = catchUpRunId;
       delete catchUpContext.chatMetadata[META_KEY].active_catchup_run_id;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;

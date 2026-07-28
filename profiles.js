@@ -512,7 +512,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const rawChatPair = rawChatPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
-    const pair = mergeRelationshipPairEvidence(cardPair, historyPair, rawChatPair, groundedPair);
+    // Source precedence is intentional: direct card facts, approved typed
+    // history, grounded memory, then bounded raw-chat facts. Descriptor-only
+    // values never provide a relationship role.
+    const pair = mergeRelationshipPairEvidence(cardPair, historyPair, groundedPair, rawChatPair);
     const profileRelationshipType = relationshipTypeForProfileTarget(pair, self, entity);
     if (/^\s*(?:character|person|npc|user|persona|entity|unknown relationship)\b/i.test(status)) {
       rejected.push(line);

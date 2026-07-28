@@ -113,3 +113,42 @@ test('all-run candidate analysis separates AI, gate, and final-assembly variance
   assert.equal(result.gate_determinism_violation_count, 0);
   assert.deepEqual(result.gate_determinism_violations, []);
 });
+
+test('duplicate runtime records are removed before scene statistics and clustering', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, candidate_dispositions: [], candidate_detail_available: false };
+  const repeated = { ...shared, run_id: 'one', generated: 3, final_break_indices: [10, 20] };
+  const result = analyzeSceneStabilityHistory([
+    repeated,
+    { ...repeated },
+    { ...shared, run_id: 'two', generated: 3, final_break_indices: [10, 22] },
+  ], { ...shared, run_id: 'three', generated: 3, final_break_indices: [10, 22] }, 2);
+  assert.equal(result.scene_run_input_accounting.duplicate_run_records_removed, 1);
+  assert.equal(result.scene_run_input_accounting.distinct_total_run_count, 3);
+  assert.deepEqual(result.scene_run_input_accounting.duplicate_runtime_run_ids, ['one']);
+  assert.equal(result.exact_boundary_frequency_by_index[10], 3);
+  assert.equal(result.shifted_boundary_clusters.find((cluster) => cluster.member_indices.includes(20)).distinct_run_count, 3);
+  assert.equal(result.prior_summary_invalidated_by_duplicate_runs, true);
+});
+
+test('exact duplicate boundaries are normalized while nearby boundaries remain distinct', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, candidate_dispositions: [], candidate_detail_available: false };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', generated: 4, final_break_indices: [10, 20, 20, 48] },
+  ], { ...shared, run_id: 'two', generated: 4, final_break_indices: [10, 20, 48] });
+  const normalized = result.run_boundary_normalization.find((run) => run.run_id === 'one');
+  assert.equal(normalized.raw_boundary_count, 4);
+  assert.equal(normalized.normalized_boundary_count, 3);
+  assert.deepEqual(normalized.duplicate_boundary_indices_removed, [20]);
+  assert.equal(result.exact_boundary_frequency_by_index[20], 2);
+});
+
+test('missing candidate snapshots leave variance and gate determinism explicitly incomplete', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [] };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'legacy', candidate_detail_available: false },
+  ], { ...shared, run_id: 'current', candidate_detail_available: true, candidate_dispositions: [{ candidate_id: 1, decision: false }] });
+  assert.equal(result.candidate_variance_analysis_complete, false);
+  assert.equal(result.scene_variance_sources, null);
+  assert.equal(result.gate_determinism_coverage.result_conclusive, false);
+  assert.deepEqual(result.scene_stability_incomplete_reasons, ['missing_candidate_history']);
+});

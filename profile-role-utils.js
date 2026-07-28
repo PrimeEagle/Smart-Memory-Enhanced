@@ -95,6 +95,22 @@ export function extractExplicitNamedFamilyCandidates(messages = []) {
       add(match[4], match[1], match[3], sourceIndex);
       add(match[4], match[2], match[3], sourceIndex);
     }
+    // Explicit coordinated sibling wording: every participant is independently
+    // named, so it cannot create an identity merge or pronoun-based role.
+    for (const match of text.matchAll(new RegExp(`\\b(${namePattern}?)\\s+and\\s+(${namePattern}?)\\s+(?:are|were)\\s+(?:the\\s+)?(sisters|brothers|siblings)\\b`, 'gi'))) {
+      const role = ({ sisters: 'sister', brothers: 'brother', siblings: 'sibling' })[match[3].toLowerCase()];
+      add(match[1], match[2], role, sourceIndex);
+      add(match[2], match[1], role, sourceIndex);
+    }
+    // Coordinated parents remain generic unless the source itself identifies
+    // mother/father. Names and shared surnames are never treated as gender
+    // evidence; the generic parent role is still a safe durable fact.
+    for (const match of text.matchAll(new RegExp(`\\b(${namePattern}?)\\s+and\\s+(${namePattern}?)\\s+(?:are|were)\\s+(${namePattern}?)(?:\\s+and\\s+(${namePattern}?))?'s\\s+parents\\b`, 'gi'))) {
+      for (const child of [match[3], match[4]].filter(Boolean)) {
+        add(match[1], child, 'parent', sourceIndex);
+        add(match[2], child, 'parent', sourceIndex);
+      }
+    }
   }
   return candidates;
 }

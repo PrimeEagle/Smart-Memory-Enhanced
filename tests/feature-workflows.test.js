@@ -275,7 +275,7 @@ test('profile relationship descriptors are independently validated against estab
   assert.match(profiles, /pair\.descriptors\.join\(', '\)/);
   assert.match(profiles, /extractCardRelationshipFacts/);
   assert.match(profiles, /extractGroundedRelationshipFacts/);
-  assert.match(profiles, /mergeRelationshipPairEvidence\(cardPair, historyPair, rawChatPair, groundedPair\)/);
+  assert.match(profiles, /mergeRelationshipPairEvidence\(cardPair, historyPair, groundedPair, rawChatPair\)/);
   assert.match(profiles, /priorRelationshipCheck/);
   assert.match(profiles, /relationship_matrix: ''/);
   assert.match(profiles, /never an\s+\/\/ authority for durable relationship labels/);
@@ -622,7 +622,7 @@ test('profile relationship validation merges a typed direct fact with descriptor
   const profiles = read('profiles.js');
   assert.match(profiles, /mergeRelationshipPairEvidence/);
   assert.match(read('profile-role-utils.js'), /without letting descriptors hide a role/);
-  assert.match(profiles, /cardPair, historyPair, rawChatPair, groundedPair/);
+  assert.match(profiles, /cardPair, historyPair, groundedPair, rawChatPair/);
   assert.match(profiles, /Normalize per token/);
 });
 

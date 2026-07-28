@@ -112,21 +112,75 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    for (let position = 0; position < seed.length; position++) hash = Math.imul(hash ^ seed.charCodeAt(position), 16777619);
    return `migrated-scene-run-${(hash >>> 0).toString(16)}`;
  };
- const identifiedRuns = compatible.map((run, index) => {
-   const finalBreakIndices = [...new Set((run.final_break_indices ?? []).filter(Number.isInteger))];
+ const fingerprint = (run) => {
+   const payload = [
+     runSignature(run), run?.prompt_shape_hash ?? null, run?.model_identifier ?? null,
+     run?.connection_profile_identifier ?? null, stableJson(run?.task_sampling_settings),
+     run?.candidate_context_hash_summary ?? null, run?.final_break_indices ?? [],
+     run?.scene_count ?? run?.generated ?? null, run?.boundary_count ?? null,
+   ];
+   let hash = 2166136261;
+   for (const character of JSON.stringify(payload)) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+   return `scene-run-fingerprint-${(hash >>> 0).toString(16)}`;
+ };
+ const boundaryNormalizations = [];
+ const identifiedRawRuns = compatible.map((run, index) => {
+   const rawIndices = (run.final_break_indices ?? []).filter(Number.isInteger);
+   const finalBreakIndices = [...new Set(rawIndices)].sort((a, b) => a - b);
    const runtimeId = Boolean(run.run_id);
    const knownCreatedAt = run.created_at ?? run.completed_at ?? null;
-   return {
+   const normalized = {
      ...run,
      run_id: runtimeId ? run.run_id : deterministicLegacyId(run, index),
      run_id_source: runtimeId ? (run.run_id_source ?? 'runtime') : 'migration_generated',
+     record_source: run.record_source ?? (runtimeId ? 'runtime' : 'migration_generated'),
+     _stable_input_order: index,
      created_at: knownCreatedAt,
      created_at_source: knownCreatedAt === null ? 'legacy_unknown' : (run.created_at_source ?? 'runtime'),
      final_break_indices: finalBreakIndices,
      boundary_count: Number.isInteger(run.boundary_count) ? run.boundary_count : finalBreakIndices.length,
      scene_count: Number.isInteger(run.scene_count) ? run.scene_count : (Number.isInteger(run.generated) ? run.generated : finalBreakIndices.length + 1),
    };
+   boundaryNormalizations.push({
+     run_id: normalized.run_id,
+     raw_boundary_count: rawIndices.length,
+     normalized_boundary_count: finalBreakIndices.length,
+     duplicate_boundary_indices_removed: [...new Set(rawIndices.filter((index, position) => rawIndices.indexOf(index) !== position))],
+   });
+   return normalized;
  });
+ // Deduplicate only the comparable input collection. Runtime IDs have the
+ // strongest identity, migration records use their stable generated IDs, and
+ // legacy compatibility imports fall back to a bounded structural fingerprint.
+ const seenRunKeys = new Map();
+ const duplicateRunRecordDetails = [];
+ const duplicateRuntimeRunIds = [];
+ const duplicateMigrationRunIds = [];
+ const duplicateFingerprintRecords = [];
+ const identifiedRuns = [];
+ for (const run of identifiedRawRuns) {
+   const keyType = run.run_id_source === 'runtime' ? 'runtime_run_id'
+     : run.run_id_source === 'migration_generated' ? 'migration_run_id' : 'record_fingerprint';
+   const key = keyType === 'record_fingerprint' ? fingerprint(run) : String(run.run_id);
+   if (!seenRunKeys.has(`${keyType}:${key}`)) {
+     seenRunKeys.set(`${keyType}:${key}`, run);
+     identifiedRuns.push(run);
+     continue;
+   }
+   const retained = seenRunKeys.get(`${keyType}:${key}`);
+   if (keyType === 'runtime_run_id') duplicateRuntimeRunIds.push(key);
+   else if (keyType === 'migration_run_id') duplicateMigrationRunIds.push(key);
+   else duplicateFingerprintRecords.push(key);
+   duplicateRunRecordDetails.push({
+     duplicate_key: key,
+     duplicate_key_type: keyType,
+     retained_run_id: retained.run_id,
+     removed_run_id: run.run_id,
+     retained_record_source: retained.record_source,
+     removed_record_source: run.record_source,
+   });
+ }
+ identifiedRuns.sort((left, right) => String(left.created_at ?? '').localeCompare(String(right.created_at ?? '')) || left._stable_input_order - right._stable_input_order);
  const counts = identifiedRuns.map((run) => Number(run.scene_count ?? run.generated ?? 0));
  const countFrequency = new Map();
  for (const count of counts) countFrequency.set(count, (countFrequency.get(count) ?? 0) + 1);
@@ -182,6 +236,10 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const marginalClusterBoundaries = detailedClusters.filter((cluster) => cluster.distinct_run_count > 0 && cluster.distinct_run_count <= runCount / 2);
  const oneOffClusterBoundaries = detailedClusters.filter((cluster) => cluster.distinct_run_count === 1);
  const pipelinesStable = identifiedRuns.every((run) => !(run.malformed_batches ?? 0) && !(run.fallback_boundaries ?? run.heuristic_fallback_candidates ?? 0));
+ const runsWithCandidateDetail = identifiedRuns.filter((run) => run.candidate_detail_available !== false
+   && Array.isArray(run.candidate_dispositions) && run.candidate_dispositions.length > 0);
+ const runsWithoutCandidateDetail = identifiedRuns.filter((run) => !runsWithCandidateDetail.includes(run));
+ const candidateHistoryComplete = runCount > 0 && runsWithoutCandidateDetail.length === 0;
  const candidateByRun = new Map();
  for (const run of identifiedRuns) {
    const contextByCandidate = new Map((run.candidate_context_hashes ?? []).map((item) => [String(item.candidate_id), item.context_hash ?? null]));
@@ -251,7 +309,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      observations: decisions,
    };
  });
- const sceneVarianceSources = allRunCandidateStability.reduce((counts, candidate) => {
+ const measuredSceneVarianceSources = allRunCandidateStability.reduce((counts, candidate) => {
    if (candidate.classification === 'ai_marginal') counts.changed_ai_decisions++;
    else if (candidate.classification === 'gate_marginal') counts.changed_gate_outcomes++;
    else if (candidate.classification === 'final_assembly_marginal') counts.changed_coalescing_outcomes++;
@@ -262,7 +320,57 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const gateDeterminismViolations = allRunCandidateStability
    .filter((candidate) => candidate.gate_determinism_violation)
    .map((candidate) => ({ candidate_id: candidate.candidate_id, message_index: candidate.message_index, gate_input_hash_values: candidate.gate_input_hash_values, gate_output_hash_values: candidate.gate_output_hash_values }));
+ const gateComparisons = allRunCandidateStability.filter((candidate) => candidate.gate_input_hash_values.length > 0 && candidate.run_count > 1);
+ const gateDeterminismCoverage = {
+   comparisons_attempted: allRunCandidateStability.length,
+   comparisons_completed: gateComparisons.length,
+   comparisons_skipped: Math.max(0, allRunCandidateStability.length - gateComparisons.length),
+   skipped_missing_candidate_history: candidateHistoryComplete ? 0 : runsWithoutCandidateDetail.length,
+   skipped_input_hash_mismatch: allRunCandidateStability.filter((candidate) => candidate.gate_input_hash_values.length > 1).length,
+   skipped_ai_decision_mismatch: allRunCandidateStability.filter((candidate) => !candidate.ai_decision_stable).length,
+   skipped_missing_gate_input_hash: allRunCandidateStability.filter((candidate) => candidate.gate_input_hash_values.length === 0).length,
+   violations_found: gateDeterminismViolations.length,
+   result_conclusive: candidateHistoryComplete && gateComparisons.length > 0,
+ };
+ const candidateHistoryCoverage = {
+   distinct_comparable_runs: runCount,
+   runs_with_candidate_detail: runsWithCandidateDetail.map((run) => run.run_id),
+   runs_without_candidate_detail: runsWithoutCandidateDetail.map((run) => run.run_id),
+   candidate_records_available: runsWithCandidateDetail.reduce((total, run) => total + run.candidate_dispositions.length, 0),
+   candidate_records_expected: identifiedRuns.reduce((total, run) => total + Number(run.candidates ?? run.boundary_candidates_evaluated ?? 0), 0),
+   candidates_compared: candidateByRun.size,
+   candidates_with_complete_history: allRunCandidateStability.filter((candidate) => candidate.run_count === runCount).length,
+   candidates_with_partial_history: allRunCandidateStability.filter((candidate) => candidate.run_count > 0 && candidate.run_count < runCount).length,
+   candidates_without_prior_history: allRunCandidateStability.filter((candidate) => candidate.run_count <= 1).length,
+   variance_analysis_complete: candidateHistoryComplete,
+   incomplete_reason: candidateHistoryComplete ? null : 'missing_candidate_history',
+ };
+ const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
+ const distinctPriorRunCount = new Set(identifiedRuns.filter((run) => run.run_id !== currentAudit.run_id).map((run) => run.run_id)).size;
  return {
+   scene_run_input_accounting: {
+     raw_prior_record_count: compatiblePriorRuns.length,
+     raw_current_record_count: currentRunIncluded ? 1 : 0,
+     raw_total_record_count: compatible.length,
+     distinct_prior_run_count: distinctPriorRunCount,
+     current_run_included: currentRunIncluded,
+     distinct_total_run_count: runCount,
+     duplicate_run_records_removed: duplicateRunRecordsRemoved,
+     duplicate_runtime_run_ids: [...new Set(duplicateRuntimeRunIds)],
+     duplicate_migration_run_ids: [...new Set(duplicateMigrationRunIds)],
+     duplicate_fingerprint_records: [...new Set(duplicateFingerprintRecords)],
+   },
+   duplicate_run_record_details: duplicateRunRecordDetails,
+   run_boundary_normalization: boundaryNormalizations,
+   prior_summary_invalidated_by_duplicate_runs: duplicateRunRecordsRemoved > 0,
+   scene_stability_summary_complete: duplicateRunRecordsRemoved === 0 && candidateHistoryComplete,
+   scene_stability_incomplete_reasons: [
+     ...(duplicateRunRecordsRemoved ? ['duplicate_run_records_removed'] : []),
+     ...(!candidateHistoryComplete ? ['missing_candidate_history'] : []),
+   ],
+   boundary_history_analysis_complete: true,
+   candidate_variance_analysis_complete: candidateHistoryComplete,
+   gate_determinism_analysis_complete: gateDeterminismCoverage.result_conclusive,
    comparable_prior_run_count: compatiblePriorRuns.length,
    prior_comparable_run_count: compatiblePriorRuns.length,
    comparable_total_run_count: runCount,
@@ -300,9 +408,11 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    clustered_marginal_transitions: marginalClusterBoundaries,
    clustered_one_off_transitions: oneOffClusterBoundaries,
    all_run_candidate_stability: allRunCandidateStability,
-   scene_variance_sources: sceneVarianceSources,
+   candidate_history_coverage: candidateHistoryCoverage,
+   scene_variance_sources: candidateHistoryComplete ? measuredSceneVarianceSources : null,
    gate_determinism_violation_count: gateDeterminismViolations.length,
    gate_determinism_violations: gateDeterminismViolations,
+   gate_determinism_coverage: gateDeterminismCoverage,
    pipeline_stable: pipelinesStable, scene_count_exactly_stable: new Set(counts).size <= 1,
    scene_count_materially_stable: counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false,
    boundary_positions_exactly_stable: entries.every(([, count]) => count === runCount),
