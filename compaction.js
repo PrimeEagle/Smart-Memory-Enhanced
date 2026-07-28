@@ -69,6 +69,61 @@ async function getChatTokenCount(chat) {
 }
 
 /**
+ * Produces a bounded rolling summary for a sequence of messages.  In
+ * particular, this is also used for incremental updates: an existing summary
+ * plus an unusually long unsummarized tail must not bypass the connection
+ * profile's context-window guard.
+ */
+async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength) {
+  const inputBudget = getMemoryInputBudget(responseLength);
+  let rollingSummary = initialSummary || 'No earlier events have been summarized yet.';
+  let chunk = [];
+
+  const summarizeChunk = async () => {
+    if (!chunk.length) return;
+    const events = chunk.map((message) => `${message.name}: ${message.mes}`).join('\n\n');
+    const prompt = applyPromptOverride(
+      buildUpdateSummaryPrompt(storedMemories)
+        .replace('{{existing_summary}}', rollingSummary)
+        .replace('{{new_events}}', events),
+      PROMPT_TASKS.COMPACTION,
+    );
+    // The caller only appends a message after testing this exact prompt. This
+    // check protects against a custom prompt override changing between passes.
+    if (estimateTokens(prompt) > inputBudget) {
+      throw new Error(`Compaction prompt exceeds its ${inputBudget}-token input budget.`);
+    }
+    const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [] });
+    if (!response?.trim()) throw new Error('Compaction provider returned an empty response.');
+    rollingSummary = formatSummary(response);
+    chunk = [];
+  };
+
+  for (const message of messages) {
+    const candidate = [...chunk, message];
+    const candidateEvents = candidate.map((item) => `${item.name}: ${item.mes}`).join('\n\n');
+    const candidatePrompt = applyPromptOverride(
+      buildUpdateSummaryPrompt(storedMemories)
+        .replace('{{existing_summary}}', rollingSummary)
+        .replace('{{new_events}}', candidateEvents),
+      PROMPT_TASKS.COMPACTION,
+    );
+    if (chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
+      await summarizeChunk();
+    }
+    if (!chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
+      // A single pathological chat message cannot be safely sent as-is. Do
+      // not issue a request the provider is guaranteed to reject; the caller
+      // can surface this precise local failure instead of a misleading 400.
+      throw new Error(`One compaction message exceeds the ${inputBudget}-token input budget.`);
+    }
+    chunk.push(message);
+  }
+  await summarizeChunk();
+  return rollingSummary;
+}
+
+/**
  * Returns true if the unsummarized portion of the chat has crossed the
  * configured compaction threshold. Only messages after summaryEnd (the last
  * message already included in the existing summary) are counted - this prevents
@@ -188,24 +243,15 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         !includeLastMessage && lastNew && !lastNew.is_user && !lastNew.is_system
           ? rawNewMessages.slice(0, -1)
           : rawNewMessages;
-      const newEvents = newMessages
-        .filter((m) => m.mes && !m.is_system)
-        .map((m) => `${m.name}: ${m.mes}`)
-        .join('\n\n');
+      const usableMessages = newMessages.filter((m) => m.mes && !m.is_system);
+      if (!usableMessages.length) return existingSummary;
 
-      if (!newEvents.trim()) return existingSummary;
-
-      const updatePrompt = buildUpdateSummaryPrompt(storedMemories)
-        .replace('{{existing_summary}}', existingSummary)
-        .replace('{{new_events}}', newEvents);
-
-      raw = await generateMemorySummarize(applyPromptOverride(updatePrompt, PROMPT_TASKS.COMPACTION), {
-        responseLength: settings.compaction_response_length || 2000,
-        includeLastMessage,
-        // The prompt body already contains {{new_events}} and {{existing_summary}},
-        // so sending the full chat as priorMessages would duplicate the new messages.
-        chatMessages: [],
-      });
+      raw = await summarizeInBoundedPasses(
+        usableMessages,
+        existingSummary,
+        storedMemories,
+        settings.compaction_response_length || 2000,
+      );
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
       const responseLength = settings.compaction_response_length || 2000;
@@ -217,35 +263,12 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         // A connection profile must respect the loaded model's context window.
         // Build the initial summary incrementally so every chat message is
         // covered rather than truncating older history to fit one request.
-        let rollingSummary = 'No earlier events have been summarized yet.';
-        let chunk = [];
-        let chunkTokens = 0;
-        for (const message of messages) {
-          const tokens = estimateTokens(`${message.name}: ${message.mes}`);
-          if (chunk.length && chunkTokens + tokens > inputBudget) {
-            const events = chunk.map((item) => `${item.name}: ${item.mes}`).join('\n\n');
-            const prompt = buildUpdateSummaryPrompt(storedMemories)
-              .replace('{{existing_summary}}', rollingSummary)
-              .replace('{{new_events}}', events);
-            const response = await generateMemorySummarize(applyPromptOverride(prompt, PROMPT_TASKS.COMPACTION), { responseLength, chatMessages: [] });
-            if (!response?.trim()) return null;
-            rollingSummary = formatSummary(response);
-            chunk = [];
-            chunkTokens = 0;
-          }
-          chunk.push(message);
-          chunkTokens += tokens;
-        }
-        if (chunk.length) {
-          const events = chunk.map((item) => `${item.name}: ${item.mes}`).join('\n\n');
-          const prompt = buildUpdateSummaryPrompt(storedMemories)
-            .replace('{{existing_summary}}', rollingSummary)
-            .replace('{{new_events}}', events);
-          const response = await generateMemorySummarize(applyPromptOverride(prompt, PROMPT_TASKS.COMPACTION), { responseLength, chatMessages: [] });
-          if (!response?.trim()) return null;
-          rollingSummary = formatSummary(response);
-        }
-        raw = rollingSummary;
+        raw = await summarizeInBoundedPasses(
+          messages,
+          'No earlier events have been summarized yet.',
+          storedMemories,
+          responseLength,
+        );
       } else {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {
           responseLength,

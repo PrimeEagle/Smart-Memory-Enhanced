@@ -105,10 +105,43 @@ function queueMemoryRequest(run) {
   });
 }
 
+/** Return the bounded chain produced by connection-manager wrapper errors. */
+function providerErrorChain(err) {
+  const chain = [];
+  const seen = new Set();
+  let current = err;
+  while (current && typeof current === 'object' && !seen.has(current) && chain.length < 5) {
+    seen.add(current);
+    chain.push(current);
+    current = current.cause;
+  }
+  return chain;
+}
+
+function providerErrorStatus(err) {
+  for (const item of providerErrorChain(err)) {
+    const status = Number(item?.status ?? item?.response?.status);
+    if (Number.isFinite(status) && status >= 100) return status;
+  }
+  return null;
+}
+
+function providerErrorText(err) {
+  return providerErrorChain(err)
+    .map((item) => `${item?.name ?? ''} ${item?.message ?? ''} ${item?.body ?? item?.response?.data ?? ''}`)
+    .join(' ')
+    .toLowerCase();
+}
+
 function isTransientProviderError(err) {
-  const status = err?.status;
+  const status = providerErrorStatus(err);
   if (status === 429 || status === 502 || status === 503 || status === 504) return true;
-  const text = `${err?.name ?? ''} ${err?.message ?? ''}`.toLowerCase();
+  const text = providerErrorText(err);
+  // Connection Manager often wraps an underlying fetch failure as the generic
+  // "API request failed" message without copying its status to the outer error.
+  // Retry that opaque wrapper unless the nested cause identifies a client-side
+  // rejection (which retries cannot repair).
+  if (/api request failed/.test(text) && !/(bad request|\b4\d\d\b|invalid request|context length|maximum context)/.test(text)) return true;
   return /econnreset|etimedout|socket hang up|networkerror|failed to fetch|unexpected token ['\"]?|responded with (429|502|503|504)/.test(
     text,
   );
@@ -311,7 +344,7 @@ async function generateWithConnectionProfile(
       task: diagnosticContext.task ?? 'unspecified',
       endpoint_category: 'connection-manager-chat-completion',
       request_mode: priorMessages.length ? 'contextual-extraction' : 'standalone-extraction',
-      http_status: Number(error?.status) || (/bad request/i.test(String(error?.message ?? '')) ? 400 : null),
+      http_status: providerErrorStatus(error) ?? (/bad request/i.test(providerErrorText(error)) ? 400 : null),
       message_count: messages.length,
       message_roles: messages.map((message) => String(message?.role ?? 'unknown')),
       first_role: messages[0]?.role ?? null,
@@ -350,7 +383,10 @@ function safePromptFingerprint(prompt) {
 
 /** Removes credentials and oversized response bodies from provider diagnostics. */
 function sanitizeProviderError(error) {
-  const raw = String(error?.body ?? error?.response?.data ?? error?.message ?? 'Provider request failed');
+  const raw = providerErrorChain(error)
+    .map((item) => item?.body ?? item?.response?.data ?? item?.message ?? '')
+    .filter(Boolean)
+    .join(' Caused by: ') || 'Provider request failed';
   return raw
     .replace(/(bearer|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
     .replace(/https?:\/\/[^\s"']+/gi, '[url redacted]')

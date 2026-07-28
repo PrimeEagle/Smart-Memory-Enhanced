@@ -9,8 +9,25 @@ test('provider failures: transient server and network failures are retried, whil
   const transient = source.slice(source.indexOf('function isTransientProviderError'), source.indexOf('function retryAfterMs'));
   assert.match(transient, /status === 429 \|\| status === 502 \|\| status === 503 \|\| status === 504/);
   assert.doesNotMatch(transient, /status === 400/);
+  assert.match(source, /function providerErrorChain/);
+  assert.match(source, /function providerErrorStatus/);
+  assert.match(source, /api request failed/);
+  assert.match(source, /Caused by:/);
   assert.match(source, /attempt >= maxRetries/);
   assert.match(source, /retryListeners\.forEach/);
+});
+
+test('compaction uses the context-window guard for both first and incremental summaries', () => {
+  const compaction = read('compaction.js');
+  assert.match(compaction, /async function summarizeInBoundedPasses/);
+  assert.match(compaction, /const inputBudget = getMemoryInputBudget\(responseLength\)/);
+  assert.match(compaction, /estimateTokens\(candidatePrompt\) > inputBudget/);
+  assert.match(compaction, /One compaction message exceeds/);
+  const incremental = compaction.slice(
+    compaction.indexOf('if (existingSummary && summaryEnd > 0'),
+    compaction.indexOf('// Full compaction:'),
+  );
+  assert.match(incremental, /summarizeInBoundedPasses/);
 });
 
 test('chat-save failures: catch-up persistence is staged and rolls back failed commits', () => {
