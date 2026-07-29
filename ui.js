@@ -2220,7 +2220,11 @@ export async function reconcileCanonicalEntities(characterName) {
   });
   const repairRecurrenceGroups = Object.values(textIdentityMismatches.reduce((groups, repair) => {
     const key = [repair.canonical_entity_identity, repair.store, repair.reference_field_path ?? 'entities', repair.detected_invalid_reason, repair.link_created_stage ?? 'unknown'].join('|');
-    const group = groups[key] ?? { recurrence_key: key, canonical_entity_identity: repair.canonical_entity_identity, record_type: repair.store, reference_field_path: repair.reference_field_path ?? 'entities', repair_reason: repair.detected_invalid_reason, source_creation_stage: repair.link_created_stage ?? 'unknown', repair_count: 0, record_ids: [] };
+    const recurrenceSource = repair.previously_quarantined ? 'migration_replay'
+      : repair.same_run_creation ? 'regenerated_legacy_record'
+        : String(repair.store ?? '').startsWith('card-local:') ? 'cross_store_mirror'
+          : repair.record_id ? 'same_record' : 'unknown';
+    const group = groups[key] ?? { recurrence_key: key, canonical_entity_identity: repair.canonical_entity_identity, record_type: repair.store, reference_field_path: repair.reference_field_path ?? 'entities', repair_reason: repair.detected_invalid_reason, source_creation_stage: repair.link_created_stage ?? 'unknown', repair_recurrence_source: recurrenceSource, repair_count: 0, record_ids: [] };
     group.repair_count++;
     if (repair.record_id && !group.record_ids.includes(repair.record_id)) group.record_ids.push(repair.record_id);
     groups[key] = group;

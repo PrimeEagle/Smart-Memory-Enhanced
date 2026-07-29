@@ -512,6 +512,11 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /second_pass_logical_mutations/);
   assert.match(settings, /stale_references_after_second_pass/);
   assert.match(settings, /candidate_context_hashes/);
+  assert.match(settings, /candidate_context_hash_summary_source/);
+  assert.match(settings, /candidate_context_summary_migration/);
+  assert.match(read('scene-stability-utils.js'), /gate_snapshot_coverage_by_run/);
+  assert.match(settings, /request_efficiency_history/);
+  assert.match(settings, /prior_request_metric_unavailable/);
   assert.match(settings, /boundary_comparison/);
   assert.match(read('scene-stability-utils.js'), /shifted_boundaries/);
   assert.match(read('scene-stability-utils.js'), /comparison_tolerance_messages: tolerance/);
@@ -520,6 +525,10 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /comparablePriorRun/);
   assert.match(settings, /prompt_shape_hash === sceneAudit\.prompt_shape_hash/);
   assert.match(read('scenes.js'), /adaptive_batch_adjustments/);
+  assert.match(read('scenes.js'), /adaptive_ceiling_effectiveness/);
+  assert.match(read('profiles.js'), /descriptor_direction_policy/);
+  assert.match(read('profiles.js'), /reverse_pair_evidence_checked/);
+  assert.match(read('ui.js'), /repair_recurrence_source/);
   assert.match(read('scenes.js'), /root_batch_summary/);
   assert.match(read('scenes.js'), /confidence_outcomes/);
   assert.match(read('scenes.js'), /confidence_outcomes_scope/);

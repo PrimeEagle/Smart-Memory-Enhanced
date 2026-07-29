@@ -212,6 +212,9 @@ test('gate output migration excludes incomplete legacy values from impossible vi
   assert.equal(coverage.violations_found, 0);
   assert.equal(coverage.terminal_skip_reasons.skipped_incompatible_legacy_gate_output, 41);
   assert.equal(coverage.result_broadly_representative, false);
+  assert.equal(coverage.result_conclusive_for_eligible_comparisons, true);
+  assert.equal(coverage.result_conclusive, false);
+  assert.equal(coverage.overall_result, 'deterministic_for_eligible_comparisons_only');
 });
 
 test('canonical gate migration normalizes structured records and refuses opaque legacy hashes', () => {
