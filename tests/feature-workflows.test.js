@@ -709,6 +709,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /\^\(\?:persona:\)\+\/i/);
   assert.match(ui, /snapshotCanonicalRuntimeContext\(context\)/);
   assert.match(ui, /runtimeSnapshot,/);
+  assert.match(ui, /registryGroups\.flat\(\)\.flatMap/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
   assert.match(ui, /blocked_unsafe_identity_merges/);

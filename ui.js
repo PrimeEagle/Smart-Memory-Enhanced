@@ -1815,8 +1815,12 @@ export async function reconcileCanonicalEntities(characterName) {
     const stableId = raw.replace(/^(?:persona:)+/i, '');
     return stableId ? `persona:${stableId}` : null;
   };
+  // `registryGroups` is organized by store. Flatten it before collecting
+  // identities; otherwise this loop reads the arrays themselves rather than
+  // their entity records and falsely marks every registry-backed reference as
+  // stale during the idempotence audit.
   const knownEntityIds = new Set([
-    ...registryGroups.flatMap((entity) => [
+    ...registryGroups.flat().flatMap((entity) => [
       entity?.id,
       entity?.canonical_card_id,
       entity?.canonical_persona_id,
