@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.52] - 2026-07-28
+
+### Fixed
+
+- Fixed valid namespaced persona references (`persona:<id>`) being falsely
+  reported as stale by the canonical integrity audit. The known-ID audit set
+  now recognizes raw, canonical-card, canonical-persona, and namespaced
+  persona representations.
+- Fixed scene-history diagnostics reporting a removed duplicate run as a
+  retained prior run. Prior-run counts and IDs now match the deduplicated data
+  actually used for stability analysis.
+
+### Tests
+
+- Added regression coverage for canonical persona ID forms and deduplicated
+  retained-prior scene reporting.
+
 ## [0.8.51] - 2026-07-28
 
 ### Added
