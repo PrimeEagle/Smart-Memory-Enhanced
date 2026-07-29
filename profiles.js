@@ -287,7 +287,23 @@ export function extractCardRelationshipFacts(roster = []) {
 export function persistExplicitFamilyRelationshipFacts(history = {}, roster = [], rawChatMessages = []) {
   const precedence = { grounded_raw_chat_evidence: 1, grounded_source_evidence: 2, approved_relationship_history: 3, persona_fact: 4, card_fact: 5, manual: 6 };
   const result = { changed: false, persisted: [], rejected: [] };
-  for (const candidate of extractExplicitNamedFamilyCandidates(rawChatMessages)) {
+  // Card facts and explicitly named chat facts share one durable pipeline.
+  // Previously the card parser fed profile validation only as transient
+  // evidence, so a correct twin fact disappeared before save/reload.
+  const candidates = [
+    ...extractCardRelationshipFacts(roster).map((fact) => ({
+      ...fact,
+      source_class: fact.relationship_type_source,
+      source_index: null,
+      source_ids: fact.relationship_type_source_ids ?? [],
+    })),
+    ...extractExplicitNamedFamilyCandidates(rawChatMessages).map((fact) => ({
+      ...fact,
+      source_class: 'grounded_raw_chat_evidence',
+      source_ids: [`chat-message:${fact.source_index}`],
+    })),
+  ];
+  for (const candidate of candidates) {
     const subject = resolveCanonicalCharacterName(candidate.subject, roster);
     const target = resolveCanonicalCharacterName(candidate.target, roster);
     if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) {
@@ -298,7 +314,8 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
     const existing = history[pair.key] ?? {};
     const existingType = String(existing.relationship_type ?? existing.canonical_relationship_type ?? '').trim().toLowerCase() || null;
     const existingSource = existing.relationship_type_source ?? 'approved_relationship_history';
-    if (existingType && existingType !== candidate.relationship_type && (precedence[existingSource] ?? 3) > precedence.grounded_raw_chat_evidence) {
+    const candidateSource = candidate.source_class ?? 'grounded_raw_chat_evidence';
+    if (existingType && existingType !== candidate.relationship_type && (precedence[existingSource] ?? 3) > (precedence[candidateSource] ?? 1)) {
       result.rejected.push({ ...candidate, reason: 'higher_precedence_role_exists', existing_relationship_type: existingType });
       continue;
     }
@@ -311,22 +328,26 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
       subject_canonical_persona_id: pair.subject.personaId,
       target_canonical_persona_id: pair.target.personaId,
       relationship_type: existingType ?? candidate.relationship_type,
-      relationship_type_source: existingType ? existingSource : 'grounded_raw_chat_evidence',
-      relationship_type_confidence_class: existing.relationship_type_confidence_class ?? 'grounded',
-      relationship_type_source_ids: [...new Set([...(existing.relationship_type_source_ids ?? []), `chat-message:${candidate.source_index}`])],
+      relationship_type_source: existingType ? existingSource : candidateSource,
+      relationship_type_confidence_class: existing.relationship_type_confidence_class ?? (candidateSource === 'card_fact' || candidateSource === 'persona_fact' ? 'authoritative' : 'grounded'),
+      relationship_type_source_ids: [...new Set([...(existing.relationship_type_source_ids ?? []), ...(candidate.source_ids ?? [])])],
       relationship_type_direction: 'subject_to_target',
-      source_message_indices: [...new Set([...(existing.source_message_indices ?? []), candidate.source_index])].sort((a, b) => a - b),
-      supporting_source_indices: [...new Set([...(existing.supporting_source_indices ?? existing.source_message_indices ?? []), candidate.source_index])].sort((a, b) => a - b),
-      latest_update_indices: [candidate.source_index],
-      creation_stage: existing.creation_stage ?? 'explicit_named_family_fact',
+      source_message_indices: [...new Set([...(existing.source_message_indices ?? []), candidate.source_index].filter(Number.isInteger))].sort((a, b) => a - b),
+      supporting_source_indices: [...new Set([...(existing.supporting_source_indices ?? existing.source_message_indices ?? []), candidate.source_index].filter(Number.isInteger))].sort((a, b) => a - b),
+      latest_update_indices: Number.isInteger(candidate.source_index) ? [candidate.source_index] : (existing.latest_update_indices ?? []),
+      creation_stage: existing.creation_stage ?? (candidateSource === 'card_fact' || candidateSource === 'persona_fact' ? 'explicit_card_family_fact' : 'explicit_named_family_fact'),
+      validation_state: existing.validation_state ?? 'validated',
+      persistence_revision: Math.max(1, Number(existing.persistence_revision ?? 1)),
       approval_status: existing.approval_status ?? 'grounded',
       updatedAt: Date.now(),
     };
-    if (JSON.stringify(existing) !== JSON.stringify(next)) {
+    const changed = JSON.stringify(existing) !== JSON.stringify(next);
+    if (changed) {
+      next.persistence_revision = Number(existing.persistence_revision ?? 0) + 1;
       history[pair.key] = next;
       result.changed = true;
     }
-    result.persisted.push({ subject: pair.subject.displayName, target: pair.target.displayName, relationship_type: next.relationship_type, source_message_index: candidate.source_index, persisted: result.changed });
+    result.persisted.push({ subject: pair.subject.displayName, target: pair.target.displayName, relationship_type: next.relationship_type, source_class: candidateSource, source_message_index: candidate.source_index, persisted: changed });
   }
   return result;
 }

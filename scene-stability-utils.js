@@ -1,4 +1,59 @@
 /** Compare bounded, text-free scene-boundary diagnostics from two equivalent runs. */
+// Gate records existed before their result was stored structurally.  Never
+// compare a legacy implementation hash (or an absent placeholder) with a
+// structured result: that produces a false determinism violation.  This
+// deliberately small, privacy-safe representation is the only one used by
+// the determinism audit.
+export function canonicalizeGateOutput(candidate = {}) {
+  const gateResult = ['accepted', 'rejected'].includes(candidate.gate_result) ? candidate.gate_result : null;
+  const disposition = typeof candidate.terminal_break_disposition === 'string'
+    ? candidate.terminal_break_disposition : null;
+  const reason = typeof candidate.gate_reason_code === 'string' ? candidate.gate_reason_code : null;
+  const explicitlyExecuted = candidate.gate_executed === true || gateResult !== null;
+  if (!explicitlyExecuted) {
+    return {
+      gate_output_schema_version: 1,
+      gate_executed: false,
+      gate_result: null,
+      gate_reason_code: null,
+      terminal_break_disposition: null,
+      classification: candidate.gate_output_hash || candidate.gate_result !== undefined
+        ? 'legacy_output_incomplete' : 'gate_not_executed',
+      migration_source_version: candidate.gate_output_schema_version ?? null,
+      migration_terminal_status: 'not_comparable',
+      canonical_gate_output_hash: null,
+    };
+  }
+  if (!gateResult || !disposition) {
+    return {
+      gate_output_schema_version: 1,
+      gate_executed: true,
+      gate_result: gateResult,
+      gate_reason_code: reason,
+      terminal_break_disposition: disposition,
+      classification: 'legacy_output_incomplete',
+      migration_source_version: candidate.gate_output_schema_version ?? null,
+      migration_terminal_status: 'not_comparable',
+      canonical_gate_output_hash: null,
+    };
+  }
+  const migrated = candidate.gate_output_schema_version !== 1;
+  const canonical = {
+    gate_executed: true,
+    gate_result: gateResult,
+    gate_reason_code: reason,
+    terminal_break_disposition: disposition,
+  };
+  return {
+    gate_output_schema_version: 1,
+    ...canonical,
+    classification: migrated ? 'migrated_legacy_output' : 'comparable_canonical_output',
+    migration_source_version: candidate.gate_output_schema_version ?? null,
+    migration_terminal_status: migrated ? 'migrated' : 'current',
+    canonical_gate_output_hash: JSON.stringify(canonical),
+  };
+}
+
 export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
   const currentIndices = currentAudit.final_break_indices ?? [];
   const currentSceneCount = currentAudit.generated ?? null;
@@ -281,6 +336,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      const candidateId = String(candidate.candidate_id ?? candidate.message_index ?? '');
      if (!candidateId) continue;
      if (!candidateByRun.has(candidateId)) candidateByRun.set(candidateId, []);
+     const canonicalGateOutput = canonicalizeGateOutput(candidate);
      candidateByRun.get(candidateId).push({
        run_id: run.run_id,
        message_index: candidate.message_index ?? candidate.candidate_id ?? null,
@@ -290,11 +346,16 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
        gate_reason_code: candidate.gate_reason_code ?? null,
        ai_confidence: candidate.ai_confidence ?? null,
        gate_input_hash: candidate.gate_input_hash ?? null,
-       // New privacy-safe snapshots retain the gate result/reason rather than
-       // an implementation-specific output hash. Derive the same stable
-       // comparison value when the legacy hash is absent.
-       gate_output_hash: candidate.gate_output_hash
-         ?? JSON.stringify([candidate.gate_result ?? null, candidate.gate_reason_code ?? null, candidate.terminal_break_disposition ?? null]),
+       gate_output_schema_version: canonicalGateOutput.gate_output_schema_version,
+       gate_output_classification: canonicalGateOutput.classification,
+       gate_executed: canonicalGateOutput.gate_executed,
+       canonical_gate_output: canonicalGateOutput,
+       gate_output_hash: canonicalGateOutput.canonical_gate_output_hash,
+       // Coalescing is a later final-assembly decision. It remains in the
+       // canonical snapshot for traceability, but is not evidence that the
+       // deterministic gate itself changed its decision.
+       gate_decision_hash: canonicalGateOutput.gate_executed
+         ? JSON.stringify([canonicalGateOutput.gate_result, canonicalGateOutput.gate_reason_code]) : null,
        context_hash: contextByCandidate.get(candidateId) ?? null,
      });
    }
@@ -306,12 +367,18 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    const gateValues = unique('gate_result');
    const finalValues = unique('terminal_break_disposition');
    const contextValues = unique('context_hash');
+   const comparableGateDecisions = decisions.filter((item) => item.gate_input_hash
+     && ['comparable_canonical_output', 'migrated_legacy_output'].includes(item.gate_output_classification));
    const inputGroups = new Map();
-   for (const decision of decisions.filter((item) => item.gate_input_hash)) {
+   for (const decision of comparableGateDecisions) {
      if (!inputGroups.has(decision.gate_input_hash)) inputGroups.set(decision.gate_input_hash, new Set());
-     inputGroups.get(decision.gate_input_hash).add(decision.gate_output_hash ?? null);
+     inputGroups.get(decision.gate_input_hash).add(decision.gate_decision_hash ?? null);
    }
-   const gateDeterminismViolation = [...inputGroups.values()].some((outputs) => outputs.size > 1);
+   // A result is meaningful only when every retained observation has an
+   // executed, canonical output.  Partial historical snapshots remain useful
+   // for general variance, but are excluded from determinism conclusions.
+   const gateDeterminismViolation = comparableGateDecisions.length === decisions.length
+     && [...inputGroups.values()].some((outputs) => outputs.size > 1);
    const enoughHistory = observedRuns.length === runCount;
    const aiDecisionStable = enoughHistory && aiValues.length <= 1;
    const gateOutcomeStable = enoughHistory && gateValues.length <= 1;
@@ -355,12 +422,11 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    else if (candidate.gate_determinism_violation) counts.unexplained_same_input_variance++;
    return counts;
  }, { changed_ai_decisions: 0, changed_gate_outcomes: 0, changed_minimum_length_outcomes: 0, changed_coalescing_outcomes: 0, changed_inputs: 0, unexplained_same_input_variance: 0 });
- const gateDeterminismViolations = allRunCandidateStability
-   .filter((candidate) => candidate.gate_determinism_violation)
-   .map((candidate) => ({ candidate_id: candidate.candidate_id, message_index: candidate.message_index, gate_input_hash_values: candidate.gate_input_hash_values, gate_output_hash_values: candidate.gate_output_hash_values }));
  const terminalSkipReasons = {
    skipped_missing_candidate_history: 0,
    skipped_missing_gate_input_hash: 0,
+   skipped_incompatible_legacy_gate_output: 0,
+   skipped_gate_not_executed: 0,
    skipped_context_hash_mismatch: 0,
    skipped_prompt_hash_mismatch: 0,
    skipped_task_settings_mismatch: 0,
@@ -370,6 +436,8 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const secondaryIneligibilityObservations = {
    missing_candidate_history: 0,
    missing_gate_input_hash: 0,
+   incompatible_legacy_gate_output: 0,
+   gate_not_executed: 0,
    context_hash_mismatch: 0,
    prompt_hash_mismatch: 0,
    task_settings_mismatch: 0,
@@ -383,13 +451,20 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    const contextMismatch = candidate.run_count > 1 && !candidate.context_hash_stable;
    const aiMismatch = candidate.run_count > 1 && !candidate.ai_decision_stable;
    const gateHashMismatch = candidate.gate_input_hash_values.length > 1;
+   const observations = candidate.observations ?? [];
+   const gateNotExecuted = observations.some((item) => item.gate_output_classification === 'gate_not_executed');
+   const incompatibleOutput = observations.some((item) => !['comparable_canonical_output', 'migrated_legacy_output'].includes(item.gate_output_classification));
    if (missingHistory) secondaryIneligibilityObservations.missing_candidate_history++;
    if (missingGateHash) secondaryIneligibilityObservations.missing_gate_input_hash++;
    if (contextMismatch) secondaryIneligibilityObservations.context_hash_mismatch++;
    if (aiMismatch) secondaryIneligibilityObservations.ai_decision_mismatch++;
    if (gateHashMismatch) secondaryIneligibilityObservations.gate_input_hash_mismatch++;
+   if (gateNotExecuted) secondaryIneligibilityObservations.gate_not_executed++;
+   if (incompatibleOutput) secondaryIneligibilityObservations.incompatible_legacy_gate_output++;
    const terminal = missingHistory ? 'skipped_missing_candidate_history'
      : missingGateHash ? 'skipped_missing_gate_input_hash'
+       : gateNotExecuted ? 'skipped_gate_not_executed'
+         : incompatibleOutput ? 'skipped_incompatible_legacy_gate_output'
        : contextMismatch ? 'skipped_context_hash_mismatch'
          : aiMismatch ? 'skipped_ai_decision_mismatch'
            : gateHashMismatch ? 'skipped_gate_input_hash_mismatch'
@@ -397,15 +472,48 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    if (terminal) terminalSkipReasons[terminal]++;
    else gateComparisons.push(candidate);
  }
+ const gateDeterminismViolations = gateComparisons
+   .filter((candidate) => {
+     const values = new Set((candidate.observations ?? []).map((item) => item.gate_decision_hash).filter(Boolean));
+     return values.size > 1;
+   })
+   .map((candidate) => ({
+     candidate_id: candidate.candidate_id,
+     message_index: candidate.message_index,
+     run_ids: candidate.runs_observed,
+     context_hash: candidate.observations[0]?.context_hash ?? null,
+     gate_input_hash: candidate.gate_input_hash_values[0] ?? null,
+     canonical_output_hashes: candidate.gate_output_hash_values,
+     canonical_output_summaries: candidate.observations.map((item) => item.canonical_gate_output).filter(Boolean),
+     violation_reason: 'matching_deterministic_inputs_different_canonical_output',
+   }));
+ const eligibleCandidateCount = gateComparisons.length;
+ const comparisonsCompleted = gateComparisons.length;
+ const comparisonsSkipped = Math.max(0, allRunCandidateStability.length - comparisonsCompleted);
+ const accountingValid = allRunCandidateStability.length === comparisonsCompleted + comparisonsSkipped
+   && gateDeterminismViolations.length <= comparisonsCompleted;
+ const eligibleCoverageRatio = allRunCandidateStability.length
+   ? eligibleCandidateCount / allRunCandidateStability.length : 0;
+ const representativeThreshold = 0.8;
  const gateDeterminismCoverage = {
+   candidate_count: allRunCandidateStability.length,
+   eligible_candidate_count: eligibleCandidateCount,
    comparisons_attempted: allRunCandidateStability.length,
-   comparisons_completed: gateComparisons.length,
-   comparisons_skipped: Math.max(0, allRunCandidateStability.length - gateComparisons.length),
+   comparisons_completed: comparisonsCompleted,
+   comparisons_skipped: comparisonsSkipped,
    terminal_skip_reasons: terminalSkipReasons,
    secondary_ineligibility_observations: secondaryIneligibilityObservations,
    skip_reason_counts_are_exclusive: true,
    violations_found: gateDeterminismViolations.length,
-   result_conclusive: candidateHistoryComplete && gateComparisons.length > 0,
+   eligible_coverage_ratio: eligibleCoverageRatio,
+   total_candidate_coverage_ratio: allRunCandidateStability.length ? comparisonsCompleted / allRunCandidateStability.length : 0,
+   representative_coverage_threshold: representativeThreshold,
+   result_conclusive_for_eligible_comparisons: candidateHistoryComplete && comparisonsCompleted > 0 && accountingValid,
+   result_broadly_representative: accountingValid && eligibleCoverageRatio >= representativeThreshold,
+   result_invalid_reason: accountingValid ? null : 'invalid_gate_determinism_accounting',
+   // Compatibility field: it means only the eligible-comparison conclusion,
+   // never broad representativeness across incomplete historical coverage.
+   result_conclusive: candidateHistoryComplete && comparisonsCompleted > 0 && accountingValid,
  };
  const candidateHistoryCoverage = {
    distinct_comparable_runs: runCount,

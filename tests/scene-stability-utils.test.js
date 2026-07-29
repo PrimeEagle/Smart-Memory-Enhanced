@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from '../scene-stability-utils.js';
+import { analyzeSceneStabilityHistory, canonicalizeGateOutput, compareSceneBoundaryRuns } from '../scene-stability-utils.js';
 
 test('scene comparison classifies exact, shifted, added, and removed boundaries', () => {
   const common = { prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: { temperature: 0 } };
@@ -196,4 +196,28 @@ test('compact snapshots verify gate determinism from retained result fields', ()
   assert.equal(result.gate_determinism_coverage.comparisons_completed, 1);
   assert.equal(result.gate_determinism_coverage.result_conclusive, true);
   assert.equal(result.gate_determinism_violation_count, 1);
+});
+
+test('gate output migration excludes incomplete legacy values from impossible violations', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [], candidate_detail_available: true };
+  const incomplete = Array.from({ length: 41 }, (_, index) => ({ candidate_id: index, decision: true, gate_input_hash: `legacy-${index}`, gate_output_hash: `opaque-${index}` }));
+  const complete = [{ candidate_id: 99, decision: true, gate_input_hash: 'same', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }];
+  const result = analyzeSceneStabilityHistory([{ ...shared, run_id: 'one', candidate_dispositions: [...incomplete, ...complete] }], { ...shared, run_id: 'two', candidate_dispositions: [...incomplete, ...complete] });
+  const coverage = result.gate_determinism_coverage;
+  assert.equal(coverage.comparisons_attempted, coverage.comparisons_completed + coverage.comparisons_skipped);
+  assert.ok(coverage.violations_found <= coverage.comparisons_completed);
+  assert.equal(coverage.violations_found, 0);
+  assert.equal(coverage.terminal_skip_reasons.skipped_incompatible_legacy_gate_output, 41);
+  assert.equal(coverage.result_broadly_representative, false);
+});
+
+test('canonical gate migration normalizes structured records and refuses opaque legacy hashes', () => {
+  const current = canonicalizeGateOutput({ gate_output_schema_version: 1, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' });
+  const migrated = canonicalizeGateOutput({ gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' });
+  const opaque = canonicalizeGateOutput({ gate_output_hash: 'legacy-hash' });
+  assert.equal(current.classification, 'comparable_canonical_output');
+  assert.equal(migrated.classification, 'migrated_legacy_output');
+  assert.equal(current.canonical_gate_output_hash, migrated.canonical_gate_output_hash);
+  assert.equal(opaque.classification, 'legacy_output_incomplete');
+  assert.equal(opaque.canonical_gate_output_hash, null);
 });

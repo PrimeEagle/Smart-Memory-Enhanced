@@ -396,7 +396,7 @@ test('explicit named family facts are persisted as typed Relationship History ev
   const profiles = read('profiles.js');
   assert.match(profiles, /persistExplicitFamilyRelationshipFacts/);
   assert.match(profiles, /extractExplicitNamedFamilyCandidates\(rawChatMessages\)/);
-  assert.match(profiles, /relationship_type_source: existingType \? existingSource : 'grounded_raw_chat_evidence'/);
+  assert.match(profiles, /relationship_type_source: existingType \? existingSource : candidateSource/);
   assert.match(profiles, /saveRelationshipHistory\(characterName, relationshipHistory\)/);
 });
 

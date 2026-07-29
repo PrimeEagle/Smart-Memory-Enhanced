@@ -192,6 +192,8 @@ function makeSceneStabilitySnapshot(audit = {}) {
       decision: typeof candidate.decision === 'boolean' ? candidate.decision : null,
       ai_confidence: candidate.ai_confidence ?? null,
       gate_input_hash: candidate.gate_input_hash ?? null,
+      gate_output_schema_version: candidate.gate_output_schema_version ?? 1,
+      gate_executed: candidate.gate_executed === true,
       gate_result: candidate.gate_result ?? null,
       gate_reason_code: candidate.gate_reason_code ?? null,
       terminal_break_disposition: candidate.terminal_break_disposition ?? null,
@@ -3529,7 +3531,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
-          const sceneAudit = { run_id: catchUpRunId, candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
+          const sceneAudit = { run_id: catchUpRunId, created_at: Date.now(), record_source: 'runtime', history_schema_version: 2, candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], candidate_context_hash_summary: null, prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v4|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
           let prevAiMsg = '';
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -3543,6 +3545,7 @@ export function bindSettingsUI(ctrl) {
             const batchResult = await detectSceneBreakAIBatch(aiCandidates, { batchSize: sceneAudit.batch_size_target, onError: (err) => { sceneAudit.detection_failed++; recordCatchUpWarning('AI scene-break batch warning', err, 'scenes'); } });
             sceneAudit.boundary_candidates_evaluated = aiCandidates.length;
             sceneAudit.candidate_context_hashes = aiCandidates.map((candidate) => ({ candidate_id: candidate.candidate_index, context_hash: diagnosticFingerprint(`${candidate.previous_message}\n${candidate.message}`) }));
+            sceneAudit.candidate_context_hash_summary = diagnosticFingerprint(sceneAudit.candidate_context_hashes.map((candidate) => `${candidate.candidate_id}:${candidate.context_hash}`).join('|'));
             sceneAudit.scene_detection_run_signature = diagnosticFingerprint(sceneAudit.candidate_context_hashes.map((candidate) => `${candidate.candidate_id}:${candidate.context_hash}`).join('|'));
             sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.total_provider_requests;
             Object.assign(sceneAudit, batchResult.diagnostics);
@@ -3601,7 +3604,10 @@ export function bindSettingsUI(ctrl) {
             const aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
             if (aiRequestedBreak) {
               if (gate.terminal_break_disposition === 'rejected_deterministic_gate') sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
-              Object.assign(aiDisposition ?? {}, gate);
+              Object.assign(aiDisposition ?? {}, gate, {
+                gate_executed: true,
+                gate_output_schema_version: 1,
+              });
             }
 
             if (isAiMsg) prevAiMsg = msgText;
