@@ -1797,18 +1797,22 @@ export async function reconcileCanonicalEntities(characterName) {
   // are deliberately namespaced as `persona:<id>`. Include every canonical
   // representation so a valid persona reference is not falsely reported as
   // stale merely because the active roster exposes its unprefixed ID.
+  const normalizePersonaReference = (value) => {
+    const raw = String(value ?? '').trim();
+    return raw ? (raw.startsWith('persona:') ? raw : `persona:${raw}`) : null;
+  };
   const knownEntityIds = new Set([
     ...registryGroups.flatMap((entity) => [
       entity?.id,
       entity?.canonical_card_id,
       entity?.canonical_persona_id,
-      entity?.canonical_persona_id ? `persona:${entity.canonical_persona_id}` : null,
+      normalizePersonaReference(entity?.canonical_persona_id),
     ]),
     ...(roster.characters ?? []).flatMap((entry) => [
       entry?.id,
       entry?.canonical_card_id,
       entry?.canonical_persona_id,
-      entry?.canonical_persona_id ? `persona:${entry.canonical_persona_id}` : null,
+      normalizePersonaReference(entry?.canonical_persona_id),
     ]),
     ...referenceRedirects.values(),
   ].filter(Boolean));
@@ -2057,8 +2061,8 @@ export async function reconcileCanonicalEntities(characterName) {
       for (const [field, entityId] of [
         ['subject_canonical_card_id', entry?.subject_canonical_card_id],
         ['target_canonical_card_id', entry?.target_canonical_card_id],
-        ['subject_canonical_persona_id', entry?.subject_canonical_persona_id ? `persona:${entry.subject_canonical_persona_id}` : null],
-        ['target_canonical_persona_id', entry?.target_canonical_persona_id ? `persona:${entry.target_canonical_persona_id}` : null],
+        ['subject_canonical_persona_id', normalizePersonaReference(entry?.subject_canonical_persona_id)],
+        ['target_canonical_persona_id', normalizePersonaReference(entry?.target_canonical_persona_id)],
       ]) {
         if (entityId && !knownEntityIds.has(entityId)) {
           staleEntityReferences.push({ store: `epistemic:${storeName}`, record_id: entry?.id ?? null, field, entity_id: entityId });

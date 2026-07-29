@@ -705,8 +705,8 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
-  assert.match(ui, /persona:\$\{entity\.canonical_persona_id\}/);
-  assert.match(ui, /persona:\$\{entry\.canonical_persona_id\}/);
+  assert.match(ui, /normalizePersonaReference/);
+  assert.match(ui, /raw\.startsWith\('persona:'\)/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
   assert.match(ui, /blocked_unsafe_identity_merges/);
