@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.61] - 2026-07-29
+
+### Fixed
+
+- Accepted complete inline XML profile sections from local models, such as
+  `<character_state>…</character_state>`, in addition to the existing
+  multiline and Markdown-heading forms. Valid structured profile output no
+  longer fails merely because its XML tags and content share a line.
+- Corrected closing-tag handling in the multiline profile parser while
+  preserving tolerant support for partial and unclosed profile sections.
+
+### Tests
+
+- Added a regression case for strict parsing of all three inline XML profile
+  sections. Full automated verification: 282 unit/integration checks and 48
+  replay-harness assertions passed.
+
 ## [0.8.60] - 2026-07-29
 
 ### Added
