@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.59] - 2026-07-29
+
+### Fixed
+
+- Reworked gate-determinism replay analysis to normalize structured and safely
+  migratable historical gate outputs before comparison. Opaque legacy hashes,
+  absent outputs, and non-executed gates are now excluded rather than being
+  counted as determinism violations.
+- Enforced gate accounting invariants: violations can never exceed completed
+  eligible comparisons, and completed plus skipped comparisons always equals
+  attempts. Diagnostics now distinguish an eligible conclusion from broad
+  representative coverage.
+- Persisted authoritative character-card family facts through the same typed
+  Relationship History path as explicit raw-chat facts. Explicit twin facts
+  now survive save/reload and can supply the safe `sister` or `sibling` role
+  to both character profiles.
+- Added a privacy-safe family-role pipeline trace covering card detection,
+  persistence, reload lookup, selected role, and terminal outcome.
+- Classified canonical entity records by logical store scope. Compatible
+  persona/card mirrors across global and card-local stores are informational;
+  only conflicting or same-scope duplicates degrade final integrity.
+- Replaced the inverted duplicate quality invariant with the truthful
+  `unresolved_duplicate_canonical_entities` reason code.
+- Added scene request-efficiency diagnostics, including prior/current request
+  counts, partial-output and format-repair counts, and a bounded explanation
+  for any request increase. Adaptive recovery now waits for five full batches
+  before cautiously increasing a reduced batch size.
+
+### Tests
+
+- Added gate-output migration and impossible-violation regression cases.
+- Expanded workflow coverage for durable card-family facts, scoped duplicate
+  audit classifications, and scene diagnostics.
+- Full automated verification: 281 unit/integration checks and 48 replay
+  harness assertions passed.
+
+### Verification note
+
+- The supplied JSONL was a pre-fix baseline and confirmed the original gate,
+  family-role, and scoped-persona defects. A post-release live replay remains
+  required to validate the serialized outcome end-to-end.
+
 ## [0.8.58] - 2026-07-29
 
 ### Fixed
