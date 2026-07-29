@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.56] - 2026-07-28
+
+### Fixed
+
+- Fixed manual canonical reconciliation and the Developer idempotence check
+  building their roster without the currently active persona. Valid raw
+  persona IDs in Epistemic records are now recognized during an on-demand
+  check, rather than being falsely reported as unknown.
+
+### Tests
+
+- Added regression coverage that requires manual reconciliation to capture
+  and pass the live runtime persona snapshot into its canonical roster.
+
 ## [0.8.55] - 2026-07-28
 
 ### Fixed
