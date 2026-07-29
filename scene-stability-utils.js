@@ -349,8 +349,9 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    variance_analysis_complete: candidateHistoryComplete,
    incomplete_reason: candidateHistoryComplete ? null : 'missing_candidate_history',
  };
- const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
- const distinctPriorRunCount = new Set(identifiedRuns.filter((run) => run.run_id !== currentAudit.run_id).map((run) => run.run_id)).size;
+  const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
+ const identifiedPriorRuns = identifiedRuns.filter((run) => run.run_id !== currentAudit.run_id);
+ const distinctPriorRunCount = identifiedPriorRuns.length;
  return {
    scene_run_input_accounting: {
      raw_prior_record_count: compatiblePriorRuns.length,
@@ -375,13 +376,16 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    boundary_history_analysis_complete: true,
    candidate_variance_analysis_complete: candidateHistoryComplete,
    gate_determinism_analysis_complete: gateDeterminismCoverage.result_conclusive,
-   comparable_prior_run_count: compatiblePriorRuns.length,
-   prior_comparable_run_count: compatiblePriorRuns.length,
+   // These fields must describe the deduplicated data that was actually
+   // analyzed, not the raw compatible input. Otherwise a removed duplicate
+   // can still appear as a retained prior run in exported diagnostics.
+   comparable_prior_run_count: identifiedPriorRuns.length,
+   prior_comparable_run_count: identifiedPriorRuns.length,
    comparable_total_run_count: runCount,
    total_comparable_run_count: runCount,
    comparable_run_count: runCount,
    current_run_included: currentRunIncluded,
-   retained_prior_run_ids: compatiblePriorRuns.map((run, index) => run.run_id ?? deterministicLegacyId(run, index)),
+   retained_prior_run_ids: identifiedPriorRuns.map((run) => run.run_id),
    current_run_id: currentRunIncluded ? (currentAudit.run_id ?? deterministicLegacyId(currentAudit, compatiblePriorRuns.length)) : null,
    retained_run_ids: identifiedRuns.map((run) => run.run_id), retained_created_at: identifiedRuns.map((run) => run.created_at ?? run.completed_at ?? null),
    scene_counts: counts, boundary_counts: identifiedRuns.map((run) => (run.final_break_indices ?? []).length),

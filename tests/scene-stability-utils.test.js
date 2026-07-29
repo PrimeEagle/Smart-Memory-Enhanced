@@ -125,6 +125,8 @@ test('duplicate runtime records are removed before scene statistics and clusteri
   assert.equal(result.scene_run_input_accounting.duplicate_run_records_removed, 1);
   assert.equal(result.scene_run_input_accounting.distinct_total_run_count, 3);
   assert.deepEqual(result.scene_run_input_accounting.duplicate_runtime_run_ids, ['one']);
+  assert.equal(result.comparable_prior_run_count, 2);
+  assert.deepEqual(result.retained_prior_run_ids, ['one', 'two']);
   assert.equal(result.exact_boundary_frequency_by_index[10], 3);
   assert.equal(result.shifted_boundary_clusters.find((cluster) => cluster.member_indices.includes(20)).distinct_run_count, 3);
   assert.equal(result.prior_summary_invalidated_by_duplicate_runs, true);
