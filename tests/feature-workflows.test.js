@@ -400,6 +400,14 @@ test('explicit named family facts are persisted as typed Relationship History ev
   assert.match(profiles, /saveRelationshipHistory\(characterName, relationshipHistory\)/);
 });
 
+test('explicit card twin facts become a safe sibling role only with explicit card gender evidence', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /sibling\|sister\|brother\|twin/);
+  assert.match(profiles, /relationshipType\.toLowerCase\(\) !== 'twin'/);
+  assert.match(profiles, /gender\|sex/);
+  assert.match(profiles, /\? 'sister' : 'sibling'/);
+});
+
 test('final diagnostics retain rejected identity candidates and a successful arc outcome', () => {
   const settings = read('settings.js');
   const arcs = read('arcs.js');

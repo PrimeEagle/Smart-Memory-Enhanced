@@ -218,8 +218,17 @@ function rosterEntries(roster) {
 }
 
 export function extractCardRelationshipFacts(roster = []) {
-  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|mother|father|parent|daughter|son|friend|roommate';
+  const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|twin|mother|father|parent|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
+  const normalizeCardRole = (relationshipType, subjectName) => {
+    if (relationshipType.toLowerCase() !== 'twin') return relationshipType.toLowerCase();
+    const subject = rosterEntries(roster).find((entry) => String(entry.canonicalName ?? '').toLowerCase() === String(subjectName ?? '').toLowerCase());
+    const cardText = `${subject?.descriptionExcerpt ?? ''}\n${subject?.relationshipFactExcerpt ?? ''}`;
+    // “Twin” establishes siblinghood. Convert it to the gendered sibling role
+    // only when the same authoritative card explicitly identifies its owner
+    // as female; otherwise retain the neutral, safe `sibling` role.
+    return /\b(?:gender|sex)\s*:\s*female\b|\bfemale\b/i.test(cardText) ? 'sister' : 'sibling';
+  };
   const facts = [];
   const addFact = (entry, subjectName, targetName, relationshipType) => {
     const subject = resolve(subjectName);
@@ -229,12 +238,12 @@ export function extractCardRelationshipFacts(roster = []) {
     facts.push({
       subject: subject.canonicalName.toLowerCase(),
       target: target.canonicalName.toLowerCase(),
-      relationship_type: relationshipType.toLowerCase(),
+      relationship_type: normalizeCardRole(relationshipType, subject.canonicalName),
       relationship_type_source: isPersonaFact ? 'persona_fact' : 'card_fact',
       relationship_type_confidence_class: 'authoritative',
       relationship_type_source_ids: [`${isPersonaFact ? 'persona' : 'card'}:${entry?.canonical_id ?? entry?.canonical_card_id ?? entry?.canonicalName ?? 'unknown'}`],
       relationship_type_direction: 'subject_to_target',
-      descriptors: [relationshipType.toLowerCase()],
+      descriptors: [],
     });
   };
   for (const entry of rosterEntries(roster)) {
