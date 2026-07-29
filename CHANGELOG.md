@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.53] - 2026-07-28
+
+### Added
+
+- Expanded the Developer idempotence result card with a privacy-safe summary
+  of any remaining stale-reference categories, grouped by store, field, and
+  reason code. This makes an attention result actionable without exposing
+  memory text or record IDs.
+
+### Tests
+
+- Added regression coverage for stale-reference summary persistence and
+  rendering.
+
 ## [0.8.52] - 2026-07-28
 
 ### Fixed
