@@ -1793,9 +1793,23 @@ export async function reconcileCanonicalEntities(characterName) {
   // Final read-only integrity audit. Reconciliation has already applied every
   // safe redirect above; this catches a dangling reference before the staged
   // transaction commits, without deleting uncertain user data.
+  // Structured stores use stable card IDs directly, but persona references
+  // are deliberately namespaced as `persona:<id>`. Include every canonical
+  // representation so a valid persona reference is not falsely reported as
+  // stale merely because the active roster exposes its unprefixed ID.
   const knownEntityIds = new Set([
-    ...registryGroups.flat().map((entity) => entity?.id),
-    ...(roster.characters ?? []).map((entry) => entry?.id),
+    ...registryGroups.flatMap((entity) => [
+      entity?.id,
+      entity?.canonical_card_id,
+      entity?.canonical_persona_id,
+      entity?.canonical_persona_id ? `persona:${entity.canonical_persona_id}` : null,
+    ]),
+    ...(roster.characters ?? []).flatMap((entry) => [
+      entry?.id,
+      entry?.canonical_card_id,
+      entry?.canonical_persona_id,
+      entry?.canonical_persona_id ? `persona:${entry.canonical_persona_id}` : null,
+    ]),
     ...referenceRedirects.values(),
   ].filter(Boolean));
   const cardIdentityMismatches = [];
