@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.58] - 2026-07-29
+
+### Fixed
+
+- Consolidated scene-stability analysis around one normalized, deduplicated
+  `comparable_runs` collection. Retained IDs, counts, candidate coverage, and
+  scene summaries now derive from that single source.
+- Corrected candidate-history expected/available/missing accounting and made
+  gate-determinism terminal skip reasons mutually exclusive. Overlapping
+  ineligibility observations remain separately labeled.
+- Treat duplicate scene-run input as completed maintenance after safe
+  deduplication rather than as an inherently incomplete analysis.
+- Persisted explicit fully named family facts as typed Relationship History
+  evidence before profile validation, with canonical pair IDs and source
+  provenance.
+- Added a safe card-fact rule for explicit twins: an explicit female card
+  owner yields `sister`; otherwise the role remains neutral `sibling`.
+- Preserved known structural relationship roles when the profile model omits
+  descriptive text, and exported compact role-resolution traces.
+- Added a shared per-run adaptive scene-batch ceiling so recovery retries do
+  not repeatedly probe recently failing batch sizes.
+
+### Tests
+
+- Added regression coverage for deduplicated comparable-run derivation,
+  candidate coverage, exclusive gate skip accounting, structural role
+  preservation, explicit family persistence, and explicit card twin roles.
+
+### Verification note
+
+- The supplied prior replay artifacts were used to confirm the original
+  defects. A new live replay is still required to verify the updated serialized
+  diagnostics and provider-request behavior end-to-end.
+
 ## [0.8.57] - 2026-07-28
 
 ### Fixed
