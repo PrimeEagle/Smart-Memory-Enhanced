@@ -1799,7 +1799,12 @@ export async function reconcileCanonicalEntities(characterName) {
   // stale merely because the active roster exposes its unprefixed ID.
   const normalizePersonaReference = (value) => {
     const raw = String(value ?? '').trim();
-    return raw ? (raw.startsWith('persona:') ? raw : `persona:${raw}`) : null;
+    // Older serialized records can contain a repeated namespace from prior
+    // writers (`persona:persona:<id>`). Collapse every leading copy before
+    // restoring the single canonical namespace; this preserves the original
+    // stable persona key without inferring or replacing an identity.
+    const stableId = raw.replace(/^(?:persona:)+/i, '');
+    return stableId ? `persona:${stableId}` : null;
   };
   const knownEntityIds = new Set([
     ...registryGroups.flatMap((entity) => [
