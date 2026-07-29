@@ -129,7 +129,40 @@ test('duplicate runtime records are removed before scene statistics and clusteri
   assert.deepEqual(result.retained_prior_run_ids, ['one', 'two']);
   assert.equal(result.exact_boundary_frequency_by_index[10], 3);
   assert.equal(result.shifted_boundary_clusters.find((cluster) => cluster.member_indices.includes(20)).distinct_run_count, 3);
-  assert.equal(result.prior_summary_invalidated_by_duplicate_runs, true);
+  assert.equal(result.prior_summary_invalidated_by_duplicate_runs, false);
+  assert.equal(result.input_maintenance_performed, true);
+  assert.equal(result.scene_stability_summary_complete, false);
+});
+
+test('canonical comparable runs drive all retained IDs and candidate coverage after duplicate maintenance', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, candidate_detail_available: true, final_break_indices: [10] };
+  const candidates = Array.from({ length: 3 }, (_, index) => ({ candidate_id: index + 1, decision: false, gate_input_hash: `gate-${index}`, gate_result: 'rejected' }));
+  const run = (run_id) => ({ ...shared, run_id, generated: 2, candidate_dispositions: candidates });
+  const result = analyzeSceneStabilityHistory([run('run-a'), run('run-b'), run('run-c'), run('run-c')], run('current'));
+  assert.equal(result.prior_comparable_run_count, 3);
+  assert.equal(result.total_comparable_run_count, 4);
+  assert.deepEqual(result.retained_prior_run_ids, ['run-a', 'run-b', 'run-c']);
+  assert.equal(new Set(result.retained_prior_run_ids).size, 3);
+  assert.equal(result.comparable_runs.filter((entry) => !entry.current_run).length, result.prior_comparable_run_count);
+  assert.equal(result.candidate_history_coverage.candidate_records_expected, 12);
+  assert.equal(result.candidate_history_coverage.candidate_records_available, 12);
+  assert.equal(result.candidate_history_coverage.candidate_records_missing, 0);
+  assert.equal(result.candidate_history_coverage.coverage_ratio, 1);
+  assert.equal(result.input_maintenance_performed, true);
+  assert.equal(result.scene_stability_summary_complete, true);
+});
+
+test('gate determinism terminal skip reasons are exclusive while secondary observations can overlap', () => {
+  const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [], candidate_detail_available: true };
+  const result = analyzeSceneStabilityHistory([
+    { ...shared, run_id: 'one', candidate_dispositions: [{ candidate_id: 1, decision: true }, { candidate_id: 2, decision: true, gate_input_hash: 'same' }, { candidate_id: 3, decision: true, gate_input_hash: 'a' }] },
+  ], { ...shared, run_id: 'two', candidate_dispositions: [{ candidate_id: 1, decision: true }, { candidate_id: 2, decision: false, gate_input_hash: 'same' }, { candidate_id: 3, decision: true, gate_input_hash: 'b' }] });
+  const coverage = result.gate_determinism_coverage;
+  const skippedByReason = Object.values(coverage.terminal_skip_reasons).reduce((sum, count) => sum + count, 0);
+  assert.equal(coverage.skip_reason_counts_are_exclusive, true);
+  assert.equal(coverage.comparisons_attempted, coverage.comparisons_completed + coverage.comparisons_skipped);
+  assert.equal(coverage.comparisons_skipped, skippedByReason);
+  assert.ok(coverage.secondary_ineligibility_observations.ai_decision_mismatch >= 1);
 });
 
 test('exact duplicate boundaries are normalized while nearby boundaries remain distinct', () => {

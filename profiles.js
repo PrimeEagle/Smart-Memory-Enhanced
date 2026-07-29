@@ -45,13 +45,14 @@ import {
   setExtensionPrompt,
   extension_prompt_types,
   extension_prompt_roles,
+  saveSettingsDebounced,
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
-import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories, loadRelationshipHistory, formatMemoriesForPrompt } from './longterm.js';
+import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, getRelationshipHistoryPair, loadCharacterMemories, loadRelationshipHistory, saveRelationshipHistory, formatMemoriesForPrompt } from './longterm.js';
 import { loadSessionMemories } from './session.js';
 import { loadSceneHistory } from './scenes.js';
 import { loadStateLedger } from './state-ledger.js';
@@ -260,6 +261,60 @@ export function extractCardRelationshipFacts(roster = []) {
     }
   }
   return facts;
+}
+
+/**
+ * Persists only explicit, fully named raw-chat family facts as typed
+ * Relationship History records. This is deliberately narrower than general
+ * relationship extraction: it never uses surnames, pronouns, descriptors, or
+ * scene summaries, and it does not override a higher-precedence existing
+ * card, persona, or manual role.
+ */
+export function persistExplicitFamilyRelationshipFacts(history = {}, roster = [], rawChatMessages = []) {
+  const precedence = { grounded_raw_chat_evidence: 1, grounded_source_evidence: 2, approved_relationship_history: 3, persona_fact: 4, card_fact: 5, manual: 6 };
+  const result = { changed: false, persisted: [], rejected: [] };
+  for (const candidate of extractExplicitNamedFamilyCandidates(rawChatMessages)) {
+    const subject = resolveCanonicalCharacterName(candidate.subject, roster);
+    const target = resolveCanonicalCharacterName(candidate.target, roster);
+    if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) {
+      result.rejected.push({ ...candidate, reason: 'participant_not_uniquely_resolved' });
+      continue;
+    }
+    const pair = getRelationshipHistoryPair(subject.canonicalName, target.canonicalName, roster);
+    const existing = history[pair.key] ?? {};
+    const existingType = String(existing.relationship_type ?? existing.canonical_relationship_type ?? '').trim().toLowerCase() || null;
+    const existingSource = existing.relationship_type_source ?? 'approved_relationship_history';
+    if (existingType && existingType !== candidate.relationship_type && (precedence[existingSource] ?? 3) > precedence.grounded_raw_chat_evidence) {
+      result.rejected.push({ ...candidate, reason: 'higher_precedence_role_exists', existing_relationship_type: existingType });
+      continue;
+    }
+    const next = {
+      ...existing,
+      subject_name: pair.subject.displayName,
+      target_name: pair.target.displayName,
+      subject_canonical_card_id: pair.subject.cardId,
+      target_canonical_card_id: pair.target.cardId,
+      subject_canonical_persona_id: pair.subject.personaId,
+      target_canonical_persona_id: pair.target.personaId,
+      relationship_type: existingType ?? candidate.relationship_type,
+      relationship_type_source: existingType ? existingSource : 'grounded_raw_chat_evidence',
+      relationship_type_confidence_class: existing.relationship_type_confidence_class ?? 'grounded',
+      relationship_type_source_ids: [...new Set([...(existing.relationship_type_source_ids ?? []), `chat-message:${candidate.source_index}`])],
+      relationship_type_direction: 'subject_to_target',
+      source_message_indices: [...new Set([...(existing.source_message_indices ?? []), candidate.source_index])].sort((a, b) => a - b),
+      supporting_source_indices: [...new Set([...(existing.supporting_source_indices ?? existing.source_message_indices ?? []), candidate.source_index])].sort((a, b) => a - b),
+      latest_update_indices: [candidate.source_index],
+      creation_stage: existing.creation_stage ?? 'explicit_named_family_fact',
+      approval_status: existing.approval_status ?? 'grounded',
+      updatedAt: Date.now(),
+    };
+    if (JSON.stringify(existing) !== JSON.stringify(next)) {
+      history[pair.key] = next;
+      result.changed = true;
+    }
+    result.persisted.push({ subject: pair.subject.displayName, target: pair.target.displayName, relationship_type: next.relationship_type, source_message_index: candidate.source_index, persisted: result.changed });
+  }
+  return result;
 }
 
 function extractGroundedRelationshipFacts(records = [], roster = []) {
@@ -644,12 +699,38 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       return false;
     }).join('\n').trim();
   }
-  // Persist a structured, role-separated projection alongside the compatible
+ // Persist a structured, role-separated projection alongside the compatible
  // text matrix. A role is emitted only from independently grounded pair
  // evidence; descriptor words never establish one.
  const evidencePairs = [cardPairs, historyPairs, groundedPairs, rawChatPairs].flat();
  const evidenceForTarget = (target) => mergeRelationshipPairEvidence(...evidencePairs.filter((pair) =>
  (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)));
+ // The profile model is allowed to omit a relationship's descriptive state,
+ // but it must not erase a deterministic role already established by typed
+ // evidence. Add a structural-only outcome for every such target so it is
+ // serialized and diagnosable without fabricating descriptors.
+ const generatedRelationshipTargets = new Set(fieldTerminalOutcomes
+   .map((outcome) => String(outcome?.relationship_target ?? '').trim().toLowerCase())
+   .filter(Boolean));
+ for (const pair of evidencePairs) {
+   if (!pair?.relationship_type || (pair.subject !== self && pair.target !== self)) continue;
+   const target = pair.subject === self ? pair.target : pair.subject;
+   if (!target || generatedRelationshipTargets.has(target)) continue;
+   const role = relationshipTypeForProfileTarget(pair, self, target);
+   if (!role) continue;
+   generatedRelationshipTargets.add(target);
+   fieldTerminalOutcomes.push({
+     relationship_target: target,
+     canonical_relationship_type: role,
+     generated_descriptors: [],
+     accepted_descriptors: [],
+     rejected_descriptors: [],
+     preserved_authoritative_descriptors: pair.descriptors ?? [],
+     final_saved_descriptors: pair.descriptors ?? [],
+     descriptive_field_generated: false,
+     field_terminal_outcome: 'not_generated_role_structurally_present',
+   });
+ }
  const structuredByTarget = new Map();
  for (const outcome of fieldTerminalOutcomes) {
  const target = String(outcome.relationship_target ?? '').trim().toLowerCase();
@@ -679,12 +760,45 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  }
  const profile_role_tokens_removed = relationship_matrix_structured.reduce((count, entry) => count + entry.role_tokens_removed_from_descriptors.length, 0);
  const profile_fields_migrated_for_role_separation = relationship_matrix_structured.filter((entry) => entry.role_tokens_removed_from_descriptors.length).length;
- return { profiles: { ...profiles, relationship_matrix_structured }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
+ const role_resolution_trace = relationship_matrix_structured.map((entry) => {
+   const target = String(entry.target ?? '').toLowerCase();
+   const evidence = evidenceForTarget(target);
+   const pairKey = evidence ? getRelationshipHistoryPair(self, target, roster).key : null;
+   const countBySource = (source) => evidencePairs.filter((pair) =>
+     (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target))
+     .filter((pair) => pair.relationship_type_source === source).length;
+   const outcome = fieldTerminalOutcomes.find((item) => String(item.relationship_target ?? '').toLowerCase() === target);
+   return {
+     profile_owner: self,
+     relationship_target: target,
+     canonical_pair_key: pairKey,
+     source_counts: {
+       typed_card: countBySource('card_fact'),
+       typed_persona: countBySource('persona_fact'),
+       manual: countBySource('manual'),
+       typed_relationship_history: countBySource('approved_relationship_history'),
+       grounded_memory: countBySource('grounded_source_evidence'),
+       raw_chat: countBySource('grounded_raw_chat_evidence'),
+       descriptor_only: historyPairs.filter((pair) => ((pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)) && !pair.relationship_type && pair.descriptors.length).length,
+       rejected_unsafe: 0,
+     },
+     candidate_roles: evidence?.relationship_type ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
+     selected_role: entry.canonical_relationship_type,
+     selected_source_class: entry.relationship_type_source,
+     selected_source_id: entry.relationship_type_source_id,
+     rejected_candidates: [],
+     terminal_outcome: outcome?.field_terminal_outcome === 'not_generated_role_structurally_present' ? 'not_generated_role_structurally_present' : entry.canonical_relationship_type ? 'generated_and_resolved' : 'generated_but_role_unresolved',
+     persistence_stage_verified: Boolean(entry.relationship_type_source_id),
+   };
+ });
+ return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
  const target = String(outcome.relationship_target ?? '').toLowerCase();
  const entry = structuredByTarget.get(target);
  const evidence = evidenceForTarget(target);
  const terminal = entry?.canonical_relationship_type
-   ? 'resolved'
+   ? (outcome.field_terminal_outcome === 'not_generated_role_structurally_present'
+     ? 'not_generated_role_structurally_present'
+     : 'generated_and_resolved')
    : evidence ? 'unresolved_ambiguous'
      : outcome.field_terminal_outcome === 'dropped_no_supported_descriptors' ? 'unresolved_no_evidence' : 'rejected_unsafe_inference';
  const candidateEvidence = evidence ? [{
@@ -959,6 +1073,15 @@ export async function generateProfiles(characterName, abortCheck = null, options
     // authority for durable relationship labels such as spouse or ex-spouse.
     // Only directly grounded memory records, card facts, and Relationship
     // History may validate the profile relationship matrix.
+    const explicitFamilyPersistence = persistExplicitFamilyRelationshipFacts(relationshipHistory, relationshipRoster, rawChatMessages);
+    if (explicitFamilyPersistence.changed) {
+      saveRelationshipHistory(characterName, relationshipHistory);
+      // Full-card Relationship History lives in extension settings; chat-local
+      // storage saves inside saveRelationshipHistory itself. Request both
+      // persistence paths here so explicit family facts are durable before
+      // the profile projection is saved.
+      saveSettingsDebounced();
+    }
     const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
     parsed = relationshipCheck.profiles;
     if (relationshipCheck.rejected.length) {
@@ -1025,6 +1148,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
         preserved_authoritative_value: profileFieldTerminalOutcomes.filter((entry) => entry.field_terminal_outcome === 'preserved_authoritative_value').length,
         dropped_no_supported_descriptors: rejectedRelationshipFields.length,
       },
+      explicit_family_role_persistence: explicitFamilyPersistence,
       field_validation: {
         accepted_exact: Math.max(0, profileFields.length - fieldGrounding.rejected.length - temporalCheck.dropped.length - speculationCheck.dropped.length - rejectedRelationshipFields.length),
         accepted_normalized: relationshipCheck.normalized ?? 0,

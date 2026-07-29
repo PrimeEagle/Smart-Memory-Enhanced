@@ -384,6 +384,22 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(ui, /relationshipIntegrityErrors/);
 });
 
+test('known structural relationship roles survive a profile-model omission without fabricated descriptors', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /not_generated_role_structurally_present/);
+  assert.match(profiles, /generatedRelationshipTargets/);
+  assert.match(profiles, /descriptive_field_generated: false/);
+  assert.match(profiles, /generated_and_resolved/);
+});
+
+test('explicit named family facts are persisted as typed Relationship History evidence before profile validation', () => {
+  const profiles = read('profiles.js');
+  assert.match(profiles, /persistExplicitFamilyRelationshipFacts/);
+  assert.match(profiles, /extractExplicitNamedFamilyCandidates\(rawChatMessages\)/);
+  assert.match(profiles, /relationship_type_source: existingType \? existingSource : 'grounded_raw_chat_evidence'/);
+  assert.match(profiles, /saveRelationshipHistory\(characterName, relationshipHistory\)/);
+});
+
 test('final diagnostics retain rejected identity candidates and a successful arc outcome', () => {
   const settings = read('settings.js');
   const arcs = read('arcs.js');

@@ -133,6 +133,20 @@ export async function detectSceneBreakAI(messageText, previousMessageText, onErr
 export async function detectSceneBreakAIBatch(candidates, options = {}) {
   const result = new Map();
   const batchSize = Math.max(1, Math.min(20, Number(options.batchSize ?? 12)));
+  // Recovery calls share this per-run state with their parent. A partial
+  // response at a given size therefore lowers the ceiling for every later
+  // root batch instead of allowing recursive retries to rediscover the same
+  // provider limit repeatedly.
+  const adaptiveState = options.adaptiveState ?? {
+    starting_batch_size: batchSize,
+    effective_batch_ceiling: batchSize,
+    recent_success_streak: 0,
+    recent_failure_sizes: [],
+    highest_recent_stable_size: 0,
+    ceiling_reduced_count: 0,
+    ceiling_increased_count: 0,
+    ceiling_history: [batchSize],
+  };
   const lineage = options.lineage ?? { next_attempt_id: 1 };
   const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, confidence_outcomes: { confidence_available: 0, confidence_not_returned: 0, confidence_invalid: 0, confidence_removed_during_repair: 0 }, batch_attempts: [], candidate_dispositions: [] };
   const parseBatch = (raw, requestedIds) => {
@@ -176,7 +190,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     const missing = requestedIds.filter((id) => !valid.has(id));
     return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [recoveredLegacyLines ? 'legacy_indexed_lines' : leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, invalid_confidence_count: invalidConfidence, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: recoveredLegacyLines ? 'legacy_lines' : Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
   };
-  let adaptiveBatchSize = batchSize;
+  let adaptiveBatchSize = Math.min(batchSize, adaptiveState.effective_batch_ceiling);
   let consecutiveFullBatches = 0;
   for (let offset = 0; offset < candidates.length;) {
     const batch = candidates.slice(offset, offset + adaptiveBatchSize);
@@ -229,7 +243,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         diagnostics.smaller_batch_retries++;
         // Retrying only the missing tail with a smaller batch limits extra work
         // and avoids discarding decisions already validated from this response.
-        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.max(1, Math.floor(batch.length / 2)), onError: options.onError, lineage, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, split_depth: attempt.split_depth + 1, attempt_type: missingCandidates.length === 1 ? 'single_candidate_retry' : 'partial_missing_retry' });
+        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.min(Math.max(1, Math.floor(batch.length / 2)), adaptiveState.effective_batch_ceiling), onError: options.onError, lineage, adaptiveState, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, split_depth: attempt.split_depth + 1, attempt_type: missingCandidates.length === 1 ? 'single_candidate_retry' : 'partial_missing_retry' });
         for (const [candidateId, decision] of smallerRetry.decisions) {
           const retryDisposition = smallerRetry.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidateId);
           parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, confidence_status: retryDisposition?.confidence_status ?? 'confidence_not_returned', retried: true });
@@ -281,16 +295,27 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       const previous = adaptiveBatchSize;
       // Back off predictably rather than halving and immediately bouncing
       // through several sizes on local providers with borderline output caps.
-      adaptiveBatchSize = Math.max(4, adaptiveBatchSize - 2);
+      const nextCeiling = Math.max(4, Math.min(adaptiveState.effective_batch_ceiling, adaptiveBatchSize - 1));
+      if (nextCeiling < adaptiveState.effective_batch_ceiling) {
+        adaptiveState.recent_failure_sizes.push(adaptiveBatchSize);
+        adaptiveState.effective_batch_ceiling = nextCeiling;
+        adaptiveState.ceiling_reduced_count++;
+        adaptiveState.ceiling_history.push(nextCeiling);
+      }
+      adaptiveBatchSize = Math.min(Math.max(4, adaptiveBatchSize - 2), adaptiveState.effective_batch_ceiling);
       consecutiveFullBatches = 0;
-      diagnostics.adaptive_batch_adjustments.push({ reason: 'partial_or_truncated_response', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
+      adaptiveState.recent_success_streak = 0;
+      diagnostics.adaptive_batch_adjustments.push({ reason: 'partial_or_truncated_response', previous_batch_size: previous, next_batch_size: adaptiveBatchSize, effective_batch_ceiling: adaptiveState.effective_batch_ceiling });
     } else if (!wasPartial && attempt.terminal_outcome === 'parsed_full') {
       consecutiveFullBatches++;
-      if (consecutiveFullBatches >= 3 && adaptiveBatchSize < batchSize) {
+      adaptiveState.recent_success_streak++;
+      adaptiveState.highest_recent_stable_size = Math.max(adaptiveState.highest_recent_stable_size, batch.length);
+      if (consecutiveFullBatches >= 3 && adaptiveBatchSize < adaptiveState.effective_batch_ceiling) {
         const previous = adaptiveBatchSize;
-        adaptiveBatchSize = Math.min(batchSize, adaptiveBatchSize + 1);
+        adaptiveBatchSize = Math.min(adaptiveState.effective_batch_ceiling, adaptiveBatchSize + 1);
         consecutiveFullBatches = 0;
-        diagnostics.adaptive_batch_adjustments.push({ reason: 'three_full_batches_conservative_increase', previous_batch_size: previous, next_batch_size: adaptiveBatchSize });
+        adaptiveState.ceiling_increased_count++;
+        diagnostics.adaptive_batch_adjustments.push({ reason: 'three_full_batches_conservative_increase', previous_batch_size: previous, next_batch_size: adaptiveBatchSize, effective_batch_ceiling: adaptiveState.effective_batch_ceiling });
       }
     }
   }
@@ -321,6 +346,22 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
   diagnostics.average_candidates_per_total_request = allRequestSizes.length ? Number((allRequestSizes.reduce((sum, size) => sum + size, 0) / diagnostics.total_provider_requests).toFixed(2)) : 0;
   diagnostics.batch_size_change_count = diagnostics.adaptive_batch_adjustments.length;
   diagnostics.batch_size_history = sizeHistory;
+  diagnostics.adaptive_batch_summary = {
+    root_requests: diagnostics.initial_batch_requests,
+    partial_retry_requests: diagnostics.partial_retry_requests,
+    single_candidate_retry_requests: diagnostics.single_candidate_retry_requests,
+    format_repair_requests: diagnostics.format_repair_requests,
+    total_provider_requests: diagnostics.total_provider_requests,
+    starting_batch_size: adaptiveState.starting_batch_size,
+    ending_batch_size: adaptiveBatchSize,
+    minimum_batch_size_used: diagnostics.minimum_batch_size_used,
+    maximum_batch_size_used: diagnostics.maximum_batch_size_used,
+    effective_ceiling_history: adaptiveState.ceiling_history,
+    failed_batch_sizes: [...new Set(adaptiveState.recent_failure_sizes)],
+    successful_batch_sizes: adaptiveState.highest_recent_stable_size ? [adaptiveState.highest_recent_stable_size] : [],
+    average_candidates_per_root_request: diagnostics.average_candidates_per_root_request,
+    average_candidates_per_total_request: diagnostics.average_candidates_per_total_request,
+  };
   // Attempts may observe the same candidate several times during recovery.
   // Terminal outcomes intentionally collapse that lineage so every candidate
   // contributes exactly once to the exported confidence accounting.
