@@ -376,6 +376,36 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     ceiling_established_at_request: diagnostics.batch_attempts.find((item) => item.ceiling_change_reason === 'partial_or_truncated_response')?.request_attempt_id ?? null,
     stable_batch_size_estimate: adaptiveState.highest_recent_stable_size || null,
   };
+  const reducedAttempts = diagnostics.batch_attempts.filter((item) => item.request_prevented_or_reduced_by_ceiling);
+  const outcomeBySize = diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').reduce((map, item) => {
+    const key = String(item.candidate_count_requested ?? 0);
+    const entry = map[key] ?? { batch_size: Number(key), successes: 0, partial_or_failed: 0, candidate_recovery_cost: 0 };
+    if (item.partial_or_truncated || /fallback|malformed|provider_error/.test(item.request_outcome ?? '')) entry.partial_or_failed++;
+    else entry.successes++;
+    entry.candidate_recovery_cost += Number(item.attempt_type !== 'initial_batch' ? item.candidate_count_requested ?? 0 : 0);
+    map[key] = entry;
+    return map;
+  }, {});
+  diagnostics.adaptive_ceiling_effectiveness = {
+    ceiling_enabled: true,
+    initial_ceiling: adaptiveState.starting_batch_size,
+    final_ceiling: adaptiveState.effective_batch_ceiling,
+    ceiling_established_at_request: diagnostics.adaptive_batch_summary.ceiling_established_at_request,
+    ceiling_reduction_count: adaptiveState.ceiling_reduced_count,
+    ceiling_increase_count: adaptiveState.ceiling_increased_count,
+    requests_reduced_by_ceiling: reducedAttempts.length,
+    candidate_slots_avoided_by_ceiling: reducedAttempts.reduce((total, item) => total + Math.max(0, batchSize - Number(item.candidate_count_requested ?? batchSize)), 0),
+    requests_prevented_by_ceiling: diagnostics.adaptive_batch_summary.requests_prevented_by_ceiling,
+    attempts_above_known_failed_size: diagnostics.adaptive_batch_summary.attempts_above_known_failed_size,
+    repeated_failed_size_probes: diagnostics.adaptive_batch_summary.repeated_failed_size_probes,
+    known_failed_sizes_final: [...new Set(adaptiveState.recent_failure_sizes)],
+    highest_stable_size: adaptiveState.highest_recent_stable_size || null,
+    lowest_required_size: diagnostics.minimum_batch_size_used,
+    failure_count_by_batch_size: Object.fromEntries(Object.values(outcomeBySize).map((item) => [item.batch_size, item.partial_or_failed])),
+    success_count_by_batch_size: Object.fromEntries(Object.values(outcomeBySize).map((item) => [item.batch_size, item.successes])),
+    full_response_rate_by_batch_size: Object.fromEntries(Object.values(outcomeBySize).map((item) => [item.batch_size, item.successes / Math.max(1, item.successes + item.partial_or_failed)])),
+    candidate_recovery_cost_by_batch_size: Object.fromEntries(Object.values(outcomeBySize).map((item) => [item.batch_size, item.candidate_recovery_cost])),
+  };
   // Attempts may observe the same candidate several times during recovery.
   // Terminal outcomes intentionally collapse that lineage so every candidate
   // contributes exactly once to the exported confidence accounting.

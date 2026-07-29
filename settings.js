@@ -248,6 +248,11 @@ function makeSceneStabilitySnapshot(audit = {}) {
     malformed_batches: audit.malformed_batches ?? 0,
     fallback_boundaries: audit.fallback_boundaries ?? 0,
     total_provider_requests: audit.total_provider_requests ?? audit.scene_detector_model_request_count ?? 0,
+    initial_batch_requests: audit.initial_batch_requests ?? null,
+    partial_retry_requests: audit.partial_retry_requests ?? null,
+    single_candidate_retry_requests: audit.single_candidate_retry_requests ?? null,
+    format_repair_requests: audit.format_repair_requests ?? null,
+    multi_candidate_requests: audit.multi_candidate_requests ?? null,
     provider_partial_response_count: (audit.batch_attempts ?? []).filter((attempt) => attempt.partial_or_truncated).length,
     format_repair_count: audit.format_repair_requests ?? 0,
     adaptive_batch_summary: audit.adaptive_batch_summary ?? null,
@@ -4329,7 +4334,13 @@ export function bindSettingsUI(ctrl) {
       // separately computed canonical comparison object. Consumers must not
       // mistake the retained raw history array for the deduplicated analysis.
       diagnostics.scene_stability_analysis = runResult.sceneDetection?.scene_stability_history ?? null;
-      const priorSceneRun = [...sceneStabilityHistory].at(-1) ?? null;
+      const priorSceneRun = runResult.sceneDetection
+        ? [...sceneStabilityHistory].reverse().find((run) => run?.scene_detection_run_signature === runResult.sceneDetection.scene_detection_run_signature
+          && run?.prompt_shape_hash === runResult.sceneDetection.prompt_shape_hash
+          && run?.model_identifier === runResult.sceneDetection.model_identifier
+          && run?.connection_profile_identifier === runResult.sceneDetection.connection_profile_identifier
+          && run?.task_settings_hash === diagnosticFingerprint(JSON.stringify(runResult.sceneDetection.task_sampling_settings ?? {}))) ?? null
+        : null;
       if (runResult.sceneDetection) {
         const currentRequests = Number(runResult.sceneDetection.total_provider_requests ?? runResult.sceneDetection.scene_detector_model_request_count ?? 0);
         // Older retained snapshots did not serialize provider-request totals.
@@ -4341,6 +4352,10 @@ export function bindSettingsUI(ctrl) {
         const priorRequests = priorHasRequestMetric ? Number(priorSceneRun.total_provider_requests) : null;
         diagnostics.scene_request_efficiency = {
           prior_provider_request_count: priorRequests,
+          prior_request_run_id: priorSceneRun?.run_id ?? null,
+          prior_request_count_available: priorRequests !== null,
+          prior_request_compatibility_status: priorSceneRun ? (priorRequests === null ? 'prior_metrics_missing' : 'compatible') : 'no_prior_compatible_run',
+          prior_request_unavailable_reason: priorRequests !== null ? null : (!priorSceneRun ? 'no_prior_compatible_run' : 'prior_metrics_missing'),
           current_provider_request_count: currentRequests,
           request_count_delta: priorRequests === null ? null : currentRequests - priorRequests,
           provider_partial_response_count: (runResult.sceneDetection.batch_attempts ?? []).filter((attempt) => attempt.partial_or_truncated).length,
@@ -4356,6 +4371,15 @@ export function bindSettingsUI(ctrl) {
       diagnostics.scene_stability_history = runResult.sceneDetection
         ? updateSceneStabilityHistory(sceneStabilityHistory, runResult.sceneDetection)
         : sceneStabilityHistory.slice(-5);
+      diagnostics.request_efficiency_history = diagnostics.scene_stability_history.map((run) => ({
+        run_id: run.run_id,
+        total_provider_requests: run.total_provider_requests ?? null,
+        root_requests: run.initial_batch_requests ?? null,
+        retry_requests: run.partial_retry_requests === undefined ? null : Number(run.partial_retry_requests ?? 0) + Number(run.single_candidate_retry_requests ?? 0),
+        format_repairs: run.format_repair_requests ?? null,
+        partial_response_count: run.provider_partial_response_count ?? null,
+        final_batch_ceiling: run.adaptive_batch_summary?.effective_ceiling_history?.at(-1) ?? null,
+      })).slice(-5);
       // `repairs` is already used above for the session repair counters in
       // this catch-up scope. Keep integrity repair accounting distinct so the
       // module remains parseable during extension activation.
@@ -4385,6 +4409,7 @@ export function bindSettingsUI(ctrl) {
       delete catchUpContext.chatMetadata[META_KEY].active_catchup_run_id;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
+      catchUpContext.chatMetadata[META_KEY].request_efficiency_history = diagnostics.request_efficiency_history;
       catchUpContext.chatMetadata[META_KEY].repair_history = diagnostics.repair_history;
       latestExportDiagnostics = diagnostics;
       try {

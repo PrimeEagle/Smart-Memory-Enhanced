@@ -201,6 +201,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      current_run: Boolean(currentRunIncluded && String(run.run_id ?? '') === String(currentAudit.run_id ?? '')),
    };
    boundaryNormalizations.push({
+     normalization_scope: 'raw_input',
      run_id: normalized.run_id,
      raw_boundary_count: rawIndices.length,
      normalized_boundary_count: finalBreakIndices.length,
@@ -583,6 +584,12 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    },
    duplicate_run_record_details: duplicateRunRecordDetails,
    run_boundary_normalization: boundaryNormalizations,
+   comparable_run_boundary_normalization: identifiedRuns.map((run) => ({
+     normalization_scope: 'deduplicated_comparable_run',
+     run_id: run.run_id,
+     boundary_count: run.boundary_count,
+     final_break_indices: run.final_break_indices,
+   })),
    // Duplicate input is maintenance information, not an analytical gap once
    // the canonical comparable array has removed it successfully.
    scene_history_input_clean: true,
