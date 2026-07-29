@@ -2101,12 +2101,13 @@ export async function reconcileCanonicalEntities(characterName) {
       identityKey === `persona:${entry.canonical_persona_id ?? String(entry.id ?? '').replace(/^persona:/, '')}`,
     )?.canonicalName;
     const compatibleNames = expectedName && records.every((record) => record.normalized_name === String(expectedName).trim().toLowerCase());
+    const sameStoredName = new Set(records.map((record) => record.normalized_name).filter(Boolean)).size === 1;
     const scopedCopies = new Set(records.map((record) => record.store)).size > 1;
     const item = { normalized_name: expectedName ?? uniqueRecords[0]?.name ?? null, records };
     // Store-local representations are allowed when every record carries the
     // same stable card/persona ID and the exact authoritative display name.
     // They are not duplicate people, so they must not degrade this chat run.
-    if (scopedCopies && compatibleNames && /^(?:card|persona):/.test(identityKey)) {
+    if (scopedCopies && (compatibleNames || sameStoredName) && /^(?:card|persona):/.test(identityKey)) {
       allowedCrossStoreRepresentation.push(item);
     } else {
       duplicateCanonicalEntities.push(item);

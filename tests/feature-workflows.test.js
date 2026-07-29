@@ -408,6 +408,12 @@ test('explicit card twin facts become a safe sibling role only with explicit car
   assert.match(profiles, /\? 'sister' : 'sibling'/);
 });
 
+test('scene diagnostics export the canonical analysis separately from retained raw run history', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /scene_stability_analysis/);
+  assert.match(settings, /canonical comparison object/);
+});
+
 test('final diagnostics retain rejected identity candidates and a successful arc outcome', () => {
   const settings = read('settings.js');
   const arcs = read('arcs.js');

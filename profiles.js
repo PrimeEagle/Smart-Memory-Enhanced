@@ -268,6 +268,11 @@ export function extractCardRelationshipFacts(roster = []) {
       addFact(entry, entry.canonicalName, match[2], match[1]);
       if (match[3]) addFact(entry, entry.canonicalName, match[3], match[1]);
     }
+    // Card shorthand such as “Kyler Covington's twin.” is still an explicit
+    // owner-relative fact. It is not a pronoun or surname inference.
+    for (const match of description.matchAll(new RegExp(`(?:^|[.\\n;])\\s*([A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*)'s\\s+(${statusPattern})\\b`, 'gi'))) {
+      addFact(entry, entry.canonicalName, match[1], match[2]);
+    }
   }
   return facts;
 }

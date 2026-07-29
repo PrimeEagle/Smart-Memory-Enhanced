@@ -4268,6 +4268,10 @@ export function bindSettingsUI(ctrl) {
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};
       const sceneStabilityHistory = catchUpContext.chatMetadata[META_KEY].scene_stability_history ?? [];
+      // Preserve raw normalized run records as history, while exporting the
+      // separately computed canonical comparison object. Consumers must not
+      // mistake the retained raw history array for the deduplicated analysis.
+      diagnostics.scene_stability_analysis = runResult.sceneDetection?.scene_stability_history ?? null;
       diagnostics.scene_stability_history = runResult.sceneDetection
         ? updateSceneStabilityHistory(sceneStabilityHistory, runResult.sceneDetection)
         : sceneStabilityHistory.slice(-5);
