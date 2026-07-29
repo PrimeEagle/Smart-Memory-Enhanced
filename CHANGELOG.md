@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.55] - 2026-07-28
+
+### Fixed
+
+- Hardened legacy persona-link normalization to collapse repeated prefixes such
+  as `persona:persona:<id>` to the canonical single-prefix form before the
+  integrity audit. Valid Epistemic persona references are no longer falsely
+  reported as stale due to repeated serialization namespaces.
+
+### Tests
+
+- Added regression coverage for repeated persona-prefix normalization.
+
 ## [0.8.54] - 2026-07-28
 
 ### Fixed
