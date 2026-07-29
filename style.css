@@ -984,6 +984,10 @@
   border-color: #c18a36;
 }
 
+#smart_memory_enhanced_settings .sme_idempotence_stale_summary {
+  margin: 5px 0 0 18px;
+}
+
 #smart_memory_enhanced_settings .sme_model_test_result {
   display: flex;
   flex-direction: column;

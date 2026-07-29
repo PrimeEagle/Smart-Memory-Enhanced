@@ -291,6 +291,16 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const secondPass = await reconcileCanonicalEntities(characterName);
     const outputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
     const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
+    const staleReferenceSummary = Object.values((secondPass.integrity_audit?.stale_entity_references ?? []).reduce((groups, reference) => {
+      const store = String(reference?.store ?? 'unknown');
+      const field = String(reference?.field ?? reference?.reference_field_path ?? 'unknown');
+      const reason = String(reference?.stale_reason_code ?? reference?.failure_reason ?? 'unknown');
+      const key = `${store}|${field}|${reason}`;
+      const group = groups[key] ?? { store, field, reason, count: 0 };
+      group.count++;
+      groups[key] = group;
+      return groups;
+    }, {})).sort((left, right) => right.count - left.count || left.store.localeCompare(right.store));
     result.idempotence_check = {
       idempotence_pass_number: 2,
       input_metadata_hash: inputMetadataHash,
@@ -299,6 +309,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       physical_mutation_count: repairs.actual_physical_store_mutations_this_run ?? 0,
       recreated_link_count: repairs.recreated_after_prior_repair ?? 0,
       stale_entity_references: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
+      stale_reference_summary: staleReferenceSummary,
     };
     result.idempotence = {
       ...result.idempotence,
@@ -309,6 +320,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       second_pass_physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
       recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
       stale_references_after_second_pass: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
+      stale_reference_summary: staleReferenceSummary,
       idempotent: inputMetadataHash === outputMetadataHash
         && (repairs.actual_logical_mutations_this_run ?? 0) === 0
         && (repairs.actual_physical_store_mutations_this_run ?? 0) === 0
@@ -4852,6 +4864,7 @@ export function bindSettingsUI(ctrl) {
     const secondPhysical = Number(result.second_pass_physical_mutations ?? 0);
     const stale = Number(result.stale_references_after_second_pass ?? 0);
     const recreated = Number(result.recreated_after_prior_repair ?? 0);
+    const staleSummary = Array.isArray(result.stale_reference_summary) ? result.stale_reference_summary : [];
     panel
       .removeClass('sme_idempotence_pass sme_idempotence_attention')
       .addClass(passed ? 'sme_idempotence_pass' : 'sme_idempotence_attention')
@@ -4863,6 +4876,11 @@ export function bindSettingsUI(ctrl) {
         ? 'The second pass made no changes, so canonical reconciliation is stable for the current chat state.'
         : 'Do not start a long generation yet. Export diagnostics or inspect the current chat state before retrying.'))
       .show();
+    if (staleSummary.length) {
+      const list = $('<ul class="sme_idempotence_stale_summary">');
+      for (const item of staleSummary) list.append($('<li>').text(`${item.count} × ${item.store} → ${item.field} (${item.reason})`));
+      panel.append($('<div>').append($('<strong>').text('Remaining reference categories:')).append(list));
+    }
   };
   renderIdempotenceResult(getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check);
   $('#sme_run_idempotence_check').on('click', async function () {
