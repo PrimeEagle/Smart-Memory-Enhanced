@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.57] - 2026-07-28
+
+### Fixed
+
+- Fixed the canonical integrity audit traversing registry store arrays rather
+  than their entity records. Valid registry-backed persona and card-local
+  references are no longer falsely reported as stale or wrong-scope.
+
+### Tests
+
+- Added regression coverage for flattening registry groups before collecting
+  known canonical identities for the idempotence audit.
+
 ## [0.8.56] - 2026-07-28
 
 ### Fixed
