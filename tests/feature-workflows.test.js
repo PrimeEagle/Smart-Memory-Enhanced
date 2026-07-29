@@ -367,7 +367,7 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   const canonical = read('canonical-entities.js');
   const settings = read('settings.js');
   assert.match(ui, /const context = getContext\(\);/);
-  assert.match(ui, /buildCanonicalCharacterRoster\(context, \{ includeChatLocalApproved: true \}\)/);
+  assert.match(ui, /buildCanonicalCharacterRoster\(context, \{\s*includeChatLocalApproved: true,\s*runtimeSnapshot,\s*\}\)/);
   assert.match(canonical, /export function buildCanonicalRoster/);
   assert.match(canonical, /scope\.activePersona/);
   assert.match(canonical, /source_type: 'persona'/);
@@ -707,6 +707,8 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
   assert.match(ui, /normalizePersonaReference/);
   assert.match(ui, /\^\(\?:persona:\)\+\/i/);
+  assert.match(ui, /snapshotCanonicalRuntimeContext\(context\)/);
+  assert.match(ui, /runtimeSnapshot,/);
   assert.match(ui, /integrity_audit/);
   assert.match(ui, /stale_entity_references/);
   assert.match(ui, /blocked_unsafe_identity_merges/);
