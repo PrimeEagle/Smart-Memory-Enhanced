@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.60] - 2026-07-29
+
+### Added
+
+- Added canonical candidate-context summaries for scene-detection runs. They
+  are ordered, input-only hashes with explicit migration and availability
+  status, so future replay comparisons no longer depend on a scene signature
+  as a proxy for candidate context.
+- Retained per-candidate gate snapshots with the context, prompt and settings
+  hashes, AI decision, gate execution state, canonical terminal gate output,
+  and final boundary disposition. Exported analysis now includes per-run gate
+  coverage rather than only aggregate totals.
+- Added bounded request-efficiency history and adaptive batch-ceiling
+  effectiveness metrics: provider requests by retry class, avoided candidate
+  slots, failed probe counts, recovery costs, and stable/failing batch sizes.
+- Added privacy-safe family-role traces and a compact sibling-role persistence
+  summary, plus descriptor-direction audit fields that record that reverse
+  evidence was checked without copying a relationship descriptor backwards.
+- Added repair recurrence attribution for same-record, migration-replay,
+  cross-store-mirror, regenerated-legacy-record, and unknown sources.
+
+### Fixed
+
+- Gate determinism conclusions are now deliberately scoped. A clean result for
+  eligible comparisons reports
+  `deterministic_for_eligible_comparisons_only` unless comparison coverage is
+  broad enough to support a representative conclusion. The legacy
+  `result_conclusive` field is now false for eligible-only coverage.
+- Request-efficiency comparisons find the latest compatible prior run rather
+  than blindly using the most recent run. Missing legacy request metrics now
+  remain unavailable instead of being misreported as zero.
+
+### Tests
+
+- Added regression assertions for eligible-only gate conclusions and for the
+  serialized candidate-context, gate-coverage, request-history, adaptive
+  ceiling, descriptor-direction, and repair-recurrence diagnostics.
+- Full automated verification: 281 unit/integration checks and 48 replay
+  harness assertions passed.
+
 ## [0.8.59] - 2026-07-29
 
 ### Fixed
