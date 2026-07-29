@@ -513,6 +513,35 @@ export function parseProfileOutput(response, options = {}) {
 
   const keyForLabel = (label) => Object.entries(sectionNames)
     .find(([, pattern]) => new RegExp(`^${pattern}$`, 'i').test(label))?.[0] ?? null;
+
+  // Some local models keep an otherwise valid XML section on one line, e.g.
+  // `<character_state>Goals: ...</character_state>`. The line-oriented
+  // fallback below intentionally supports unclosed tags, but cannot see an
+  // inline opening tag as a heading. Parse complete inline sections first
+  // without accepting free-form text or relaxing the required-section rule.
+  const expectedOrder = ['character_state', 'world_state', 'relationship_matrix'];
+  const inlineSections = expectedOrder.flatMap((key) => {
+    const pattern = sectionNames[key];
+    const matcher = new RegExp(`<\\s*${pattern}\\s*>([\\s\\S]*?)<\\s*\\/\\s*${pattern}\\s*>`, 'gi');
+    return [...text.matchAll(matcher)].map((match) => ({
+      key,
+      index: match.index ?? 0,
+      value: stripOuterGeneratedWrapper(match[1].trim()),
+    }));
+  }).sort((left, right) => left.index - right.index);
+  if (inlineSections.length) {
+    if (new Set(inlineSections.map((section) => section.key)).size !== inlineSections.length) return null;
+    const inlineOrder = inlineSections.map((section) => expectedOrder.indexOf(section.key));
+    if (inlineOrder.some((position, index) => index > 0 && position <= inlineOrder[index - 1])) return null;
+    // Defer mixed or partial XML to the tolerant line-oriented parser below;
+    // it is responsible for preserving an unclosed section beside complete
+    // later sections. This fast path is only for a complete inline contract.
+    if (inlineSections.length === expectedOrder.length && inlineSections.every((section) => section.value)) {
+      const values = Object.fromEntries(expectedOrder.map((key) => [key, '']));
+      for (const section of inlineSections) values[section.key] = section.value;
+      return values;
+    }
+  }
   const lines = text.split('\n');
   const headings = [];
   for (let index = 0; index < lines.length; index++) {
@@ -532,7 +561,6 @@ export function parseProfileOutput(response, options = {}) {
   }
 
   if (new Set(headings.map((heading) => heading.key)).size !== headings.length) return null;
-  const expectedOrder = ['character_state', 'world_state', 'relationship_matrix'];
   const order = headings.map((heading) => expectedOrder.indexOf(heading.key));
   if (order.some((position, index) => index > 0 && position <= order[index - 1])) return null;
   if (options.requireAll && headings.length !== expectedOrder.length) return null;
@@ -542,7 +570,7 @@ export function parseProfileOutput(response, options = {}) {
     const heading = headings[position];
     const end = headings[position + 1]?.index ?? lines.length;
     const value = stripOuterGeneratedWrapper(lines.slice(heading.index + 1, end)
-      .filter((line) => !new RegExp(`^\\s*<\\/\s*${sectionNames[heading.key]}\\s*>\\s*$`, 'i').test(line))
+      .filter((line) => !new RegExp(`^\\s*<\\/\\s*${sectionNames[heading.key]}\\s*>\\s*$`, 'i').test(line))
       .join('\n')
       .replace(/^\s*\*{1,2}|\*{1,2}\s*$/g, '')
       .trim());

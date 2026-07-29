@@ -688,6 +688,15 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
   assert.equal(result.world_state, 'Location: council chamber');
 });
 
+test('parseProfileOutput: accepts complete inline XML sections from local models', () => {
+  const result = parseProfileOutput('<character_state>Goals: leave safely</character_state>\n<world_state>Location: station</world_state>\n<relationship_matrix>Alex: trusted</relationship_matrix>', { requireAll: true });
+  assert.deepEqual(result, {
+    character_state: 'Goals: leave safely',
+    world_state: 'Location: station',
+    relationship_matrix: 'Alex: trusted',
+  });
+});
+
 test('parseProfileOutput: ignores bounded conversational preamble before recognised sections', () => {
   const result = parseProfileOutput(`Here is the requested profile:\n\n## Character State\nGoals: keep the treaty intact\n\n## World State\nLocation: council chamber\n\n## Relationship Matrix\nAlissa: trusted ally`);
   assert.equal(result.character_state, 'Goals: keep the treaty intact');
