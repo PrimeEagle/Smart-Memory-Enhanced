@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.54] - 2026-07-28
+
+### Fixed
+
+- Fixed the canonical integrity audit double-prefixing legacy persona IDs
+  already stored as `persona:<id>`. Valid Epistemic persona links now resolve
+  correctly instead of being falsely reported as stale.
+
+### Tests
+
+- Added regression coverage for raw and already-namespaced persona ID audit
+  normalization.
+
 ## [0.8.53] - 2026-07-28
 
 ### Added
