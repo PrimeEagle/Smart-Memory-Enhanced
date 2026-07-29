@@ -4286,14 +4286,21 @@ export function bindSettingsUI(ctrl) {
       const priorSceneRun = [...sceneStabilityHistory].at(-1) ?? null;
       if (runResult.sceneDetection) {
         const currentRequests = Number(runResult.sceneDetection.total_provider_requests ?? runResult.sceneDetection.scene_detector_model_request_count ?? 0);
-        const priorRequests = Number(priorSceneRun?.total_provider_requests ?? 0);
+        // Older retained snapshots did not serialize provider-request totals.
+        // Missing is not zero: reporting a delta against it would invent a
+        // regression where no historical metric exists.
+        const priorHasRequestMetric = Boolean(priorSceneRun
+          && Object.prototype.hasOwnProperty.call(priorSceneRun, 'total_provider_requests')
+          && Number.isFinite(Number(priorSceneRun.total_provider_requests)));
+        const priorRequests = priorHasRequestMetric ? Number(priorSceneRun.total_provider_requests) : null;
         diagnostics.scene_request_efficiency = {
-          prior_provider_request_count: priorSceneRun ? priorRequests : null,
+          prior_provider_request_count: priorRequests,
           current_provider_request_count: currentRequests,
-          request_count_delta: priorSceneRun ? currentRequests - priorRequests : null,
+          request_count_delta: priorRequests === null ? null : currentRequests - priorRequests,
           provider_partial_response_count: (runResult.sceneDetection.batch_attempts ?? []).filter((attempt) => attempt.partial_or_truncated).length,
           format_repair_count: Number(runResult.sceneDetection.format_repair_requests ?? 0),
           likely_request_regression_reason: !priorSceneRun ? 'no_comparable_prior_run'
+            : priorRequests === null ? 'prior_request_metric_unavailable'
             : currentRequests <= priorRequests ? 'no_request_regression'
               : (runResult.sceneDetection.partial_retry_requests ?? 0) > 0 ? 'provider_partial_responses_required_bounded_retries'
                 : (runResult.sceneDetection.format_repair_requests ?? 0) > 0 ? 'provider_format_repair_required'
