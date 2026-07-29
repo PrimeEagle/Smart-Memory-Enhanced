@@ -2090,6 +2090,8 @@ export async function reconcileCanonicalEntities(characterName) {
   }
   const duplicateCanonicalEntities = [];
   const allowedCrossStoreRepresentation = [];
+  const duplicateWrapperObservations = [];
+  const canonicalIdentityAudit = [];
   for (const [identityKey, entities] of canonicalGroups.entries()) {
     const uniqueRecords = entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index);
     if (uniqueRecords.length < 2) continue;
@@ -2103,15 +2105,36 @@ export async function reconcileCanonicalEntities(characterName) {
     const compatibleNames = expectedName && records.every((record) => record.normalized_name === String(expectedName).trim().toLowerCase());
     const sameStoredName = new Set(records.map((record) => record.normalized_name).filter(Boolean)).size === 1;
     const scopedCopies = new Set(records.map((record) => record.store)).size > 1;
-    const item = { normalized_name: expectedName ?? uniqueRecords[0]?.name ?? null, records };
+    const recordsByStore = Object.fromEntries([...new Set(records.map((record) => record.store))].map((store) => [store, records.filter((record) => record.store === store)]));
+    const sameScopeDuplicates = Object.values(recordsByStore).some((storeRecords) => new Set(storeRecords.map((record) => record.record_id).filter(Boolean)).size > 1);
+    const conflictingIdentity = new Set(records.map((record) => record.normalized_name).filter(Boolean)).size > 1
+      || new Set(records.map((record) => record.identity_type).filter(Boolean)).size > 1;
+    const item = { canonical_identity: identityKey, normalized_name: expectedName ?? uniqueRecords[0]?.name ?? null, record_count: records.length, logical_store_count: Object.keys(recordsByStore).length, records_by_store: recordsByStore, records };
     // Store-local representations are allowed when every record carries the
     // same stable card/persona ID and the exact authoritative display name.
     // They are not duplicate people, so they must not degrade this chat run.
-    if (scopedCopies && (compatibleNames || sameStoredName) && /^(?:card|persona):/.test(identityKey)) {
+    if (sameScopeDuplicates) {
+      item.classification = 'duplicate_within_same_logical_store';
+      item.integrity_effect = 'degraded';
+      item.classification_reason = 'multiple_distinct_records_share one canonical identity inside one logical store';
+      duplicateCanonicalEntities.push(item);
+    } else if (conflictingIdentity) {
+      item.classification = 'conflicting_same_canonical_identity';
+      item.integrity_effect = 'degraded';
+      item.classification_reason = 'same stable identity has conflicting display names or identity types';
+      duplicateCanonicalEntities.push(item);
+    } else if (scopedCopies && (compatibleNames || sameStoredName) && /^(?:card|persona):/.test(identityKey)) {
+      item.classification = 'allowed_cross_store_representation';
+      item.integrity_effect = 'informational';
+      item.classification_reason = 'one compatible representation exists in each permitted logical scope';
       allowedCrossStoreRepresentation.push(item);
     } else {
+      item.classification = 'true_unreconciled_duplicate';
+      item.integrity_effect = 'degraded';
+      item.classification_reason = 'canonical identity could not be classified as a permitted scoped representation';
       duplicateCanonicalEntities.push(item);
     }
+    canonicalIdentityAudit.push(item);
   }
   const syntheticIdentityRemaining = observations
     .filter(({ entity }) => {
@@ -2215,6 +2238,11 @@ export async function reconcileCanonicalEntities(characterName) {
     checked_stores: ['longterm', 'session', 'card-local', 'scenes', 'arcs', 'state-ledger', 'epistemic'],
     duplicate_canonical_entities: duplicateCanonicalEntities,
     allowed_cross_store_representation: allowedCrossStoreRepresentation,
+    canonical_identity_audit: canonicalIdentityAudit,
+    duplicate_wrapper_observations: duplicateWrapperObservations,
+    allowed_cross_store_persona_representations: allowedCrossStoreRepresentation.filter((item) => item.canonical_identity.startsWith('persona:')).length,
+    allowed_cross_store_card_representations: allowedCrossStoreRepresentation.filter((item) => item.canonical_identity.startsWith('card:')).length,
+    true_same_scope_duplicates: duplicateCanonicalEntities.filter((item) => item.classification === 'duplicate_within_same_logical_store').length,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
     relationship_integrity_errors: relationshipIntegrityErrors,
