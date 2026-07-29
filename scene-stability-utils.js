@@ -548,6 +548,23 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  candidateHistoryCoverage.coverage_ratio = candidateHistoryCoverage.candidate_records_expected > 0
    ? candidateHistoryCoverage.candidate_records_available / candidateHistoryCoverage.candidate_records_expected
    : null;
+ const gateSnapshotCoverageByRun = identifiedRuns.map((run) => {
+   const records = candidateRecordsByRun.get(run.run_id) ?? [];
+   const executed = records.filter((candidate) => candidate.gate_executed === true || ['accepted', 'rejected'].includes(candidate.gate_result));
+   const canonicalOutputs = executed.filter((candidate) => canonicalizeGateOutput(candidate).canonical_gate_output_hash).length;
+   return {
+     run_id: run.run_id,
+     history_schema_version: run.history_schema_version ?? null,
+     candidate_count: declaredCandidateCount(run, records),
+     candidates_with_context_hash: records.filter((candidate) => candidate.candidate_context_hash ?? (run.candidate_context_hashes ?? []).some((item) => String(item.candidate_id) === String(candidate.candidate_id))).length,
+     candidates_with_ai_decision: records.filter((candidate) => typeof candidate.decision === 'boolean').length,
+     candidates_with_gate_execution_status: records.filter((candidate) => typeof candidate.gate_executed === 'boolean' || candidate.gate_result !== undefined).length,
+     candidates_with_gate_input_hash: executed.filter((candidate) => candidate.gate_input_hash).length,
+     candidates_with_canonical_gate_output: canonicalOutputs,
+     candidates_comparable_in_future: canonicalOutputs,
+     completeness_ratio: records.length ? (records.filter((candidate) => typeof candidate.decision === 'boolean').length / records.length) : null,
+   };
+ });
   const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
  const identifiedPriorRuns = identifiedRuns.filter((run) => !run.current_run);
  const distinctPriorRunCount = identifiedPriorRuns.length;
@@ -641,6 +658,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    gate_determinism_violation_count: gateDeterminismViolations.length,
    gate_determinism_violations: gateDeterminismViolations,
    gate_determinism_coverage: gateDeterminismCoverage,
+   gate_snapshot_coverage_by_run: gateSnapshotCoverageByRun,
    pipeline_stable: pipelinesStable, scene_count_exactly_stable: new Set(counts).size <= 1,
    scene_count_materially_stable: counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false,
    boundary_positions_exactly_stable: entries.every(([, count]) => count === runCount),
