@@ -806,6 +806,14 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    return {
      profile_owner: self,
      relationship_target: target,
+     card_source_available: cardPairs.some((pair) => (pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self)),
+     card_fact_detected: countBySource('card_fact') > 0 || countBySource('persona_fact') > 0,
+     raw_chat_fact_detected: countBySource('grounded_raw_chat_evidence') > 0,
+     grounded_memory_fact_detected: countBySource('grounded_source_evidence') > 0,
+     parsed_directed_facts: evidencePairs.filter((pair) =>
+       (pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self))
+       .filter((pair) => pair.relationship_type)
+       .map((pair) => ({ subject: pair.subject, target: pair.target, relationship_type: pair.relationship_type, source_class: pair.relationship_type_source })),
      canonical_pair_key: pairKey,
      source_counts: {
        typed_card: countBySource('card_fact'),
@@ -821,12 +829,15 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      selected_role: entry.canonical_relationship_type,
      selected_source_class: entry.relationship_type_source,
      selected_source_id: entry.relationship_type_source_id,
+     typed_fact_persisted: countBySource('card_fact') > 0 || countBySource('persona_fact') > 0 || countBySource('grounded_raw_chat_evidence') > 0 || countBySource('approved_relationship_history') > 0,
+     typed_fact_reload_verified: Boolean(evidence?.relationship_type),
+     profile_lookup_found_typed_fact: Boolean(evidence?.relationship_type),
      rejected_candidates: [],
      terminal_outcome: outcome?.field_terminal_outcome === 'not_generated_role_structurally_present' ? 'not_generated_role_structurally_present' : entry.canonical_relationship_type ? 'generated_and_resolved' : 'generated_but_role_unresolved',
      persistence_stage_verified: Boolean(entry.relationship_type_source_id),
    };
  });
- return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
+ return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
  const target = String(outcome.relationship_target ?? '').toLowerCase();
  const entry = structuredByTarget.get(target);
  const evidence = evidenceForTarget(target);
