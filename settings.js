@@ -205,6 +205,10 @@ function makeSceneStabilitySnapshot(audit = {}) {
     history_schema_version: 2,
     malformed_batches: audit.malformed_batches ?? 0,
     fallback_boundaries: audit.fallback_boundaries ?? 0,
+    total_provider_requests: audit.total_provider_requests ?? audit.scene_detector_model_request_count ?? 0,
+    provider_partial_response_count: (audit.batch_attempts ?? []).filter((attempt) => attempt.partial_or_truncated).length,
+    format_repair_count: audit.format_repair_requests ?? 0,
+    adaptive_batch_summary: audit.adaptive_batch_summary ?? null,
     heuristic_fallback_candidates: audit.heuristic_fallback_candidates ?? 0,
     pipeline_status: audit.pipeline_status ?? ((audit.malformed_batches ?? 0) || (audit.fallback_boundaries ?? 0) ? 'degraded' : 'clean'),
     completed_at: createdAt,
@@ -329,6 +333,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         && (repairs.recreated_after_prior_repair ?? 0) === 0
         && (secondPass.integrity_audit?.stale_entity_references?.length ?? 0) === 0,
     };
+    result.idempotence.developer_summary = `Idempotence check ${result.idempotence.idempotent ? 'passed' : 'needs attention'}: ${result.idempotence.first_pass_logical_mutations} first-pass mutations, ${result.idempotence.second_pass_logical_mutations} second-pass mutations, ${result.idempotence.stale_references_after_second_pass} stale references, ${result.idempotence.recreated_after_prior_repair} recreated links.`;
   }
   if (extension_settings[MODULE_NAME]?.verbose_logging) {
     console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
@@ -4180,7 +4185,7 @@ export function bindSettingsUI(ctrl) {
         ['active_persona_roster_entry_present', !runResult.runtimeContext?.active_persona?.canonical_name || runResult.finalReconciliation.persona_roster_size > 0, 'active_persona_roster_entry_missing'],
         ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'active_persona_invalid'],
         ['deterministic_persona_aliases_resolved', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.integrity_audit?.persona_aliases?.persona_aliases_unresolved), 'A deterministic active-persona alias remains unresolved.'],
-        ['no_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
+        ['unresolved_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
         ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
         ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
         ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
@@ -4278,6 +4283,23 @@ export function bindSettingsUI(ctrl) {
       // separately computed canonical comparison object. Consumers must not
       // mistake the retained raw history array for the deduplicated analysis.
       diagnostics.scene_stability_analysis = runResult.sceneDetection?.scene_stability_history ?? null;
+      const priorSceneRun = [...sceneStabilityHistory].at(-1) ?? null;
+      if (runResult.sceneDetection) {
+        const currentRequests = Number(runResult.sceneDetection.total_provider_requests ?? runResult.sceneDetection.scene_detector_model_request_count ?? 0);
+        const priorRequests = Number(priorSceneRun?.total_provider_requests ?? 0);
+        diagnostics.scene_request_efficiency = {
+          prior_provider_request_count: priorSceneRun ? priorRequests : null,
+          current_provider_request_count: currentRequests,
+          request_count_delta: priorSceneRun ? currentRequests - priorRequests : null,
+          provider_partial_response_count: (runResult.sceneDetection.batch_attempts ?? []).filter((attempt) => attempt.partial_or_truncated).length,
+          format_repair_count: Number(runResult.sceneDetection.format_repair_requests ?? 0),
+          likely_request_regression_reason: !priorSceneRun ? 'no_comparable_prior_run'
+            : currentRequests <= priorRequests ? 'no_request_regression'
+              : (runResult.sceneDetection.partial_retry_requests ?? 0) > 0 ? 'provider_partial_responses_required_bounded_retries'
+                : (runResult.sceneDetection.format_repair_requests ?? 0) > 0 ? 'provider_format_repair_required'
+                  : 'unclassified_request_increase',
+        };
+      }
       diagnostics.scene_stability_history = runResult.sceneDetection
         ? updateSceneStabilityHistory(sceneStabilityHistory, runResult.sceneDetection)
         : sceneStabilityHistory.slice(-5);
