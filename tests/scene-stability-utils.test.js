@@ -194,7 +194,10 @@ test('compact snapshots verify gate determinism from retained result fields', ()
     { ...shared, run_id: 'one', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }] },
   ], { ...shared, run_id: 'two', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_result: 'rejected', gate_reason_code: 'same_continuous_interaction', terminal_break_disposition: 'rejected_deterministic_gate' }] });
   assert.equal(result.gate_determinism_coverage.comparisons_completed, 1);
-  assert.equal(result.gate_determinism_coverage.result_conclusive, true);
+  assert.equal(result.gate_determinism_coverage.result_conclusive_for_eligible_comparisons, true);
+  assert.equal(result.gate_determinism_coverage.result_broadly_representative, true);
+  assert.equal(result.gate_determinism_coverage.result_conclusive, false);
+  assert.equal(result.gate_determinism_coverage.overall_result, 'violations_detected');
   assert.equal(result.gate_determinism_violation_count, 1);
 });
 

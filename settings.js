@@ -157,6 +157,27 @@ function diagnosticFingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+/** Canonical, input-only summary for future scene-run comparability. */
+function summarizeCandidateContexts(candidateContexts = []) {
+  const seen = new Set();
+  const duplicateCandidateIds = [];
+  const pairs = (Array.isArray(candidateContexts) ? candidateContexts : [])
+    .map((item) => ({ candidate_id: Number(item?.candidate_id), context_hash: String(item?.context_hash ?? '') }))
+    .filter((item) => Number.isInteger(item.candidate_id) && item.context_hash);
+  pairs.sort((left, right) => left.candidate_id - right.candidate_id);
+  const canonicalPairs = pairs.filter((item) => {
+    if (seen.has(item.candidate_id)) { duplicateCandidateIds.push(item.candidate_id); return false; }
+    seen.add(item.candidate_id);
+    return true;
+  });
+  return {
+    canonical_pairs: canonicalPairs,
+    summary: canonicalPairs.length ? diagnosticFingerprint(JSON.stringify(canonicalPairs)) : null,
+    duplicate_candidate_ids: [...new Set(duplicateCandidateIds)],
+    status: canonicalPairs.length ? (duplicateCandidateIds.length ? 'recomputed_with_duplicates_removed' : 'computed_from_candidate_contexts') : 'missing_candidate_detail',
+  };
+}
+
 // Keep only bounded, text-free material needed to compare equivalent scene
 // detection runs. This deliberately excludes prompts, chat messages, and raw
 // provider responses.
@@ -164,6 +185,9 @@ function makeSceneStabilitySnapshot(audit = {}) {
   const finalBreakIndices = [...(audit.final_break_indices ?? [])];
   const createdAt = Date.now();
   const taskSettings = audit.task_sampling_settings ?? {};
+  const contextSummary = summarizeCandidateContexts(audit.candidate_context_hashes);
+  const storedSummary = audit.candidate_context_hash_summary ?? null;
+  const summaryMismatch = Boolean(storedSummary && contextSummary.summary && storedSummary !== contextSummary.summary);
   return {
     run_id: audit.run_id ?? `unavailable-scene-run-${createdAt}`,
     run_id_source: audit.run_id ? 'runtime' : 'unavailable',
@@ -180,8 +204,19 @@ function makeSceneStabilitySnapshot(audit = {}) {
     connection_profile_identifier: audit.connection_profile_identifier ?? null,
     task_sampling_settings: taskSettings,
     task_settings_hash: diagnosticFingerprint(JSON.stringify(taskSettings)),
-    candidate_context_hashes: audit.candidate_context_hashes ?? [],
-    candidate_context_hash_summary: diagnosticFingerprint(JSON.stringify(audit.candidate_context_hashes ?? [])),
+    candidate_context_hashes: contextSummary.canonical_pairs,
+    candidate_context_hash_summary: contextSummary.summary,
+    candidate_context_hash_summary_source: 'computed_from_candidate_contexts',
+    candidate_context_hash_summary_status: summaryMismatch ? 'mismatch_detected' : contextSummary.status,
+    legacy_candidate_context_hash_summary: summaryMismatch ? storedSummary : null,
+    candidate_context_summary_migration: {
+      stored_value: storedSummary,
+      recomputed_value: contextSummary.summary,
+      values_match: storedSummary === null || storedSummary === contextSummary.summary,
+      source_status: contextSummary.status,
+      migration_applied: summaryMismatch,
+      duplicate_candidate_ids: contextSummary.duplicate_candidate_ids,
+    },
     // Keep only bounded, privacy-safe terminal facts needed for subsequent
     // variance and deterministic-gate comparison. No chat or prompt text is
     // retained in scene history.
@@ -3550,7 +3585,7 @@ export function bindSettingsUI(ctrl) {
             const batchResult = await detectSceneBreakAIBatch(aiCandidates, { batchSize: sceneAudit.batch_size_target, onError: (err) => { sceneAudit.detection_failed++; recordCatchUpWarning('AI scene-break batch warning', err, 'scenes'); } });
             sceneAudit.boundary_candidates_evaluated = aiCandidates.length;
             sceneAudit.candidate_context_hashes = aiCandidates.map((candidate) => ({ candidate_id: candidate.candidate_index, context_hash: diagnosticFingerprint(`${candidate.previous_message}\n${candidate.message}`) }));
-            sceneAudit.candidate_context_hash_summary = diagnosticFingerprint(sceneAudit.candidate_context_hashes.map((candidate) => `${candidate.candidate_id}:${candidate.context_hash}`).join('|'));
+            sceneAudit.candidate_context_hash_summary = summarizeCandidateContexts(sceneAudit.candidate_context_hashes).summary;
             sceneAudit.scene_detection_run_signature = diagnosticFingerprint(sceneAudit.candidate_context_hashes.map((candidate) => `${candidate.candidate_id}:${candidate.context_hash}`).join('|'));
             sceneAudit.scene_detector_model_request_count = batchResult.diagnostics.total_provider_requests;
             Object.assign(sceneAudit, batchResult.diagnostics);

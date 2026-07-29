@@ -495,6 +495,13 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const eligibleCoverageRatio = allRunCandidateStability.length
    ? eligibleCandidateCount / allRunCandidateStability.length : 0;
  const representativeThreshold = 0.8;
+ const eligibleConclusion = candidateHistoryComplete && comparisonsCompleted > 0 && accountingValid;
+ const broadlyRepresentative = accountingValid && eligibleCoverageRatio >= representativeThreshold;
+ const overallResult = !accountingValid ? 'analysis_invalid'
+   : gateDeterminismViolations.length ? 'violations_detected'
+     : broadlyRepresentative ? 'deterministic_with_representative_coverage'
+       : eligibleConclusion ? 'deterministic_for_eligible_comparisons_only'
+         : 'insufficient_coverage';
  const gateDeterminismCoverage = {
    candidate_count: allRunCandidateStability.length,
    eligible_candidate_count: eligibleCandidateCount,
@@ -508,12 +515,19 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    eligible_coverage_ratio: eligibleCoverageRatio,
    total_candidate_coverage_ratio: allRunCandidateStability.length ? comparisonsCompleted / allRunCandidateStability.length : 0,
    representative_coverage_threshold: representativeThreshold,
-   result_conclusive_for_eligible_comparisons: candidateHistoryComplete && comparisonsCompleted > 0 && accountingValid,
-   result_broadly_representative: accountingValid && eligibleCoverageRatio >= representativeThreshold,
+   result_conclusive_for_eligible_comparisons: eligibleConclusion,
+   result_broadly_representative: broadlyRepresentative,
    result_invalid_reason: accountingValid ? null : 'invalid_gate_determinism_accounting',
-   // Compatibility field: it means only the eligible-comparison conclusion,
-   // never broad representativeness across incomplete historical coverage.
-   result_conclusive: candidateHistoryComplete && comparisonsCompleted > 0 && accountingValid,
+   overall_result: overallResult,
+   overall_gate_determinism_result: overallResult === 'deterministic_with_representative_coverage' ? 'representative_no_violations'
+     : overallResult === 'deterministic_for_eligible_comparisons_only' ? 'eligible_only_no_violations'
+       : overallResult === 'violations_detected' ? 'violations_detected'
+         : overallResult === 'analysis_invalid' ? 'invalid'
+           : overallResult === 'analysis_unavailable' ? 'unavailable' : 'insufficient_coverage',
+   // Deprecated compatibility field is now deliberately global in meaning:
+   // consumers cannot mistake an eligible-only conclusion for broad support.
+   result_conclusive: broadlyRepresentative && gateDeterminismViolations.length === 0,
+   result_conclusive_scope: broadlyRepresentative ? 'representative_coverage' : 'not_globally_conclusive',
  };
  const candidateHistoryCoverage = {
    distinct_comparable_runs: runCount,
