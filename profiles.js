@@ -709,8 +709,10 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // A profile cannot meaningfully carry a relationship entry to itself.
     // Drop this model formatting artifact before it can create a misleading
     // unresolved trace or quality warning.
-    if (entity === self) {
+    const resolvedEntity = resolveCanonicalCharacterName(match[1].trim(), roster);
+    if (entity === self || (resolvedEntity.status === 'resolved' && String(resolvedEntity.canonicalName).toLowerCase() === self)) {
       rejected.push(line);
+      rejectionDetails.push({ section: 'relationship_matrix', field_path: match[1].trim(), owner_canonical_id: resolveCanonicalCharacterName(characterName, roster).canonicalId ?? self, target_canonical_id: resolvedEntity.canonicalId ?? self, disposition: 'rejected_self_relationship_target', reason_code: 'self_relationship_target', generated_field_present: true, persisted: false });
       return '';
     }
     // Accept the complete valid confidence range, including 1.0. Leaving a
@@ -930,12 +932,23 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const parentEvidence = evidencePairs.filter((pair) =>
      isTargetRelativePair(pair) && ['parent', 'mother', 'father'].includes(pair.relationship_type));
    const coreferenceTrace = boundedCoreferenceFacts
-     .filter((fact) => {
-       const subject = resolveCanonicalCharacterName(fact.subject, roster).canonicalName ?? String(fact.subject);
-       const targetName = resolveCanonicalCharacterName(fact.target, roster).canonicalName ?? String(fact.target);
+     .map((fact) => {
+       const subjectResolution = resolveCanonicalCharacterName(fact.subject, roster);
+       const targetResolution = resolveCanonicalCharacterName(fact.target, roster);
+       return { fact, subjectResolution, targetResolution };
+     })
+     .filter(({ fact, subjectResolution, targetResolution }) => {
+       const subject = subjectResolution.canonicalName ?? String(fact.subject);
+       const targetName = targetResolution.canonicalName ?? String(fact.target);
        return String(subject).toLowerCase() === target && String(targetName).toLowerCase() === self;
      })
-     .map((fact) => ({
+     .map(({ fact, subjectResolution, targetResolution }) => ({
+       local_subject_label: fact.subject,
+       local_target_label: fact.target,
+       subject_canonical_id: subjectResolution.canonicalId ?? `name:${String(fact.subject).toLowerCase()}`,
+       target_canonical_id: targetResolution.canonicalId ?? `name:${String(fact.target).toLowerCase()}`,
+       subject_resolution_method: subjectResolution.status === 'resolved' ? (String(fact.subject).toLowerCase() === String(subjectResolution.canonicalName).toLowerCase() ? 'exact_canonical_name' : 'unique_short_name') : 'name_backed_entity',
+       target_resolution_method: targetResolution.status === 'resolved' ? (String(fact.target).toLowerCase() === String(targetResolution.canonicalName).toLowerCase() ? 'exact_canonical_name' : 'unique_short_name') : 'name_backed_entity',
        source_message_indices: fact.source_message_indices,
        evidence_window_size: fact.evidence_window_size,
        evidence_pattern: fact.evidence_pattern,
@@ -1016,7 +1029,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        source_sufficient_for_generic_parent: parentEvidence.some((pair) => ['parent', 'mother', 'father'].includes(pair.relationship_type)),
        source_sufficient_for_gendered_parent: parentEvidence.some((pair) => ['mother', 'father'].includes(pair.relationship_type)),
        selected_role: selectedRole,
-       unresolved_reason: parentEvidence.length ? null : (coreferenceTrace.length ? 'unresolved_insufficient_corroboration' : 'unresolved_no_family_evidence'),
+       unresolved_reason: selectedRole ? null : (parentEvidence.length ? null : (coreferenceTrace.length ? 'unresolved_insufficient_corroboration' : 'unresolved_no_family_evidence')),
      },
      parent_role_expectation_status: parentRoleExpectationStatus,
      descriptor_direction_policy: 'directional_evidence_required',
