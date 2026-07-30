@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.64] - 2026-07-30
+
+### Added
+
+- Added a deterministic bounded family-coreference resolver for direct local
+  kinship evidence. It supports explicit Mom/Dad address, direct named
+  kinship address, and named mother–daughter narrative apposition without
+  consulting model-generated profile text.
+- Added privacy-safe coreference trace data with bounded source indices,
+  evidence pattern, strength, resolved-participant state, and promotion
+  outcome.
+
+### Fixed
+
+- Direct local parent evidence can now persist typed mother/father facts for
+  explicitly named people who do not have a character card.
+- A directly supported mother/father fact now upgrades an existing generic
+  `parent` role; conflicting strong roles are blocked rather than silently
+  replacing each other.
+- Family-role diagnostics now retain target-relative evidence accounting and
+  preserve the existing protections against surname, first-name, descriptor,
+  remote-pronoun, and model-output inference.
+
+### Tests
+
+- Added coverage for direct address, mother–daughter apposition, joint
+  Mom/Dad grammar, and unsafe remote or surname-only references.
+- Full automated verification: 280 unit/integration checks and 48 replay
+  harness assertions passed.
+
 ## [0.8.63] - 2026-07-29
 
 ### Fixed
