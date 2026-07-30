@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.62] - 2026-07-29
+
+### Added
+
+- Added privacy-safe parent-role source audits to every profile relationship
+  trace. They report only source classes and counts, never card text or chat
+  text, and explicitly distinguish absent evidence from a parser failure.
+- Added compact family-role persistence summaries, evidence de-duplication
+  summaries, trace-consistency failures, Relationship History record-kind
+  counts, and directional reverse-evidence counts to exported diagnostics.
+- Added complete gate-snapshot coverage and schema-migration progress, along
+  with clearer adaptive batch-size observations and provider-request metrics.
+
+### Fixed
+
+- Family-role selection now de-duplicates identical observations before role
+  selection and source counts. Raw observations remain available separately
+  for diagnosis, while distinct independent sources continue to corroborate
+  a fact.
+- Typed role persistence is now reported separately from descriptor-only
+  Relationship History records. A descriptor-only record can no longer be
+  reported as a persisted or reload-verified canonical family role.
+- Parent roles remain unresolved with `unresolved_no_explicit_evidence` when
+  no explicit, named source supports them; the extension does not infer them
+  from surnames, names, pronouns, or model assumptions.
+- Profile quality status now separates placeholders, unsupported descriptors,
+  unsupported fields, and actual authoritative conflicts. Unsupported text is
+  no longer mislabeled as a conflict, and canonical roles remain preserved
+  when descriptive output is rejected.
+- Renamed gate-snapshot coverage semantics so complete snapshots mean only
+  future comparison eligibility if deterministic inputs also match. Batch
+  reporting now distinguishes request-size reductions and deferred candidate
+  slots from provider requests actually eliminated.
+
+### Tests
+
+- Expanded workflow coverage for family-role diagnostics, source audits,
+  typed-role persistence semantics, profile-quality reason accounting,
+  Relationship History record classification, and gate/batch diagnostics.
+- Full automated verification: 282 unit/integration checks and 48 replay
+  harness assertions passed.
+
 ## [0.8.61] - 2026-07-29
 
 ### Fixed
