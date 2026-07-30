@@ -417,7 +417,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         full_direct_success_rate: Number(directRate.toFixed(3)),
         qualified_stability_status: qualified ? 'qualified' : entry.root_attempts < 3 ? 'insufficient_root_attempts' : directRate < 0.8 ? 'direct_success_rate_below_threshold' : 'recent_failure_pattern',
       };
-    }));
+    });
   const qualifiedStableSizes = batchSizeObservations
     .filter((entry) => entry.qualified_stability_status === 'qualified' && entry.batch_size <= adaptiveState.effective_batch_ceiling)
     .map((entry) => entry.batch_size);
