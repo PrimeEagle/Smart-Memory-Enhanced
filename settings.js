@@ -336,9 +336,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     stale_references_after_second_pass: null,
     idempotent: null,
   };
-  // Developer-only exact-state idempotence check. It intentionally runs on
-  // the already-finalized serialized metadata; it does not regenerate records
-  // or introduce new IDs.
+  // Developer-only semantic idempotence check. It intentionally runs on the
+  // already-finalized serialized metadata; it does not regenerate records or
+  // introduce new IDs. Diagnostic/revision metadata may change even when no
+  // durable record changes, so the metadata hash is reported but is not by
+  // itself a failed reconciliation.
   if (extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck) {
     const inputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
     const secondPass = await reconcileCanonicalEntities(characterName);
@@ -374,8 +376,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
       stale_references_after_second_pass: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
       stale_reference_summary: staleReferenceSummary,
-      idempotent: inputMetadataHash === outputMetadataHash
-        && (repairs.actual_logical_mutations_this_run ?? 0) === 0
+      metadata_hash_stable: inputMetadataHash === outputMetadataHash,
+      idempotent: (repairs.actual_logical_mutations_this_run ?? 0) === 0
         && (repairs.actual_physical_store_mutations_this_run ?? 0) === 0
         && (repairs.recreated_after_prior_repair ?? 0) === 0
         && (secondPass.integrity_audit?.stale_entity_references?.length ?? 0) === 0,

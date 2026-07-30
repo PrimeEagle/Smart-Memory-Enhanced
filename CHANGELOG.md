@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.67] - 2026-07-30
+
+### Fixed
+
+- Fixed the developer Idempotence Check reporting “needs attention” solely
+  because diagnostic/revision metadata changed. It now passes when the second
+  reconciliation makes zero durable mutations and leaves no stale or recreated
+  links, while retaining the metadata-hash comparison for diagnostics.
+
+### Tests
+
+- Expanded idempotence workflow coverage; full automated verification passed
+  with 287 unit/integration checks and 48 replay harness assertions.
+
 ## [0.8.66] - 2026-07-30
 
 ### Fixed

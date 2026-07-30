@@ -734,6 +734,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /developer_manual_command/);
   assert.match(settings, /#sme_run_idempotence_check/);
   assert.match(settings, /developer_idempotence_check/);
+  assert.match(settings, /metadata_hash_stable/);
   assert.match(settings, /renderIdempotenceResult/);
   assert.match(settings, /Second pass:/);
   assert.match(settings, /stale_reference_summary/);
