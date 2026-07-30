@@ -993,7 +993,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        rejected_unsafe: 0,
      },
      candidate_roles: typedRoleEvidenceAvailable ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
-     selected_role: selectedRole,
+       selected_role: selectedRole,
      selected_source_class: entry.relationship_type_source,
      selected_source_id: entry.relationship_type_source_id,
      relationship_record_present: pairHistoryRecords.length > 0,
@@ -1028,9 +1028,13 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        source_sufficient_for_role: Boolean(parentEvidence.length),
        source_sufficient_for_generic_parent: parentEvidence.some((pair) => ['parent', 'mother', 'father'].includes(pair.relationship_type)),
        source_sufficient_for_gendered_parent: parentEvidence.some((pair) => ['mother', 'father'].includes(pair.relationship_type)),
-       selected_role: selectedRole,
+     selected_role: selectedRole,
        unresolved_reason: selectedRole ? null : (parentEvidence.length ? null : (coreferenceTrace.length ? 'unresolved_insufficient_corroboration' : 'unresolved_no_family_evidence')),
      },
+     // Keep the terminal reason at the trace root as well as in the parent
+     // audit.  Consumers should never have to infer a resolution from an
+     // empty evidence array or from a persistence flag.
+     unresolved_reason: selectedRole ? null : (parentEvidence.length ? null : (coreferenceTrace.length ? 'unresolved_insufficient_corroboration' : 'unresolved_no_family_evidence')),
      parent_role_expectation_status: parentRoleExpectationStatus,
      descriptor_direction_policy: 'directional_evidence_required',
      reverse_pair_evidence_checked: true,
@@ -1053,6 +1057,11 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    if (trace.typed_role_fact_reload_verified && !trace.typed_role_fact_persisted) failures.push('reload_verified_without_persisted_role');
    if (['parent', 'mother', 'father'].includes(trace.selected_role) && !trace.parent_role_source_audit.source_sufficient_for_role) failures.push('parent_role_without_explicit_source');
    if (trace.relationship_history_record_kind === 'descriptor_only' && trace.typed_role_fact_persisted) failures.push('typed_role_claimed_against_descriptor_only_record');
+   for (const observation of trace.family_coreference_trace ?? []) {
+     if (!observation.subject_canonical_id || !observation.target_canonical_id) failures.push('coreference_observation_missing_canonical_participant');
+     if (String(observation.local_target_label ?? '').toLowerCase() === String(observation.local_subject_label ?? '').toLowerCase()) failures.push('coreference_self_relationship_candidate');
+     if (observation.rejection_reason) failures.push(`coreference_observation_rejected:${observation.rejection_reason}`);
+   }
    return { ...trace, trace_validation: { passed: failures.length === 0, failures } };
  });
  return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, family_role_evidence_deduplication: familyEvidence.diagnostics, relationship_history_counts, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {

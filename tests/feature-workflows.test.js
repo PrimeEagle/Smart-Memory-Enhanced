@@ -528,6 +528,10 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /prompt_shape_hash === sceneAudit\.prompt_shape_hash/);
   assert.match(read('scenes.js'), /adaptive_batch_adjustments/);
   assert.match(read('scenes.js'), /adaptive_ceiling_effectiveness/);
+  assert.match(read('scenes.js'), /batch_size_observations/);
+  assert.match(read('scenes.js'), /recommended_operating_batch_size/);
+  assert.match(read('scenes.js'), /highest_size_with_any_full_success/);
+  assert.match(read('scenes.js'), /qualified_stability_status/);
   assert.match(read('profiles.js'), /descriptor_direction_policy/);
   assert.match(read('profiles.js'), /reverse_pair_evidence_checked/);
   assert.match(read('profiles.js'), /deduplicateRelationshipEvidence/);
@@ -541,6 +545,9 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('profiles.js'), /unresolved_no_explicit_evidence/);
   assert.match(read('profiles.js'), /trace_validation/);
   assert.match(read('profiles.js'), /parent_role_without_explicit_source/);
+  assert.match(read('profiles.js'), /subject_canonical_id/);
+  assert.match(read('profiles.js'), /target_canonical_id/);
+  assert.match(read('profiles.js'), /coreference_observation_missing_canonical_participant/);
   assert.match(settings, /family_role_persistence_summary/);
   assert.match(settings, /family_role_trace_validation_failures/);
   assert.match(settings, /relationship_history_counts/);

@@ -365,6 +365,66 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     return map;
   }, {})).sort((left, right) => left.size - right.size);
   const successfulBatchSizes = successfulBatchSizeCounts.filter((item) => item.full_successes > 0).map((item) => item.size);
+  // A single successful large request is useful telemetry, but it is not a
+  // safe operating recommendation.  Keep the raw observation separate from
+  // a recommendation that has enough repeat evidence to be trustworthy.
+  const batchSizeObservations = Object.values(diagnostics.batch_attempts
+    .filter((item) => item.attempt_type !== 'format_repair')
+    .reduce((map, item) => {
+      const size = Number(item.candidate_count_requested ?? 0);
+      if (!size) return map;
+      const entry = map[String(size)] ?? {
+        batch_size: size,
+        root_attempts: 0,
+        retry_attempts: 0,
+        full_direct_successes: 0,
+        full_successes_after_format_repair: 0,
+        partial_responses: 0,
+        invalid_responses: 0,
+        provider_errors: 0,
+        recent_outcomes: [],
+      };
+      const directFull = item.attempt_type === 'initial_batch'
+        && item.terminal_outcome === 'parsed_full'
+        && !item.partial_or_truncated
+        && !item.format_repair_succeeded;
+      const repairedFull = item.attempt_type === 'initial_batch'
+        && item.terminal_outcome === 'recovered_after_repair_request';
+      const providerError = item.terminal_outcome === 'provider_error_all_fallback';
+      const invalid = item.terminal_outcome === 'malformed_all_fallback' || item.terminal_outcome === 'returned_none_all_fallback';
+      const partial = Boolean(item.partial_or_truncated) || item.terminal_outcome === 'parsed_partial' || item.terminal_outcome === 'recovered_after_smaller_batch_retry';
+      if (item.attempt_type === 'initial_batch') {
+        entry.root_attempts++;
+        entry.recent_outcomes.push(directFull ? 'full_direct' : repairedFull ? 'full_repaired' : providerError ? 'provider_error' : invalid ? 'invalid' : partial ? 'partial' : 'other');
+      } else entry.retry_attempts++;
+      if (directFull) entry.full_direct_successes++;
+      if (repairedFull) entry.full_successes_after_format_repair++;
+      if (partial) entry.partial_responses++;
+      if (invalid) entry.invalid_responses++;
+      if (providerError) entry.provider_errors++;
+      map[String(size)] = entry;
+      return map;
+    }, {}))
+    .sort((left, right) => left.batch_size - right.batch_size)
+    .map((entry) => {
+      const recent = entry.recent_outcomes.slice(-3);
+      const recentFailures = recent.filter((outcome) => !['full_direct', 'full_repaired'].includes(outcome)).length;
+      const directRate = entry.full_direct_successes / Math.max(1, entry.root_attempts);
+      const qualified = entry.root_attempts >= 3 && directRate >= 0.8 && recentFailures <= 1;
+      return {
+        ...entry,
+        recent_outcomes: recent,
+        full_direct_success_rate: Number(directRate.toFixed(3)),
+        qualified_stability_status: qualified ? 'qualified' : entry.root_attempts < 3 ? 'insufficient_root_attempts' : directRate < 0.8 ? 'direct_success_rate_below_threshold' : 'recent_failure_pattern',
+      };
+    }));
+  const qualifiedStableSizes = batchSizeObservations
+    .filter((entry) => entry.qualified_stability_status === 'qualified' && entry.batch_size <= adaptiveState.effective_batch_ceiling)
+    .map((entry) => entry.batch_size);
+  const recommendedOperatingBatchSize = qualifiedStableSizes.at(-1) ?? adaptiveState.effective_batch_ceiling;
+  const recommendationReason = qualifiedStableSizes.length
+    ? 'highest_batch_size_with_three_or_more_root_attempts,_80_percent_or_better_direct_full_success,_and_no_repeated_recent_failures'
+    : 'insufficient_repeat_evidence;_using_final_effective_ceiling_as_a_conservative_fallback';
   diagnostics.adaptive_batch_summary = {
     root_requests: diagnostics.initial_batch_requests,
     partial_retry_requests: diagnostics.partial_retry_requests,
@@ -389,8 +449,13 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     repeated_failed_size_probes: diagnostics.batch_attempts.filter((item) => (item.known_failed_sizes_before ?? []).includes(item.candidate_count_requested)).length,
     ceiling_established_at_request: diagnostics.batch_attempts.find((item) => item.ceiling_change_reason === 'partial_or_truncated_response')?.request_attempt_id ?? null,
     highest_observed_successful_size: successfulBatchSizes.at(-1) ?? null,
-    recommended_stable_batch_size: adaptiveState.highest_recent_stable_size || null,
-    highest_size_meeting_stability_threshold: adaptiveState.highest_recent_stable_size || null,
+    highest_size_with_any_full_success: successfulBatchSizes.at(-1) ?? null,
+    recommended_stable_batch_size: recommendedOperatingBatchSize || null,
+    recommended_operating_batch_size: recommendedOperatingBatchSize || null,
+    highest_size_meeting_stability_threshold: qualifiedStableSizes.at(-1) ?? null,
+    final_effective_ceiling: adaptiveState.effective_batch_ceiling,
+    recommendation_reason: recommendationReason,
+    batch_size_observations: batchSizeObservations,
   };
   const reducedAttempts = diagnostics.batch_attempts.filter((item) => item.request_prevented_or_reduced_by_ceiling);
   const outcomeBySize = diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').reduce((map, item) => {
@@ -417,8 +482,13 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     repeated_failed_size_probes: diagnostics.adaptive_batch_summary.repeated_failed_size_probes,
     known_failed_sizes_final: [...new Set(adaptiveState.recent_failure_sizes)],
     highest_observed_successful_size: successfulBatchSizes.at(-1) ?? null,
-    recommended_stable_batch_size: adaptiveState.highest_recent_stable_size || null,
-    highest_size_meeting_stability_threshold: adaptiveState.highest_recent_stable_size || null,
+    highest_size_with_any_full_success: successfulBatchSizes.at(-1) ?? null,
+    recommended_stable_batch_size: recommendedOperatingBatchSize || null,
+    recommended_operating_batch_size: recommendedOperatingBatchSize || null,
+    highest_size_meeting_stability_threshold: qualifiedStableSizes.at(-1) ?? null,
+    final_effective_ceiling: adaptiveState.effective_batch_ceiling,
+    recommendation_reason: recommendationReason,
+    batch_size_observations: batchSizeObservations,
     successful_batch_sizes: successfulBatchSizes,
     successful_batch_size_counts: successfulBatchSizeCounts,
     lowest_required_size: diagnostics.minimum_batch_size_used,
