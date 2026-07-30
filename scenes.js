@@ -355,6 +355,16 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
   diagnostics.average_candidates_per_total_request = allRequestSizes.length ? Number((allRequestSizes.reduce((sum, size) => sum + size, 0) / diagnostics.total_provider_requests).toFixed(2)) : 0;
   diagnostics.batch_size_change_count = diagnostics.adaptive_batch_adjustments.length;
   diagnostics.batch_size_history = sizeHistory;
+  const successfulBatchSizeCounts = Object.values(diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').reduce((map, item) => {
+    const key = String(item.candidate_count_requested ?? 0);
+    const entry = map[key] ?? { size: Number(key), full_successes: 0, partials: 0, failures: 0, format_repairs: 0 };
+    if (item.partial_or_truncated) entry.partials++;
+    else if (/fallback|provider_error|malformed/.test(item.request_outcome ?? '')) entry.failures++;
+    else entry.full_successes++;
+    map[key] = entry;
+    return map;
+  }, {})).sort((left, right) => left.size - right.size);
+  const successfulBatchSizes = successfulBatchSizeCounts.filter((item) => item.full_successes > 0).map((item) => item.size);
   diagnostics.adaptive_batch_summary = {
     root_requests: diagnostics.initial_batch_requests,
     partial_retry_requests: diagnostics.partial_retry_requests,
@@ -367,14 +377,20 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     maximum_batch_size_used: diagnostics.maximum_batch_size_used,
     effective_ceiling_history: adaptiveState.ceiling_history,
     failed_batch_sizes: [...new Set(adaptiveState.recent_failure_sizes)],
-    successful_batch_sizes: adaptiveState.highest_recent_stable_size ? [adaptiveState.highest_recent_stable_size] : [],
+    successful_batch_sizes: successfulBatchSizes,
+    successful_batch_size_counts: successfulBatchSizeCounts,
     average_candidates_per_root_request: diagnostics.average_candidates_per_root_request,
     average_candidates_per_total_request: diagnostics.average_candidates_per_total_request,
-    requests_prevented_by_ceiling: diagnostics.batch_attempts.filter((item) => item.request_prevented_or_reduced_by_ceiling).length,
+    requests_size_limited_by_ceiling: diagnostics.batch_attempts.filter((item) => item.request_prevented_or_reduced_by_ceiling).length,
+    candidate_slots_deferred_by_ceiling: diagnostics.batch_attempts.filter((item) => item.request_prevented_or_reduced_by_ceiling).reduce((total, item) => total + Math.max(0, batchSize - Number(item.candidate_count_requested ?? batchSize)), 0),
+    estimated_retry_requests_avoided: 0,
+    provider_requests_actually_eliminated: 0,
     attempts_above_known_failed_size: diagnostics.batch_attempts.filter((item) => (item.known_failed_sizes_before ?? []).some((size) => item.candidate_count_requested >= size)).length,
     repeated_failed_size_probes: diagnostics.batch_attempts.filter((item) => (item.known_failed_sizes_before ?? []).includes(item.candidate_count_requested)).length,
     ceiling_established_at_request: diagnostics.batch_attempts.find((item) => item.ceiling_change_reason === 'partial_or_truncated_response')?.request_attempt_id ?? null,
-    stable_batch_size_estimate: adaptiveState.highest_recent_stable_size || null,
+    highest_observed_successful_size: successfulBatchSizes.at(-1) ?? null,
+    recommended_stable_batch_size: adaptiveState.highest_recent_stable_size || null,
+    highest_size_meeting_stability_threshold: adaptiveState.highest_recent_stable_size || null,
   };
   const reducedAttempts = diagnostics.batch_attempts.filter((item) => item.request_prevented_or_reduced_by_ceiling);
   const outcomeBySize = diagnostics.batch_attempts.filter((item) => item.attempt_type !== 'format_repair').reduce((map, item) => {
@@ -393,13 +409,18 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     ceiling_established_at_request: diagnostics.adaptive_batch_summary.ceiling_established_at_request,
     ceiling_reduction_count: adaptiveState.ceiling_reduced_count,
     ceiling_increase_count: adaptiveState.ceiling_increased_count,
-    requests_reduced_by_ceiling: reducedAttempts.length,
-    candidate_slots_avoided_by_ceiling: reducedAttempts.reduce((total, item) => total + Math.max(0, batchSize - Number(item.candidate_count_requested ?? batchSize)), 0),
-    requests_prevented_by_ceiling: diagnostics.adaptive_batch_summary.requests_prevented_by_ceiling,
+    requests_size_limited_by_ceiling: reducedAttempts.length,
+    candidate_slots_deferred_by_ceiling: reducedAttempts.reduce((total, item) => total + Math.max(0, batchSize - Number(item.candidate_count_requested ?? batchSize)), 0),
+    estimated_retry_requests_avoided: 0,
+    provider_requests_actually_eliminated: 0,
     attempts_above_known_failed_size: diagnostics.adaptive_batch_summary.attempts_above_known_failed_size,
     repeated_failed_size_probes: diagnostics.adaptive_batch_summary.repeated_failed_size_probes,
     known_failed_sizes_final: [...new Set(adaptiveState.recent_failure_sizes)],
-    highest_stable_size: adaptiveState.highest_recent_stable_size || null,
+    highest_observed_successful_size: successfulBatchSizes.at(-1) ?? null,
+    recommended_stable_batch_size: adaptiveState.highest_recent_stable_size || null,
+    highest_size_meeting_stability_threshold: adaptiveState.highest_recent_stable_size || null,
+    successful_batch_sizes: successfulBatchSizes,
+    successful_batch_size_counts: successfulBatchSizeCounts,
     lowest_required_size: diagnostics.minimum_batch_size_used,
     failure_count_by_batch_size: Object.fromEntries(Object.values(outcomeBySize).map((item) => [item.batch_size, item.partial_or_failed])),
     success_count_by_batch_size: Object.fromEntries(Object.values(outcomeBySize).map((item) => [item.batch_size, item.successes])),

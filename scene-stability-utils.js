@@ -562,10 +562,33 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      candidates_with_gate_execution_status: records.filter((candidate) => typeof candidate.gate_executed === 'boolean' || candidate.gate_result !== undefined).length,
      candidates_with_gate_input_hash: executed.filter((candidate) => candidate.gate_input_hash).length,
      candidates_with_canonical_gate_output: canonicalOutputs,
+     candidates_with_complete_gate_snapshot: canonicalOutputs,
+     // Compatibility alias: this reports snapshot completeness only, not
+     // current eligibility for a deterministic comparison.
      candidates_comparable_in_future: canonicalOutputs,
+     compatibility_field_scope: 'snapshot_completeness_only',
+     gate_output_schema_version: run.gate_output_schema_version ?? null,
+     candidate_snapshot_schema_version: run.candidate_snapshot_schema_version ?? null,
+     migration_status: canonicalOutputs === records.length ? 'current_or_complete'
+       : canonicalOutputs ? 'partial_or_migrated' : 'legacy_nonmigratable',
+     complete_snapshot_count: canonicalOutputs,
+     partial_snapshot_count: Math.max(0, records.length - canonicalOutputs),
+     noncomparable_snapshot_count: Math.max(0, records.length - canonicalOutputs),
      completeness_ratio: records.length ? (records.filter((candidate) => typeof candidate.decision === 'boolean').length / records.length) : null,
    };
  });
+ const gateSchemaMigrationProgress = {
+   total_retained_runs: gateSnapshotCoverageByRun.length,
+   current_schema_runs: gateSnapshotCoverageByRun.filter((run) => run.gate_output_schema_version === 1).length,
+   legacy_migratable_runs: gateSnapshotCoverageByRun.filter((run) => run.migration_status === 'partial_or_migrated').length,
+   legacy_nonmigratable_runs: gateSnapshotCoverageByRun.filter((run) => run.migration_status === 'legacy_nonmigratable').length,
+   runs_with_complete_gate_snapshots: gateSnapshotCoverageByRun.filter((run) => run.complete_snapshot_count === run.candidate_count).length,
+   runs_with_partial_gate_snapshots: gateSnapshotCoverageByRun.filter((run) => run.partial_snapshot_count > 0 && run.complete_snapshot_count > 0).length,
+   candidates_current_schema: gateSnapshotCoverageByRun.filter((run) => run.gate_output_schema_version === 1).reduce((total, run) => total + run.complete_snapshot_count, 0),
+   candidates_migrated: gateSnapshotCoverageByRun.filter((run) => run.migration_status === 'partial_or_migrated').reduce((total, run) => total + run.complete_snapshot_count, 0),
+   candidates_noncomparable_legacy: gateSnapshotCoverageByRun.reduce((total, run) => total + run.noncomparable_snapshot_count, 0),
+   projected_full_coverage_after_history_rollover: gateSnapshotCoverageByRun.every((run) => run.complete_snapshot_count === run.candidate_count),
+ };
   const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
  const identifiedPriorRuns = identifiedRuns.filter((run) => !run.current_run);
  const distinctPriorRunCount = identifiedPriorRuns.length;
@@ -666,6 +689,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    gate_determinism_violations: gateDeterminismViolations,
    gate_determinism_coverage: gateDeterminismCoverage,
    gate_snapshot_coverage_by_run: gateSnapshotCoverageByRun,
+   gate_schema_migration_progress: gateSchemaMigrationProgress,
    pipeline_stable: pipelinesStable, scene_count_exactly_stable: new Set(counts).size <= 1,
    scene_count_materially_stable: counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false,
    boundary_positions_exactly_stable: entries.every(([, count]) => count === runCount),

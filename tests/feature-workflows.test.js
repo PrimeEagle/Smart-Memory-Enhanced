@@ -528,6 +528,14 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(read('scenes.js'), /adaptive_ceiling_effectiveness/);
   assert.match(read('profiles.js'), /descriptor_direction_policy/);
   assert.match(read('profiles.js'), /reverse_pair_evidence_checked/);
+  assert.match(read('profiles.js'), /deduplicateRelationshipEvidence/);
+  assert.match(read('profiles.js'), /family_role_evidence_deduplication/);
+  assert.match(read('profiles.js'), /typed_card_facts_unique/);
+  assert.match(read('profiles.js'), /typed_role_fact_persisted/);
+  assert.match(read('profiles.js'), /descriptor_only_record_present/);
+  assert.match(read('profiles.js'), /parent_role_source_audit/);
+  assert.match(read('profiles.js'), /unresolved_no_explicit_evidence/);
+  assert.match(settings, /family_role_persistence_summary/);
   assert.match(read('ui.js'), /repair_recurrence_source/);
   assert.match(read('scenes.js'), /root_batch_summary/);
   assert.match(read('scenes.js'), /confidence_outcomes/);

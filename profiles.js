@@ -217,6 +217,38 @@ function rosterEntries(roster) {
   return getCanonicalRosterPeople(roster);
 }
 
+/** Deduplicate repeated observations without collapsing distinct sources. */
+function deduplicateRelationshipEvidence(pairs = []) {
+  const duplicatesBySourceClass = {};
+  const duplicatesByPair = {};
+  const seen = new Set();
+  const unique = [];
+  for (const pair of pairs) {
+    const sourceIds = [...new Set(pair?.relationship_type_source_ids ?? [])].sort();
+    const key = [pair?.subject, pair?.target, pair?.relationship_type ?? '', pair?.relationship_type_source ?? '', sourceIds.join(','), ...(pair?.source_message_indices ?? [])].join('|');
+    if (seen.has(key)) {
+      const sourceClass = pair?.relationship_type_source ?? 'unknown';
+      const pairKey = `${pair?.subject ?? 'unknown'}→${pair?.target ?? 'unknown'}`;
+      duplicatesBySourceClass[sourceClass] = (duplicatesBySourceClass[sourceClass] ?? 0) + 1;
+      duplicatesByPair[pairKey] = (duplicatesByPair[pairKey] ?? 0) + 1;
+      continue;
+    }
+    seen.add(key);
+    unique.push(pair);
+  }
+  return {
+    unique,
+    diagnostics: {
+      raw_observation_count: pairs.length,
+      unique_observation_count: unique.length,
+      duplicate_observations_suppressed: pairs.length - unique.length,
+      duplicates_by_source_class: duplicatesBySourceClass,
+      duplicates_by_pair: duplicatesByPair,
+      distinct_supporting_source_count: new Set(unique.flatMap((pair) => pair.relationship_type_source_ids ?? []).filter(Boolean)).size,
+    },
+  };
+}
+
 export function extractCardRelationshipFacts(roster = []) {
   const statusPattern = 'husband|wife|ex-husband|ex-wife|partner|sister-in-law|brother-in-law|sibling-in-law|sibling|sister|brother|twin|mother|father|parent|daughter|son|friend|roommate';
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
@@ -556,6 +588,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       target: String(state?.target_name ?? '').toLowerCase(),
       relationship_type: String(state?.relationship_type ?? state?.canonical_relationship_type ?? '').trim().toLowerCase() || null,
       relationship_type_source: state?.relationship_type_source ?? 'approved_relationship_history',
+      relationship_type_source_ids: state?.relationship_type_source_ids ?? [],
+      source_message_indices: state?.source_message_indices ?? [],
       relationship_type_confidence_class: state?.relationship_type ? 'authoritative' : null,
       descriptors: (state?.descriptors ?? []).map((descriptor) => String(typeof descriptor === 'string' ? descriptor : descriptor?.word ?? '').trim().toLowerCase()).filter(Boolean),
     }))
@@ -737,7 +771,9 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  // Persist a structured, role-separated projection alongside the compatible
  // text matrix. A role is emitted only from independently grounded pair
  // evidence; descriptor words never establish one.
- const evidencePairs = [cardPairs, historyPairs, groundedPairs, rawChatPairs].flat();
+ const rawEvidencePairs = [cardPairs, historyPairs, groundedPairs, rawChatPairs].flat();
+ const familyEvidence = deduplicateRelationshipEvidence(rawEvidencePairs);
+ const evidencePairs = familyEvidence.unique;
  const evidenceForTarget = (target) => mergeRelationshipPairEvidence(...evidencePairs.filter((pair) =>
  (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)));
  // The profile model is allowed to omit a relationship's descriptive state,
@@ -803,6 +839,18 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target))
      .filter((pair) => pair.relationship_type_source === source).length;
    const outcome = fieldTerminalOutcomes.find((item) => String(item.relationship_target ?? '').toLowerCase() === target);
+   const pairHistoryRecords = historyPairs.filter((pair) =>
+     (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target));
+   const descriptorOnlyRecordPresent = pairHistoryRecords.some((pair) => !pair.relationship_type && pair.descriptors.length);
+   const typedRoleFactPresent = Boolean(evidence?.relationship_type);
+   const selectedRole = entry.canonical_relationship_type;
+   const parentEvidence = evidencePairs.filter((pair) =>
+     ((pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self))
+     && ['parent', 'mother', 'father'].includes(pair.relationship_type));
+   const parentRoleExpectationStatus = selectedRole === 'parent' ? 'resolved_generic_parent'
+     : ['mother', 'father'].includes(selectedRole) ? 'resolved_gendered_parent'
+       : ['mother', 'father', 'parent'].some((role) => parentEvidence.some((pair) => pair.relationship_type === role)) ? 'verified_from_source'
+         : 'unresolved_no_explicit_evidence';
    return {
      profile_owner: self,
      relationship_target: target,
@@ -816,6 +864,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        .map((pair) => ({ subject: pair.subject, target: pair.target, relationship_type: pair.relationship_type, source_class: pair.relationship_type_source })),
      canonical_pair_key: pairKey,
      source_counts: {
+       typed_card_observations_raw: rawEvidencePairs.filter((pair) => ((pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self)) && pair.relationship_type_source === 'card_fact').length,
+       typed_card_facts_unique: countBySource('card_fact'),
        typed_card: countBySource('card_fact'),
        typed_persona: countBySource('persona_fact'),
        manual: countBySource('manual'),
@@ -825,23 +875,47 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        descriptor_only: historyPairs.filter((pair) => ((pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)) && !pair.relationship_type && pair.descriptors.length).length,
        rejected_unsafe: 0,
      },
-     candidate_roles: evidence?.relationship_type ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
-     selected_role: entry.canonical_relationship_type,
+     candidate_roles: typedRoleFactPresent ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
+     selected_role: selectedRole,
      selected_source_class: entry.relationship_type_source,
      selected_source_id: entry.relationship_type_source_id,
-     typed_fact_persisted: countBySource('card_fact') > 0 || countBySource('persona_fact') > 0 || countBySource('grounded_raw_chat_evidence') > 0 || countBySource('approved_relationship_history') > 0,
-     typed_fact_reload_verified: Boolean(evidence?.relationship_type),
-     profile_lookup_found_typed_fact: Boolean(evidence?.relationship_type),
+     relationship_record_present: pairHistoryRecords.length > 0,
+     descriptor_only_record_present: descriptorOnlyRecordPresent,
+     typed_role_fact_present: typedRoleFactPresent,
+     typed_role_fact_persist_attempted: typedRoleFactPresent && Boolean(evidence?.relationship_type_source_ids?.length),
+     typed_role_fact_persisted: typedRoleFactPresent && Boolean(evidence?.relationship_type_source_ids?.length),
+     typed_role_fact_reload_verified: typedRoleFactPresent && Boolean(evidence?.relationship_type),
+     typed_role_fact_found_by_profile_lookup: typedRoleFactPresent && Boolean(evidence?.relationship_type),
+     relationship_history_record_kind: !pairHistoryRecords.length ? 'empty_or_invalid'
+       : pairHistoryRecords.some((pair) => pair.relationship_type && pair.descriptors.length) ? 'typed_role_with_descriptors'
+         : pairHistoryRecords.some((pair) => pair.relationship_type) ? 'typed_role_only'
+           : 'descriptor_only',
+     parent_role_source_audit: {
+       relationship_owner: self,
+       relationship_target: target,
+       card_fact_count: countBySource('card_fact'),
+       persona_fact_count: countBySource('persona_fact'),
+       typed_relationship_history_count: countBySource('approved_relationship_history'),
+       grounded_memory_count: countBySource('grounded_source_evidence'),
+       raw_chat_count: countBySource('grounded_raw_chat_evidence'),
+       generic_parent_fact_count: parentEvidence.filter((pair) => pair.relationship_type === 'parent').length,
+       gendered_parent_fact_count: parentEvidence.filter((pair) => ['mother', 'father'].includes(pair.relationship_type)).length,
+       unsafe_or_ambiguous_count: 0,
+       strongest_available_source: parentEvidence[0]?.relationship_type_source ?? null,
+       source_sufficient_for_role: Boolean(parentEvidence.length),
+       unresolved_reason: parentEvidence.length ? null : 'unresolved_no_explicit_evidence',
+     },
+     parent_role_expectation_status: parentRoleExpectationStatus,
      descriptor_direction_policy: 'directional_evidence_required',
      reverse_pair_evidence_checked: true,
      symmetric_descriptor_rule_applied: false,
      descriptor_support_source: evidence?.descriptors?.length ? (evidence.relationship_type_source ?? 'relationship_history') : null,
      rejected_candidates: [],
-     terminal_outcome: outcome?.field_terminal_outcome === 'not_generated_role_structurally_present' ? 'not_generated_role_structurally_present' : entry.canonical_relationship_type ? 'generated_and_resolved' : 'generated_but_role_unresolved',
+     terminal_outcome: outcome?.field_terminal_outcome === 'not_generated_role_structurally_present' ? 'not_generated_role_structurally_present' : selectedRole ? 'generated_and_resolved' : 'generated_but_role_unresolved',
      persistence_stage_verified: Boolean(entry.relationship_type_source_id),
    };
  });
- return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
+ return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, family_role_evidence_deduplication: familyEvidence.diagnostics, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
  const target = String(outcome.relationship_target ?? '').toLowerCase();
  const entry = structuredByTarget.get(target);
  const evidence = evidenceForTarget(target);
