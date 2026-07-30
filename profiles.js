@@ -849,18 +849,22 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const target = String(entry.target ?? '').toLowerCase();
    const evidence = evidenceForTarget(target);
    const pairKey = evidence ? getRelationshipHistoryPair(self, target, roster).key : null;
-   const countBySource = (source) => evidencePairs.filter((pair) =>
-     (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target))
+   // A trace belongs to the profile target, so count the fact directed from
+   // that target to this profile.  The reverse relationship may be relevant
+   // evidence for a symmetric role, but it is not another observation of the
+   // same target-relative fact.
+   const isTargetRelativePair = (pair) => pair.subject === target && pair.target === self;
+   const countBySource = (source) => evidencePairs
+     .filter(isTargetRelativePair)
      .filter((pair) => pair.relationship_type_source === source).length;
    const outcome = fieldTerminalOutcomes.find((item) => String(item.relationship_target ?? '').toLowerCase() === target);
-   const pairHistoryRecords = historyPairs.filter((pair) =>
-     (pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target));
+   const pairHistoryRecords = historyPairs.filter(isTargetRelativePair);
    const descriptorOnlyRecordPresent = pairHistoryRecords.some((pair) => !pair.relationship_type && pair.descriptors.length);
-   const typedRoleFactPresent = Boolean(evidence?.relationship_type);
+   const typedRoleEvidenceAvailable = Boolean(evidence?.relationship_type);
+   const typedRoleFactPresent = pairHistoryRecords.some((pair) => Boolean(pair.relationship_type));
    const selectedRole = entry.canonical_relationship_type;
    const parentEvidence = evidencePairs.filter((pair) =>
-     ((pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self))
-     && ['parent', 'mother', 'father'].includes(pair.relationship_type));
+     isTargetRelativePair(pair) && ['parent', 'mother', 'father'].includes(pair.relationship_type));
    const parentRoleExpectationStatus = selectedRole === 'parent' ? 'resolved_generic_parent'
      : ['mother', 'father'].includes(selectedRole) ? 'resolved_gendered_parent'
        : ['mother', 'father', 'parent'].some((role) => parentEvidence.some((pair) => pair.relationship_type === role)) ? 'verified_from_source'
@@ -868,17 +872,16 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    return {
      profile_owner: self,
      relationship_target: target,
-     card_source_available: cardPairs.some((pair) => (pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self)),
+     card_source_available: cardPairs.some(isTargetRelativePair),
      card_fact_detected: countBySource('card_fact') > 0 || countBySource('persona_fact') > 0,
      raw_chat_fact_detected: countBySource('grounded_raw_chat_evidence') > 0,
      grounded_memory_fact_detected: countBySource('grounded_source_evidence') > 0,
-     parsed_directed_facts: evidencePairs.filter((pair) =>
-       (pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self))
+     parsed_directed_facts: evidencePairs.filter(isTargetRelativePair)
        .filter((pair) => pair.relationship_type)
        .map((pair) => ({ subject: pair.subject, target: pair.target, relationship_type: pair.relationship_type, source_class: pair.relationship_type_source })),
      canonical_pair_key: pairKey,
      source_counts: {
-       typed_card_observations_raw: rawEvidencePairs.filter((pair) => ((pair.subject === self && pair.target === target) || (pair.subject === target && pair.target === self)) && pair.relationship_type_source === 'card_fact').length,
+       typed_card_observations_raw: rawEvidencePairs.filter((pair) => isTargetRelativePair(pair) && pair.relationship_type_source === 'card_fact').length,
        typed_card_facts_unique: countBySource('card_fact'),
        typed_card: countBySource('card_fact'),
        typed_persona: countBySource('persona_fact'),
@@ -886,20 +889,20 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        typed_relationship_history: countBySource('approved_relationship_history'),
        grounded_memory: countBySource('grounded_source_evidence'),
        raw_chat: countBySource('grounded_raw_chat_evidence'),
-       descriptor_only: historyPairs.filter((pair) => ((pair.subject === self && pair.target === target) || (pair.target === self && pair.subject === target)) && !pair.relationship_type && pair.descriptors.length).length,
+       descriptor_only: pairHistoryRecords.filter((pair) => !pair.relationship_type && pair.descriptors.length).length,
        rejected_unsafe: 0,
      },
-     candidate_roles: typedRoleFactPresent ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
+     candidate_roles: typedRoleEvidenceAvailable ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
      selected_role: selectedRole,
      selected_source_class: entry.relationship_type_source,
      selected_source_id: entry.relationship_type_source_id,
      relationship_record_present: pairHistoryRecords.length > 0,
      descriptor_only_record_present: descriptorOnlyRecordPresent,
      typed_role_fact_present: typedRoleFactPresent,
-     typed_role_fact_persist_attempted: typedRoleFactPresent && Boolean(evidence?.relationship_type_source_ids?.length),
-     typed_role_fact_persisted: typedRoleFactPresent && Boolean(evidence?.relationship_type_source_ids?.length),
-     typed_role_fact_reload_verified: typedRoleFactPresent && Boolean(evidence?.relationship_type),
-     typed_role_fact_found_by_profile_lookup: typedRoleFactPresent && Boolean(evidence?.relationship_type),
+     typed_role_fact_persist_attempted: typedRoleFactPresent,
+     typed_role_fact_persisted: typedRoleFactPresent,
+     typed_role_fact_reload_verified: typedRoleFactPresent,
+     typed_role_fact_found_by_profile_lookup: typedRoleFactPresent,
      relationship_history_record_kind: !pairHistoryRecords.length ? 'empty_or_invalid'
        : pairHistoryRecords.some((pair) => pair.relationship_type && pair.descriptors.length) ? 'typed_role_with_descriptors'
          : pairHistoryRecords.some((pair) => pair.relationship_type) ? 'typed_role_only'

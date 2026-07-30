@@ -4240,16 +4240,19 @@ export function bindSettingsUI(ctrl) {
       if (profileQuality.fields_dropped_no_supported_descriptors > 0) qualityReasons.push({
         code: 'profile_relationship_fields_unsupported',
         tier: 'profiles',
+        severity: 'notice',
         message: `${profileQuality.fields_dropped_no_supported_descriptors} unsupported model-generated relationship field${profileQuality.fields_dropped_no_supported_descriptors === 1 ? '' : 's'} contained unsupported descriptors and ${profileQuality.fields_dropped_no_supported_descriptors === 1 ? 'was' : 'were'} dropped; canonical profile values were preserved.`,
       });
       if (profileQuality.fields_dropped_placeholder_only > 0) qualityReasons.push({
         code: 'profile_relationship_placeholders_dropped',
         tier: 'profiles',
+        severity: 'notice',
         message: `${profileQuality.fields_dropped_placeholder_only} placeholder-only relationship field${profileQuality.fields_dropped_placeholder_only === 1 ? ' was' : 's were'} ignored.`,
       });
       if (profileQuality.descriptors_rejected_unsupported > 0) qualityReasons.push({
         code: 'profile_relationship_descriptors_unsupported',
         tier: 'profiles',
+        severity: 'notice',
         message: `${profileQuality.descriptors_rejected_unsupported} unsupported model-generated relationship descriptor${profileQuality.descriptors_rejected_unsupported === 1 ? ' was' : 's were'} rejected; supported and canonical values were preserved.`,
       });
       if (runResult.profiles.family_role_trace_validation_failures.length > 0) qualityReasons.push({
@@ -4330,15 +4333,18 @@ export function bindSettingsUI(ctrl) {
         && (reconciliation.integrity_audit?.stale_entity_references?.length ?? 0) === 0)
         ? 'clean'
         : auditStatus;
+      const qualityDegradingReasons = qualityReasons.filter((reason) => reason.severity !== 'notice');
+      const qualityNotices = qualityReasons.filter((reason) => reason.severity === 'notice');
       runResult.quality = {
-        status: qualityReasons.length ? 'degraded' : 'clean',
+        status: qualityDegradingReasons.length ? 'degraded' : 'clean',
         operational_status: projectedOperationalStatus,
         final_integrity_status: finalIntegrityStatus,
-        data_quality_status: qualityReasons.length ? 'degraded' : 'clean',
-        generation_quality_status: qualityReasons.length ? 'degraded' : 'clean',
+        data_quality_status: qualityDegradingReasons.length ? 'degraded' : 'clean',
+        generation_quality_status: qualityDegradingReasons.length ? 'degraded' : 'clean',
         maintenance_actions: maintenanceActions,
         maintenance_actions_performed: maintenanceActions.entity_links_repaired,
         reasons: qualityReasons,
+        notices: qualityNotices,
       };
       await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
       await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
@@ -4513,14 +4519,17 @@ export function bindSettingsUI(ctrl) {
         const qualityDetail = runResult.quality.status === 'degraded'
           ? ` Data quality degraded: ${runResult.quality.reasons.map((reason) => reason.message).join(' ')}`
           : '';
+        const profileGuardDetail = runResult.quality.status === 'clean' && runResult.quality.notices.length
+          ? ` Profile safeguards: ${runResult.quality.notices.map((notice) => notice.message).join(' ')}`
+          : '';
         const repairedLinks = runResult.quality.maintenance_actions_performed ?? 0;
         const repairStores = runResult.quality.maintenance_actions?.entity_link_store_mutations ?? 0;
         const maintenanceDetail = repairedLinks > 0
           ? ` ${repairedLinks} entity link${repairedLinks === 1 ? '' : 's'} repaired${repairStores > 1 ? ` across ${repairStores} durable store mutations` : ''}.`
           : '';
-        setStatusMessage(`Catch-up complete.${qualityDetail}${maintenanceDetail}${sceneSummary}`);
+        setStatusMessage(`Catch-up complete.${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`);
         const notifier = runResult.quality.status === 'degraded' ? toastr.warning : toastr.success;
-        notifier(`Full catch-up extraction finished.${qualityDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
+        notifier(`Full catch-up extraction finished.${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
           timeOut: runResult.quality.status === 'degraded' ? 8000 : 4000,
           positionClass: 'toast-bottom-right',
         });
