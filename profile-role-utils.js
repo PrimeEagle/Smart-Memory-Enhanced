@@ -56,6 +56,22 @@ export function mergeRelationshipPairEvidence(...candidates) {
 }
 
 /**
+ * Reports only durable typed-role storage. Runtime, card, or raw-chat
+ * evidence may safely resolve a profile role, but cannot be reported as a
+ * persisted Relationship History role until a typed record actually exists.
+ */
+export function deriveTypedRolePersistenceState(records = []) {
+  const typedRoleFactPresent = records.some((record) => Boolean(record?.relationship_type));
+  return {
+    typed_role_fact_present: typedRoleFactPresent,
+    typed_role_fact_persist_attempted: typedRoleFactPresent,
+    typed_role_fact_persisted: typedRoleFactPresent,
+    typed_role_fact_reload_verified: typedRoleFactPresent,
+    typed_role_fact_found_by_profile_lookup: typedRoleFactPresent,
+  };
+}
+
+/**
  * Parses only fully named, directional family statements from raw chat. It
  * returns candidates rather than canonical entities; the caller remains
  * responsible for roster resolution and for rejecting unsafe identities.

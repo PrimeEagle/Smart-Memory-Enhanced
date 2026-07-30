@@ -68,6 +68,7 @@ import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-val
 import { validateCitationSemanticSupport } from './grounding.js';
 import {
   CANONICAL_RELATIONSHIP_ROLE_TOKENS,
+  deriveTypedRolePersistenceState,
   extractExplicitNamedFamilyCandidates,
   migrateProfileRoleDescriptorSeparation,
   mergeRelationshipPairEvidence,
@@ -861,7 +862,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const pairHistoryRecords = historyPairs.filter(isTargetRelativePair);
    const descriptorOnlyRecordPresent = pairHistoryRecords.some((pair) => !pair.relationship_type && pair.descriptors.length);
    const typedRoleEvidenceAvailable = Boolean(evidence?.relationship_type);
-   const typedRoleFactPresent = pairHistoryRecords.some((pair) => Boolean(pair.relationship_type));
+   const typedRolePersistence = deriveTypedRolePersistenceState(pairHistoryRecords);
+   const typedRoleFactPresent = typedRolePersistence.typed_role_fact_present;
    const selectedRole = entry.canonical_relationship_type;
    const parentEvidence = evidencePairs.filter((pair) =>
      isTargetRelativePair(pair) && ['parent', 'mother', 'father'].includes(pair.relationship_type));
@@ -898,11 +900,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      selected_source_id: entry.relationship_type_source_id,
      relationship_record_present: pairHistoryRecords.length > 0,
      descriptor_only_record_present: descriptorOnlyRecordPresent,
-     typed_role_fact_present: typedRoleFactPresent,
-     typed_role_fact_persist_attempted: typedRoleFactPresent,
-     typed_role_fact_persisted: typedRoleFactPresent,
-     typed_role_fact_reload_verified: typedRoleFactPresent,
-     typed_role_fact_found_by_profile_lookup: typedRoleFactPresent,
+     ...typedRolePersistence,
      relationship_history_record_kind: !pairHistoryRecords.length ? 'empty_or_invalid'
        : pairHistoryRecords.some((pair) => pair.relationship_type && pair.descriptors.length) ? 'typed_role_with_descriptors'
          : pairHistoryRecords.some((pair) => pair.relationship_type) ? 'typed_role_only'

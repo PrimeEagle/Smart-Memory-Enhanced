@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractExplicitNamedFamilyCandidates, mergeRelationshipPairEvidence, migrateProfileRoleDescriptorSeparation, relationshipTypeForProfileTarget } from '../profile-role-utils.js';
+import { deriveTypedRolePersistenceState, extractExplicitNamedFamilyCandidates, mergeRelationshipPairEvidence, migrateProfileRoleDescriptorSeparation, relationshipTypeForProfileTarget } from '../profile-role-utils.js';
 
 test('profile role migration persists canonical roles separately from descriptors', () => {
   const migrated = migrateProfileRoleDescriptorSeparation({
@@ -55,6 +55,21 @@ test('typed relationship evidence wins over descriptor-only history', () => {
   assert.equal(merged.relationship_type, 'wife');
   assert.equal(merged.relationship_type_source, 'grounded_raw_chat_evidence');
   assert.deepEqual(merged.descriptors, ['protective', 'open']);
+});
+
+test('descriptor-only records never report durable typed-role persistence', () => {
+  assert.deepEqual(deriveTypedRolePersistenceState([
+    { subject: 'aaron holland', target: 'taylor covington', descriptors: ['loving'] },
+  ]), {
+    typed_role_fact_present: false,
+    typed_role_fact_persist_attempted: false,
+    typed_role_fact_persisted: false,
+    typed_role_fact_reload_verified: false,
+    typed_role_fact_found_by_profile_lookup: false,
+  });
+  assert.equal(deriveTypedRolePersistenceState([
+    { subject: 'kyler covington', target: 'taylor covington', relationship_type: 'sister' },
+  ]).typed_role_fact_persisted, true);
 });
 
 test('named family parser accepts explicit participants and rejects pronoun-only claims', () => {
