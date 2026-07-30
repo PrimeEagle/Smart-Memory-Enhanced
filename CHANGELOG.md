@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.63] - 2026-07-29
+
+### Fixed
+
+- Corrected family-role trace semantics when a profile can safely use bounded
+  raw-chat evidence but Relationship History contains only descriptors. Such
+  evidence no longer appears as a persisted or reload-verified typed role.
+- Made family-role trace counts target-relative, preventing reverse-pair
+  observations from inflating a profile target's role evidence count.
+- Guarded profile relationship output is now reported as an informational
+  safeguard when canonical values were preserved, rather than degrading an
+  otherwise clean completed run.
+
+### Tests
+
+- Added regression coverage proving descriptor-only Relationship History
+  records cannot claim durable typed-role persistence.
+- Full automated verification: 276 unit/integration checks and 48 replay
+  harness assertions passed.
+
 ## [0.8.62] - 2026-07-29
 
 ### Added
