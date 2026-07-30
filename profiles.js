@@ -706,6 +706,13 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
     const entity = match[1].trim().toLowerCase();
+    // A profile cannot meaningfully carry a relationship entry to itself.
+    // Drop this model formatting artifact before it can create a misleading
+    // unresolved trace or quality warning.
+    if (entity === self) {
+      rejected.push(line);
+      return '';
+    }
     // Accept the complete valid confidence range, including 1.0. Leaving a
     // trailing annotation turns an otherwise exact descriptor (for example
     // "open [confidence: 1.0]") into a false mismatch.
@@ -923,7 +930,11 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const parentEvidence = evidencePairs.filter((pair) =>
      isTargetRelativePair(pair) && ['parent', 'mother', 'father'].includes(pair.relationship_type));
    const coreferenceTrace = boundedCoreferenceFacts
-     .filter((fact) => String(fact.subject).toLowerCase() === target && String(fact.target).toLowerCase() === self)
+     .filter((fact) => {
+       const subject = resolveCanonicalCharacterName(fact.subject, roster).canonicalName ?? String(fact.subject);
+       const targetName = resolveCanonicalCharacterName(fact.target, roster).canonicalName ?? String(fact.target);
+       return String(subject).toLowerCase() === target && String(targetName).toLowerCase() === self;
+     })
      .map((fact) => ({
        source_message_indices: fact.source_message_indices,
        evidence_window_size: fact.evidence_window_size,
