@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.65] - 2026-07-30
+
+### Added
+
+- Added canonical participant IDs and resolution methods to bounded
+  family-coreference trace observations, so short local references such as
+  `Taylor` can be audited against `Taylor Covington` without relying on a
+  display-name comparison.
+- Added per-size scene-batch observations, including root versus retry
+  attempts, direct full-success rate, repair outcomes, partial/invalid/provider
+  failures, and recent outcome history.
+- Added a conservative operating-batch recommendation. A size now needs at
+  least three root attempts, an 80% direct full-success rate, and no repeated
+  recent failures before it is recommended; otherwise diagnostics clearly use
+  the final adaptive ceiling as a fallback.
+
+### Fixed
+
+- Family-role traces now use canonical matching for bounded raw-chat evidence,
+  retain the terminal unresolved reason at the trace root, and reject malformed
+  self-relationship observations before they can be presented as valid evidence.
+- Scene diagnostics no longer imply that the largest size with one successful
+  response is a stable provider setting. They distinguish that observation from
+  the evidence-backed operating recommendation.
+
+### Tests
+
+- Expanded regression coverage for canonical family-trace fields and the
+  conservative adaptive-batch diagnostic contract.
+- Full automated verification: 287 unit/integration checks and 48 replay
+  harness assertions passed.
+
 ## [0.8.64] - 2026-07-30
 
 ### Added
