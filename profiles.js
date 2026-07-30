@@ -610,6 +610,17 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     total_pairs: cardPairs.length + historyPairs.length + groundedPairs.length + rawChatPairs.length,
     source_precedence: ['card_fact', 'persona_fact', 'approved_relationship_history', 'grounded_source_evidence', 'grounded_raw_chat_evidence'],
   };
+  const relationship_history_counts = {
+    descriptor_only_records: historyPairs.filter((pair) => !pair.relationship_type && pair.descriptors.length > 0).length,
+    typed_role_only_records: historyPairs.filter((pair) => pair.relationship_type && pair.descriptors.length === 0).length,
+    typed_role_with_descriptor_records: historyPairs.filter((pair) => pair.relationship_type && pair.descriptors.length > 0).length,
+    invalid_or_empty_records: Object.values(relationshipHistory ?? {}).length - historyPairs.length,
+    by_pair: Object.fromEntries(historyPairs.map((pair) => {
+      const key = `${pair.subject}|${pair.target}`;
+      const kind = !pair.relationship_type ? 'descriptor_only' : pair.descriptors.length ? 'typed_role_with_descriptors' : 'typed_role_only';
+      return [key, { record_kind: kind, descriptor_count: pair.descriptors.length, typed_role_present: Boolean(pair.relationship_type) }];
+    })),
+  };
   if (!historyPairs.length && !cardPairs.length && !groundedPairs.length && !rawChatPairs.length) {
     const lines = String(profiles.relationship_matrix ?? '').split('\n').filter(Boolean);
     const descriptor_terminal_outcomes = lines.flatMap((line) => String(line).split(':').slice(1).join(':').split(',').map((value) => value.trim()).filter(Boolean).map((descriptor) => ({
@@ -624,7 +635,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       accepted_descriptors: [], rejected_descriptors: [], preserved_authoritative_descriptors: [], final_saved_descriptors: [],
       field_terminal_outcome: 'dropped_no_supported_descriptors',
     }));
-    return { profiles: { ...profiles, relationship_matrix: '' }, rejected: lines, rejection_details: [], descriptor_traces: descriptor_terminal_outcomes, descriptor_terminal_outcomes, field_terminal_outcomes, relationship_evidence_coverage };
+    return { profiles: { ...profiles, relationship_matrix: '' }, rejected: lines, rejection_details: [], descriptor_traces: descriptor_terminal_outcomes, descriptor_terminal_outcomes, field_terminal_outcomes, relationship_evidence_coverage, relationship_history_counts };
   }
   const self = String(characterName ?? '').toLowerCase();
   const rejected = [];
@@ -661,7 +672,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
       fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType, generated_descriptors: [status], accepted_descriptors: [], rejected_descriptors: [status], preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
-      rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'invalid_relationship_label' });
+      rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_invalid_label', reason_code: 'invalid_relationship_label' });
       invalidLabel++;
       return '';
     }
@@ -739,13 +750,16 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     rejected.push(line);
     for (const token of descriptorTokens) {
       const placeholder = placeholderDescriptors.has(token);
-      const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: placeholder ? 'rejected_placeholder' : (pair ? 'rejected_conflict' : 'rejected_unsupported'), reason_code: placeholder ? 'placeholder_relationship_descriptor' : (pair ? 'unsupported_relationship_descriptor' : 'no_authoritative_relationship_pair'), normalization_rule: null };
+      // A descriptor that merely lacks support is not a conflict.  Reserve
+      // conflict outcomes for an explicit contradiction with authoritative
+      // evidence, so diagnostics do not overstate ordinary parser rejection.
+      const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: placeholder ? 'rejected_placeholder' : 'rejected_unsupported', reason_code: placeholder ? 'placeholder_relationship_descriptor' : (pair ? 'unsupported_relationship_descriptor' : 'no_authoritative_relationship_pair'), normalization_rule: null };
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
       if (placeholder) rejectedPlaceholder++;
     }
     fieldTerminalOutcomes.push({ relationship_target: entity, canonical_relationship_type: profileRelationshipType, generated_descriptors: descriptorTokens, accepted_descriptors: [], rejected_descriptors: descriptorTokens, preserved_authoritative_descriptors: pair?.descriptors ?? [], final_saved_descriptors: [], field_terminal_outcome: 'dropped_no_supported_descriptors' });
-    rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_conflict', reason_code: 'unsupported_relationship_descriptor' });
+    rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: status, authoritative_value: pair?.descriptors ?? [], disposition: 'dropped_unsupported', reason_code: 'unsupported_relationship_descriptor' });
     return '';
   }).filter(Boolean).join('\n');
   // A model may put a legally established relationship in the matrix but still
@@ -831,7 +845,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  }
  const profile_role_tokens_removed = relationship_matrix_structured.reduce((count, entry) => count + entry.role_tokens_removed_from_descriptors.length, 0);
  const profile_fields_migrated_for_role_separation = relationship_matrix_structured.filter((entry) => entry.role_tokens_removed_from_descriptors.length).length;
- const role_resolution_trace = relationship_matrix_structured.map((entry) => {
+ const roleResolutionTraceRecords = relationship_matrix_structured.map((entry) => {
    const target = String(entry.target ?? '').toLowerCase();
    const evidence = evidenceForTarget(target);
    const pairKey = evidence ? getRelationshipHistoryPair(self, target, roster).key : null;
@@ -908,14 +922,27 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      parent_role_expectation_status: parentRoleExpectationStatus,
      descriptor_direction_policy: 'directional_evidence_required',
      reverse_pair_evidence_checked: true,
+     reverse_pair_evidence_count: historyPairs.filter((pair) => pair.subject === target && pair.target === self && pair.descriptors.length > 0).length,
      symmetric_descriptor_rule_applied: false,
+     symmetric_rule_applied: false,
      descriptor_support_source: evidence?.descriptors?.length ? (evidence.relationship_type_source ?? 'relationship_history') : null,
      rejected_candidates: [],
      terminal_outcome: outcome?.field_terminal_outcome === 'not_generated_role_structurally_present' ? 'not_generated_role_structurally_present' : selectedRole ? 'generated_and_resolved' : 'generated_but_role_unresolved',
      persistence_stage_verified: Boolean(entry.relationship_type_source_id),
    };
  });
- return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, family_role_evidence_deduplication: familyEvidence.diagnostics, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
+ // Keep the diagnostic trace internally self-checking.  This does not alter
+ // relationship data; it makes a contradictory persistence report visible
+ // before it can be mistaken for a successful role migration.
+ const role_resolution_trace = roleResolutionTraceRecords.map((trace) => {
+   const failures = [];
+   if (trace.typed_role_fact_persisted && !trace.selected_source_id) failures.push('persisted_role_missing_source_id');
+   if (trace.typed_role_fact_reload_verified && !trace.typed_role_fact_persisted) failures.push('reload_verified_without_persisted_role');
+   if (['parent', 'mother', 'father'].includes(trace.selected_role) && !trace.parent_role_source_audit.source_sufficient_for_role) failures.push('parent_role_without_explicit_source');
+   if (trace.relationship_history_record_kind === 'descriptor_only' && trace.typed_role_fact_persisted) failures.push('typed_role_claimed_against_descriptor_only_record');
+   return { ...trace, trace_validation: { passed: failures.length === 0, failures } };
+ });
+ return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, family_role_evidence_deduplication: familyEvidence.diagnostics, relationship_history_counts, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
  const target = String(outcome.relationship_target ?? '').toLowerCase();
  const entry = structuredByTarget.get(target);
  const evidence = evidenceForTarget(target);
@@ -1260,6 +1287,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
         ...detail,
       })),
       profile_descriptor_traces: relationshipCheck.descriptor_traces ?? [],
+      relationship_history_counts: relationshipCheck.relationship_history_counts ?? null,
       profile_descriptor_terminal_outcomes: profileDescriptorTerminalOutcomes,
       profile_field_terminal_outcomes: profileFieldTerminalOutcomes.map((detail) => ({
         profile_identity: characterName,

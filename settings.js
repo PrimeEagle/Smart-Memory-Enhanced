@@ -3323,7 +3323,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], family_role_pipeline_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], family_role_pipeline_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       identity_review: { existing_at_start: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
@@ -3906,8 +3906,8 @@ export function bindSettingsUI(ctrl) {
                 profile_owner: trace.profile_owner,
                 relationship_target: trace.relationship_target,
                 role: trace.selected_role,
-                persisted: Boolean(trace.typed_fact_persisted),
-                reload_verified: Boolean(trace.typed_fact_reload_verified),
+                persisted: Boolean(trace.typed_role_fact_persisted),
+                reload_verified: Boolean(trace.typed_role_fact_reload_verified),
               })));
             runResult.profiles.family_role_persistence_summary.push(...(profiles.family_role_pipeline_trace ?? []).map((trace) => ({
               owner: trace.profile_owner,
@@ -3920,7 +3920,11 @@ export function bindSettingsUI(ctrl) {
               terminal_outcome: trace.terminal_outcome,
               unresolved_reason: trace.parent_role_source_audit?.unresolved_reason ?? null,
             })));
+            runResult.profiles.family_role_trace_validation_failures.push(...(profiles.family_role_pipeline_trace ?? [])
+              .filter((trace) => !trace.trace_validation?.passed)
+              .map((trace) => ({ owner: trace.profile_owner, target: trace.relationship_target, failures: trace.trace_validation.failures })));
             if (profiles.family_role_evidence_deduplication) runResult.profiles.family_role_evidence_deduplication.push(profiles.family_role_evidence_deduplication);
+            if (profiles.relationship_history_counts) runResult.profiles.relationship_history_counts.push({ profile_owner: String(name).toLowerCase(), ...profiles.relationship_history_counts });
             runResult.profiles.profiles_parsed++;
             runResult.profiles.profiles_saved++;
             runResult.profiles.sections_parsed++;
@@ -3947,9 +3951,23 @@ export function bindSettingsUI(ctrl) {
               const key = String(outcome.field_terminal_outcome ?? '');
               if (key in runResult.profiles.field_outcomes) runResult.profiles.field_outcomes[key]++;
             }
-            runResult.profiles.relationship_descriptor_rejections += Number(profiles.relationship_descriptor_rejections ?? 0);
-            runResult.profiles.relationship_field_rejections += (profiles.profile_field_terminal_outcomes ?? []).filter((entry) => entry.field_terminal_outcome === 'dropped_no_supported_descriptors').length;
-            runResult.profiles.relationship_dropped_field_descriptor_count += Number(profiles.relationship_dropped_field_descriptor_count ?? 0);
+            const placeholderTokens = new Set(['unknown', 'none', 'n/a', 'not specified', 'unsure', 'unclear']);
+            const fieldOutcomes = profiles.profile_field_terminal_outcomes ?? [];
+            const descriptorOutcomes = profiles.profile_descriptor_terminal_outcomes ?? [];
+            const quality = runResult.profiles.profile_relationship_quality_breakdown;
+            const droppedFields = fieldOutcomes.filter((entry) => entry.field_terminal_outcome === 'dropped_no_supported_descriptors');
+            const placeholderOnlyFields = droppedFields.filter((entry) => (entry.rejected_descriptors ?? entry.generated_descriptors ?? []).length > 0
+              && (entry.rejected_descriptors ?? entry.generated_descriptors ?? []).every((value) => placeholderTokens.has(String(value).trim().toLowerCase())));
+            quality.fields_dropped_placeholder_only += placeholderOnlyFields.length;
+            quality.fields_dropped_no_supported_descriptors += droppedFields.length - placeholderOnlyFields.length;
+            quality.fields_dropped_conflict += fieldOutcomes.filter((entry) => entry.field_terminal_outcome === 'dropped_conflict').length;
+            quality.descriptors_rejected_unsupported += descriptorOutcomes.filter((entry) => entry.disposition === 'rejected_unsupported').length;
+            quality.descriptors_rejected_placeholder += descriptorOutcomes.filter((entry) => entry.disposition === 'rejected_placeholder').length;
+            quality.roles_unresolved += fieldOutcomes.filter((entry) => !entry.canonical_relationship_type).length;
+            quality.canonical_roles_preserved += fieldOutcomes.filter((entry) => entry.canonical_relationship_type && (entry.field_terminal_outcome === 'dropped_no_supported_descriptors' || entry.field_terminal_outcome === 'not_generated_role_structurally_present')).length;
+            runResult.profiles.relationship_descriptor_rejections += descriptorOutcomes.filter((entry) => entry.disposition === 'rejected_unsupported').length;
+            runResult.profiles.relationship_field_rejections += droppedFields.length - placeholderOnlyFields.length;
+            runResult.profiles.relationship_dropped_field_descriptor_count += droppedFields.reduce((total, entry) => total + (entry.rejected_descriptors?.length ?? entry.generated_descriptors?.length ?? 0), 0);
             runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
@@ -4218,15 +4236,26 @@ export function bindSettingsUI(ctrl) {
         tier: 'identity',
         message: 'Final canonical reconciliation failed and was rolled back; validated tier data was preserved.',
       });
-      if (runResult.profiles.relationship_field_rejections > 0) qualityReasons.push({
-        code: 'profile_relationship_conflicts_dropped',
+      const profileQuality = runResult.profiles.profile_relationship_quality_breakdown;
+      if (profileQuality.fields_dropped_no_supported_descriptors > 0) qualityReasons.push({
+        code: 'profile_relationship_fields_unsupported',
         tier: 'profiles',
-        message: `${runResult.profiles.relationship_field_rejections} unsupported model-generated relationship field${runResult.profiles.relationship_field_rejections === 1 ? '' : 's'}${runResult.profiles.relationship_dropped_field_descriptor_count ? ` containing ${runResult.profiles.relationship_dropped_field_descriptor_count} descriptor${runResult.profiles.relationship_dropped_field_descriptor_count === 1 ? '' : 's'}` : ''} ${runResult.profiles.relationship_field_rejections === 1 ? 'was' : 'were'} dropped; canonical profile values were preserved.`,
+        message: `${profileQuality.fields_dropped_no_supported_descriptors} unsupported model-generated relationship field${profileQuality.fields_dropped_no_supported_descriptors === 1 ? '' : 's'} contained unsupported descriptors and ${profileQuality.fields_dropped_no_supported_descriptors === 1 ? 'was' : 'were'} dropped; canonical profile values were preserved.`,
       });
-      if (runResult.profiles.relationship_descriptor_rejections > 0) qualityReasons.push({
-        code: 'profile_relationship_descriptors_rejected',
+      if (profileQuality.fields_dropped_placeholder_only > 0) qualityReasons.push({
+        code: 'profile_relationship_placeholders_dropped',
         tier: 'profiles',
-        message: `${runResult.profiles.relationship_descriptor_rejections} unsupported model-generated relationship descriptor${runResult.profiles.relationship_descriptor_rejections === 1 ? '' : 's'} dropped; supported and canonical values were preserved.`,
+        message: `${profileQuality.fields_dropped_placeholder_only} placeholder-only relationship field${profileQuality.fields_dropped_placeholder_only === 1 ? ' was' : 's were'} ignored.`,
+      });
+      if (profileQuality.descriptors_rejected_unsupported > 0) qualityReasons.push({
+        code: 'profile_relationship_descriptors_unsupported',
+        tier: 'profiles',
+        message: `${profileQuality.descriptors_rejected_unsupported} unsupported model-generated relationship descriptor${profileQuality.descriptors_rejected_unsupported === 1 ? ' was' : 's were'} rejected; supported and canonical values were preserved.`,
+      });
+      if (runResult.profiles.family_role_trace_validation_failures.length > 0) qualityReasons.push({
+        code: 'family_role_trace_inconsistent',
+        tier: 'profiles',
+        message: `${runResult.profiles.family_role_trace_validation_failures.length} family-role trace${runResult.profiles.family_role_trace_validation_failures.length === 1 ? '' : 's'} reported inconsistent persistence evidence; no additional relationship role was inferred.`,
       });
       const identityFailures = runResult.identityResolution.logical_review_items?.length ?? 0;
       if (identityFailures > 0) qualityReasons.push({
