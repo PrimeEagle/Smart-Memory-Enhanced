@@ -66,6 +66,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { validateCitationSemanticSupport } from './grounding.js';
+import { extractBoundedFamilyCoreferenceCandidates } from './family-coreference-utils.js';
 import {
   CANONICAL_RELATIONSHIP_ROLE_TOKENS,
   deriveTypedRolePersistenceState,
@@ -319,7 +320,15 @@ export function extractCardRelationshipFacts(roster = []) {
  */
 export function persistExplicitFamilyRelationshipFacts(history = {}, roster = [], rawChatMessages = []) {
   const precedence = { grounded_raw_chat_evidence: 1, grounded_source_evidence: 2, approved_relationship_history: 3, persona_fact: 4, card_fact: 5, manual: 6 };
-  const result = { changed: false, persisted: [], rejected: [] };
+  const result = { changed: false, persisted: [], rejected: [], family_coreference_trace: [] };
+  const resolveParticipant = (name) => {
+    const resolved = resolveCanonicalCharacterName(name, roster);
+    if (resolved.status === 'resolved') return resolved;
+    const explicit = String(name ?? '').trim();
+    return /^[A-Z][\w'-]+(?:\s+[A-Z][\w'-]*)+$/.test(explicit)
+      ? { status: 'explicit_named_chat_participant', canonicalName: explicit }
+      : resolved;
+  };
   // Card facts and explicitly named chat facts share one durable pipeline.
   // Previously the card parser fed profile validation only as transient
   // evidence, so a correct twin fact disappeared before save/reload.
@@ -335,11 +344,22 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
       source_class: 'grounded_raw_chat_evidence',
       source_ids: [`chat-message:${fact.source_index}`],
     })),
+    ...extractBoundedFamilyCoreferenceCandidates(rawChatMessages)
+      .filter((fact) => fact.evidence_strength === 'direct')
+      .map((fact) => ({
+        ...fact,
+        source_class: 'grounded_raw_chat_evidence',
+        source_index: fact.source_message_indices[0],
+        source_ids: fact.source_message_indices.map((messageIndex) => `chat-message:${messageIndex}`),
+        creation_stage: 'bounded_family_coreference',
+      })),
   ];
   for (const candidate of candidates) {
-    const subject = resolveCanonicalCharacterName(candidate.subject, roster);
-    const target = resolveCanonicalCharacterName(candidate.target, roster);
-    if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) {
+    const subject = resolveParticipant(candidate.subject);
+    const target = resolveParticipant(candidate.target);
+    if (!['resolved', 'explicit_named_chat_participant'].includes(subject.status)
+      || !['resolved', 'explicit_named_chat_participant'].includes(target.status)
+      || subject.canonicalName === target.canonicalName) {
       result.rejected.push({ ...candidate, reason: 'participant_not_uniquely_resolved' });
       continue;
     }
@@ -380,7 +400,25 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
       history[pair.key] = next;
       result.changed = true;
     }
-    result.persisted.push({ subject: pair.subject.displayName, target: pair.target.displayName, relationship_type: next.relationship_type, source_class: candidateSource, source_message_index: candidate.source_index, persisted: changed });
+    const trace = {
+      source_message_indices: candidate.source_message_indices ?? [candidate.source_index].filter(Number.isInteger),
+      evidence_window_size: candidate.evidence_window_size ?? 1,
+      evidence_pattern: candidate.evidence_pattern ?? 'named_direct_statement',
+      speaker_resolved: Boolean(candidate.speaker_resolved),
+      addressee_resolved: Boolean(candidate.addressee_resolved),
+      possessor_resolved: Boolean(candidate.possessor_resolved),
+      named_candidates: [pair.subject.displayName, pair.target.displayName],
+      candidate_count: 2,
+      participant_set_stable: true,
+      scene_boundary_crossed: false,
+      ambiguity_detected: false,
+      evidence_strength: candidate.evidence_strength ?? 'direct',
+      corroborating_observation_count: 1,
+      promoted_to_typed_role: changed || Boolean(existingType),
+      rejection_reason: null,
+    };
+    result.family_coreference_trace.push(trace);
+    result.persisted.push({ subject: pair.subject.displayName, target: pair.target.displayName, relationship_type: next.relationship_type, source_class: candidateSource, source_message_index: candidate.source_index, persisted: changed, family_coreference_trace: trace });
   }
   return result;
 }
@@ -510,6 +548,10 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
   for (const candidate of extractExplicitNamedFamilyCandidates(messages)) {
     addFact(candidate.subject, candidate.target, candidate.relationship_type, candidate.source_index);
   }
+  for (const candidate of extractBoundedFamilyCoreferenceCandidates(messages)) {
+    if (candidate.evidence_strength !== 'direct') continue;
+    addFact(candidate.subject, candidate.target, candidate.relationship_type, candidate.source_message_indices?.[0]);
+  }
   for (const [arrayIndex, message] of (messages ?? []).entries()) {
     if (message?.is_system) continue;
     const text = String(message?.mes ?? '');
@@ -598,6 +640,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const cardPairs = extractCardRelationshipFacts(roster);
   const groundedPairs = extractGroundedRelationshipFacts(groundedRecords, roster);
   const rawChatPairs = extractRawChatRelationshipFacts(rawChatMessages, roster);
+  const boundedCoreferenceFacts = extractBoundedFamilyCoreferenceCandidates(rawChatMessages);
   // Keep the diagnostic compact and privacy-safe: counts and source classes
   // explain why a role may be accepted without exporting card text, memory
   // text, or raw chat.  This also makes an absence of usable evidence
@@ -867,6 +910,25 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const selectedRole = entry.canonical_relationship_type;
    const parentEvidence = evidencePairs.filter((pair) =>
      isTargetRelativePair(pair) && ['parent', 'mother', 'father'].includes(pair.relationship_type));
+   const coreferenceTrace = boundedCoreferenceFacts
+     .filter((fact) => String(fact.subject).toLowerCase() === target && String(fact.target).toLowerCase() === self)
+     .map((fact) => ({
+       source_message_indices: fact.source_message_indices,
+       evidence_window_size: fact.evidence_window_size,
+       evidence_pattern: fact.evidence_pattern,
+       speaker_resolved: fact.speaker_resolved,
+       addressee_resolved: fact.addressee_resolved,
+       possessor_resolved: fact.possessor_resolved,
+       named_candidates: [fact.subject, fact.target],
+       candidate_count: 2,
+       participant_set_stable: true,
+       scene_boundary_crossed: false,
+       ambiguity_detected: false,
+       evidence_strength: fact.evidence_strength,
+       corroborating_observation_count: 1,
+       promoted_to_typed_role: ['direct', 'strongly_corroborated', 'corroborated'].includes(fact.evidence_strength),
+       rejection_reason: null,
+     }));
    const parentRoleExpectationStatus = selectedRole === 'parent' ? 'resolved_generic_parent'
      : ['mother', 'father'].includes(selectedRole) ? 'resolved_gendered_parent'
        : ['mother', 'father', 'parent'].some((role) => parentEvidence.some((pair) => pair.relationship_type === role)) ? 'verified_from_source'
@@ -913,12 +975,25 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
        typed_relationship_history_count: countBySource('approved_relationship_history'),
        grounded_memory_count: countBySource('grounded_source_evidence'),
        raw_chat_count: countBySource('grounded_raw_chat_evidence'),
+       direct_named_fact_count: 0,
+       direct_address_count: coreferenceTrace.filter((fact) => fact.evidence_pattern === 'direct_address_kinship').length,
+       adjacent_introduction_count: coreferenceTrace.filter((fact) => fact.evidence_pattern === 'adjacent_family_introduction').length,
+       speaker_relative_reference_count: coreferenceTrace.filter((fact) => fact.evidence_pattern === 'speaker_relative_parent_reference').length,
+       narrative_apposition_count: coreferenceTrace.filter((fact) => fact.evidence_pattern === 'narrative_kinship_apposition').length,
+       first_person_parent_reference_count: coreferenceTrace.filter((fact) => fact.evidence_pattern === 'first_person_plural_parent_reference').length,
+       third_person_parent_reference_count: coreferenceTrace.filter((fact) => fact.evidence_pattern === 'third_person_plural_parent_reference').length,
+       unique_evidence_count: coreferenceTrace.length,
+       corroboration_score: coreferenceTrace.reduce((score, fact) => score + (fact.evidence_strength === 'direct' ? 3 : fact.evidence_strength === 'corroborated' ? 2 : 1), 0),
+       strongest_evidence_strength: coreferenceTrace.some((fact) => fact.evidence_strength === 'direct') ? 'direct' : coreferenceTrace[0]?.evidence_strength ?? null,
        generic_parent_fact_count: parentEvidence.filter((pair) => pair.relationship_type === 'parent').length,
        gendered_parent_fact_count: parentEvidence.filter((pair) => ['mother', 'father'].includes(pair.relationship_type)).length,
        unsafe_or_ambiguous_count: 0,
        strongest_available_source: parentEvidence[0]?.relationship_type_source ?? null,
        source_sufficient_for_role: Boolean(parentEvidence.length),
-       unresolved_reason: parentEvidence.length ? null : 'unresolved_no_explicit_evidence',
+       source_sufficient_for_generic_parent: parentEvidence.some((pair) => ['parent', 'mother', 'father'].includes(pair.relationship_type)),
+       source_sufficient_for_gendered_parent: parentEvidence.some((pair) => ['mother', 'father'].includes(pair.relationship_type)),
+       selected_role: selectedRole,
+       unresolved_reason: parentEvidence.length ? null : (coreferenceTrace.length ? 'unresolved_insufficient_corroboration' : 'unresolved_no_family_evidence'),
      },
      parent_role_expectation_status: parentRoleExpectationStatus,
      descriptor_direction_policy: 'directional_evidence_required',
@@ -927,6 +1002,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      symmetric_descriptor_rule_applied: false,
      symmetric_rule_applied: false,
      descriptor_support_source: evidence?.descriptors?.length ? (evidence.relationship_type_source ?? 'relationship_history') : null,
+     family_coreference_trace: coreferenceTrace,
      rejected_candidates: [],
      terminal_outcome: outcome?.field_terminal_outcome === 'not_generated_role_structurally_present' ? 'not_generated_role_structurally_present' : selectedRole ? 'generated_and_resolved' : 'generated_but_role_unresolved',
      persistence_stage_verified: Boolean(entry.relationship_type_source_id),
