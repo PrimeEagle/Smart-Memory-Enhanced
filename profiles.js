@@ -368,10 +368,20 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
     const existingType = String(existing.relationship_type ?? existing.canonical_relationship_type ?? '').trim().toLowerCase() || null;
     const existingSource = existing.relationship_type_source ?? 'approved_relationship_history';
     const candidateSource = candidate.source_class ?? 'grounded_raw_chat_evidence';
-    if (existingType && existingType !== candidate.relationship_type && (precedence[existingSource] ?? 3) > (precedence[candidateSource] ?? 1)) {
+    const upgradesGenericParent = existingType === 'parent' && ['mother', 'father'].includes(candidate.relationship_type);
+    const wouldDowngradeGenderedParent = ['mother', 'father'].includes(existingType) && candidate.relationship_type === 'parent';
+    if (existingType && existingType !== candidate.relationship_type
+      && !upgradesGenericParent && !wouldDowngradeGenderedParent
+      && (precedence[existingSource] ?? 3) > (precedence[candidateSource] ?? 1)) {
       result.rejected.push({ ...candidate, reason: 'higher_precedence_role_exists', existing_relationship_type: existingType });
       continue;
     }
+    if (existingType && existingType !== candidate.relationship_type
+      && !upgradesGenericParent && !wouldDowngradeGenderedParent) {
+      result.rejected.push({ ...candidate, reason: 'conflicting_family_role', existing_relationship_type: existingType });
+      continue;
+    }
+    const selectedType = upgradesGenericParent ? candidate.relationship_type : existingType ?? candidate.relationship_type;
     const next = {
       ...existing,
       subject_name: pair.subject.displayName,
@@ -380,9 +390,11 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
       target_canonical_card_id: pair.target.cardId,
       subject_canonical_persona_id: pair.subject.personaId,
       target_canonical_persona_id: pair.target.personaId,
-      relationship_type: existingType ?? candidate.relationship_type,
-      relationship_type_source: existingType ? existingSource : candidateSource,
-      relationship_type_confidence_class: existing.relationship_type_confidence_class ?? (candidateSource === 'card_fact' || candidateSource === 'persona_fact' ? 'authoritative' : 'grounded'),
+      relationship_type: selectedType,
+      relationship_type_source: upgradesGenericParent || !existingType ? candidateSource : existingSource,
+      relationship_type_confidence_class: upgradesGenericParent || !existingType
+        ? (candidateSource === 'card_fact' || candidateSource === 'persona_fact' ? 'authoritative' : 'grounded')
+        : (existing.relationship_type_confidence_class ?? 'grounded'),
       relationship_type_source_ids: [...new Set([...(existing.relationship_type_source_ids ?? []), ...(candidate.source_ids ?? [])])],
       relationship_type_direction: 'subject_to_target',
       source_message_indices: [...new Set([...(existing.source_message_indices ?? []), candidate.source_index].filter(Number.isInteger))].sort((a, b) => a - b),
