@@ -3439,11 +3439,11 @@ export function bindSettingsUI(ctrl) {
     };
     const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
     setCatchUpErrorCount(0);
-    if (historicalParticipantScope.mode === 'historical_group_authors') {
+    if (historicalParticipantScope.mode === 'historical_group_roster') {
       const disabledLabel = historicalParticipantScope.currently_disabled_included.length
         ? `; including ${historicalParticipantScope.currently_disabled_included.length} currently disabled historical participant${historicalParticipantScope.currently_disabled_included.length === 1 ? '' : 's'}`
         : '';
-      setStatusMessage(`Historical rebuild: ${catchUpCharacterNames.length} participant${catchUpCharacterNames.length === 1 ? '' : 's'} found from chat history${disabledLabel}.`);
+      setStatusMessage(`Historical rebuild: processing all ${catchUpCharacterNames.length} current group character${catchUpCharacterNames.length === 1 ? '' : 's'} with full chat history${disabledLabel}.`);
     }
     $('#sme_catch_up').hide();
     $('#sme_cancel_catch_up').show().prop('disabled', false);
@@ -3510,11 +3510,12 @@ export function bindSettingsUI(ctrl) {
 
         if (settings.longterm_enabled && !isFreshStart()) {
           for (const name of catchUpCharacterNames) {
-            // Filter chunk to this character's messages + user messages, matching
-            // the Phase 2 per-character window filtering used in automatic extraction.
-            const nameChunk = catchUpContext.groupId
-              ? chunk.filter((m) => m.is_user || m.name === name)
-              : chunk;
+            // Historical group rebuilds intentionally give every current card
+            // the full chunk. Older chats may predate the group split or carry
+            // incorrect speaker attribution, so author filtering would hide
+            // the only evidence for a card's earlier dialogue. The extraction
+            // prompt remains explicitly targeted to `name`.
+            const nameChunk = chunk;
             if (nameChunk.length === 0) continue;
             setStatusMessage(
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,

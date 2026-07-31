@@ -7,25 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.73] - 2026-07-31
+
+### Fixed
+
+- Historical group rebuilds now target every current group card with the full
+  chat history. This supports chats that began as a single multi-character
+  card, were later split into a group, or contain imperfect speaker labels.
+  Current enabled/disabled presence remains a live-extraction concern only.
+
 ## [0.8.72] - 2026-07-31
 
 ### Changed
 
-- Memorize Chat now derives its character-specific rebuild scope from the
-  authored message history of a group chat, rather than from whichever members
-  are enabled at the final message. A currently disabled member who spoke
-  earlier is included and receives its own Chat-Local data.
-- Members that never authored a historical message are not given empty
-  character-local stores. Live automatic extraction continues to use only the
-  currently enabled group roster.
-- Catch-up diagnostics now record the historical participant scope, including
-  disabled historical participants included and current members without
-  authored messages.
+- Memorize Chat began recording historical group participant scope, including
+  disabled members and authored-message coverage. This diagnostic groundwork
+  is refined by v0.8.73's all-current-card rebuild behavior.
 
 ### Tests
 
-- Added historical group-participant coverage for disabled speakers,
-  never-speaking members, and ambiguous aliases.
+- Added historical group-participant coverage.
 
 ## [0.8.70] - 2026-07-30
 

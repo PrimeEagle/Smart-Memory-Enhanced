@@ -12,7 +12,7 @@ const characters = [
   { avatar: 'side.png', name: 'Side Character' },
 ];
 
-test('historical rebuild includes disabled group members who authored messages', () => {
+test('historical rebuild includes every group card, including disabled members', () => {
   const scope = resolveHistoricalGroupParticipants({
     group,
     characters,
@@ -23,24 +23,24 @@ test('historical rebuild includes disabled group members who authored messages',
     ],
     fallbackCharacterName: 'Alissa Kawaguchi',
   });
-  assert.deepEqual(scope.participant_names, ['Alissa Kawaguchi', 'Paul Schmidt']);
-  assert.deepEqual(scope.currently_disabled_included, ['Paul Schmidt']);
-  assert.deepEqual(scope.current_members_without_authored_messages, ['Side Character']);
+  assert.deepEqual(scope.participant_names, ['Alissa Kawaguchi', 'Paul Schmidt', 'Side Character']);
+  assert.deepEqual(scope.currently_disabled_included, ['Paul Schmidt', 'Side Character']);
+  assert.deepEqual(scope.members_with_authored_messages, ['Alissa Kawaguchi', 'Paul Schmidt']);
 });
 
-test('historical rebuild does not create personal stores for members with no authored messages', () => {
+test('historical rebuild keeps the full group roster even when no member has authored messages', () => {
   const scope = resolveHistoricalGroupParticipants({ group, characters, messages: [{ is_user: true, name: 'User', mes: 'Only me.' }], fallbackCharacterName: 'Alissa Kawaguchi' });
-  assert.deepEqual(scope.participant_names, ['Alissa Kawaguchi']);
-  assert.equal(scope.fallback_used, true);
+  assert.deepEqual(scope.participant_names, ['Alissa Kawaguchi', 'Paul Schmidt', 'Side Character']);
+  assert.equal(scope.fallback_used, false);
 });
 
-test('ambiguous aliases do not cause a historical participant match', () => {
+test('ambiguous aliases are diagnostics-only and never suppress a group target', () => {
   const scope = resolveHistoricalGroupParticipants({
     group: { members: ['a.png', 'b.png'] },
     characters: [{ avatar: 'a.png', name: 'Taylor One', aliases: ['Taylor'] }, { avatar: 'b.png', name: 'Taylor Two', aliases: ['Taylor'] }],
     messages: [{ is_user: false, name: 'Taylor', mes: 'Ambiguous.' }],
     fallbackCharacterName: 'Taylor One',
   });
-  assert.deepEqual(scope.participant_names, ['Taylor One']);
-  assert.equal(scope.fallback_used, true);
+  assert.deepEqual(scope.participant_names, ['Taylor One', 'Taylor Two']);
+  assert.deepEqual(scope.members_with_authored_messages, []);
 });

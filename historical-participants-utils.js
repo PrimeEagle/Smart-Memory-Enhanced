@@ -1,8 +1,9 @@
 /**
- * Determines which current group character cards actually participated in a
- * historical chat. This is deliberately separate from the live enabled roster:
- * a disabled member may have authored older messages that still need a
- * chat-local rebuild.
+ * Determines the target cards for a historical group rebuild. This is
+ * deliberately separate from the live enabled roster: older chats may have
+ * begun as one multi-character card, may later have been split into cards, or
+ * may contain incorrect model speaker attribution. Every current group card
+ * therefore receives the full historical evidence during Memorize Chat.
  */
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
@@ -27,18 +28,18 @@ export function resolveHistoricalGroupParticipants({ group, characters = [], mes
     const name = aliases.get(normalize(message.name));
     if (name) authored.add(name);
   }
-  const participantNames = cards.filter(({ card }) => authored.has(card.name)).map(({ card }) => card.name);
+  const participantNames = cards.map(({ card }) => card.name);
   const fallbackUsed = participantNames.length === 0 && Boolean(fallbackCharacterName);
   const names = fallbackUsed ? [fallbackCharacterName] : participantNames;
   const disabledIncluded = cards
     .filter(({ avatar, card }) => disabled.has(avatar) && names.includes(card.name))
     .map(({ card }) => card.name);
   return {
-    mode: group ? 'historical_group_authors' : 'single_character',
+    mode: group ? 'historical_group_roster' : 'single_character',
     participant_names: names,
     currently_disabled_included: disabledIncluded,
-    current_members_without_authored_messages: cards
-      .filter(({ card }) => !names.includes(card.name))
+    members_with_authored_messages: cards
+      .filter(({ card }) => authored.has(card.name))
       .map(({ card }) => card.name),
     fallback_used: fallbackUsed,
   };
