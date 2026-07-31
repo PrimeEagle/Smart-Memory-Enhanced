@@ -1061,7 +1061,6 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         : 'completed_no_candidates';
       arcExtraction.terminal_reconciled = true;
     }
-    const roster = buildCanonicalCharacterRoster(getContext());
     const rawAdd = parsedAdd.map((arc) => {
       const sanitized = sanitizeSyntheticIdentityLabels(arc.content, roster);
       const participantResolution = validateArcParticipants(arc.character_participants, roster, {

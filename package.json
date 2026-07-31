@@ -1,12 +1,12 @@
 {
   "name": "smart-memory",
-  "version": "0.8.75",
+  "version": "0.8.76",
   "type": "module",
   "description": "Smart Memory - SillyTavern extension",
   "license": "AGPL-3.0-or-later",
   "scripts": {
-    "test": "node --check scenes.js && node --test tests/arc-summary-validation.test.js tests/canonical-entities.test.js tests/diagnostic-fixtures.test.js tests/family-coreference-utils.test.js tests/feature-workflows.test.js tests/grounding.test.js tests/historical-participants-utils.test.js tests/idempotence-utils.test.js tests/memory-utils.test.js tests/parsers.test.js tests/profile-role-utils.test.js tests/profile-self-target-utils.test.js tests/prompt-profile-utils.test.js tests/record-validation.test.js tests/scene-archive-utils.test.js tests/scene-gate-utils.test.js tests/scene-stability-utils.test.js && node test-harness.mjs",
-    "test:unit": "node --check scenes.js && node --test tests/arc-summary-validation.test.js tests/canonical-entities.test.js tests/diagnostic-fixtures.test.js tests/family-coreference-utils.test.js tests/feature-workflows.test.js tests/grounding.test.js tests/historical-participants-utils.test.js tests/idempotence-utils.test.js tests/memory-utils.test.js tests/parsers.test.js tests/profile-role-utils.test.js tests/profile-self-target-utils.test.js tests/prompt-profile-utils.test.js tests/record-validation.test.js tests/scene-archive-utils.test.js tests/scene-gate-utils.test.js tests/scene-stability-utils.test.js",
+    "test": "node --check scenes.js && node --check arcs.js && node --test tests/arc-summary-validation.test.js tests/canonical-entities.test.js tests/diagnostic-fixtures.test.js tests/family-coreference-utils.test.js tests/feature-workflows.test.js tests/grounding.test.js tests/historical-participants-utils.test.js tests/idempotence-utils.test.js tests/memory-utils.test.js tests/parsers.test.js tests/profile-role-utils.test.js tests/profile-self-target-utils.test.js tests/prompt-profile-utils.test.js tests/record-validation.test.js tests/scene-archive-utils.test.js tests/scene-gate-utils.test.js tests/scene-stability-utils.test.js && node test-harness.mjs",
+    "test:unit": "node --check scenes.js && node --check arcs.js && node --test tests/arc-summary-validation.test.js tests/canonical-entities.test.js tests/diagnostic-fixtures.test.js tests/family-coreference-utils.test.js tests/feature-workflows.test.js tests/grounding.test.js tests/historical-participants-utils.test.js tests/idempotence-utils.test.js tests/memory-utils.test.js tests/parsers.test.js tests/profile-role-utils.test.js tests/profile-self-target-utils.test.js tests/prompt-profile-utils.test.js tests/record-validation.test.js tests/scene-archive-utils.test.js tests/scene-gate-utils.test.js tests/scene-stability-utils.test.js",
     "test:live": "node test-harness.mjs --live",
     "test:parsers": "node test-harness.mjs --parsers"
   },

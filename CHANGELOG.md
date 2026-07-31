@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.76] - 2026-07-31
+
+### Fixed
+
+- Fixed a duplicate local roster declaration in full-history arc extraction
+  that prevented the extension from loading after v0.8.75.
+
+### Tests
+
+- The regular syntax gate now checks both `scenes.js` and `arcs.js` before the
+  unit and regression suites run.
+
 ## [0.8.75] - 2026-07-31
 
 ### Fixed
