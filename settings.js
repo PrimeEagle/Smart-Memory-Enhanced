@@ -146,6 +146,7 @@ import {
 import {
   deriveIdempotenceResult,
   durableStateHash,
+  summarizeDurableStateChanges,
   diagnosticMetadataHash,
   revisionMetadataHash,
   normalizeIdempotenceResult,
@@ -342,7 +343,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   };
   const firstPassRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
   const metadataAfterFirstPass = getContext().chatMetadata?.[META_KEY] ?? {};
-  const durableStateHashAfterFirstPass = durableStateHash(idempotenceDurableState(metadataAfterFirstPass));
+  const durableStateAfterFirstPass = idempotenceDurableState(metadataAfterFirstPass);
+  const durableStateHashAfterFirstPass = durableStateHash(durableStateAfterFirstPass);
   result.idempotence = {
     available: true,
     attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck),
@@ -375,6 +377,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const secondPass = await reconcileCanonicalEntities(characterName);
     const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
+    const durableStateAfterSecondPass = idempotenceDurableState(metadataAfterSecondPass);
     const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
     const staleReferenceSummary = Object.values((secondPass.integrity_audit?.stale_entity_references ?? []).reduce((groups, reference) => {
       const store = String(reference?.store ?? 'unknown');
@@ -389,7 +392,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: 2,
-      durable_state_hash_after_second_pass: durableStateHash(idempotenceDurableState(metadataAfterSecondPass)),
+      durable_state_hash_after_second_pass: durableStateHash(durableStateAfterSecondPass),
       diagnostic_metadata_hash_after: diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_hash_after: revisionMetadataHash(metadataAfterSecondPass),
       durable_state_changed: durableStateHashAfterFirstPass !== durableStateHash(metadataAfterSecondPass),
@@ -402,6 +405,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       unsafe_merge_candidates_after_second_pass: secondPass.integrity_audit?.unsafe_merge_candidates ?? 0,
       unresolved_integrity_failures_after_second_pass: secondPass.integrity_audit?.relationship_integrity_errors?.length ?? 0,
       stale_reference_summary: staleReferenceSummary,
+      durable_state_change_summary: summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass),
     };
     result.idempotence = deriveIdempotenceResult(baseIdempotence);
     result.idempotence.hash_comparison = {
@@ -5109,6 +5113,9 @@ export function bindSettingsUI(ctrl) {
       .show();
     if (unresolved && normalized.attention_reasons?.length) {
       panel.append($('<div>').append($('<strong>').text('Attention reason: ')).append(document.createTextNode(normalized.attention_reasons.join(', '))));
+    }
+    if (unresolved && normalized.durable_state_change_summary?.changed_top_level_stores?.length) {
+      panel.append($('<div>').append($('<strong>').text('Durable stores changed: ')).append(document.createTextNode(normalized.durable_state_change_summary.changed_top_level_stores.join(', '))));
     }
     if (staleSummary.length) {
       const list = $('<ul class="sme_idempotence_stale_summary">');

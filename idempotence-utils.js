@@ -64,6 +64,37 @@ export function durableStateHash(metadata = {}) {
   return fingerprint(JSON.stringify(canonicalizeDurableIdempotenceState(metadata)));
 }
 
+/**
+ * Privacy-safe structural diff for an idempotence run. It reports only
+ * durable store/path names and change kinds—never stored memory or model text.
+ */
+export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24) {
+  const left = canonicalizeDurableIdempotenceState(before);
+  const right = canonicalizeDurableIdempotenceState(after);
+  const paths = [];
+  const visit = (a, b, path = '') => {
+    if (paths.length >= limit || JSON.stringify(a) === JSON.stringify(b)) return;
+    const aObject = a && typeof a === 'object';
+    const bObject = b && typeof b === 'object';
+    if (!aObject || !bObject || Array.isArray(a) || Array.isArray(b)) {
+      paths.push({ path: path || 'root', change: a === undefined ? 'added' : b === undefined ? 'removed' : 'changed' });
+      return;
+    }
+    for (const key of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+      visit(a[key], b[key], path ? `${path}.${key}` : key);
+      if (paths.length >= limit) break;
+    }
+  };
+  visit(left, right);
+  return {
+    changed: paths.length > 0,
+    changed_top_level_stores: [...new Set(paths.map((entry) => entry.path.split('.')[0]))],
+    path_count: paths.length,
+    paths,
+    truncated: paths.length >= limit,
+  };
+}
+
 export function diagnosticMetadataHash(metadata = {}) {
   return fingerprint(JSON.stringify(metadata ?? {}));
 }

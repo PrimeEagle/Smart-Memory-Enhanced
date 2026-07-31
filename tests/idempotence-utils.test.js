@@ -4,6 +4,7 @@ import {
   canonicalizeDurableIdempotenceState,
   deriveIdempotenceResult,
   durableStateHash,
+  summarizeDurableStateChanges,
   normalizeIdempotenceResult,
 } from '../idempotence-utils.js';
 
@@ -101,4 +102,15 @@ test('durable canonicalizer includes per-character durable stores', () => {
     durableStateHash({ characters: { Taylor: { memories: [{ id: 'one' }] } } }),
     durableStateHash({ characters: { Taylor: { memories: [{ id: 'two' }] } } }),
   );
+});
+
+test('durable-state diagnostics expose changed store paths without content', () => {
+  const summary = summarizeDurableStateChanges(
+    { sessionMemories: [{ id: 'one', content: 'private before' }] },
+    { sessionMemories: [{ id: 'one', content: 'private after' }] },
+  );
+  assert.equal(summary.changed, true);
+  assert.deepEqual(summary.changed_top_level_stores, ['sessionMemories']);
+  assert.equal(JSON.stringify(summary).includes('private before'), false);
+  assert.equal(JSON.stringify(summary).includes('private after'), false);
 });
