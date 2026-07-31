@@ -734,7 +734,13 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /developer_manual_command/);
   assert.match(settings, /#sme_run_idempotence_check/);
   assert.match(settings, /developer_idempotence_check/);
-  assert.match(settings, /metadata_hash_stable/);
+  assert.match(settings, /deriveIdempotenceResult/);
+  assert.match(settings, /idempotence_result_lifecycle/);
+  assert.match(settings, /developer_idempotence_check = finalResult/);
+  assert.match(settings, /durable_state_hash_before/);
+  assert.match(read('idempotence-utils.js'), /metadata_only_changes/);
+  assert.match(read('profiles.js'), /profile_relationship_self_targets_rejected/);
+  assert.match(read('profiles.js'), /rejected_self_relationship_target/);
   assert.match(settings, /renderIdempotenceResult/);
   assert.match(settings, /Second pass:/);
   assert.match(settings, /stale_reference_summary/);
@@ -742,6 +748,9 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(html, /id="sme_run_idempotence_check"/);
   assert.match(html, /id="sme_idempotence_result"/);
   assert.match(html, /without provider calls/);
+  const idempotenceStart = settings.indexOf('async function runFinalIntegrityReconciliation');
+  const idempotenceRunner = settings.slice(idempotenceStart, settings.indexOf('return result;', idempotenceStart) + 'return result;'.length);
+  assert.doesNotMatch(idempotenceRunner, /generateMemoryExtract|detectSceneBreak|generateProfiles|extractAndStoreMemories/);
 });
 
 test('scene provider attempts use globally unique parented request lineage and reconciled counters', () => {

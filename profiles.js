@@ -77,6 +77,7 @@ import {
   relationshipTypeForProfileTarget,
   renderRelationshipMatrixLine,
 } from './profile-role-utils.js';
+import { isCanonicalProfileSelfTarget } from './profile-self-target-utils.js';
 
 export { CANONICAL_RELATIONSHIP_ROLE_TOKENS, migrateProfileRoleDescriptorSeparation };
 
@@ -710,9 +711,24 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // Drop this model formatting artifact before it can create a misleading
     // unresolved trace or quality warning.
     const resolvedEntity = resolveCanonicalCharacterName(match[1].trim(), roster);
-    if (entity === self || (resolvedEntity.status === 'resolved' && String(resolvedEntity.canonicalName).toLowerCase() === self)) {
+    const ownerResolution = resolveCanonicalCharacterName(characterName, roster);
+    if (isCanonicalProfileSelfTarget({
+      ownerCanonicalId: ownerResolution.canonicalId ?? self,
+      ownerCanonicalName: ownerResolution.canonicalName ?? characterName,
+      targetLabel: match[1].trim(),
+      targetResolution: resolvedEntity,
+    })) {
       rejected.push(line);
-      rejectionDetails.push({ section: 'relationship_matrix', field_path: match[1].trim(), owner_canonical_id: resolveCanonicalCharacterName(characterName, roster).canonicalId ?? self, target_canonical_id: resolvedEntity.canonicalId ?? self, disposition: 'rejected_self_relationship_target', reason_code: 'self_relationship_target', generated_field_present: true, persisted: false });
+      rejectionDetails.push({
+        owner_canonical_id: ownerResolution.canonicalId ?? self,
+        target_canonical_id: resolvedEntity.canonicalId ?? self,
+        normalized_target_label: entity,
+        rejection_stage: 'profile_relationship_validation',
+        reason: 'self_relationship_target',
+        terminal_outcome: 'rejected_self_relationship_target',
+        persisted: false,
+        included_in_family_aggregates: false,
+      });
       return '';
     }
     // Accept the complete valid confidence range, including 1.0. Leaving a
@@ -1410,6 +1426,11 @@ export async function generateProfiles(characterName, abortCheck = null, options
       })),
       profile_descriptor_traces: relationshipCheck.descriptor_traces ?? [],
       relationship_history_counts: relationshipCheck.relationship_history_counts ?? null,
+      // Informational only: malformed model self-pairs are removed before
+      // Relationship History, family traces, quality counters, or review work.
+      profile_relationship_self_targets_rejected: (relationshipCheck.rejection_details ?? [])
+        .filter((entry) => entry?.reason === 'self_relationship_target')
+        .map((entry) => ({ ...entry })),
       profile_descriptor_terminal_outcomes: profileDescriptorTerminalOutcomes,
       profile_field_terminal_outcomes: profileFieldTerminalOutcomes.map((detail) => ({
         profile_identity: characterName,

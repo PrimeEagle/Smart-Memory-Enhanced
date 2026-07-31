@@ -143,6 +143,13 @@ import {
   exportPromptOverrides,
   importPromptOverrides,
 } from './prompt-config.js';
+import {
+  deriveIdempotenceResult,
+  durableStateHash,
+  diagnosticMetadataHash,
+  revisionMetadataHash,
+  normalizeIdempotenceResult,
+} from './idempotence-utils.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -155,6 +162,20 @@ function diagnosticFingerprint(value) {
     hash = Math.imul(hash, 16777619);
   }
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Reconciliation touches both chat-local metadata and per-card durable
+ * stores. Keep configuration/telemetry out of this snapshot; the pure
+ * canonicalizer selects only reconciliation-relevant keys from it.
+ */
+function idempotenceDurableState(metadata = {}) {
+  const settings = extension_settings[MODULE_NAME] ?? {};
+  return {
+    ...(metadata && typeof metadata === 'object' ? metadata : {}),
+    characters: settings.characters ?? {},
+    entityRegistry: metadata?.entityRegistry ?? settings.entityRegistry ?? settings.entity_registry ?? [],
+  };
 }
 
 /** Canonical, input-only summary for future scene-run comparability. */
@@ -296,7 +317,10 @@ async function runStagedChatCleanup(context, mutate) {
  */
 async function runFinalIntegrityReconciliation(characterName, { forceIdempotenceCheck = false } = {}) {
   const startedAt = performance.now();
-  const firstPassInputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+  const metadataBefore = getContext().chatMetadata?.[META_KEY] ?? {};
+  const durableStateHashBefore = durableStateHash(idempotenceDurableState(metadataBefore));
+  const diagnosticMetadataHashBefore = diagnosticMetadataHash(metadataBefore);
+  const revisionMetadataHashBefore = revisionMetadataHash(metadataBefore);
   const reconciliation = await reconcileCanonicalEntities(characterName);
   const summaries = loadArcSummaries();
   let quarantinedSummaries = 0;
@@ -317,15 +341,21 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     duration_ms: Math.round(performance.now() - startedAt),
   };
   const firstPassRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
-  const firstPassOutputHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+  const metadataAfterFirstPass = getContext().chatMetadata?.[META_KEY] ?? {};
+  const durableStateHashAfterFirstPass = durableStateHash(idempotenceDurableState(metadataAfterFirstPass));
   result.idempotence = {
     available: true,
     attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck),
     enabled_by: forceIdempotenceCheck ? 'developer_manual_command' : extension_settings[MODULE_NAME]?.verbose_logging ? 'developer_verbose_logging' : null,
     not_attempted_reason: extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck ? null : 'developer_check_disabled',
     pass_count: 1,
-    first_pass_input_hash: firstPassInputHash,
-    first_pass_output_hash: firstPassOutputHash,
+    durable_state_hash_before: durableStateHashBefore,
+    durable_state_hash_after_first_pass: durableStateHashAfterFirstPass,
+    durable_state_hash_after_second_pass: null,
+    diagnostic_metadata_hash_before: diagnosticMetadataHashBefore,
+    diagnostic_metadata_hash_after: null,
+    revision_metadata_hash_before: revisionMetadataHashBefore,
+    revision_metadata_hash_after: null,
     first_pass_logical_mutations: firstPassRepairs.actual_logical_mutations_this_run ?? 0,
     first_pass_physical_mutations: firstPassRepairs.actual_physical_store_mutations_this_run ?? 0,
     second_pass_input_hash: null,
@@ -342,9 +372,9 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   // durable record changes, so the metadata hash is reported but is not by
   // itself a failed reconciliation.
   if (extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck) {
-    const inputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+    const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const secondPass = await reconcileCanonicalEntities(characterName);
-    const outputMetadataHash = diagnosticFingerprint(JSON.stringify(getContext().chatMetadata?.[META_KEY] ?? {}));
+    const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
     const staleReferenceSummary = Object.values((secondPass.integrity_audit?.stale_entity_references ?? []).reduce((groups, reference) => {
       const store = String(reference?.store ?? 'unknown');
@@ -356,33 +386,55 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       groups[key] = group;
       return groups;
     }, {})).sort((left, right) => right.count - left.count || left.store.localeCompare(right.store));
-    result.idempotence_check = {
-      idempotence_pass_number: 2,
-      input_metadata_hash: inputMetadataHash,
-      output_metadata_hash: outputMetadataHash,
-      logical_mutation_count: repairs.actual_logical_mutations_this_run ?? 0,
-      physical_mutation_count: repairs.actual_physical_store_mutations_this_run ?? 0,
-      recreated_link_count: repairs.recreated_after_prior_repair ?? 0,
-      stale_entity_references: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
-      stale_reference_summary: staleReferenceSummary,
-    };
-    result.idempotence = {
+    const baseIdempotence = {
       ...result.idempotence,
       pass_count: 2,
-      second_pass_input_hash: inputMetadataHash,
-      second_pass_output_hash: outputMetadataHash,
+      durable_state_hash_after_second_pass: durableStateHash(idempotenceDurableState(metadataAfterSecondPass)),
+      diagnostic_metadata_hash_after: diagnosticMetadataHash(metadataAfterSecondPass),
+      revision_metadata_hash_after: revisionMetadataHash(metadataAfterSecondPass),
+      durable_state_changed: durableStateHashAfterFirstPass !== durableStateHash(metadataAfterSecondPass),
+      diagnostic_metadata_changed: diagnosticMetadataHash(metadataBeforeSecondPass) !== diagnosticMetadataHash(metadataAfterSecondPass),
+      revision_metadata_changed: revisionMetadataHash(metadataBeforeSecondPass) !== revisionMetadataHash(metadataAfterSecondPass),
       second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
       second_pass_physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
       recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
       stale_references_after_second_pass: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
+      unsafe_merge_candidates_after_second_pass: secondPass.integrity_audit?.unsafe_merge_candidates ?? 0,
+      unresolved_integrity_failures_after_second_pass: secondPass.integrity_audit?.relationship_integrity_errors?.length ?? 0,
       stale_reference_summary: staleReferenceSummary,
-      metadata_hash_stable: inputMetadataHash === outputMetadataHash,
-      idempotent: (repairs.actual_logical_mutations_this_run ?? 0) === 0
-        && (repairs.actual_physical_store_mutations_this_run ?? 0) === 0
-        && (repairs.recreated_after_prior_repair ?? 0) === 0
-        && (secondPass.integrity_audit?.stale_entity_references?.length ?? 0) === 0,
     };
-    result.idempotence.developer_summary = `Idempotence check ${result.idempotence.idempotent ? 'passed' : 'needs attention'}: ${result.idempotence.first_pass_logical_mutations} first-pass mutations, ${result.idempotence.second_pass_logical_mutations} second-pass mutations, ${result.idempotence.stale_references_after_second_pass} stale references, ${result.idempotence.recreated_after_prior_repair} recreated links.`;
+    result.idempotence = deriveIdempotenceResult(baseIdempotence);
+    result.idempotence.hash_comparison = {
+      durable_before: result.idempotence.durable_state_hash_before,
+      durable_after_first_pass: result.idempotence.durable_state_hash_after_first_pass,
+      durable_after_second_pass: result.idempotence.durable_state_hash_after_second_pass,
+      durable_first_to_second_equal: result.idempotence.durable_state_hash_after_first_pass === result.idempotence.durable_state_hash_after_second_pass,
+      full_metadata_before: result.idempotence.diagnostic_metadata_hash_before,
+      full_metadata_after: result.idempotence.diagnostic_metadata_hash_after,
+      full_metadata_equal: result.idempotence.diagnostic_metadata_hash_before === result.idempotence.diagnostic_metadata_hash_after,
+      metadata_only_difference_detected: result.idempotence.metadata_only_changes,
+    };
+    result.idempotence.idempotence_audit_summary = {
+      first_pass_had_maintenance: result.idempotence.maintenance_needed_on_first_pass,
+      second_pass_stable: result.idempotence.stable_on_second_pass,
+      durable_state_unchanged_on_second_pass: !result.idempotence.durable_state_changed,
+      metadata_only_changes: result.idempotence.metadata_only_changes,
+      stale_references_remaining: result.idempotence.stale_references_after_second_pass,
+      recreated_links: result.idempotence.recreated_after_prior_repair,
+      idempotent: result.idempotence.idempotent,
+      attention_required: result.idempotence.attention_required,
+    };
+    result.idempotence_check = {
+      idempotence_pass_number: 2,
+      input_metadata_hash: result.idempotence.diagnostic_metadata_hash_before,
+      output_metadata_hash: result.idempotence.diagnostic_metadata_hash_after,
+      logical_mutation_count: result.idempotence.second_pass_logical_mutations,
+      physical_mutation_count: result.idempotence.second_pass_physical_mutations,
+      recreated_link_count: result.idempotence.recreated_after_prior_repair,
+      stale_entity_references: result.idempotence.stale_references_after_second_pass,
+      stale_reference_summary: staleReferenceSummary,
+    };
+    result.idempotence.developer_summary = result.idempotence.summary;
   }
   if (extension_settings[MODULE_NAME]?.verbose_logging) {
     console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
@@ -3325,7 +3377,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], family_role_pipeline_traces: [], family_coreference_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], family_role_pipeline_traces: [], family_coreference_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_relationship_self_targets_rejected: { count: 0, records: [] }, profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       identity_review: { existing_at_start: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
@@ -3898,6 +3950,9 @@ export function bindSettingsUI(ctrl) {
             updateProfilesUI(profiles);
           }
           if (profiles) {
+            const selfTargetRejections = profiles.profile_relationship_self_targets_rejected ?? [];
+            runResult.profiles.profile_relationship_self_targets_rejected.records.push(...selfTargetRejections);
+            runResult.profiles.profile_relationship_self_targets_rejected.count += selfTargetRejections.length;
             runResult.profiles.family_role_pipeline_traces.push(...(profiles.family_role_pipeline_trace ?? []).map((trace) => ({
               ...trace,
               profile_owner: trace.profile_owner ?? String(name).toLowerCase(),
@@ -5029,15 +5084,16 @@ export function bindSettingsUI(ctrl) {
       panel.hide().empty();
       return;
     }
-    const passed = result.idempotent === true;
-    const unresolved = result.idempotent === false;
-    const firstLogical = Number(result.first_pass_logical_mutations ?? 0);
-    const firstPhysical = Number(result.first_pass_physical_mutations ?? 0);
-    const secondLogical = Number(result.second_pass_logical_mutations ?? 0);
-    const secondPhysical = Number(result.second_pass_physical_mutations ?? 0);
-    const stale = Number(result.stale_references_after_second_pass ?? 0);
-    const recreated = Number(result.recreated_after_prior_repair ?? 0);
-    const staleSummary = Array.isArray(result.stale_reference_summary) ? result.stale_reference_summary : [];
+    const normalized = normalizeIdempotenceResult(result);
+    const passed = normalized.idempotent === true;
+    const unresolved = normalized.attention_required === true;
+    const firstLogical = Number(normalized.first_pass_logical_mutations ?? 0);
+    const firstPhysical = Number(normalized.first_pass_physical_mutations ?? 0);
+    const secondLogical = Number(normalized.second_pass_logical_mutations ?? 0);
+    const secondPhysical = Number(normalized.second_pass_physical_mutations ?? 0);
+    const stale = Number(normalized.stale_references_after_second_pass ?? 0);
+    const recreated = Number(normalized.recreated_after_prior_repair ?? 0);
+    const staleSummary = Array.isArray(normalized.stale_reference_summary) ? normalized.stale_reference_summary : [];
     panel
       .removeClass('sme_idempotence_pass sme_idempotence_attention')
       .addClass(passed ? 'sme_idempotence_pass' : 'sme_idempotence_attention')
@@ -5046,7 +5102,9 @@ export function bindSettingsUI(ctrl) {
       .append($('<div>').text(`First pass: ${firstLogical} logical and ${firstPhysical} physical changes.`))
       .append($('<div>').text(`Second pass: ${secondLogical} logical and ${secondPhysical} physical changes; ${stale} stale references; ${recreated} recreated links.`))
       .append($('<small>').text(passed
-        ? 'The second pass made no changes, so canonical reconciliation is stable for the current chat state.'
+        ? (normalized.maintenance_needed_on_first_pass
+          ? 'The first pass performed maintenance; the second pass made no durable changes, so canonical reconciliation is stable.'
+          : `The finalized state is stable.${normalized.metadata_only_changes ? ' Diagnostic metadata changed only.' : ''}`)
         : 'Do not start a long generation yet. Export diagnostics or inspect the current chat state before retrying.'))
       .show();
     if (staleSummary.length) {
@@ -5055,7 +5113,16 @@ export function bindSettingsUI(ctrl) {
       panel.append($('<div>').append($('<strong>').text('Remaining reference categories:')).append(list));
     }
   };
-  renderIdempotenceResult(getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check);
+  const restoredIdempotenceContext = getContext();
+  const restoredIdempotence = restoredIdempotenceContext.chatMetadata?.[META_KEY]?.developer_idempotence_check;
+  if (restoredIdempotence) {
+    const normalized = normalizeIdempotenceResult(restoredIdempotence);
+    if (JSON.stringify(normalized) !== JSON.stringify(restoredIdempotence) && restoredIdempotenceContext.chatMetadata) {
+      restoredIdempotenceContext.chatMetadata[META_KEY].developer_idempotence_check = normalized;
+      saveChatMetadata(restoredIdempotenceContext).catch((error) => smLog('[Smart Memory Enhanced] Could not persist migrated idempotence result:', error));
+    }
+    renderIdempotenceResult(normalized);
+  } else renderIdempotenceResult(null);
   $('#sme_run_idempotence_check').on('click', async function () {
     const button = $(this);
     const characterName = ctrl.getSelectedCharacterName();
@@ -5070,11 +5137,37 @@ export function bindSettingsUI(ctrl) {
       const context = getContext();
       if (context.chatMetadata) {
         context.chatMetadata[META_KEY] ??= {};
-        context.chatMetadata[META_KEY].developer_idempotence_check = reconciliation.idempotence;
+        const runnerResult = normalizeIdempotenceResult(reconciliation.idempotence);
+        context.chatMetadata[META_KEY].developer_idempotence_check = runnerResult;
+        await saveChatMetadata(context);
+        const persistedResult = normalizeIdempotenceResult(context.chatMetadata[META_KEY].developer_idempotence_check);
+        const restoredResult = normalizeIdempotenceResult(getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check ?? persistedResult);
+        // A manual check is local-only, but its result must be visible through
+        // the same diagnostics export consumers use after a catch-up run.
+        const exportReport = latestExportDiagnostics ?? context.chatMetadata[META_KEY].catch_up_diagnostics ?? null;
+        const exportedResult = normalizeIdempotenceResult(restoredResult);
+        const lifecycle = {
+          runner_result: runnerResult.idempotent,
+          persisted_result: persistedResult.idempotent,
+          restored_result: restoredResult.idempotent,
+          exported_result: exportedResult.idempotent,
+          renderer_result: exportedResult.idempotent,
+          values_consistent: [runnerResult.idempotent, persistedResult.idempotent, restoredResult.idempotent, exportedResult.idempotent].every((value) => value === runnerResult.idempotent),
+        };
+        const finalResult = normalizeIdempotenceResult({ ...exportedResult, idempotence_result_lifecycle: lifecycle });
+        context.chatMetadata[META_KEY].developer_idempotence_check = finalResult;
+        if (exportReport && typeof exportReport === 'object') {
+          exportReport.developer_idempotence_check = finalResult;
+          exportReport.finalReconciliation ??= {};
+          exportReport.finalReconciliation.idempotence = finalResult;
+          latestExportDiagnostics = exportReport;
+          context.chatMetadata[META_KEY].catch_up_diagnostics = exportReport;
+        }
         await saveChatMetadata(context);
       }
-      renderIdempotenceResult(reconciliation.idempotence);
-      const result = reconciliation.idempotence?.idempotent === true ? 'passed' : 'found remaining changes';
+      const savedResult = context.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? reconciliation.idempotence;
+      renderIdempotenceResult(savedResult);
+      const result = normalizeIdempotenceResult(savedResult).idempotent === true ? 'passed' : 'found remaining changes';
       setStatusMessage(`Developer idempotence check ${result}.`);
     } catch (error) {
       smLog('[Smart Memory Enhanced] Developer idempotence check failed:', error);
