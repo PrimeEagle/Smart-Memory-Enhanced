@@ -16,11 +16,72 @@ const editDistance = (left, right) => {
   return row[b.length];
 };
 const PERSONA_PLACEHOLDERS = new Set(['', 'unused', 'unknown', 'user', 'default', 'user-default', 'user-default.png', 'null', 'undefined']);
+const GENERIC_USER_AUTHOR_NAMES = new Set(['assistant', 'system', 'narrator', 'character', 'persona', 'you', 'me', 'player']);
 const COMMON_NOUN_ENTITY_FRAGMENTS = new Set(['sides', 'both sides', 'family sides', 'parents', 'people', 'others', 'someone', 'everyone']);
 const isUsablePersonaName = (value) => {
   const name = String(value ?? '').trim();
   return Boolean(name) && !PERSONA_PLACEHOLDERS.has(normalize(name)) && !/^(?:user[-_ ]?default|default[-_ ]?user)\.(?:png|jpg|jpeg|webp)$/i.test(name);
 };
+
+const isUsableImportedUserAuthor = (value, activeCharacterNames = new Set()) => {
+  const candidate = String(value ?? '').trim();
+  return isUsablePersonaName(candidate)
+    && !GENERIC_USER_AUTHOR_NAMES.has(normalize(candidate))
+    && !activeCharacterNames.has(normalize(candidate));
+};
+
+/**
+ * Recovers an imported-chat persona only when the user-authored transcript has
+ * a stable, unambiguous non-placeholder author label. This is deliberately a
+ * local observation: it never creates a character card or invents an NPC.
+ */
+export function recoverImportedPersonaFromAuthorship(context = {}) {
+  const activeCharacterNames = new Set([
+    context?.characterName,
+    context?.activeCharacter?.name,
+    ...(context?.characters ?? []).map((card) => card?.name),
+  ].map(normalize).filter(Boolean));
+  const counts = new Map();
+  let userMessages = 0;
+  for (const message of context?.chat ?? []) {
+    if (!message?.is_user) continue;
+    userMessages += 1;
+    const name = String(message?.name ?? '').trim();
+    if (!isUsableImportedUserAuthor(name, activeCharacterNames)) continue;
+    const key = normalize(name);
+    const existing = counts.get(key) ?? { name, count: 0 };
+    existing.count += 1;
+    counts.set(key, existing);
+  }
+  const ranked = [...counts.values()].sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+  const winner = ranked[0] ?? null;
+  const runnerUp = ranked[1] ?? null;
+  const validAuthorMessages = ranked.reduce((total, candidate) => total + candidate.count, 0);
+  const supportRatio = validAuthorMessages ? winner.count / validAuthorMessages : 0;
+  const unambiguous = Boolean(winner)
+    && winner.count >= 2
+    && supportRatio >= 0.8
+    && (!runnerUp || runnerUp.count < winner.count * 0.25);
+  const rejectionReason = !winner
+    ? 'no_usable_user_message_author'
+    : winner.count < 2
+      ? 'insufficient_author_evidence'
+      : supportRatio < 0.8 || (runnerUp && runnerUp.count >= winner.count * 0.25)
+        ? 'competing_user_message_authors'
+        : null;
+  return Object.freeze({
+    canonical_name: unambiguous ? winner.name : '',
+    stable_persona_id: unambiguous ? normalize(winner.name) : null,
+    source: unambiguous ? 'stable_user_message_author' : 'unavailable',
+    user_message_count: userMessages,
+    valid_author_message_count: validAuthorMessages,
+    candidate_count: ranked.length,
+    candidate_support_count: winner?.count ?? 0,
+    candidate_support_ratio: Number(supportRatio.toFixed(4)),
+    competing_author_count: runnerUp?.count ?? 0,
+    rejection_reason: rejectionReason,
+  });
+}
 
 // Catch-up work can run for hours.  SillyTavern's serialized chat header is
 // not authoritative for a persona (and imported chats commonly contain
@@ -30,27 +91,33 @@ const isUsablePersonaName = (value) => {
 let activeRuntimePersonaSnapshot = null;
 
 export function snapshotCanonicalRuntimeContext(context = {}) {
-  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && isUsablePersonaName(message?.name))?.name;
+  const importedPersonaRecovery = recoverImportedPersonaFromAuthorship(context);
   const explicitPersona = context?.activePersona ?? context?.persona ?? null;
+  const activeCharacterNames = new Set([
+    context?.characterName,
+    context?.activeCharacter?.name,
+    ...(context?.characters ?? []).map((card) => card?.name),
+  ].map(normalize).filter(Boolean));
   const personaCandidates = [
-    { name: explicitPersona?.name, record: explicitPersona, source: context?.activePersona ? 'active_persona' : 'persona' },
-    { name: context?.personaName, record: explicitPersona, source: 'persona_name' },
+    { name: explicitPersona?.name, record: explicitPersona, source: context?.activePersona ? 'active_persona' : 'persona', authoritative: true },
+    { name: context?.personaName, record: explicitPersona, source: 'persona_name', authoritative: true },
     { name: context?.userName, record: explicitPersona, source: 'resolved_user_name' },
+    { name: importedPersonaRecovery.canonical_name, record: explicitPersona, source: 'stable_user_message_author', authoritative: true },
     // SillyTavern uses name1 for the current user/persona and name2 for the
     // active character.  Keep name2 only as a legacy final fallback for older
     // context adapters that expose the user identity there.
     { name: context?.name1, record: explicitPersona, source: 'context_name1' },
-    { name: chatPersonaName, record: explicitPersona, source: 'user_message' },
     { name: context?.name2, record: explicitPersona, source: 'legacy_name2' },
   ];
-  const selected = personaCandidates.find((candidate) => isUsablePersonaName(candidate.name)) ?? null;
+  const selected = personaCandidates.find((candidate) => isUsablePersonaName(candidate.name)
+    && (candidate.authoritative || !activeCharacterNames.has(normalize(candidate.name)))) ?? null;
   const personaName = selected ? String(selected.name).trim() : '';
   const personaRecord = selected?.record
     ?? (Array.isArray(context?.personas) ? context.personas.find((entry) => normalize(entry?.name) === normalize(personaName)) : null)
     ?? {};
   const runtimePersonaKey = String(context?.activePersonaKey ?? context?.personaKey ?? '').trim();
   const providedPersonaId = String(personaRecord?.id ?? personaRecord?.avatar ?? runtimePersonaKey ?? context?.personaId ?? context?.persona_id ?? context?.user_avatar ?? '').trim();
-  const stablePersonaId = personaName ? (providedPersonaId || `name:${normalize(personaName)}`) : null;
+  const stablePersonaId = personaName ? (providedPersonaId || normalize(personaName)) : null;
   const aliases = [
     ...(Array.isArray(personaRecord?.aliases) ? personaRecord.aliases : []),
     personaRecord?.alias,
@@ -71,6 +138,7 @@ export function snapshotCanonicalRuntimeContext(context = {}) {
       source: 'live_runtime',
       runtime_source: selected?.source ?? 'unavailable',
       stable_id_source: providedPersonaId ? 'runtime_key' : personaName ? 'derived_name' : 'unavailable',
+      imported_persona_recovery: importedPersonaRecovery,
     }),
   });
 }
@@ -162,12 +230,13 @@ export function buildCanonicalRoster(context, scope = {}) {
   // The active user persona participates in the chat but is not represented
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
-  const chatPersonaName = [...(context?.chat ?? [])].reverse().find((message) => message?.is_user && String(message?.name ?? '').trim())?.name;
   // SillyTavern's name1 is normally the active character while name2 is the
   // user/persona. Prefer explicit persona state, userName/name2, and actual
   // user messages before using name1 as a legacy fallback.
-  const runtimePersona = scope.runtimeSnapshot?.active_persona ?? activeRuntimePersonaSnapshot?.active_persona ?? null;
-  const personaName = String(runtimePersona?.canonical_name ?? scope.personaName ?? scope.persona?.name ?? scope.activePersona?.name ?? context?.persona?.name ?? context?.userName ?? context?.name2 ?? chatPersonaName ?? context?.name1 ?? '').trim();
+  const runtimePersona = scope.runtimeSnapshot?.active_persona
+    ?? activeRuntimePersonaSnapshot?.active_persona
+    ?? snapshotCanonicalRuntimeContext(context).active_persona;
+  const personaName = String(runtimePersona?.canonical_name || scope.personaName || scope.persona?.name || scope.activePersona?.name || context?.persona?.name || '').trim();
   const personaRecord = scope.persona ?? scope.activePersona ?? context?.persona ?? (context?.personas ?? []).find((entry) => normalize(entry?.name) === normalize(personaName));
   const personaId = runtimePersona?.stable_persona_id ?? personaRecord?.id ?? personaRecord?.avatar ?? context?.personaId ?? context?.persona_id ?? normalize(personaName);
   const personaAliases = [

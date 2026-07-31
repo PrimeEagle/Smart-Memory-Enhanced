@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.74] - 2026-07-31
+
+### Fixed
+
+- Imported chats with placeholder headers can now recover a user persona only
+  from an unambiguous, stable user-message author. Competing authors and
+  character-card names remain unresolved rather than being guessed.
+- Historical scene detection now evaluates bounded semantic boundaries instead
+  of requesting one model decision per message. Diagnostics record prefilter
+  coverage and the boundary-before-message convention.
+- Historical arc extraction now covers the complete ordered chat in
+  provider-safe windows rather than silently inspecting only the trailing
+  context window.
+
+### Added
+
+- Added privacy-safe imported-persona recovery diagnostics, including evidence
+  counts, resolution method, and ambiguity outcome without raw chat content.
+
+### Tests
+
+- Full automated verification passed: 306 unit/integration tests and 48
+  regression-harness assertions. Live replay validation remains pending.
+
 ## [0.8.73] - 2026-07-31
 
 ### Fixed

@@ -62,6 +62,56 @@ import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalize
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
 
+/**
+ * Selects a bounded, high-recall set of semantic boundaries for the scene
+ * detector. A candidate represents the boundary immediately before message N,
+ * so the provider always receives both sides of the possible transition.
+ *
+ * The cadence guard prevents a long low-signal stretch from becoming
+ * invisible, while transition/heuristic signals avoid one request per turn.
+ */
+export function selectSceneBoundaryCandidates(messages = [], options = {}) {
+  const cadence = Math.max(4, Number(options.cadence ?? 12));
+  const candidates = [];
+  const signalCounts = { heuristic: 0, structural_transition: 0, cadence_checkpoint: 0 };
+  let sinceCandidate = cadence;
+  const structuralTransition = (text) => /(?:\b(?:later|meanwhile|afterward|the next (?:day|morning|evening)|hours? later|days? later|that night|the following)\b|\b(?:at|in|outside|inside|back at|arrived at|returned to|moved to|walked into|entered)\s+(?:the|a|an)\b|^\s*(?:\*\*|#{1,3}\s|\[\s*(?:scene|time|location))/im.test(String(text ?? ''));
+  for (let index = 1; index < messages.length; index++) {
+    const current = String(messages[index]?.mes ?? '');
+    const previous = String(messages[index - 1]?.mes ?? '');
+    const heuristic = detectSceneBreakHeuristic(current) || detectSceneBreakHeuristic(previous);
+    const structural = structuralTransition(current) || structuralTransition(previous);
+    const checkpoint = sinceCandidate >= cadence;
+    if (!heuristic && !structural && !checkpoint) {
+      sinceCandidate += 1;
+      continue;
+    }
+    const reasons = [];
+    if (heuristic) { reasons.push('heuristic'); signalCounts.heuristic += 1; }
+    if (structural) { reasons.push('structural_transition'); signalCounts.structural_transition += 1; }
+    if (checkpoint) { reasons.push('cadence_checkpoint'); signalCounts.cadence_checkpoint += 1; }
+    candidates.push({
+      candidate_index: index,
+      message: current,
+      previous_message: previous,
+      boundary_semantics: 'before_message',
+      selection_reasons: reasons,
+    });
+    sinceCandidate = 0;
+  }
+  return {
+    candidates,
+    diagnostics: {
+      total_message_boundaries: Math.max(0, messages.length - 1),
+      candidates_after_prefilter: candidates.length,
+      candidates_skipped_by_prefilter: Math.max(0, messages.length - 1 - candidates.length),
+      selection_signal_counts: signalCounts,
+      cadence,
+      boundary_semantics: 'before_message',
+    },
+  };
+}
+
 // ---- Deduplication ------------------------------------------------------
 
 /**

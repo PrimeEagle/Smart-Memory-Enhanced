@@ -22,6 +22,7 @@ import {
   reconcileCanonicalLedger,
   remapEntityIdInMemories,
   resolveEntityCandidate,
+  recoverImportedPersonaFromAuthorship,
   snapshotCanonicalRuntimeContext,
   setCanonicalRuntimeContextSnapshot,
   clearCanonicalRuntimeContextSnapshot,
@@ -327,6 +328,46 @@ test('entity resolver permits a grounded unknown NPC but never promotes an unsup
   });
   assert.equal(variant.status, 'rejected');
   assert.equal(variant.promotion.allowed, false);
+});
+
+test('imported persona recovery promotes one stable user-message author when headers are placeholders', () => {
+  const context = {
+    userName: 'unused', name1: 'Alissa Kawaguchi', name2: 'Alissa Kawaguchi',
+    characters: [{ id: 'alissa', name: 'Alissa Kawaguchi' }],
+    chat: [
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: false, name: 'Alissa Kawaguchi' },
+    ],
+  };
+  const recovery = recoverImportedPersonaFromAuthorship(context);
+  const snapshot = snapshotCanonicalRuntimeContext(context);
+  const recovered = buildCanonicalRoster(context, { runtimeSnapshot: snapshot });
+  assert.equal(recovery.canonical_name, 'Kyle Holland');
+  assert.equal(recovery.source, 'stable_user_message_author');
+  assert.equal(snapshot.active_persona.runtime_source, 'stable_user_message_author');
+  assert.equal(snapshot.active_persona.imported_persona_recovery.candidate_support_count, 3);
+  assert.equal(resolveCanonicalCharacterName('Kyle', recovered).canonicalName, 'Kyle Holland');
+});
+
+test('imported persona recovery refuses competing user-message authors and never guesses a card as persona', () => {
+  const context = {
+    userName: 'unused', name1: 'Alissa Kawaguchi', name2: 'Alissa Kawaguchi',
+    characters: [{ id: 'alissa', name: 'Alissa Kawaguchi' }],
+    chat: [
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Aaron Holland' },
+      { is_user: true, name: 'Aaron Holland' },
+      { is_user: true, name: 'Alissa Kawaguchi' },
+    ],
+  };
+  const recovery = recoverImportedPersonaFromAuthorship(context);
+  const snapshot = snapshotCanonicalRuntimeContext(context);
+  assert.equal(recovery.canonical_name, '');
+  assert.equal(recovery.rejection_reason, 'competing_user_message_authors');
+  assert.notEqual(snapshot.active_persona.canonical_name, 'Alissa Kawaguchi');
 });
 
 test('entity resolver applies a source-supported unique full-name typo correction only', () => {

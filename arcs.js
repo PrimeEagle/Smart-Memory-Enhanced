@@ -117,6 +117,39 @@ export function selectArcExtractionWindow(messages, tokenBudget) {
 }
 
 /**
+ * Partitions the complete eligible history into ordered, provider-safe windows.
+ * This is used by historical catch-up so early open threads are not silently
+ * discarded merely because a long chat exceeds one request's context budget.
+ */
+export function selectArcExtractionWindows(messages, tokenBudget) {
+  const eligible = (messages ?? []).filter((message) => message?.mes && !message.is_system);
+  const windows = [];
+  let current = [];
+  let tokenEstimate = 0;
+  for (const message of eligible) {
+    const tokens = estimateTokens(`${message.name}: ${message.mes}`);
+    if (current.length && tokenEstimate + tokens > tokenBudget) {
+      windows.push({ messages: current, tokenEstimate, tokenBudget });
+      current = [];
+      tokenEstimate = 0;
+    }
+    if (!current.length && tokens > tokenBudget) {
+      const headChars = Math.max(1000, Math.floor(tokenBudget * 3));
+      current.push({ ...message, mes: `${String(message.mes).slice(0, headChars)}\n[Remaining text omitted for context safety]` });
+      tokenEstimate = estimateTokens(`${current[0].name}: ${current[0].mes}`);
+      windows.push({ messages: current, tokenEstimate, tokenBudget, truncatedMessage: true });
+      current = [];
+      tokenEstimate = 0;
+      continue;
+    }
+    current.push(message);
+    tokenEstimate += tokens;
+  }
+  if (current.length) windows.push({ messages: current, tokenEstimate, tokenBudget });
+  return windows;
+}
+
+/**
  * Jaccard word-overlap similarity between two arc content strings.
  * Retained as the fallback when embeddings are unavailable.
  * @param {string} a
@@ -935,24 +968,29 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const inputBudget = Number(options.arcInputBudget) > 0
       ? Number(options.arcInputBudget)
       : Math.max(500, Math.floor(getMemoryInputBudget(responseLength) * 0.7));
-    const selected = selectArcExtractionWindow(messages, inputBudget);
+    const extractionWindows = options.fullCoverage
+      ? selectArcExtractionWindows(messages, inputBudget)
+      : [selectArcExtractionWindow(messages, inputBudget)];
+    const selected = extractionWindows.at(-1) ?? { messages: [], tokenEstimate: 0, tokenBudget: inputBudget, omittedMessages: 0, truncatedMessage: false };
     if (arcExtraction) {
       arcExtraction.input_token_budget = selected.tokenBudget;
       arcExtraction.input_token_estimate = selected.tokenEstimate;
       arcExtraction.input_messages = selected.messages.length;
-      arcExtraction.omitted_messages = selected.omittedMessages;
-      arcExtraction.truncated_message = selected.truncatedMessage;
+      arcExtraction.omitted_messages = options.fullCoverage ? 0 : selected.omittedMessages;
+      arcExtraction.truncated_message = extractionWindows.some((window) => window.truncatedMessage);
+      arcExtraction.coverage_mode = options.fullCoverage ? 'ordered_full_history_windows' : 'recent_window';
+      arcExtraction.windows_requested = extractionWindows.length;
       const source = settings.source ?? 'main';
       arcExtraction.request_diagnostics = {
         provider_type: source,
         model: source === 'ollama' ? (settings.ollama_model || null) : source === 'openai_compat' ? (settings.openai_compat_model || null) : null,
         endpoint_class: source === 'connection_profile' ? 'connection-profile' : source,
         task: 'initial-arc-extraction',
-        message_count: selected.messages.length,
-        role_sequence_summary: selected.messages.map((message) => message.is_user ? 'user' : 'assistant').join(','),
-        first_role: selected.messages[0]?.is_user ? 'user' : 'assistant',
-        last_role: selected.messages.at(-1)?.is_user ? 'user' : 'assistant',
-        approximate_prompt_tokens: selected.tokenEstimate,
+        message_count: extractionWindows.reduce((total, window) => total + window.messages.length, 0),
+        role_sequence_summary: extractionWindows.map((window) => window.messages.map((message) => message.is_user ? 'user' : 'assistant').join(',')).join('|'),
+        first_role: extractionWindows[0]?.messages[0]?.is_user ? 'user' : 'assistant',
+        last_role: extractionWindows.at(-1)?.messages.at(-1)?.is_user ? 'user' : 'assistant',
+        approximate_prompt_tokens: extractionWindows.reduce((total, window) => total + window.tokenEstimate, 0),
         output_budget: responseLength,
         context_limit: selected.tokenBudget,
         structured_output_mode: 'prompt-contract',
@@ -961,26 +999,36 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         adjacent_same_role_messages_merged: false,
         // Hash only the shape and token estimate; raw prompt/chat text is
         // deliberately excluded from exported diagnostics.
-        prompt_shape: `arc-extraction:${selected.messages.length}:${selected.tokenEstimate}`,
+        prompt_shape: `arc-extraction:${options.fullCoverage ? 'full-history' : 'recent'}:${extractionWindows.length}:${extractionWindows.map((window) => window.messages.length).join(',')}`,
       };
     }
-    const rawChatHistory = selected.messages
-      .map((m) => `${m.name}: ${m.mes}`)
-      .join('\n\n');
-
-    if (!rawChatHistory.trim()) return 0;
+    if (!extractionWindows.some((window) => window.messages.length)) return 0;
 
     const existing = loadArcs();
     // Only show active arcs to the model - resolved arcs are closed threads and
     // should be invisible to extraction to prevent duplicate resolutions.
     const activeExisting = existing.filter((a) => !a.resolved);
     const existingText = activeExisting.map((a) => `[arc] ${a.content}`).join('\n');
-    const chatHistory = canonicalizeNarrativeNames(rawChatHistory, buildCanonicalCharacterRoster(getContext())).text;
-
-    const response = await generateMemoryExtract(
-      applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))), PROMPT_TASKS.ARC_EXTRACTION, characterName),
-      { responseLength, task: 'initial-arc-extraction' },
-    );
+    const roster = buildCanonicalCharacterRoster(getContext());
+    const responses = [];
+    for (const window of extractionWindows) {
+      if (abortCheck?.()) return 0;
+      const rawChatHistory = window.messages.map((m) => `${m.name}: ${m.mes}`).join('\n\n');
+      const chatHistory = canonicalizeNarrativeNames(rawChatHistory, roster).text;
+      const response = await generateMemoryExtract(
+        applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(roster)), PROMPT_TASKS.ARC_EXTRACTION, characterName),
+        { responseLength, task: 'initial-arc-extraction' },
+      );
+      responses.push(response ?? '');
+    }
+    const response = responses.filter(Boolean).join('\n');
+    if (arcExtraction) arcExtraction.requests_completed = responses.length;
+    // Retain local full-history evidence only for deterministic validation;
+    // it is never exported as diagnostics or sent as one unbounded request.
+    const rawChatHistory = extractionWindows
+      .flatMap((window) => window.messages)
+      .map((message) => `${message.name}: ${message.mes}`)
+      .join('\n\n');
 
     smLog('[Smart Memory Enhanced] Arc extraction response:', response);
 
