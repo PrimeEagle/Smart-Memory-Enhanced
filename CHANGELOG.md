@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.75] - 2026-07-31
+
+### Fixed
+
+- Fixed a syntax error in the scene-boundary prefilter regular expression that
+  prevented Smart Memory Enhanced from loading in SillyTavern.
+
+### Tests
+
+- Added direct JavaScript syntax verification for `scenes.js`; full automated
+  verification passed with 306 unit/integration tests and 48 regression-harness
+  assertions.
+
 ## [0.8.74] - 2026-07-31
 
 ### Fixed

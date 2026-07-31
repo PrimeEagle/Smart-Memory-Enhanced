@@ -75,7 +75,7 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
   const candidates = [];
   const signalCounts = { heuristic: 0, structural_transition: 0, cadence_checkpoint: 0 };
   let sinceCandidate = cadence;
-  const structuralTransition = (text) => /(?:\b(?:later|meanwhile|afterward|the next (?:day|morning|evening)|hours? later|days? later|that night|the following)\b|\b(?:at|in|outside|inside|back at|arrived at|returned to|moved to|walked into|entered)\s+(?:the|a|an)\b|^\s*(?:\*\*|#{1,3}\s|\[\s*(?:scene|time|location))/im.test(String(text ?? ''));
+  const structuralTransition = (text) => /(?:\b(?:later|meanwhile|afterward|the next (?:day|morning|evening)|hours? later|days? later|that night|the following)\b|\b(?:at|in|outside|inside|back at|arrived at|returned to|moved to|walked into|entered)\s+(?:the|a|an)\b|^\s*(?:\*\*|#{1,3}\s|\[\s*(?:scene|time|location)))/im.test(String(text ?? ''));
   for (let index = 1; index < messages.length; index++) {
     const current = String(messages[index]?.mes ?? '');
     const previous = String(messages[index - 1]?.mes ?? '');
