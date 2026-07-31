@@ -151,6 +151,7 @@ import {
   revisionMetadataHash,
   normalizeIdempotenceResult,
 } from './idempotence-utils.js';
+import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -3294,15 +3295,16 @@ export function bindSettingsUI(ctrl) {
     // final reconciliation must never rediscover this from serialized chat
     // metadata after a long run.
     const canonicalRuntimeContext = snapshotCanonicalRuntimeContext(getLivePersonaCaptureContext(catchUpContext));
-    const catchUpCharacterNames = (() => {
-      if (!catchUpContext.groupId) return [characterName];
-      const group = catchUpContext.groups?.find((g) => g.id === catchUpContext.groupId);
-      if (!group) return [characterName];
-      return group.members
-        .filter((avatar) => !(group.disabled_members ?? []).includes(avatar))
-        .map((avatar) => catchUpContext.characters.find((c) => c.avatar === avatar)?.name)
-        .filter(Boolean);
-    })();
+    const catchUpGroup = catchUpContext.groupId
+      ? catchUpContext.groups?.find((group) => group.id === catchUpContext.groupId)
+      : null;
+    const historicalParticipantScope = resolveHistoricalGroupParticipants({
+      group: catchUpGroup,
+      characters: catchUpContext.characters ?? [],
+      messages: catchUpContext.chat ?? [],
+      fallbackCharacterName: characterName,
+    });
+    const catchUpCharacterNames = historicalParticipantScope.participant_names;
 
     // Warn if memories already exist for any character in the list.
     const existingMemories = catchUpCharacterNames.some(
@@ -3337,6 +3339,7 @@ export function bindSettingsUI(ctrl) {
     let catchUpErrorCount = 0;
     const runResult = {
       run_id: catchUpRunId,
+      historical_participant_scope: historicalParticipantScope,
       totalChunks: 0,
       completedChunks: 0,
       failedChunks: 0,
@@ -3436,6 +3439,12 @@ export function bindSettingsUI(ctrl) {
     };
     const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
     setCatchUpErrorCount(0);
+    if (historicalParticipantScope.mode === 'historical_group_authors') {
+      const disabledLabel = historicalParticipantScope.currently_disabled_included.length
+        ? `; including ${historicalParticipantScope.currently_disabled_included.length} currently disabled historical participant${historicalParticipantScope.currently_disabled_included.length === 1 ? '' : 's'}`
+        : '';
+      setStatusMessage(`Historical rebuild: ${catchUpCharacterNames.length} participant${catchUpCharacterNames.length === 1 ? '' : 's'} found from chat history${disabledLabel}.`);
+    }
     $('#sme_catch_up').hide();
     $('#sme_cancel_catch_up').show().prop('disabled', false);
 
