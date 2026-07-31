@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.70] - 2026-07-30
+
+### Changed
+
+- Consolidated the historical `codex/*` implementation branches into the
+  published repository record. All historical branch tips are already merged
+  into `main`; no additional functional merge was required.
+- Documented the completed live validation of the Developer Idempotence Check:
+  the persisted result now restores as stable with zero second-pass mutations,
+  zero stale references, zero recreated links, matching durable hashes, and a
+  consistent runner/persistence/restore lifecycle.
+
+## [0.8.69] - 2026-07-30
+
+### Fixed
+
+- Fixed a false idempotence failure where a stale compatibility
+  `durable_state_changed` boolean overrode equal durable-state hashes. Hashes
+  are now authoritative whenever both second-pass durable hashes are present.
+- The Developer Idempotence Check now displays its exact attention reason when
+  a genuine issue remains, so diagnostics export is not required to identify
+  the reason.
+
+### Tests
+
+- Added a regression test for the exact persisted false-negative result shape:
+  equal durable hashes with a stale change flag now restore as idempotent.
+
+## [0.8.68] - 2026-07-30
+
+### Added
+
+- Added a single idempotence-result derivation and normalization path for the
+  runner, persisted chat metadata, restored Developer panel, and diagnostics
+  export.
+- Added durable-state canonical hashing separate from diagnostic and revision
+  metadata hashes, plus compact lifecycle consistency data.
+- Added legacy full-hash false-negative migration and informational telemetry
+  for rejected generated profile self-target relationships.
+
 ## [0.8.67] - 2026-07-30
 
 ### Fixed
