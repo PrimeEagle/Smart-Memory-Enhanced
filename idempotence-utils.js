@@ -89,7 +89,14 @@ export function deriveIdempotenceResult(data = {}) {
   const recreated = numeric(data.recreated_after_prior_repair);
   const unsafe = numeric(data.unsafe_merge_candidates_after_second_pass);
   const unresolved = numeric(data.unresolved_integrity_failures_after_second_pass);
-  const durableChanged = data.durable_state_changed === true;
+  // Persisted legacy/compatibility fields have previously disagreed with the
+  // actual durable hashes.  Whenever both hashes are present, the hashes are
+  // authoritative; only fall back to the older boolean for incomplete data.
+  const durableHashesAvailable = typeof data.durable_state_hash_after_first_pass === 'string'
+    && typeof data.durable_state_hash_after_second_pass === 'string';
+  const durableChanged = durableHashesAvailable
+    ? data.durable_state_hash_after_first_pass !== data.durable_state_hash_after_second_pass
+    : data.durable_state_changed === true;
   const attentionReasons = [];
   if (data.check_failed) attentionReasons.push('check_failed');
   if (secondLogical) attentionReasons.push('second_pass_logical_mutations_nonzero');
@@ -112,6 +119,7 @@ export function deriveIdempotenceResult(data = {}) {
     recreated_after_prior_repair: recreated,
     unsafe_merge_candidates_after_second_pass: unsafe,
     unresolved_integrity_failures_after_second_pass: unresolved,
+    durable_state_changed: durableChanged,
     maintenance_needed_on_first_pass: firstPassMaintenance,
     stable_on_second_pass: idempotent,
     idempotent_final_state: idempotent,

@@ -5107,6 +5107,9 @@ export function bindSettingsUI(ctrl) {
           : `The finalized state is stable.${normalized.metadata_only_changes ? ' Diagnostic metadata changed only.' : ''}`)
         : 'Do not start a long generation yet. Export diagnostics or inspect the current chat state before retrying.'))
       .show();
+    if (unresolved && normalized.attention_reasons?.length) {
+      panel.append($('<div>').append($('<strong>').text('Attention reason: ')).append(document.createTextNode(normalized.attention_reasons.join(', '))));
+    }
     if (staleSummary.length) {
       const list = $('<ul class="sme_idempotence_stale_summary">');
       for (const item of staleSummary) list.append($('<li>').text(`${item.count} × ${item.store} → ${item.field} (${item.reason})`));

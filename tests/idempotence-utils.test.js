@@ -35,6 +35,21 @@ test('an unaccounted durable hash change requires attention', () => {
   assert.ok(result.attention_reasons.includes('durable_state_hash_changed_without_accounted_mutation'));
 });
 
+test('matching durable hashes override a stale compatibility change flag', () => {
+  const result = normalizeIdempotenceResult({
+    ...stableSecondPass,
+    idempotence_result_schema_version: 2,
+    idempotent: false,
+    durable_state_changed: true,
+    durable_state_hash_after_first_pass: 'same',
+    durable_state_hash_after_second_pass: 'same',
+  });
+  assert.equal(result.durable_state_changed, false);
+  assert.equal(result.idempotent, true);
+  assert.equal(result.attention_required, false);
+  assert.equal(result.idempotence_false_negative_detected, true);
+});
+
 test('first-pass maintenance followed by a stable second pass is idempotent', () => {
   const result = deriveIdempotenceResult({ ...stableSecondPass, first_pass_logical_mutations: 3, first_pass_physical_mutations: 5 });
   assert.equal(result.idempotent, true);
