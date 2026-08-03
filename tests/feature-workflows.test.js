@@ -1021,7 +1021,9 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   const html = read('settings.html');
   assert.match(html, /sme_preview_catch_up/);
   assert.match(html, /sme_export_diagnostics/);
-  assert.match(settings, /Dry run complete - no memories or entities were saved/);
+  assert.match(settings, /Preview complete - no memories or entities were saved/);
+  assert.match(settings, /Preview is a fast provider preflight/);
+  assert.match(settings, /const longterm = await extractAndStoreMemories/);
   assert.match(settings, /catch_up_diagnostics/);
   assert.match(settings, /source_start_index/);
   assert.match(settings, /parser_debris_cleanup/);

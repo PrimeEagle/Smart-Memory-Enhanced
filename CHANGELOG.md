@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.79] - 2026-08-02
+
+### Fixed
+
+- Preview Memorize Chat now uses a small, token-capped stable sample instead
+  of submitting the complete chat as one long-term and session request. This
+  prevents large imported chats from bypassing normal chunking and producing
+  connection-profile `400 Bad Request` failures.
+- Preview requests now run sequentially, avoiding avoidable contention with
+  serialized local providers.
+
+### Changed
+
+- The preview result now clearly distinguishes its non-destructive sample
+  findings from the estimated workload of a full Memorize Chat run.
+
+### Tests
+
+- Added preview workflow coverage for bounded preflight extraction. Full
+  automated verification passed with 310 unit/integration tests.
+
 ## [0.8.78] - 2026-08-02
 
 ### Fixed

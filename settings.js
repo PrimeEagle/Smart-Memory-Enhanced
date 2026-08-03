@@ -1618,8 +1618,29 @@ export function bindSettingsUI(ctrl) {
   $('#sme_scene_stability').toggle(Boolean(extension_settings[MODULE_NAME]?.verbose_logging)).on('click', showSceneStability);
   $('#sme_preview_catch_up').on('click', async () => {
     const context = getContext();
-    const messages = (context.chat ?? []).filter((message) => message.mes && !message.is_system);
-    const tokenEstimate = messages.reduce((total, message) => total + estimateTokens(`${message.name}: ${message.mes}`), 0);
+    const allMessages = (context.chat ?? []).filter((message) => message.mes && !message.is_system);
+    const fullTokenEstimate = allMessages.reduce((total, message) => total + estimateTokens(`${message.name}: ${message.mes}`), 0);
+    // Preview is a fast provider preflight, not a miniature full rebuild. The
+    // former implementation sent an entire imported chat as one request,
+    // which bypassed the normal catch-up chunker and caused provider 400s.
+    // Keep a representative recent, stable sample small enough to leave room
+    // for the extraction contract, existing-memory context, and response.
+    const previewTokenBudget = Math.max(500, Math.min(1400, Math.floor(getMaxContextSize(0) * 0.15)));
+    const stablePreview = ctrl.getStableExtractionWindowWithFallback(context.chat, 12)
+      .filter((message) => message.mes && !message.is_system);
+    const messages = [];
+    let previewTokens = 0;
+    for (const message of [...stablePreview].reverse()) {
+      const messageTokens = estimateTokens(`${message.name}: ${message.mes}`);
+      if (messages.length > 0 && previewTokens + messageTokens > previewTokenBudget) break;
+      messages.unshift(message);
+      previewTokens += messageTokens;
+    }
+    if (!messages.length && stablePreview.length) {
+      const onlyMessage = stablePreview.at(-1);
+      messages.push(onlyMessage);
+      previewTokens = estimateTokens(`${onlyMessage.name}: ${onlyMessage.mes}`);
+    }
     const chunkBudget = Math.max(500, Math.floor(getMaxContextSize(0) * 0.35));
     let scenes = 0;
     for (const message of messages) if (detectSceneBreakHeuristic(message.mes ?? '')) scenes++;
@@ -1627,21 +1648,30 @@ export function bindSettingsUI(ctrl) {
     if (!characterName) return toastr.warning('No character is active.', 'Smart Memory Enhanced');
     const button = $('#sme_preview_catch_up').prop('disabled', true);
     try {
-      const [longterm, session, arcs] = await Promise.all([
-        extractAndStoreMemories(characterName, messages, null, { dryRun: true }),
-        extractSessionMemories(messages, null, { dryRun: true }),
-        extractArcs(messages, characterName, null, { dryRun: true }),
-      ]);
+      // Run one request at a time. Many local connection profiles serialize
+      // inference, and concurrent preview calls make a provider failure less
+      // actionable while offering no meaningful speed benefit.
+      const longterm = await extractAndStoreMemories(characterName, messages, null, { dryRun: true });
+      const session = await extractSessionMemories(messages, null, { dryRun: true });
+      const arcs = await extractArcs(messages, characterName, null, { dryRun: true });
       const candidates = [...(longterm?.candidates ?? []), ...(session?.candidates ?? [])];
       const reviewCount = candidates.filter((candidate) => candidate.validation_status === 'needs_review').length;
       latestExportDiagnostics = {
         version: 1, created_at: Date.now(), dry_run: true,
-        workload: { messages: messages.length, token_estimate: tokenEstimate, chunk_estimate: Math.ceil(tokenEstimate / chunkBudget), heuristic_scene_candidates: scenes },
+        workload: {
+          total_usable_messages: allMessages.length,
+          total_token_estimate: fullTokenEstimate,
+          estimated_catch_up_chunks: Math.ceil(fullTokenEstimate / chunkBudget),
+          preview_messages: messages.length,
+          preview_token_estimate: previewTokens,
+          preview_token_budget: previewTokenBudget,
+          heuristic_scene_candidates_in_preview: scenes,
+        },
         longterm, session, arcs,
       };
       $('#sme_export_diagnostics').prop('disabled', false);
       await callGenericPopup(
-        `Dry run complete - no memories or entities were saved.\n\n${messages.length} usable messages\n~${tokenEstimate.toLocaleString()} chat tokens\n~${Math.ceil(tokenEstimate / chunkBudget)} extraction chunks\n${scenes} heuristic scene-break candidates\n${longterm?.candidates?.length ?? 0} long-term candidates\n${session?.candidates?.length ?? 0} session candidates\n${arcs?.candidates?.length ?? 0} story-arc candidates\n${arcs?.resolved_candidates ?? 0} potential arc resolutions\n${reviewCount} candidates need grounding review\n\nExport Diagnostics contains the candidate details.`,
+        `Preview complete - no memories or entities were saved.\n\nPreflight sample: ${messages.length} recent stable messages\n~${previewTokens.toLocaleString()} sample tokens\n${scenes} heuristic scene-break candidates in sample\n${longterm?.candidates?.length ?? 0} long-term candidates\n${session?.candidates?.length ?? 0} session candidates\n${arcs?.candidates?.length ?? 0} story-arc candidates\n${arcs?.resolved_candidates ?? 0} potential arc resolutions\n${reviewCount} candidates need grounding review\n\nFull chat estimate: ${allMessages.length} usable messages, ~${fullTokenEstimate.toLocaleString()} chat tokens, ~${Math.ceil(fullTokenEstimate / chunkBudget)} extraction chunks.\n\nExport Diagnostics contains the sample candidate details.`,
         POPUP_TYPE.DISPLAY,
       );
     } catch (error) {
