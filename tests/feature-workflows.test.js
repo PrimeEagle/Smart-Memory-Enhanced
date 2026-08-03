@@ -931,7 +931,8 @@ test('integrity round: primary provenance is prepared before verification and co
   const session = read('session.js');
   const validation = read('record-validation.js');
   assert.match(longterm, /applyDirectProvenance\(parsed, recentMessages, provenanceWindowStart/);
-  assert.match(session, /applyDirectProvenance\(citedCandidates, recentMessages, provenanceWindowStart/);
+  assert.match(session, /const sourceMessages = recentMessages\.filter\(\(m\) => m\.mes && !m\.is_system\)/);
+  assert.match(session, /applyDirectProvenance\(citedCandidates, sourceMessages, provenanceWindowStart/);
   assert.match(validation, /prepareRecordForValidation/);
   assert.match(validation, /flattenConsolidationProvenance/);
   assert.match(validation, /disposable extraction candidates/);
@@ -1082,6 +1083,24 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /injectEpistemicKnowledge\(characterName, characterName\)/);
   assert.match(freshStart, /injectCanon\(characterName\)/);
   assert.ok(freshStart.indexOf('injectRelationshipHistory(characterName)') < freshStart.indexOf('updateTokenDisplay()'));
+});
+
+test('long-chat scene prefilter requires transition evidence and never promotes cadence alone', () => {
+  const scenes = read('scenes.js');
+  assert.match(scenes, /Cadence is observability only/);
+  assert.match(scenes, /directContinuation/);
+  assert.match(scenes, /cadence_checkpoints_rejected_locally/);
+  assert.match(scenes, /Do not promote ordinary arrival\/departure verbs by themselves/);
+  assert.doesNotMatch(scenes, /const strong =[^\n]*arrived at/);
+});
+
+test('session provenance maps prompt-visible messages and repairs partial citation omissions', () => {
+  const session = read('session.js');
+  assert.match(session, /const sourceMessages = recentMessages\.filter/);
+  assert.match(session, /const uncitedCandidates = parsedCandidates\.filter/);
+  assert.match(session, /repairEligibleCount = uncitedCandidates\.length/);
+  assert.match(session, /applyDirectProvenance\(citedCandidates, sourceMessages/);
+  assert.match(session, /provenanceMapping/);
 });
 
 test('changing the Short-Term Memory budget reinjects the current summary before refreshing token usage', () => {

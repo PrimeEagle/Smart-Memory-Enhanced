@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.77] - 2026-08-02
+
+### Fixed
+
+- Imported-chat persona recovery now preserves the selected technical persona
+  identifier while safely expanding an abbreviated selected label from a single
+  stable user-message author. Final reconciliation reuses that run-scoped
+  identity snapshot instead of rebuilding from placeholder chat headers.
+- Session-memory citations now resolve against the exact filtered message list
+  presented to the provider. Partial citation omissions receive the bounded
+  repair pass rather than being skipped solely because other records in the
+  same response were cited correctly.
+- Reconciliation now normalizes model-created parenthetical identity labels
+  before matching durable entities, allowing safe merges such as a synthetic
+  qualifier appended to an otherwise valid person name.
+- Explicit named spouse, husband, wife, and ex-spouse statements in chat are
+  available for durable typed-role persistence. Neutral marriage wording is
+  stored as `spouse` without inferring gendered roles.
+- Historical scene prefiltering no longer treats cadence checkpoints or
+  ordinary movement verbs alone as scene boundaries, and it vetoes direct
+  question-and-answer continuations.
+- Arc diagnostics now count validated, deduplicated open arcs after they are
+  durably staged, rather than showing an inactive pipeline whenever no arc
+  happened to resolve during the run.
+
+### Added
+
+- Session diagnostics now include privacy-safe citation-map metadata: raw
+  chunk count, prompt-visible source count, index-map size, and mapping
+  strategy.
+
+### Tests
+
+- Added persona snapshot, spouse-role, partial-citation, and long-chat scene
+  prefilter regression coverage. Full automated verification passed with 310
+  unit/integration tests. Live long-chat replay validation remains pending.
+
 ## [0.8.76] - 2026-07-31
 
 ### Fixed

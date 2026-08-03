@@ -77,7 +77,10 @@ export function deriveTypedRolePersistenceState(records = []) {
  * responsible for roster resolution and for rejecting unsafe identities.
  */
 export function extractExplicitNamedFamilyCandidates(messages = []) {
-  const familyPattern = 'sister|brother|sibling|mother|father|parent|daughter|son';
+  // Persist spouse roles from fully named, directional source wording too.
+  // Otherwise an explicit marriage can be lost when a later profile model
+  // omits or paraphrases it.
+  const familyPattern = 'sister|brother|sibling|mother|father|parent|daughter|son|husband|wife|spouse|ex-husband|ex-wife';
   const namePattern = "[A-Z][\\w'-]*(?:\\s+[A-Z][\\w'-]*)*";
   const candidates = [];
   const add = (subject, target, relationshipType, sourceIndex) => {
@@ -117,6 +120,12 @@ export function extractExplicitNamedFamilyCandidates(messages = []) {
       const role = ({ sisters: 'sister', brothers: 'brother', siblings: 'sibling' })[match[3].toLowerCase()];
       add(match[1], match[2], role, sourceIndex);
       add(match[2], match[1], role, sourceIndex);
+    }
+    // Marriage wording is bidirectional, but does not establish a gendered
+    // husband/wife label. Store the neutral role instead of guessing.
+    for (const match of text.matchAll(new RegExp(`\\b(${namePattern}?)\\s+and\\s+(${namePattern}?)\\s+(?:are|were)\\s+(?:married|spouses)\\b`, 'gi'))) {
+      add(match[1], match[2], 'spouse', sourceIndex);
+      add(match[2], match[1], 'spouse', sourceIndex);
     }
     // Coordinated parents remain generic unless the source itself identifies
     // mother/father. Names and shared surnames are never treated as gender

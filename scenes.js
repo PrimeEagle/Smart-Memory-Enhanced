@@ -73,23 +73,49 @@ export { detectSceneBreakHeuristic };
 export function selectSceneBoundaryCandidates(messages = [], options = {}) {
   const cadence = Math.max(4, Number(options.cadence ?? 12));
   const candidates = [];
-  const signalCounts = { heuristic: 0, structural_transition: 0, cadence_checkpoint: 0 };
+  const signalCounts = { heuristic: 0, strong_transition: 0, moderate_transition: 0, weak_transition: 0, continuity_only: 0, cadence_only: 0 };
+  const cadenceAudit = { cadence_checkpoints_considered: 0, cadence_checkpoints_promoted: 0, cadence_checkpoints_rejected_locally: 0 };
   let sinceCandidate = cadence;
-  const structuralTransition = (text) => /(?:\b(?:later|meanwhile|afterward|the next (?:day|morning|evening)|hours? later|days? later|that night|the following)\b|\b(?:at|in|outside|inside|back at|arrived at|returned to|moved to|walked into|entered)\s+(?:the|a|an)\b|^\s*(?:\*\*|#{1,3}\s|\[\s*(?:scene|time|location)))/im.test(String(text ?? ''));
+  const signalFor = (text) => {
+    const value = String(text ?? '');
+    // Do not promote ordinary arrival/departure verbs by themselves. Long
+    // roleplay chats commonly contain hundreds of "entered", "returned", or
+    // "walked" phrases within one continuous interaction. A strong candidate
+    // needs an explicit time/channel boundary or a scene delimiter.
+    const strong = /(?:\b(?:the next (?:day|morning|evening)|later that night|the following (?:day|morning|evening)|a week later|months? later|the next week)\b|\b(?:woke up|fell asleep|ended (?:the )?(?:call|text exchange)|hung up|began (?:a )?(?:call|text exchange))\b|^\s*(?:---+|\*\*\s*(?:scene|time|location)\b|#{1,3}\s*(?:scene|time|location)\b))/im.test(value);
+    const time = /\b(?:later (?:that )?(?:morning|afternoon|evening|night)|the following|after (?:several )?(?:hours|days)|by (?:morning|nightfall)|at \d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i.test(value);
+    const travel = /\b(?:drove|walked|travel(?:ed|led)|flew|went back|headed (?:home|back|to)|moved (?:to|into)|entered)\b/i.test(value);
+    const channel = /\b(?:phone (?:rang|call)|text(?:ed|ing)?|message(?:d|ing)?|video call)\b/i.test(value);
+    const opening = /^(?:\s|\*){0,12}(?:meanwhile|elsewhere|hours later|later that|the next)/im.test(value);
+    return { strong, moderate: [time, travel, channel, opening].filter(Boolean).length, weak: /\b(?:then|now|after)\b/i.test(value) };
+  };
+  const directContinuation = (previous, current) => /(?:\?|\b(?:would|could|should|do you|are you|will you)\b)/i.test(previous)
+    && /^(?:\s|[“"'*-])*(?:yes|no|i |we |that |it |you |he |she |they )/i.test(current);
   for (let index = 1; index < messages.length; index++) {
     const current = String(messages[index]?.mes ?? '');
     const previous = String(messages[index - 1]?.mes ?? '');
     const heuristic = detectSceneBreakHeuristic(current) || detectSceneBreakHeuristic(previous);
-    const structural = structuralTransition(current) || structuralTransition(previous);
+    const currentSignals = signalFor(current);
+    const previousSignals = signalFor(previous);
+    const strong = currentSignals.strong || previousSignals.strong;
+    const moderate = currentSignals.moderate + previousSignals.moderate >= 2;
+    const continuation = directContinuation(previous, current);
     const checkpoint = sinceCandidate >= cadence;
-    if (!heuristic && !structural && !checkpoint) {
+    if (checkpoint) cadenceAudit.cadence_checkpoints_considered++;
+    // Cadence is observability only. It cannot turn ordinary conversation into
+    // a provider candidate without independently supported transition evidence.
+    if (checkpoint && !heuristic && !strong && !moderate) cadenceAudit.cadence_checkpoints_rejected_locally++;
+    if ((!heuristic && !strong && !moderate) || (continuation && !strong)) {
+      if (continuation) signalCounts.continuity_only++;
       sinceCandidate += 1;
       continue;
     }
     const reasons = [];
     if (heuristic) { reasons.push('heuristic'); signalCounts.heuristic += 1; }
-    if (structural) { reasons.push('structural_transition'); signalCounts.structural_transition += 1; }
-    if (checkpoint) { reasons.push('cadence_checkpoint'); signalCounts.cadence_checkpoint += 1; }
+    if (strong) { reasons.push('strong_transition'); signalCounts.strong_transition += 1; }
+    if (moderate) { reasons.push('moderate_transition'); signalCounts.moderate_transition += 1; }
+    if (currentSignals.weak || previousSignals.weak) signalCounts.weak_transition += 1;
+    if (checkpoint) cadenceAudit.cadence_checkpoints_promoted++;
     candidates.push({
       candidate_index: index,
       message: current,
@@ -106,6 +132,7 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
       candidates_after_prefilter: candidates.length,
       candidates_skipped_by_prefilter: Math.max(0, messages.length - 1 - candidates.length),
       selection_signal_counts: signalCounts,
+      ...cadenceAudit,
       cadence,
       boundary_semantics: 'before_message',
     },

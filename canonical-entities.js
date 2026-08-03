@@ -98,11 +98,17 @@ export function snapshotCanonicalRuntimeContext(context = {}) {
     context?.activeCharacter?.name,
     ...(context?.characters ?? []).map((card) => card?.name),
   ].map(normalize).filter(Boolean));
+  const explicitPersonaName = String(explicitPersona?.name ?? context?.personaName ?? '').trim();
+  const recoveredShortName = words(importedPersonaRecovery.canonical_name)[0] ?? '';
+  const recoveredAuthorShouldWin = Boolean(importedPersonaRecovery.canonical_name)
+    && (!isUsablePersonaName(explicitPersonaName)
+      || normalize(explicitPersonaName) === recoveredShortName);
   const personaCandidates = [
+    ...(recoveredAuthorShouldWin ? [{ name: importedPersonaRecovery.canonical_name, record: explicitPersona, source: 'stable_user_message_author', authoritative: true }] : []),
     { name: explicitPersona?.name, record: explicitPersona, source: context?.activePersona ? 'active_persona' : 'persona', authoritative: true },
     { name: context?.personaName, record: explicitPersona, source: 'persona_name', authoritative: true },
     { name: context?.userName, record: explicitPersona, source: 'resolved_user_name' },
-    { name: importedPersonaRecovery.canonical_name, record: explicitPersona, source: 'stable_user_message_author', authoritative: true },
+    ...(!recoveredAuthorShouldWin ? [{ name: importedPersonaRecovery.canonical_name, record: explicitPersona, source: 'stable_user_message_author', authoritative: true }] : []),
     // SillyTavern uses name1 for the current user/persona and name2 for the
     // active character.  Keep name2 only as a legacy final fallback for older
     // context adapters that expose the user identity there.

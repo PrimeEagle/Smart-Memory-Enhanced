@@ -115,7 +115,7 @@ import {
   mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, snapshotCanonicalRuntimeContext } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, snapshotCanonicalRuntimeContext } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -1571,7 +1571,11 @@ export async function reconcileCanonicalEntities(characterName) {
   // run-scoped snapshot that only exists while extraction is active. Without
   // this, valid raw persona IDs in Epistemic records are incorrectly reported
   // as unknown by the developer idempotence audit.
-  const runtimeSnapshot = snapshotCanonicalRuntimeContext(context);
+  // A long-running catch-up captured the selected technical persona key and
+  // stable transcript author at its start. Reuse that authoritative snapshot
+  // during final reconciliation instead of rebuilding from placeholder chat
+  // headers (for example `user-default.png`).
+  const runtimeSnapshot = getCanonicalRuntimeContextSnapshot() ?? snapshotCanonicalRuntimeContext(context);
   // Final reconciliation needs the active persona plus approved chat-local
   // characters in the same authoritative roster used for every store.
   const roster = buildCanonicalCharacterRoster(context, {

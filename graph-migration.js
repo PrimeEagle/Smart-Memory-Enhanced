@@ -601,12 +601,30 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
       });
       continue;
     }
-    const entityCandidate = resolveEntityCandidate(entity.name, roster, registry, {
+    let entityCandidate = resolveEntityCandidate(entity.name, roster, registry, {
       grounding_status: entity.source_message_indices?.length ? 'direct' : 'none',
       source_message_indices: entity.source_message_indices ?? [],
       source_record_ids: entity.source_record_ids ?? [],
       manual: Boolean(entity.manual_locked || entity.manual_confirmed),
     });
+    // A parenthetical name suffix such as "Sophie (Alissa Kawaguchi)" is
+    // model-created disambiguation, not a second durable identity. Normalize
+    // it before target lookup so an existing Sophie record can be merged, or
+    // the existing record can simply be repaired in place. Preserve manual
+    // names untouched because a user may intentionally use parentheses.
+    if (entityCandidate.synthetic_parenthetical && !entity.manual_locked && !entity.manual_confirmed) {
+      const syntheticName = entity.name;
+      entity.name = entityCandidate.synthetic_parenthetical.base_name;
+      entity.rejected_aliases = [...new Set([...(entity.rejected_aliases ?? []), syntheticName])];
+      entity.synthetic_identity_normalized_from = syntheticName;
+      report.synthetic_parenthetical_detected++;
+      report.changed = true;
+      entityCandidate = resolveEntityCandidate(entity.name, roster, registry.filter((entry) => entry.id !== entity.id), {
+        grounding_status: entity.source_message_indices?.length ? 'direct' : 'none',
+        source_message_indices: entity.source_message_indices ?? [],
+        source_record_ids: entity.source_record_ids ?? [],
+      });
+    }
     if (entityCandidate.matching_rule === 'common_noun_fragment' && !entity.manual_locked && !entity.manual_confirmed) {
       for (const memory of memories) {
         if (!Array.isArray(memory.entities) || !memory.entities.includes(entity.id)) continue;

@@ -320,8 +320,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
   };
 
   try {
-    const chatHistory = recentMessages
-      .filter((m) => m.mes && !m.is_system)
+    // Keep this exact filtered list for both prompt numbering and citation
+    // expansion.  The model sees indices for this list, not for the raw
+    // chunk (which can contain system/empty messages).
+    const sourceMessages = recentMessages.filter((m) => m.mes && !m.is_system);
+    const chatHistory = sourceMessages
       .map((m, index) => `[${index}] ${m.name}: ${m.mes}`)
       .join('\n\n');
 
@@ -368,10 +371,25 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const provenanceContext = getContext();
     const provenanceChatLength = provenanceContext.chat?.length ?? 1;
     const provenanceWindowEnd = Math.max(0, provenanceChatLength - 2);
-    const provenanceWindowStart = Math.max(0, provenanceWindowEnd - recentMessages.length + 1);
-    const provenanceOriginalIndices = recentMessages.map((message) => message.__sme_original_index).every(Number.isInteger)
-      ? recentMessages.map((message) => message.__sme_original_index)
-      : null;
+    const provenanceWindowStart = Math.max(0, provenanceWindowEnd - sourceMessages.length + 1);
+    const chatIndexByMessage = new Map((provenanceContext.chat ?? []).map((message, index) => [message, index]));
+    const provenanceOriginalIndices = sourceMessages.map((message, index) => {
+      if (Number.isInteger(message.__sme_original_index)) return message.__sme_original_index;
+      const chatIndex = chatIndexByMessage.get(message);
+      return Number.isInteger(chatIndex) ? chatIndex : provenanceWindowStart + index;
+    });
+    if (sessionDiagnostics) {
+      // Bounded mapping metadata makes citation failures explainable without
+      // exporting message text or model output.
+      sessionDiagnostics.provenanceMapping = {
+        prompt_source_message_count: sourceMessages.length,
+        raw_chunk_message_count: recentMessages.length,
+        mapped_source_indices: provenanceOriginalIndices.length,
+        mapping_strategy: sourceMessages.every((message) => Number.isInteger(message.__sme_original_index))
+          ? 'preserved_original_indices'
+          : 'context_identity_or_window_fallback',
+      };
+    }
     const parsedCandidates = parseSessionOutput(response);
     const initiallyParsedCount = parsedCandidates.length;
     parsedCandidateCount = initiallyParsedCount;
@@ -390,15 +408,20 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let repairRecovered = 0;
     let repairEligibleCount = 0;
     let repairTerminalRecorded = false;
-    if (parsedCandidates.length > 0 && parsedCandidates.every((candidate) => !(candidate.source_message_indices ?? []).length)) {
-      repairEligibleCount = initiallyParsedCount;
+    const uncitedCandidates = parsedCandidates.filter((candidate) => !(candidate.source_message_indices ?? []).length);
+    if (uncitedCandidates.length > 0) {
+      repairEligibleCount = uncitedCandidates.length;
       if (sessionDiagnostics) {
         sessionDiagnostics.repairEligible = (sessionDiagnostics.repairEligible ?? 0) + repairEligibleCount;
         // Attempts are candidates submitted to the one repair request, not
         // merely the count of provider calls.
         sessionDiagnostics.repairAttempts = (sessionDiagnostics.repairAttempts ?? 0) + repairEligibleCount;
       }
-      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return the SAME items only: preserve each type, importance, expiration, entity tags, and factual content. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${response}\n\nOutput only corrected bracketed memory lines.`;
+      const uncitedLines = uncitedCandidates.map((candidate) => {
+        const entities = (candidate._raw_entity_names ?? []).length ? `:entity=${candidate._raw_entity_names.join(',')}` : '';
+        return `[${candidate.type}:${candidate.importance}:${candidate.expiration}${entities}] ${candidate.content}`;
+      }).join('\n');
+      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return the SAME items only: preserve each type, importance, expiration, entity tags, and factual content. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
       try {
         const repairedResponse = await generateMemoryExtract(applyPromptOverride(repairPrompt, PROMPT_TASKS.SESSION_EXTRACTION, characterName), {
           responseLength: settings.session_response_length ?? 500,
@@ -408,7 +431,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           if (sessionDiagnostics) sessionDiagnostics.repairReturnedNone = (sessionDiagnostics.repairReturnedNone ?? 0) + repairEligibleCount;
           repairTerminalRecorded = true;
         } else {
-          const allowed = new Set(parsedCandidates.map((candidate) => `${candidate.type}|${candidate.content}`));
+          const allowed = new Set(uncitedCandidates.map((candidate) => `${candidate.type}|${candidate.content}`));
           const parsedRepair = parseSessionOutput(repairedResponse);
           if (!parsedRepair.length && sessionDiagnostics) {
             sessionDiagnostics.repairMalformed = (sessionDiagnostics.repairMalformed ?? 0) + repairEligibleCount;
@@ -419,7 +442,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           );
           if (repaired.length) {
             for (const candidate of repaired) candidate.__sme_citation_repair = true;
-            parsedCandidates.splice(0, parsedCandidates.length, ...repaired);
+            const alreadyCited = parsedCandidates.filter((candidate) => (candidate.source_message_indices ?? []).length > 0);
+            parsedCandidates.splice(0, parsedCandidates.length, ...alreadyCited, ...repaired);
             repairRecovered = repaired.length;
           }
         }
@@ -446,7 +470,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // Uncited candidates are intentionally not stored. The repair pass above
     // is their only chance to supply the already-required evidence.
     recordDisposition('missing_provenance', missingProvenance);
-    applyDirectProvenance(citedCandidates, recentMessages, provenanceWindowStart, provenanceOriginalIndices);
+    applyDirectProvenance(citedCandidates, sourceMessages, provenanceWindowStart, provenanceOriginalIndices);
 
     const {
       verified: incoming,

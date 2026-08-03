@@ -1322,6 +1322,26 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       });
     const merged = [...finalActive, ...finalNew].slice(-max);
 
+    // Window extraction identifies candidates; this is the first point at
+    // which they have passed canonicalization, validation, and cross-window
+    // deduplication and therefore become durable story-level arcs. Earlier
+    // diagnostics only counted resolved-arc summary generation, leaving an
+    // all-open long chat deceptively reported as an inactive pipeline.
+    if (arcPipeline) {
+      arcPipeline.generationAttempted = (arcPipeline.generationAttempted ?? 0) + finalNew.length;
+      arcPipeline.generated = (arcPipeline.generated ?? 0) + finalNew.length;
+      arcPipeline.persisted = (arcPipeline.persisted ?? 0) + finalNew.length;
+    }
+    if (options.arcResolutionStats) {
+      options.arcResolutionStats.still_open = (options.arcResolutionStats.still_open ?? 0) + finalNew.length;
+    }
+    if (arcExtraction) {
+      arcExtraction.consolidated_candidates = dedupedAdd.length;
+      arcExtraction.persisted_final_arcs = finalNew.length;
+      arcExtraction.duplicate_candidates_merged = Math.max(0, rawAdd.length - dedupedAdd.length);
+      arcExtraction.reduction_ratio = rawAdd.length ? Number((1 - (dedupedAdd.length / rawAdd.length)).toFixed(4)) : 0;
+    }
+
     if (abortCheck?.()) return 0;
     await saveArcs([...merged, ...finalResolved]);
     if (characterName) {

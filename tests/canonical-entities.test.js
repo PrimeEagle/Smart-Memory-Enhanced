@@ -351,6 +351,24 @@ test('imported persona recovery promotes one stable user-message author when hea
   assert.equal(resolveCanonicalCharacterName('Kyle', recovered).canonicalName, 'Kyle Holland');
 });
 
+test('stable imported author expands a selected short persona label while retaining its technical ID', () => {
+  const snapshot = snapshotCanonicalRuntimeContext({
+    activePersona: { id: 'user-default.png', avatar: 'user-default.png', name: 'Kyle' },
+    user_avatar: 'user-default.png',
+    chat: [
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Kyle Holland' },
+    ],
+  });
+  const roster = buildCanonicalRoster({ characters: [] }, { runtimeSnapshot: snapshot });
+  assert.equal(snapshot.active_persona.canonical_name, 'Kyle Holland');
+  assert.equal(snapshot.active_persona.stable_persona_id, 'user-default.png');
+  assert.equal(snapshot.active_persona.runtime_source, 'stable_user_message_author');
+  assert.equal(roster.characters[0].canonical_id, 'persona:user-default.png');
+  assert.equal(resolveCanonicalCharacterName('Kyle', roster).canonicalId, 'persona:user-default.png');
+});
+
 test('imported persona recovery refuses competing user-message authors and never guesses a card as persona', () => {
   const context = {
     userName: 'unused', name1: 'Alissa Kawaguchi', name2: 'Alissa Kawaguchi',

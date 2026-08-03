@@ -114,3 +114,15 @@ test('named family parser retains explicit coordinated siblings and generic pare
     { subject: 'Richard Covington', target: 'Kyler Covington', relationship_type: 'parent', source_index: 1 },
   ]);
 });
+
+test('named relationship parser persists explicit spouse roles without inferring gender', () => {
+  const facts = extractExplicitNamedFamilyCandidates([
+    { mes: 'Morgan Lee is Alex Rivera\'s wife.', __sme_original_index: 41 },
+    { mes: 'Jamie Park and Casey Park are married.', __sme_original_index: 42 },
+  ]);
+  assert.deepEqual(facts, [
+    { subject: 'Morgan Lee', target: 'Alex Rivera', relationship_type: 'wife', source_index: 41 },
+    { subject: 'Jamie Park', target: 'Casey Park', relationship_type: 'spouse', source_index: 42 },
+    { subject: 'Casey Park', target: 'Jamie Park', relationship_type: 'spouse', source_index: 42 },
+  ]);
+});
