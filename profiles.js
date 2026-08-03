@@ -322,6 +322,31 @@ export function extractCardRelationshipFacts(roster = []) {
 export function persistExplicitFamilyRelationshipFacts(history = {}, roster = [], rawChatMessages = []) {
   const precedence = { grounded_raw_chat_evidence: 1, grounded_source_evidence: 2, approved_relationship_history: 3, persona_fact: 4, card_fact: 5, manual: 6 };
   const result = { changed: false, persisted: [], rejected: [], family_coreference_trace: [] };
+  // Spouse roles are directional labels for one symmetric, explicitly stated
+  // relationship.  A source that says "Paul is Alissa's husband" also
+  // directly supports "Alissa is Paul's wife"; keeping both records prevents
+  // profile generation from depending on which person happened to be parsed
+  // as the subject.  This deliberately does not infer a role from a name.
+  const inverseSpouseRole = {
+    husband: 'wife',
+    wife: 'husband',
+    'ex-husband': 'ex-wife',
+    'ex-wife': 'ex-husband',
+    partner: 'partner',
+  };
+  const addDirectionalSpouseInverse = (candidate) => {
+    const relationshipType = String(candidate?.relationship_type ?? '').toLowerCase();
+    const inverseType = inverseSpouseRole[relationshipType];
+    if (!inverseType) return [candidate];
+    return [candidate, {
+      ...candidate,
+      subject: candidate.target,
+      target: candidate.subject,
+      relationship_type: inverseType,
+      relationship_type_direction: 'inverse_from_explicit_spouse_fact',
+      inverse_of_explicit_spouse_fact: true,
+    }];
+  };
   const resolveParticipant = (name) => {
     const resolved = resolveCanonicalCharacterName(name, roster);
     if (resolved.status === 'resolved') return resolved;
@@ -354,7 +379,7 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
         source_ids: fact.source_message_indices.map((messageIndex) => `chat-message:${messageIndex}`),
         creation_stage: 'bounded_family_coreference',
       })),
-  ];
+  ].flatMap(addDirectionalSpouseInverse);
   for (const candidate of candidates) {
     const subject = resolveParticipant(candidate.subject);
     const target = resolveParticipant(candidate.target);

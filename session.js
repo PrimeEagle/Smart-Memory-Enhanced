@@ -111,27 +111,30 @@ import { reportTierTrimStats } from './trim-stats.js';
  */
 async function verifySessionCandidates(candidates, existing) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
-    return { verified: [], superseded: new Map(), confirmed: new Set(), dispositions: { malformed_candidate: 0, duplicate_same_pass: 0, duplicate_existing: 0 } };
+    return { verified: [], superseded: new Map(), confirmed: new Set(), dispositions: { malformed_candidate: 0, duplicate_same_pass: 0, duplicate_existing: 0 }, rejected: [] };
   }
 
   const seen = new Set();
   const dispositions = { malformed_candidate: 0, duplicate_same_pass: 0, duplicate_existing: 0 };
+  const rejected = [];
   const filtered = candidates.filter((mem) => {
     const text = String(mem.content || '').trim();
     if (text.length < 5 || text.length > 240) {
       dispositions.malformed_candidate++;
+      rejected.push({ candidate: mem, disposition: 'rejected_malformed' });
       return false;
     }
     const key = `${mem.type}|${text.toLowerCase()}`;
     if (seen.has(key)) {
       dispositions.duplicate_same_pass++;
+      rejected.push({ candidate: mem, disposition: 'rejected_duplicate' });
       return false;
     }
     seen.add(key);
     return true;
   });
 
-  if (filtered.length === 0) return { verified: [], superseded: new Map(), confirmed: new Set(), dispositions };
+  if (filtered.length === 0) return { verified: [], superseded: new Map(), confirmed: new Set(), dispositions, rejected };
 
   const { passed, superseded, confirmed } = await batchVerify(filtered, existing);
   const verified = filtered.filter((m) =>
@@ -142,7 +145,11 @@ async function verifySessionCandidates(candidates, existing) {
     ),
   );
   dispositions.duplicate_existing = Math.max(0, filtered.length - verified.length);
-  return { verified, superseded, confirmed, dispositions };
+  const verifiedIds = new Set(verified.map((candidate) => candidate._citation_candidate_id));
+  for (const candidate of filtered) {
+    if (!verifiedIds.has(candidate._citation_candidate_id)) rejected.push({ candidate, disposition: 'rejected_duplicate' });
+  }
+  return { verified, superseded, confirmed, dispositions, rejected };
 }
 
 // ---- Storage (chatMetadata) ---------------------------------------------
@@ -391,7 +398,20 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       };
     }
     const parsedCandidates = parseSessionOutput(response);
+    // Stable within-request IDs make citation repair an association task rather
+    // than a best-effort text match. They are transient and never persisted in
+    // a memory record or exported with memory text.
+    for (const [index, candidate] of parsedCandidates.entries()) {
+      candidate._citation_candidate_id ??= `session-${index + 1}`;
+    }
     const initiallyParsedCount = parsedCandidates.length;
+    const terminalRecords = new Map();
+    const recordTerminalCandidate = (candidate, disposition, reason = null) => {
+      const candidateId = candidate?._citation_candidate_id;
+      if (!candidateId || terminalRecords.has(candidateId)) return false;
+      terminalRecords.set(candidateId, { candidate_id: candidateId, terminal_disposition: disposition, reason });
+      return true;
+    };
     parsedCandidateCount = initiallyParsedCount;
     // A non-empty provider response that yields no structured records is not
     // the same as an intentional NONE. Keep the catch-up running, but expose
@@ -408,6 +428,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let repairRecovered = 0;
     let repairEligibleCount = 0;
     let repairTerminalRecorded = false;
+    let repairMalformedCount = 0;
     const uncitedCandidates = parsedCandidates.filter((candidate) => !(candidate.source_message_indices ?? []).length);
     if (uncitedCandidates.length > 0) {
       repairEligibleCount = uncitedCandidates.length;
@@ -419,9 +440,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }
       const uncitedLines = uncitedCandidates.map((candidate) => {
         const entities = (candidate._raw_entity_names ?? []).length ? `:entity=${candidate._raw_entity_names.join(',')}` : '';
-        return `[${candidate.type}:${candidate.importance}:${candidate.expiration}${entities}] ${candidate.content}`;
+        return `[${candidate.type}:${candidate.importance}:${candidate.expiration}:candidate_id=${candidate._citation_candidate_id}${entities}] ${candidate.content}`;
       }).join('\n');
-      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return the SAME items only: preserve each type, importance, expiration, entity tags, and factual content. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
+      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return exactly one line per supplied candidate_id. Preserve candidate_id, type, importance, expiration, entity tags, and factual content exactly. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories; do not reorder them. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
       try {
         const repairedResponse = await generateMemoryExtract(applyPromptOverride(repairPrompt, PROMPT_TASKS.SESSION_EXTRACTION, characterName), {
           responseLength: settings.session_response_length ?? 500,
@@ -431,15 +452,23 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           if (sessionDiagnostics) sessionDiagnostics.repairReturnedNone = (sessionDiagnostics.repairReturnedNone ?? 0) + repairEligibleCount;
           repairTerminalRecorded = true;
         } else {
-          const allowed = new Set(uncitedCandidates.map((candidate) => `${candidate.type}|${candidate.content}`));
+          const originalsById = new Map(uncitedCandidates.map((candidate) => [candidate._citation_candidate_id, candidate]));
           const parsedRepair = parseSessionOutput(repairedResponse);
           if (!parsedRepair.length && sessionDiagnostics) {
             sessionDiagnostics.repairMalformed = (sessionDiagnostics.repairMalformed ?? 0) + repairEligibleCount;
             repairTerminalRecorded = true;
           }
-          const repaired = parsedRepair.filter((candidate) =>
-            allowed.has(`${candidate.type}|${candidate.content}`) && (candidate.source_message_indices ?? []).length > 0,
-          );
+          if (!parsedRepair.length) repairMalformedCount = repairEligibleCount;
+          const repairedIds = new Set();
+          const repaired = parsedRepair.flatMap((candidate) => {
+            const original = originalsById.get(candidate._citation_candidate_id);
+            if (!original || repairedIds.has(candidate._citation_candidate_id) || !(candidate.source_message_indices ?? []).length) return [];
+            // Never accept a repair that rewrites the claim, even if it copied
+            // the ID. The repair operation is allowed to supply citations only.
+            if (candidate.type !== original.type || candidate.content !== original.content) return [];
+            repairedIds.add(candidate._citation_candidate_id);
+            return [{ ...original, source_message_indices: candidate.source_message_indices, grounding_status: 'direct', validation_status: 'unvalidated' }];
+          });
           if (repaired.length) {
             for (const candidate of repaired) candidate.__sme_citation_repair = true;
             const alreadyCited = parsedCandidates.filter((candidate) => (candidate.source_message_indices ?? []).length > 0);
@@ -477,6 +506,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       superseded: supersessionMap,
       confirmed: confirmedIds,
       dispositions: verificationDispositions,
+      rejected: verificationRejected,
     } = await verifySessionCandidates(citedCandidates, existing);
     if (sessionDiagnostics) {
       sessionDiagnostics.validated = (sessionDiagnostics.validated ?? 0) + incoming.length;
@@ -499,6 +529,50 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     }
     recordDisposition('accepted_after_citation_repair', acceptedAfterRepair);
     recordDisposition('accepted_validated', Math.max(0, incoming.length - acceptedAfterRepair));
+    const citedCandidateIds = new Set(citedCandidates.map((candidate) => candidate._citation_candidate_id));
+    for (const candidate of uncitedCandidates) {
+      if (!citedCandidateIds.has(candidate._citation_candidate_id)) {
+        recordTerminalCandidate(candidate, 'rejected_missing_provenance', repairTerminalRecorded ? 'provider_omitted_citations' : 'response_candidate_unmatched');
+      }
+    }
+    for (const candidate of verificationRejected) recordTerminalCandidate(candidate.candidate, candidate.disposition, candidate.disposition === 'rejected_malformed' ? 'invalid_candidate_shape' : 'duplicate_candidate');
+    for (const candidate of incoming) recordTerminalCandidate(candidate, candidate.__sme_citation_repair ? 'accepted_after_citation_repair' : 'accepted_initially');
+    // A terminal record is mandatory even if a future verifier adds a new
+    // rejection class. This prevents an accounting gap from being reported as
+    // clean quality while retaining a bounded diagnostic reason for follow-up.
+    for (const candidate of parsedCandidates) recordTerminalCandidate(candidate, 'rejected_other', 'no_terminal_assignment');
+    if (sessionDiagnostics) {
+      const pipeline = sessionDiagnostics.session_citation_pipeline ?? {
+        candidates_emitted: 0, initially_valid: 0, initial_provenance_failures: 0,
+        repair_eligible: 0, repair_attempted: 0, repair_recovered: 0,
+        repair_malformed: 0, repair_still_invalid: 0, repair_not_attempted: 0,
+        repair_unaccounted: 0, final_valid: 0, final_missing_provenance: 0,
+        final_malformed: 0, final_duplicates: 0, final_rejected: 0,
+        terminal_candidate_count: 0, terminal_dispositions_reconciled: true,
+        unaccounted_candidate_ids: [], candidate_terminal_records: [],
+      };
+      const terminalValues = [...terminalRecords.values()];
+      const unrepaired = terminalValues.filter((entry) => entry.terminal_disposition === 'rejected_missing_provenance').length;
+      pipeline.candidates_emitted += initiallyParsedCount;
+      pipeline.initially_valid += initiallyParsedCount - uncitedCandidates.length;
+      pipeline.initial_provenance_failures += uncitedCandidates.length;
+      pipeline.repair_eligible += repairEligibleCount;
+      pipeline.repair_attempted += repairEligibleCount;
+      pipeline.repair_recovered += repairRecovered;
+      pipeline.repair_malformed += repairMalformedCount;
+      pipeline.repair_still_invalid += Math.max(0, unrepaired - repairMalformedCount);
+      pipeline.final_valid += incoming.length;
+      pipeline.final_missing_provenance += unrepaired;
+      pipeline.final_malformed += terminalValues.filter((entry) => entry.terminal_disposition === 'rejected_malformed').length;
+      pipeline.final_duplicates += terminalValues.filter((entry) => entry.terminal_disposition === 'rejected_duplicate').length;
+      pipeline.final_rejected += terminalValues.filter((entry) => entry.terminal_disposition.startsWith('rejected_')).length;
+      pipeline.terminal_candidate_count += terminalValues.length;
+      pipeline.candidate_terminal_records.push(...terminalValues.map((entry) => ({ ...entry, citation_mapping_strategy: sessionDiagnostics.provenanceMapping?.mapping_strategy ?? 'unknown' })));
+      pipeline.candidate_terminal_records = pipeline.candidate_terminal_records.slice(-200);
+      pipeline.unaccounted_candidate_ids = [];
+      pipeline.terminal_dispositions_reconciled = pipeline.candidates_emitted === pipeline.terminal_candidate_count;
+      sessionDiagnostics.session_citation_pipeline = pipeline;
+    }
     if (incoming.length === 0) return 0;
 
     // Tag each new memory with the source message range so users can jump back

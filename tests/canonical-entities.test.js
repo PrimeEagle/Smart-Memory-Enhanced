@@ -26,6 +26,7 @@ import {
   snapshotCanonicalRuntimeContext,
   setCanonicalRuntimeContextSnapshot,
   clearCanonicalRuntimeContextSnapshot,
+  isGenericCharacterContainerName,
   validateExactCanonicalProposal,
 } from '../canonical-entities.js';
 import { isEntityRolePlaceholder, isPlausibleEntityName } from '../parsers.js';
@@ -369,6 +370,29 @@ test('stable imported author expands a selected short persona label while retain
   assert.equal(resolveCanonicalCharacterName('Kyle', roster).canonicalId, 'persona:user-default.png');
 });
 
+test('a distinct live persona and imported author remain separate canonical personas', () => {
+  const context = {
+    groupId: 'group-history',
+    activePersona: { id: 'live-adam', name: 'Adam Lawson' },
+    characters: [{ id: 'alissa', name: 'Alissa Kawaguchi' }],
+    chat: [
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: true, name: 'Kyle Holland' },
+      { is_user: false, name: 'Alissa Kawaguchi' },
+    ],
+  };
+  const snapshot = snapshotCanonicalRuntimeContext(context);
+  const roster = buildCanonicalRoster(context, { runtimeSnapshot: snapshot });
+  const live = roster.characters.find((entry) => entry.canonicalName === 'Adam Lawson');
+  const historical = roster.characters.find((entry) => entry.canonicalName === 'Kyle Holland');
+  assert.equal(snapshot.active_persona.stable_persona_id, 'live-adam');
+  assert.match(snapshot.historical_persona.stable_persona_id, /^persona-history:/);
+  assert.notEqual(snapshot.historical_persona.stable_persona_id, snapshot.active_persona.stable_persona_id);
+  assert.equal(historical.canonical_persona_id, snapshot.historical_persona.stable_persona_id);
+  assert.equal(resolveCanonicalCharacterName('Kyle', roster).canonicalPersonaId, historical.canonical_persona_id);
+  assert.equal(live.canonical_persona_id, 'live-adam');
+});
+
 test('imported persona recovery refuses competing user-message authors and never guesses a card as persona', () => {
   const context = {
     userName: 'unused', name1: 'Alissa Kawaguchi', name2: 'Alissa Kawaguchi',
@@ -543,4 +567,17 @@ test('historical persona short names are not added when a card uses that name', 
   });
   assert.equal(resolveCanonicalCharacterName('Adam', competingRoster).canonicalName, 'Adam Jones');
   assert.equal(resolveCanonicalCharacterName('Adam Lawson', competingRoster).canonicalName, 'Kyle Holland');
+});
+
+test('generic side-character cards remain UI containers, not canonical people', () => {
+  const containerRoster = buildCanonicalRoster({
+    characters: [
+      { id: 'named', name: 'Alissa Kawaguchi', description: '' },
+      { id: 'side', name: 'Side Character', description: '' },
+      { id: 'support', name: 'Supporting Character 2', description: '' },
+    ],
+  });
+  assert.equal(isGenericCharacterContainerName('Side Character'), true);
+  assert.equal(isGenericCharacterContainerName('Alissa Kawaguchi'), false);
+  assert.deepEqual(containerRoster.characters.map((entry) => entry.canonicalName), ['Alissa Kawaguchi']);
 });

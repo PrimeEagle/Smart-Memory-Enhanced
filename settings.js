@@ -3367,6 +3367,17 @@ export function bindSettingsUI(ctrl) {
     catchUpContext.chatMetadata = catchUpContext.chatMetadata ?? {};
     catchUpContext.chatMetadata[META_KEY] = catchUpContext.chatMetadata[META_KEY] ?? {};
     catchUpContext.chatMetadata[META_KEY].active_catchup_run_id = catchUpRunId;
+    // Persist only the compact historical identity evidence needed to restore
+    // canonical IDs after reload. The full transcript remains the authority;
+    // this is an audit snapshot, never a generated memory.
+    if (canonicalRuntimeContext.historical_persona) {
+      catchUpContext.chatMetadata[META_KEY].historical_persona_snapshot = {
+        ...canonicalRuntimeContext.historical_persona,
+        run_id: catchUpRunId,
+      };
+    } else {
+      delete catchUpContext.chatMetadata[META_KEY].historical_persona_snapshot;
+    }
     let catchUpErrorCount = 0;
     const runResult = {
       run_id: catchUpRunId,

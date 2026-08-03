@@ -165,6 +165,41 @@ function arcJaccard(a, b) {
   return intersection / (aWords.size + bWords.size - intersection);
 }
 
+const ARC_STATUS_STOPWORDS = new Set(['about', 'after', 'again', 'along', 'and', 'are', 'been', 'being', 'between', 'but', 'can', 'could', 'for', 'from', 'has', 'have', 'her', 'him', 'his', 'into', 'its', 'not', 'of', 'or', 'our', 'out', 'she', 'that', 'the', 'their', 'them', 'then', 'there', 'they', 'this', 'through', 'to', 'was', 'were', 'what', 'when', 'with', 'would', 'you']);
+
+/**
+ * Classifies only well-supported lifecycle transitions from later evidence.
+ * A lack of later topical evidence is deliberately "uncertain", not
+ * "abandoned": absence alone cannot prove a story thread was dropped.
+ */
+export function deriveArcStatusFromTimeline(arc, messages = []) {
+  const sourceIndices = (arc?.source_message_indices ?? []).filter(Number.isInteger);
+  const latestSourceIndex = Math.max(...sourceIndices, -1);
+  const indexed = messages.map((message, index) => ({
+    index: Number.isInteger(message?.__sme_original_index) ? message.__sme_original_index : index,
+    text: String(message?.mes ?? ''),
+  }));
+  const later = indexed.filter((entry) => entry.index > latestSourceIndex);
+  if (!later.length) return { status: 'open', confidence: 'candidate', last_status_change_index: latestSourceIndex, reason_code: 'no_later_evidence' };
+  const keywords = [...new Set(String(arc?.content ?? '').toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [])]
+    .filter((word) => !ARC_STATUS_STOPWORDS.has(word));
+  const laterText = later.map((entry) => entry.text).join('\n').toLowerCase();
+  const overlap = keywords.filter((word) => laterText.includes(word));
+  // One generic word is not enough to attach a later event to this arc.
+  const topical = overlap.length >= Math.min(2, Math.max(1, keywords.length));
+  if (!topical) return { status: 'uncertain', confidence: 'low', last_status_change_index: latestSourceIndex, reason_code: 'no_supported_later_continuation', topical_overlap: overlap.length };
+  const lastRelevant = [...later].reverse().find((entry) => overlap.some((word) => entry.text.toLowerCase().includes(word))) ?? later.at(-1);
+  const lastText = lastRelevant.text;
+  if (/\b(?:reopened|again|returns?|returned|resumed|renewed|still unresolved)\b/i.test(lastText)
+    && /\b(?:issue|question|plan|conflict|relationship|decision|promise|search|fear|goal)\b/i.test(lastText)) {
+    return { status: 'reopened', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_reopening_evidence', topical_overlap: overlap.length };
+  }
+  if (/\b(?:resolved|settled|concluded|completed|decided|agreed|confessed|revealed|found|answered|ended)\b/i.test(lastText)) {
+    return { status: 'resolved', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_terminal_evidence', topical_overlap: overlap.length };
+  }
+  return { status: 'open', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_continuation_evidence', topical_overlap: overlap.length };
+}
+
 /**
  * Returns the semantic similarity between two arc strings.
  * Uses cosine similarity on embeddings when available, falling back to Jaccard.
@@ -1019,9 +1054,13 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(roster)), PROMPT_TASKS.ARC_EXTRACTION, characterName),
         { responseLength, task: 'initial-arc-extraction' },
       );
-      responses.push(response ?? '');
+      // Keep each response attached to its ordered source window.  Flattening
+      // the outputs before parsing used to make every final arc appear to be
+      // supported by the entire chat, which erased chronology and made later
+      // status verification impossible.
+      responses.push({ response: response ?? '', window });
     }
-    const response = responses.filter(Boolean).join('\n');
+    const response = responses.map((item) => item.response).filter(Boolean).join('\n');
     if (arcExtraction) arcExtraction.requests_completed = responses.length;
     // Retain local full-history evidence only for deterministic validation;
     // it is never exported as diagnostics or sent as one unbounded request.
@@ -1045,7 +1084,26 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     }
 
     // Parse against activeExisting so resolve indices map correctly to active arcs.
-    const { add: parsedAdd, resolve, rejected: parserRejected } = parseArcOutput(response, activeExisting);
+    const parsedWindows = responses.map(({ response: windowResponse, window }) => {
+      const parsed = parseArcOutput(windowResponse, activeExisting);
+      const sourceMessageIndices = window.messages
+        .map((message) => Number.isInteger(message.__sme_original_index)
+          ? message.__sme_original_index
+          : getContext().chat.indexOf(message))
+        .filter((index) => Number.isInteger(index) && index >= 0);
+      return {
+        ...parsed,
+        add: parsed.add.map((arc) => ({
+          ...arc,
+          source_message_indices: sourceMessageIndices,
+          source_window_start_index: sourceMessageIndices[0] ?? null,
+          source_window_end_index: sourceMessageIndices.at(-1) ?? null,
+        })),
+      };
+    });
+    const parsedAdd = parsedWindows.flatMap((parsed) => parsed.add);
+    const resolve = [...new Set(parsedWindows.flatMap((parsed) => parsed.resolve))];
+    const parserRejected = parsedWindows.flatMap((parsed) => parsed.rejected);
     if (arcExtraction) {
       arcExtraction.request_completed = (arcExtraction.request_completed ?? 0) + 1;
       arcExtraction.parsed_candidates = (arcExtraction.parsed_candidates ?? 0) + parsedAdd.length;
@@ -1301,13 +1359,27 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       .filter(Boolean);
     const finalActive = finalBase.filter((a) => !a.resolved);
     const finalResolved = finalBase.filter((a) => a.resolved);
-    const sourceMessageIndices = messages
-      .map((message) => Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))
-      .filter((index) => Number.isInteger(index) && index >= 0);
     const finalNew = dedupedAdd
       .filter((n) => !finalActive.some((a) => a.content === n.content))
       .map((arc) => {
-        const record = { ...arc, id: generateMemoryId(), source_message_indices: sourceMessageIndices, source_memory_ids: [], parent_memory_ids: [] };
+        const statusDecision = deriveArcStatusFromTimeline(arc, messages);
+        const record = {
+          ...arc,
+          id: generateMemoryId(),
+          source_message_indices: arc.source_message_indices ?? [],
+          source_memory_ids: [],
+          parent_memory_ids: [],
+          status: statusDecision.status,
+          resolved: statusDecision.status === 'resolved',
+          status_confidence_class: statusDecision.confidence,
+          status_reason_code: statusDecision.reason_code,
+          last_status_change_index: statusDecision.last_status_change_index,
+          verification: {
+            outcome: arc.source_message_indices?.length && arc.character_participants?.length ? 'supported' : 'pending_review',
+            reason_code: arc.source_message_indices?.length ? 'provenance_and_participants_attached' : 'missing_source_provenance',
+            verified_at: Date.now(),
+          },
+        };
         validateGeneratedRecord(record);
         for (const rejection of record.identity_rejections ?? []) {
           recordIdentityReviewCandidate({
@@ -1320,7 +1392,12 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         }
         return record;
       });
-    const merged = [...finalActive, ...finalNew].slice(-max);
+    // A newly extracted historical arc can already have later, grounded
+    // closure evidence. Keep it for audit/history, but do not let a resolved
+    // record consume an active-arc slot or be injected as an open thread.
+    const finalNewActive = finalNew.filter((arc) => !arc.resolved);
+    const finalNewResolved = finalNew.filter((arc) => arc.resolved);
+    const merged = [...finalActive, ...finalNewActive].slice(-max);
 
     // Window extraction identifies candidates; this is the first point at
     // which they have passed canonicalization, validation, and cross-window
@@ -1343,7 +1420,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     }
 
     if (abortCheck?.()) return 0;
-    await saveArcs([...merged, ...finalResolved]);
+    await saveArcs([...merged, ...finalResolved, ...finalNewResolved]);
     if (characterName) {
       const registry = loadCharacterEntityRegistry(characterName);
       for (const arc of merged) {

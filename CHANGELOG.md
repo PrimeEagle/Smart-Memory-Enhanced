@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.80] - 2026-08-03
+
+### Fixed
+
+- Imported-chat identity recovery now creates a stable, chat-scoped
+  historical-persona snapshot when a dominant historical user-message author
+  differs from the currently selected live persona. This keeps the two
+  identities separate while allowing an unambiguous historical short name to
+  resolve to the recovered persona.
+- Session citation repair now assigns a stable, privacy-safe candidate ID
+  before repair and records one terminal disposition per candidate. Repair
+  output is matched by that ID rather than lossy content text matching.
+- Explicitly supported spouse roles now persist in both directional forms,
+  including husband/wife and ex-husband/ex-wife, so profile generation and
+  reload do not depend on the extraction direction.
+- Full-history arc extraction now preserves the source window for each
+  candidate rather than attributing every arc to the entire chat. New arcs
+  receive bounded timeline status evidence, and already-resolved records no
+  longer consume active arc capacity or inject as open threads.
+- Generic group-card containers such as “Side Character” are excluded from
+  canonical-person identity and relationship processing, preventing
+  placeholder relationship traces.
+
+### Added
+
+- Historical-persona recovery metadata is persisted with the catch-up run for
+  safe reload and final reconciliation.
+- Session citation diagnostics now include terminal-candidate reconciliation
+  metadata without exporting memory text.
+
+### Tests
+
+- Added canonical historical-persona separation and generic-card-container
+  coverage. Full automated verification passed with 313 unit/integration
+  tests. Live long-chat replay validation remains pending.
+
 ## [0.8.79] - 2026-08-02
 
 ### Fixed

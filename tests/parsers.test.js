@@ -688,6 +688,12 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
   assert.equal(result.world_state, 'Location: council chamber');
 });
 
+test('parseSessionOutput preserves a bounded citation-repair candidate ID', () => {
+  const [record] = parseSessionOutput('[detail:2:session:candidate_id=session-4:sources=1] A supported detail.');
+  assert.equal(record._citation_candidate_id, 'session-4');
+  assert.deepEqual(record.source_message_indices, [1]);
+});
+
 test('parseProfileOutput: accepts complete inline XML sections from local models', () => {
   const result = parseProfileOutput('<character_state>Goals: leave safely</character_state>\n<world_state>Location: station</world_state>\n<relationship_matrix>Alex: trusted</relationship_matrix>', { requireAll: true });
   assert.deepEqual(result, {

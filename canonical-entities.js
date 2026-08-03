@@ -23,6 +23,19 @@ const isUsablePersonaName = (value) => {
   return Boolean(name) && !PERSONA_PLACEHOLDERS.has(normalize(name)) && !/^(?:user[-_ ]?default|default[-_ ]?user)\.(?:png|jpg|jpeg|webp)$/i.test(name);
 };
 
+/** Stable, content-free fingerprint for a historical imported-persona scope. */
+function historicalPersonaScopeFingerprint(context = {}, recovery = {}) {
+  const stableScope = String(context?.chatId ?? context?.groupId ?? context?.chat_id ?? '').trim();
+  const fallback = `${context?.chat?.length ?? 0}|${recovery.canonical_name ?? ''}|${recovery.candidate_support_count ?? 0}`;
+  const source = stableScope || fallback;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index++) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `history-${(hash >>> 0).toString(16)}`;
+}
+
 const isUsableImportedUserAuthor = (value, activeCharacterNames = new Set()) => {
   const candidate = String(value ?? '').trim();
   return isUsablePersonaName(candidate)
@@ -133,6 +146,22 @@ export function snapshotCanonicalRuntimeContext(context = {}) {
     ...(Array.isArray(personaRecord?.previous_names) ? personaRecord.previous_names : []),
     ...(Array.isArray(personaRecord?.historical_aliases) ? personaRecord.historical_aliases : []),
   ].map((value) => String(value ?? '').trim()).filter(Boolean);
+  // An imported transcript can legitimately belong to a different person than
+  // the persona currently selected in SillyTavern. Keep that structured author
+  // as a second, chat-scoped persona identity rather than overwriting either
+  // identity or treating the author as an ordinary grounded NPC.
+  const importedName = importedPersonaRecovery.canonical_name;
+  const distinctHistoricalPersona = Boolean(importedName)
+    && normalize(importedName) !== normalize(personaName);
+  const historicalPersona = distinctHistoricalPersona ? Object.freeze({
+    canonical_name: importedName,
+    stable_persona_id: `persona-history:${historicalPersonaScopeFingerprint(context, importedPersonaRecovery)}:${normalize(importedName)}`,
+    approved_aliases: Object.freeze([words(importedName)[0]].filter(Boolean)),
+    source: 'stable_user_message_author',
+    scope: 'imported_chat_history',
+    support_count: importedPersonaRecovery.candidate_support_count,
+    support_ratio: importedPersonaRecovery.candidate_support_ratio,
+  }) : null;
   return Object.freeze({
     active_persona: Object.freeze({
       canonical_name: personaName,
@@ -146,11 +175,12 @@ export function snapshotCanonicalRuntimeContext(context = {}) {
       stable_id_source: providedPersonaId ? 'runtime_key' : personaName ? 'derived_name' : 'unavailable',
       imported_persona_recovery: importedPersonaRecovery,
     }),
+    historical_persona: historicalPersona,
   });
 }
 
 export function setCanonicalRuntimeContextSnapshot(snapshot) {
-  activeRuntimePersonaSnapshot = snapshot?.active_persona?.canonical_name ? snapshot : null;
+  activeRuntimePersonaSnapshot = snapshot?.active_persona?.canonical_name || snapshot?.historical_persona?.canonical_name ? snapshot : null;
 }
 
 export function clearCanonicalRuntimeContextSnapshot() {
@@ -177,6 +207,16 @@ export function getCanonicalPersonaEntries(roster) {
 
 export function getCanonicalCardEntries(roster) {
   return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'character-card' || entry?.source_type === 'character-card');
+}
+
+/**
+ * Generic group slots are useful UI containers, but are not narrative
+ * identities.  Treating a card literally named "Side Character" as a person
+ * makes relationship extraction invent links to a placeholder rather than to
+ * a named participant in the chat.
+ */
+export function isGenericCharacterContainerName(value) {
+  return /^(?:side|supporting|minor|background)\s+character(?:\s*\d+)?$/i.test(String(value ?? '').trim());
 }
 
 /** Removes model-created parenthetical disambiguators without touching known titles. */
@@ -232,7 +272,7 @@ export function buildCanonicalRoster(context, scope = {}) {
         source_type: 'character-card',
       };
     })
-    .filter((entry) => entry.canonicalName);
+    .filter((entry) => entry.canonicalName && !isGenericCharacterContainerName(entry.canonicalName));
   // The active user persona participates in the chat but is not represented
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
@@ -282,6 +322,27 @@ export function buildCanonicalRoster(context, scope = {}) {
       descriptionExcerpt: '',
       source: 'user-persona',
       source_type: 'persona',
+    });
+  }
+  const historicalPersona = scope.runtimeSnapshot?.historical_persona
+    ?? activeRuntimePersonaSnapshot?.historical_persona
+    ?? snapshotCanonicalRuntimeContext(context).historical_persona;
+  if (historicalPersona?.canonical_name
+    && !characters.some((entry) => String(entry.canonical_persona_id ?? '') === String(historicalPersona.stable_persona_id))) {
+    characters.push({
+      id: `persona:${historicalPersona.stable_persona_id}`,
+      canonicalName: historicalPersona.canonical_name,
+      canonical_id: `persona:${historicalPersona.stable_persona_id}`,
+      canonical_name: historicalPersona.canonical_name,
+      entity_type: 'character',
+      canonical_identity_type: 'persona',
+      canonical_persona_id: String(historicalPersona.stable_persona_id),
+      canonical_card_id: null,
+      aliases: [...new Set(historicalPersona.approved_aliases ?? [])],
+      descriptionExcerpt: '',
+      source: 'historical-persona',
+      source_type: 'persona',
+      persona_scope: historicalPersona.scope ?? 'imported_chat_history',
     });
   }
   // Chat-local approved character entities are useful as roster context in a
