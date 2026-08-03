@@ -4717,13 +4717,15 @@ export function bindSettingsUI(ctrl) {
       if (!freshStartContext.groupId) return characterName ? [characterName] : [];
       const group = freshStartContext.groups?.find((entry) => entry.id === freshStartContext.groupId);
       if (!group) return characterName ? [characterName] : [];
+      // A Fresh Start resets the chat, so it covers every group card—not just
+      // members currently enabled for live reply generation. Disabled cards
+      // can still own previously stored Full or Chat-Local data.
       return group.members
-        .filter((avatar) => !(group.disabled_members ?? []).includes(avatar))
         .map((avatar) => freshStartContext.characters.find((card) => card.avatar === avatar)?.name)
         .filter(Boolean);
     })();
     const nameLabel = freshStartCharacterNames.length > 1
-      ? `${freshStartCharacterNames.length} active group characters`
+      ? `${freshStartCharacterNames.length} group characters`
       : characterName ? `"${characterName}"` : 'this character';
     if (
       !(await callGenericPopup(
@@ -4739,8 +4741,8 @@ export function bindSettingsUI(ctrl) {
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
     try {
       await runStagedChatCleanup(context, async () => {
-        // Group token rows represent every active member's personal stores.
-        // Fresh Start therefore clears each active member, not merely the
+        // Group token rows represent every group member's personal stores.
+        // Fresh Start therefore clears each member, not merely the
         // card currently selected in the settings selector.
         for (const memberName of freshStartCharacterNames) {
           clearCharacterMemories(memberName);
@@ -4748,6 +4750,7 @@ export function bindSettingsUI(ctrl) {
           clearEpistemicKnowledge(memberName);
           clearCanon(memberName);
           await clearProfiles(memberName);
+          clearCharacterDurableDataForFreshStart(memberName);
         }
 
         delete context.chatMetadata[META_KEY].summary;
@@ -5145,6 +5148,18 @@ export function bindSettingsUI(ctrl) {
       for (const item of staleSummary) list.append($('<li>').text(`${item.count} × ${item.store} → ${item.field} (${item.reason})`));
       panel.append($('<div>').append($('<strong>').text('Remaining reference categories:')).append(list));
     }
+  };
+
+  // Fresh Start is an explicit destructive reset, not an ordinary policy-aware
+  // write. Read-only and disabled policies must not leave old personal stores
+  // behind; retain only the policy setting itself for the next chat.
+  const clearCharacterDurableDataForFreshStart = (characterName) => {
+    const characters = extension_settings[MODULE_NAME]?.characters;
+    const existing = characters?.[characterName];
+    if (!existing) return;
+    const policy = existing.memory_policy;
+    if (policy) characters[characterName] = { memory_policy: policy };
+    else delete characters[characterName];
   };
   const restoredIdempotenceContext = getContext();
   const restoredIdempotence = restoredIdempotenceContext.chatMetadata?.[META_KEY]?.developer_idempotence_check;

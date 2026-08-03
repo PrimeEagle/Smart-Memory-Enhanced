@@ -1078,6 +1078,8 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /for \(const memberName of freshStartCharacterNames\)/);
   assert.match(freshStart, /clearCharacterMemories\(memberName\)/);
   assert.match(freshStart, /await clearProfiles\(memberName\)/);
+  assert.match(freshStart, /clearCharacterDurableDataForFreshStart\(memberName\)/);
+  assert.doesNotMatch(freshStart, /group\.disabled_members/);
   assert.match(freshStart, /clearChatLocalCharacterData\(context\);/);
   assert.match(freshStart, /injectRelationshipHistory\(characterName\)/);
   assert.match(freshStart, /injectEpistemicKnowledge\(characterName, characterName\)/);

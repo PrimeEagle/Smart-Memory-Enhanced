@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.78] - 2026-08-02
+
+### Fixed
+
+- Fresh Start now clears every current group card, including cards disabled for
+  live reply generation. It also removes retained personal data for Read-only
+  and Disabled policies while preserving the selected policy for the next
+  chat, preventing stale per-character token bars after a reset.
+
+### Tests
+
+- Added Fresh Start coverage for disabled group members and policy-protected
+  durable stores. Full automated verification passed with 310
+  unit/integration tests.
+
 ## [0.8.77] - 2026-08-02
 
 ### Fixed
