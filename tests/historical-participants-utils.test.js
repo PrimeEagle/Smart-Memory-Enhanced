@@ -24,6 +24,8 @@ test('historical rebuild includes every group card, including disabled members',
     fallbackCharacterName: 'Alissa Kawaguchi',
   });
   assert.deepEqual(scope.participant_names, ['Alissa Kawaguchi', 'Paul Schmidt', 'Side Character']);
+  assert.deepEqual(scope.semantic_participant_names, ['Alissa Kawaguchi', 'Paul Schmidt']);
+  assert.deepEqual(scope.generic_container_names, ['Side Character']);
   assert.deepEqual(scope.currently_disabled_included, ['Paul Schmidt', 'Side Character']);
   assert.deepEqual(scope.members_with_authored_messages, ['Alissa Kawaguchi', 'Paul Schmidt']);
 });
@@ -31,6 +33,7 @@ test('historical rebuild includes every group card, including disabled members',
 test('historical rebuild keeps the full group roster even when no member has authored messages', () => {
   const scope = resolveHistoricalGroupParticipants({ group, characters, messages: [{ is_user: true, name: 'User', mes: 'Only me.' }], fallbackCharacterName: 'Alissa Kawaguchi' });
   assert.deepEqual(scope.participant_names, ['Alissa Kawaguchi', 'Paul Schmidt', 'Side Character']);
+  assert.deepEqual(scope.semantic_participant_names, ['Alissa Kawaguchi', 'Paul Schmidt']);
   assert.equal(scope.fallback_used, false);
 });
 

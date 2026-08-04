@@ -1410,7 +1410,11 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
       arcPipeline.persisted = (arcPipeline.persisted ?? 0) + finalNew.length;
     }
     if (options.arcResolutionStats) {
-      options.arcResolutionStats.still_open = (options.arcResolutionStats.still_open ?? 0) + finalNew.length;
+      for (const arc of finalNew) {
+        const status = String(arc.status ?? 'open');
+        const key = status === 'open' ? 'still_open' : status;
+        options.arcResolutionStats[key] = (options.arcResolutionStats[key] ?? 0) + 1;
+      }
     }
     if (arcExtraction) {
       arcExtraction.consolidated_candidates = dedupedAdd.length;

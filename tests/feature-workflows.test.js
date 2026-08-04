@@ -132,8 +132,8 @@ test('generated prose rewrites only deterministic card or persona aliases before
 
 test('catch-up diagnostics report derived arc-summary verification outcomes', () => {
   const settings = read('settings.js');
-  assert.match(settings, /arc_summary_verification: summarizeArcSummaryVerification\(loadArcSummaries\(\)\)/);
-  assert.match(settings, /arcResolution: runResult\.arcResolution/);
+  assert.match(settings, /arc_summary_verification: summarizeArcSummaryVerification\(loadArcSummaries\(\), loadArcs\(\)\)/);
+  assert.match(settings, /arcResolution: summarizeArcStatusResolution\(loadArcs\(\), runResult\.arcResolution\)/);
   assert.match(settings, /identityResolutionDetails/);
   assert.match(settings, /preverification: \{\}/);
   assert.match(settings, /legacy_unverified/);

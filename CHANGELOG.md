@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.81] - 2026-08-03
+
+### Fixed
+
+- Historical group rebuilds now distinguish local-memory card containers from
+  semantic characters. Generic cards such as “Side Character” remain
+  manageable as card-local stores but no longer receive generated profiles or
+  relationship-graph processing.
+- Session citation-repair identifiers are now unique for the whole catch-up
+  run, preventing diagnostics from conflating identically numbered candidates
+  from different chunks.
+- Generation quality now evaluates citation repair from the authoritative
+  one-terminal-record-per-candidate pipeline, fixing false degradation caused
+  by overlapping legacy aggregate counters.
+- Arc diagnostics now account for durable historical arc verification and
+  final lifecycle status, including resolved records that do not have a
+  separate derived summary.
+
+### Added
+
+- Diagnostics export now includes a compact historical-persona recovery
+  summary with live and imported persona identities, approved aliases, and
+  migration counters.
+
+### Tests
+
+- Added historical group-container coverage and updated arc diagnostic
+  workflow coverage. Full automated verification passed with 313
+  unit/integration tests. Live replay validation remains pending.
+
 ## [0.8.80] - 2026-08-03
 
 ### Fixed

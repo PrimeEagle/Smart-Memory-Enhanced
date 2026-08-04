@@ -6,6 +6,7 @@
  * therefore receives the full historical evidence during Memorize Chat.
  */
 const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+const isGenericContainer = (value) => /^(?:side|supporting|minor|background)\s+character(?:\s*\d+)?$/i.test(String(value ?? '').trim());
 
 export function resolveHistoricalGroupParticipants({ group, characters = [], messages = [], fallbackCharacterName = null } = {}) {
   const members = Array.isArray(group?.members) ? group.members : [];
@@ -31,12 +32,18 @@ export function resolveHistoricalGroupParticipants({ group, characters = [], mes
   const participantNames = cards.map(({ card }) => card.name);
   const fallbackUsed = participantNames.length === 0 && Boolean(fallbackCharacterName);
   const names = fallbackUsed ? [fallbackCharacterName] : participantNames;
+  // Retain generic slots in the historical memory scope so a user can still
+  // manage their local store, but never generate a structured profile or
+  // relationship graph for a container rather than a named person.
+  const semanticNames = names.filter((name) => !isGenericContainer(name));
   const disabledIncluded = cards
     .filter(({ avatar, card }) => disabled.has(avatar) && names.includes(card.name))
     .map(({ card }) => card.name);
   return {
     mode: group ? 'historical_group_roster' : 'single_character',
     participant_names: names,
+    semantic_participant_names: semanticNames,
+    generic_container_names: names.filter(isGenericContainer),
     currently_disabled_included: disabledIncluded,
     members_with_authored_messages: cards
       .filter(({ card }) => authored.has(card.name))

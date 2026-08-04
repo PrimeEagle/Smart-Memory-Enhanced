@@ -402,7 +402,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // than a best-effort text match. They are transient and never persisted in
     // a memory record or exported with memory text.
     for (const [index, candidate] of parsedCandidates.entries()) {
-      candidate._citation_candidate_id ??= `session-${index + 1}`;
+      // The diagnostics object lives for the full catch-up run, so its
+      // monotonically increasing sequence avoids reusing session-1/session-2
+      // in every chunk. This is required for a true one-terminal-record-per-
+      // candidate audit across a long imported chat.
+      const sequence = sessionDiagnostics
+        ? (sessionDiagnostics._citation_candidate_sequence = Number(sessionDiagnostics._citation_candidate_sequence ?? 0) + 1)
+        : index + 1;
+      candidate._citation_candidate_id ??= `session-${sequence}`;
     }
     const initiallyParsedCount = parsedCandidates.length;
     const terminalRecords = new Map();

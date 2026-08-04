@@ -118,7 +118,7 @@ import {
   detectSceneBreakHeuristic,
   selectSceneBoundaryCandidates,
 } from './scenes.js';
-import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcSummaries, saveArcSummaries } from './arcs.js';
+import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcs, loadArcSummaries, saveArcSummaries } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import { evaluateDeterministicSceneGate } from './scene-gate-utils.js';
@@ -3336,6 +3336,7 @@ export function bindSettingsUI(ctrl) {
       fallbackCharacterName: characterName,
     });
     const catchUpCharacterNames = historicalParticipantScope.participant_names;
+    const catchUpProfileCharacterNames = historicalParticipantScope.semantic_participant_names ?? catchUpCharacterNames;
 
     // Warn if memories already exist for any character in the list.
     const existingMemories = catchUpCharacterNames.some(
@@ -3975,7 +3976,7 @@ export function bindSettingsUI(ctrl) {
       // Generate character & world profiles once at the end of a completed run.
       // Skipped on cancel - partial data may produce low-quality profiles.
       if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
-        for (const name of catchUpCharacterNames) {
+        for (const name of catchUpProfileCharacterNames) {
           setStatusMessage(`Generating character & world profiles for ${name}...`);
           runResult.profiles.profiles_attempted++;
           let profileTerminal = null;
@@ -4384,12 +4385,21 @@ export function bindSettingsUI(ctrl) {
       });
       const entityLinkRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
       const repairs = runResult.sessionExtraction;
-      const repairTerminalTotal = (repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0);
-      repairs.repairTerminalReconciled = repairTerminalTotal === (repairs.repairAttempts ?? 0) && (repairs.repairAttempts ?? 0) <= (repairs.repairEligible ?? 0);
+      // The terminal-record pipeline is authoritative. Legacy aggregate
+      // counters intentionally describe overlapping stages (for example a
+      // recovered record is also a completed repair), so adding them produces
+      // a false quality failure even when every emitted candidate reconciles.
+      const citationPipeline = repairs.session_citation_pipeline;
+      const repairTerminalTotal = citationPipeline?.terminal_candidate_count ?? 0;
+      repairs.repairTerminalReconciled = citationPipeline
+        ? Boolean(citationPipeline.terminal_dispositions_reconciled)
+        : ((repairs.repairAccepted ?? 0) + (repairs.repairProviderError ?? 0) + (repairs.repairReturnedNone ?? 0) + (repairs.repairMalformed ?? 0) + (repairs.repairStillInvalid ?? 0) + (repairs.repairSemanticallyUnsupported ?? 0)) === (repairs.repairAttempts ?? 0);
       if (!repairs.repairTerminalReconciled) qualityReasons.push({
         code: 'session_citation_repair_counters_unreconciled',
         tier: 'session',
-        message: `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
+        message: citationPipeline
+          ? `${citationPipeline.unaccounted_candidate_ids?.length ?? 0} citation-repair candidates lack a terminal disposition.`
+          : `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
       });
       const requiredIdentityInvariants = [
         // Keep snapshot capture, roster construction, and identity validity
@@ -4482,8 +4492,8 @@ export function bindSettingsUI(ctrl) {
         warnings: runResult.warnings,
         warnings_suppressed: runResult.warningsSuppressed,
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
-        arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries()),
-        arcResolution: runResult.arcResolution,
+        arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries(), loadArcs()),
+        arcResolution: summarizeArcStatusResolution(loadArcs(), runResult.arcResolution),
         arcExtraction: runResult.arcExtraction,
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
@@ -4506,6 +4516,26 @@ export function bindSettingsUI(ctrl) {
             competing_author_count: recovery.competing_author_count,
             rejection_reason: recovery.rejection_reason,
             selected_canonical_persona_id: runResult.runtimeContext?.active_persona?.stable_persona_id ?? null,
+          };
+        })(),
+        historical_persona_recovery: (() => {
+          const historical = runResult.runtimeContext?.historical_persona;
+          const recovery = runResult.runtimeContext?.active_persona?.imported_persona_recovery;
+          return {
+            attempted: Boolean(recovery),
+            current_live_persona_id: runResult.runtimeContext?.active_persona?.stable_persona_id ?? null,
+            current_live_persona_name: runResult.runtimeContext?.active_persona?.canonical_name ?? null,
+            imported_author_candidate: recovery?.canonical_name ?? null,
+            imported_author_support_count: recovery?.candidate_support_count ?? 0,
+            imported_author_support_ratio: recovery?.candidate_support_ratio ?? 0,
+            historical_snapshot_created: Boolean(historical),
+            historical_snapshot_id: historical?.stable_persona_id ?? null,
+            historical_snapshot_reused: false,
+            aliases_approved: historical?.approved_aliases ?? [],
+            duplicate_entities_collapsed: runResult.finalReconciliation?.card_local_entities_merged ?? 0,
+            relationship_pairs_rekeyed: runResult.finalReconciliation?.relationship_pairs_merged ?? 0,
+            profile_targets_rewritten: runResult.finalReconciliation?.participant_lists_rewritten ?? 0,
+            unresolved_reviews: runResult.identity_review?.remaining_at_end ?? 0,
           };
         })(),
         quality: runResult.quality,
@@ -5458,8 +5488,19 @@ export function bindSettingsUI(ctrl) {
   });
 }
 
-function summarizeArcSummaryVerification(summaries = []) {
-  const result = { total: summaries.length, supported: 0, pending_review: 0, rejected: 0, legacy_unverified: 0, preverification: {} };
+function summarizeArcSummaryVerification(summaries = [], arcs = []) {
+  // New historical arcs are verified as durable records even when they do not
+  // need a separate resolved-arc prose summary. Older summary records remain
+  // included for backward-compatible review accounting.
+  const verifiedArcs = (arcs ?? []).filter((arc) => arc?.verification);
+  const result = { total: verifiedArcs.length || summaries.length, supported: 0, pending_review: 0, rejected: 0, legacy_unverified: 0, preverification: {} };
+  for (const arc of verifiedArcs) {
+    const outcome = arc.verification?.outcome;
+    if (outcome === 'supported') result.supported++;
+    else if (outcome === 'rejected') result.rejected++;
+    else result.pending_review++;
+  }
+  if (verifiedArcs.length) return result;
   for (const summary of summaries) {
     if (summary.validation_status === 'approved' || summary.semantic_support === 'supported' || summary.semantic_support === 'user_approved') result.supported++;
     else if (summary.validation_status === 'rejected' || summary.semantic_support === 'unsupported') result.rejected++;
@@ -5468,6 +5509,17 @@ function summarizeArcSummaryVerification(summaries = []) {
     if (summary.deterministic_rejection_reason) {
       result.preverification[summary.deterministic_rejection_reason] = (result.preverification[summary.deterministic_rejection_reason] ?? 0) + 1;
     }
+  }
+  return result;
+}
+
+function summarizeArcStatusResolution(arcs = [], fallback = {}) {
+  const result = { open: 0, resolved: 0, abandoned: 0, superseded: 0, reopened: 0, uncertain: 0 };
+  if (!arcs.length) return { ...result, ...fallback };
+  for (const arc of arcs) {
+    const status = String(arc?.status ?? (arc?.resolved ? 'resolved' : 'open')).toLowerCase();
+    if (status in result) result[status]++;
+    else result.uncertain++;
   }
   return result;
 }
