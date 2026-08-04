@@ -1644,6 +1644,24 @@ export async function reconcileCanonicalEntities(characterName) {
     ['session', sessionEntities],
     ...Object.entries(meta.card_local_entities ?? {}).map(([name, entries]) => [`card-local:${name}`, entries]),
   ];
+  // Older/generated records occasionally used their own registry UUID as a
+  // `canonical_card_id`.  That is not a character-card identity: it cannot
+  // resolve to a roster card and otherwise prevents two exact grounded-name
+  // copies (for example a concept and character classification) from being
+  // reconciled safely.  Clear only this provably malformed self-reference;
+  // a real card/persona ID is never inferred from the display name.
+  const malformedSelfCardIdentitiesCleared = [];
+  const rosterCardIds = new Set((roster.characters ?? []).map((entry) => String(entry.id)).filter(Boolean));
+  for (const [store, entries] of registrySources) {
+    for (const entity of entries ?? []) {
+      const selfCardReference = entity?.id && entity?.canonical_card_id && String(entity.id) === String(entity.canonical_card_id);
+      const declaredGrounded = !entity?.canonical_identity_type || entity.canonical_identity_type === 'grounded_npc';
+      if (!selfCardReference || !declaredGrounded || entity?.canonical_persona_id || rosterCardIds.has(String(entity.canonical_card_id))) continue;
+      malformedSelfCardIdentitiesCleared.push({ store, record_id: entity.id, normalized_name: String(entity.name ?? '').trim().toLowerCase() || null });
+      delete entity.canonical_card_id;
+      if (entity.canonical_identity_type === 'grounded_npc') delete entity.canonical_identity_type;
+    }
+  }
   for (const [store, entries] of registrySources) for (const entity of entries ?? []) {
     await yieldEvery();
     const key = entity?.canonical_persona_id
@@ -1667,6 +1685,23 @@ export async function reconcileCanonicalEntities(characterName) {
     String(observation.record_id),
     String(observation.canonical_entity_id),
   ]));
+  // Persisted merge redirects outlive their source registry row. Add them
+  // before any stale-link audit so a durable reference can be repaired from
+  // merge provenance rather than guessing from narrative text.
+  const durableRedirects = meta.entity_redirects ?? {};
+  const resolveDurableRedirect = (id) => {
+    const seen = new Set();
+    let current = String(id);
+    while (durableRedirects[current]?.replacement_canonical_id && !seen.has(current)) {
+      seen.add(current);
+      current = String(durableRedirects[current].replacement_canonical_id);
+    }
+    return seen.has(current) ? null : current;
+  };
+  for (const [sourceId, redirect] of Object.entries(durableRedirects)) {
+    const targetId = resolveDurableRedirect(redirect?.replacement_canonical_id);
+    if (targetId) referenceRedirects.set(String(sourceId), targetId);
+  }
   for (const entities of canonicalGroups.values()) {
     if (entities.length < 2) continue;
     // Prefer the session record as the chat-wide canonical target, then the
@@ -1680,6 +1715,42 @@ export async function reconcileCanonicalEntities(characterName) {
       if (source.id === target.id) continue;
       const result = mergeCanonicalEntityAcrossStores(source.id, target.id, context);
       if (result.merged) { crossStoreEntityMerges++; crossStoreReferencesRedirected += result.referencesRedirected; }
+    }
+  }
+  // A model may classify the same non-card person as a `concept` in one
+  // logical store and a `character` in another.  Exact normalized grounded
+  // names across different stores are safe to consolidate after the strict
+  // card/persona pass above.  Prefer the character classification, but do not
+  // merge anything carrying an authoritative card/persona identity.
+  const groundedNameGroups = new Map();
+  for (const observation of observations) {
+    const entity = observation.entity;
+    if (entity?.canonical_card_id || entity?.canonical_persona_id || !observation.normalized_name) continue;
+    (groundedNameGroups.get(observation.normalized_name) ?? groundedNameGroups.set(observation.normalized_name, []).get(observation.normalized_name)).push(observation);
+  }
+  const crossStoreTypeNormalizations = [];
+  for (const [normalizedName, group] of groundedNameGroups) {
+    const unique = group.filter((entry, index, all) => all.findIndex((candidate) => candidate.record_id === entry.record_id) === index);
+    if (unique.length < 2 || new Set(unique.map((entry) => entry.store)).size < 2) continue;
+    const typeRank = (entry) => entry.entity?.type === 'character' ? 0 : entry.entity?.type === 'unknown' ? 1 : 2;
+    const targetObservation = [...unique].sort((left, right) => typeRank(left) - typeRank(right)
+      || (left.store === 'session' ? 0 : 1) - (right.store === 'session' ? 0 : 1))[0];
+    if (targetObservation.entity?.type !== 'character' && unique.some((entry) => entry.entity?.type === 'character')) targetObservation.entity.type = 'character';
+    for (const sourceObservation of unique) {
+      await yieldEvery();
+      if (sourceObservation.record_id === targetObservation.record_id) continue;
+      const result = mergeCanonicalEntityAcrossStores(sourceObservation.record_id, targetObservation.record_id, context);
+      if (!result.merged) continue;
+      crossStoreEntityMerges++;
+      crossStoreReferencesRedirected += result.referencesRedirected;
+      crossStoreTypeNormalizations.push({
+        normalized_name: normalizedName,
+        source_record_id: sourceObservation.record_id,
+        source_type: sourceObservation.entity?.type ?? 'unknown',
+        target_record_id: targetObservation.record_id,
+        target_type: targetObservation.entity?.type ?? 'unknown',
+        reason: 'exact_grounded_name_cross_store_type_normalization',
+      });
     }
   }
 
@@ -1731,6 +1802,24 @@ export async function reconcileCanonicalEntities(characterName) {
   if (reviewDecisionDuplicatesRemoved || syntheticReviewNamesRemoved || resolvedReviewItemsRemoved) {
     getSettings().identity_review_queue = activeReviewQueue;
   }
+  // Keep the review queue itself user-facing, but export a bounded category
+  // summary so historical persona recovery is not reported as one opaque
+  // unresolved-review number.  This never includes model output or chat text.
+  const classifyIdentityReviewItem = (item) => {
+    const text = [item?.issue_type, item?.reason, item?.source, item?.source_store, item?.resolution_reason]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (/(?:persona|imported.author|historical.author|user.author)/.test(text)) return 'historical_persona_or_author';
+    if (/(?:stale|redirect|missing.registry|wrong.scope)/.test(text)) return 'stale_reference';
+    if (/(?:cross.store|card.local|scope.conflict)/.test(text)) return 'cross_store_scope';
+    if (/(?:ambiguous|multiple.candidate|competing)/.test(text)) return 'ambiguous_identity';
+    if (/(?:unsupported|invalid|synthetic|placeholder)/.test(text)) return 'unsupported_candidate';
+    return 'other_unresolved_identity';
+  };
+  const identityReviewCategories = activeReviewQueue.reduce((summary, item) => {
+    const category = classifyIdentityReviewItem(item);
+    summary[category] = (summary[category] ?? 0) + 1;
+    return summary;
+  }, {});
   const sceneRewrites = await rewriteNarrativeRecords(scenes, ['summary']);
   const arcRewrites = await rewriteNarrativeRecords(arcs, ['content']);
   const summaryRewrites = await rewriteNarrativeRecords(summaries, ['summary', 'arc']);
@@ -1928,7 +2017,11 @@ export async function reconcileCanonicalEntities(characterName) {
             .map((name) => (roster.characters ?? []).find((entry) => String(entry.canonicalName ?? '').trim().toLowerCase() === name.toLowerCase()))
             .filter(Boolean);
           const redirectedIdentity = referenceRedirects.get(String(entityId));
-          const redirectTarget = (roster.characters ?? []).find((entry) => String(entry.id) === String(redirectedIdentity));
+          // Redirects normally point to a durable registry ID. Older merges
+          // may point straight at a roster identity, so support both without
+          // falling back to ambiguous text matching.
+          const redirectTarget = entityById.get(String(redirectedIdentity))
+            ?? (roster.characters ?? []).find((entry) => String(entry.id) === String(redirectedIdentity));
           const target = redirectTarget ?? (canonicalTargets.length === 1 ? canonicalTargets[0] : null);
           const stale = {
             store, record_id: record?.id ?? null, reference_field_path: `${field}[${entryIndex}]`,
@@ -2096,8 +2189,12 @@ export async function reconcileCanonicalEntities(characterName) {
   const allowedCrossStoreRepresentation = [];
   const duplicateWrapperObservations = [];
   const canonicalIdentityAudit = [];
+  // Groups were collected before the cross-store merge pass.  Audit only
+  // rows that still exist so a successful merge is not reported as its own
+  // unresolved duplicate in this same reconciliation run.
+  const liveRegistryIds = new Set(registrySources.flatMap(([, entries]) => (entries ?? []).map((entity) => entity?.id)).filter(Boolean));
   for (const [identityKey, entities] of canonicalGroups.entries()) {
-    const uniqueRecords = entities.filter((entity, index, all) => all.findIndex((candidate) => candidate.id === entity.id) === index);
+    const uniqueRecords = entities.filter((entity, index, all) => liveRegistryIds.has(entity?.id) && all.findIndex((candidate) => candidate.id === entity.id) === index);
     if (uniqueRecords.length < 2) continue;
     const records = observations
       .filter((observation) => uniqueRecords.some((entity) => entity.id === observation.record_id))
@@ -2250,6 +2347,8 @@ export async function reconcileCanonicalEntities(characterName) {
     duplicate_wrapper_observations: duplicateWrapperObservations,
     allowed_cross_store_persona_representations: allowedCrossStoreRepresentation.filter((item) => item.canonical_identity.startsWith('persona:')).length,
     allowed_cross_store_card_representations: allowedCrossStoreRepresentation.filter((item) => item.canonical_identity.startsWith('card:')).length,
+    malformed_self_card_identities_cleared: malformedSelfCardIdentitiesCleared,
+    cross_store_type_normalizations: crossStoreTypeNormalizations,
     true_same_scope_duplicates: duplicateCanonicalEntities.filter((item) => item.classification === 'duplicate_within_same_logical_store').length,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
@@ -2268,6 +2367,7 @@ export async function reconcileCanonicalEntities(characterName) {
     global_legacy_integrity: globalLegacyIntegrity,
     global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     identity_review_items: activeReviewQueue.length,
+    identity_review_categories: identityReviewCategories,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     reference_rewrite_revision: referenceRewriteRevision,
     index_rebuild_revision: indexRebuildRevision,

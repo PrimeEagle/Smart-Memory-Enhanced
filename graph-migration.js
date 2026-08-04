@@ -1285,6 +1285,19 @@ export function mergeEntitiesById(
 export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = getContext()) {
   if (!sourceId || !targetId || sourceId === targetId) return { merged: false, referencesRedirected: 0 };
   const meta = context.chatMetadata?.[META_KEY] ?? {};
+  const redirects = (meta.entity_redirects ??= {});
+  const resolveRedirect = (id) => {
+    const seen = new Set();
+    let current = String(id);
+    while (redirects[current]?.replacement_canonical_id && !seen.has(current)) {
+      seen.add(current);
+      current = String(redirects[current].replacement_canonical_id);
+    }
+    return { id: current, cycle: seen.has(current), chain: [...seen] };
+  };
+  const resolvedTarget = resolveRedirect(targetId);
+  if (resolvedTarget.cycle) return { merged: false, referencesRedirected: 0, unsafe: true, reason: 'Entity redirect cycle detected.' };
+  targetId = resolvedTarget.id;
   const characterStores = Object.values(extension_settings[MODULE_NAME]?.characters ?? {});
   const registries = [
     meta.sessionEntities ?? [],
@@ -1304,6 +1317,21 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
   for (const source of sources) {
     const safety = safeCanonicalMerge(source, target, roster);
     if (!safety.allowed) return { merged: false, referencesRedirected: 0, unsafe: true, reason: safety.reason };
+  }
+  // Record the durable redirect before touching any source registry row. A
+  // later store may be the only remaining holder of a structured ID, so a
+  // redirect is the authoritative repair path when its prose is ambiguous.
+  for (const source of sources) {
+    redirects[String(source.id)] = {
+      old_canonical_id: String(source.id),
+      replacement_canonical_id: String(targetId),
+      reason: 'canonical_entity_merge',
+      originating_run: meta.active_catchup_run_id ?? null,
+      source_store_scopes: [...new Set(sources.map((entry) => entry.scope ?? entry.source ?? 'registry'))],
+      migration_schema_version: 1,
+      references_rewritten: false,
+      unresolved_reference_count: 0,
+    };
   }
   if (!Array.isArray(target.aliases)) target.aliases = [];
   for (const source of sources) {
@@ -1365,7 +1393,13 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
   for (const registry of registries) {
     for (let index = registry.length - 1; index >= 0; index--) if (registry[index]?.id === sourceId) registry.splice(index, 1);
   }
-  return { merged: true, referencesRedirected };
+  for (const source of sources) {
+    const redirect = redirects[String(source.id)];
+    if (!redirect) continue;
+    redirect.references_rewritten = true;
+    redirect.unresolved_reference_count = 0;
+  }
+  return { merged: true, referencesRedirected, redirectsCreated: sources.length };
 }
 
 /**

@@ -12,6 +12,9 @@ const DURABLE_KEYS = new Set([
   'card_local_entities', 'card_local_memories', 'card_local_epistemic',
   'summary', 'summaryEnd', 'entityRegistry', 'entity_registry', 'redirects',
   'relationshipHistory', 'relationship_history', 'epistemic', 'canon',
+  // Durable merge redirects are semantic graph state: a redirect-only repair
+  // must be visible to the local idempotence check.
+  'entity_redirects',
   // Character-card stores live in extension settings rather than chat
   // metadata. The runner supplies this key as a durable snapshot.
   'characters',

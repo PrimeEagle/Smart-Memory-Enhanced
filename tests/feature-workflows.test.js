@@ -778,7 +778,13 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(graph, /both sides independently resolve/);
   assert.match(graph, /card_local_entities/);
   assert.match(graph, /card_local_memories/);
+  assert.match(graph, /old_canonical_id/);
+  assert.match(graph, /replacement_canonical_id/);
+  assert.match(graph, /references_rewritten/);
   assert.match(ui, /mergeCanonicalEntityAcrossStores\(merge\.sourceId, merge\.targetId, context\)/);
+  assert.match(ui, /malformedSelfCardIdentitiesCleared/);
+  assert.match(ui, /exact_grounded_name_cross_store_type_normalization/);
+  assert.match(ui, /liveRegistryIds/);
   assert.match(ui, /normalizePersonaReference/);
   assert.match(ui, /\^\(\?:persona:\)\+\/i/);
   assert.match(ui, /snapshotCanonicalRuntimeContext\(context\)/);
@@ -797,6 +803,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(settings, /finalReconciliation\.integrity_audit/);
   assert.match(settings, /unsafe_identity_merge_blocked/);
   assert.match(settings, /resolved_review_items_removed/);
+  assert.match(settings, /unresolved_review_categories/);
 });
 
 test('final reconciliation canonicalizes scene and arc participant lists while retaining historical display names', () => {
@@ -1090,6 +1097,18 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /injectEpistemicKnowledge\(characterName, characterName\)/);
   assert.match(freshStart, /injectCanon\(characterName\)/);
   assert.ok(freshStart.indexOf('injectRelationshipHistory(characterName)') < freshStart.indexOf('updateTokenDisplay()'));
+});
+
+test('arc diagnostics distinguish staged candidates from durable final arcs', () => {
+  const arcs = read('arcs.js');
+  const settings = read('settings.js');
+  assert.match(arcs, /persisted_final_arcs/);
+  assert.match(arcs, /rejected_before_persistence/);
+  assert.match(arcs, /retainedFinalNew/);
+  assert.match(settings, /summarizeArcRecordAccounting/);
+  assert.match(settings, /arc_record_accounting/);
+  assert.match(settings, /authoritative_records/);
+  assert.match(settings, /accounting_reconciled/);
 });
 
 test('long-chat scene prefilter requires transition evidence and never promotes cadence alone', () => {

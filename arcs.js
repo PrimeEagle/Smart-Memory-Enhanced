@@ -1398,6 +1398,12 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const finalNewActive = finalNew.filter((arc) => !arc.resolved);
     const finalNewResolved = finalNew.filter((arc) => arc.resolved);
     const merged = [...finalActive, ...finalNewActive].slice(-max);
+    const retainedNewIds = new Set([
+      ...merged.map((arc) => arc.id),
+      ...finalNewResolved.map((arc) => arc.id),
+    ]);
+    const retainedFinalNew = finalNew.filter((arc) => retainedNewIds.has(arc.id));
+    const rejectedBeforePersistence = finalNew.filter((arc) => !retainedNewIds.has(arc.id));
 
     // Window extraction identifies candidates; this is the first point at
     // which they have passed canonicalization, validation, and cross-window
@@ -1407,7 +1413,8 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     if (arcPipeline) {
       arcPipeline.generationAttempted = (arcPipeline.generationAttempted ?? 0) + finalNew.length;
       arcPipeline.generated = (arcPipeline.generated ?? 0) + finalNew.length;
-      arcPipeline.persisted = (arcPipeline.persisted ?? 0) + finalNew.length;
+      arcPipeline.persisted = (arcPipeline.persisted ?? 0) + retainedFinalNew.length;
+      arcPipeline.rejectedBeforePersistence = (arcPipeline.rejectedBeforePersistence ?? 0) + rejectedBeforePersistence.length;
     }
     if (options.arcResolutionStats) {
       for (const arc of finalNew) {
@@ -1418,7 +1425,13 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     }
     if (arcExtraction) {
       arcExtraction.consolidated_candidates = dedupedAdd.length;
-      arcExtraction.persisted_final_arcs = finalNew.length;
+      // Candidate staging and durable retention are distinct. The active-arc
+      // cap may intentionally reject older open candidates before save; they
+      // must never be reported as persisted final records.
+      arcExtraction.staged_records = finalNew.length;
+      arcExtraction.persisted_final_arcs = retainedFinalNew.length;
+      arcExtraction.rejected_before_persistence = (arcExtraction.rejected_before_persistence ?? 0) + rejectedBeforePersistence.length;
+      arcExtraction.authoritative_records = (arcExtraction.authoritative_records ?? 0) + retainedFinalNew.length;
       arcExtraction.duplicate_candidates_merged = Math.max(0, rawAdd.length - dedupedAdd.length);
       arcExtraction.reduction_ratio = rawAdd.length ? Number((1 - (dedupedAdd.length / rawAdd.length)).toFixed(4)) : 0;
     }

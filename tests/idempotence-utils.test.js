@@ -104,6 +104,13 @@ test('durable canonicalizer includes per-character durable stores', () => {
   );
 });
 
+test('durable canonicalizer includes persistent entity merge redirects', () => {
+  assert.notEqual(
+    durableStateHash({ entity_redirects: { old: { replacement_canonical_id: 'first' } } }),
+    durableStateHash({ entity_redirects: { old: { replacement_canonical_id: 'second' } } }),
+  );
+});
+
 test('durable-state diagnostics expose changed store paths without content', () => {
   const summary = summarizeDurableStateChanges(
     { sessionMemories: [{ id: 'one', content: 'private before' }] },

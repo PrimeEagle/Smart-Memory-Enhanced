@@ -4494,6 +4494,7 @@ export function bindSettingsUI(ctrl) {
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries(), loadArcs()),
         arcResolution: summarizeArcStatusResolution(loadArcs(), runResult.arcResolution),
+        arc_record_accounting: summarizeArcRecordAccounting(loadArcs(), runResult.arcExtraction),
         arcExtraction: runResult.arcExtraction,
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
@@ -4536,6 +4537,7 @@ export function bindSettingsUI(ctrl) {
             relationship_pairs_rekeyed: runResult.finalReconciliation?.relationship_pairs_merged ?? 0,
             profile_targets_rewritten: runResult.finalReconciliation?.participant_lists_rewritten ?? 0,
             unresolved_reviews: runResult.identity_review?.remaining_at_end ?? 0,
+            unresolved_review_categories: runResult.finalReconciliation?.integrity_audit?.identity_review_categories ?? {},
           };
         })(),
         quality: runResult.quality,
@@ -5522,4 +5524,34 @@ function summarizeArcStatusResolution(arcs = [], fallback = {}) {
     else result.uncertain++;
   }
   return result;
+}
+
+function summarizeArcRecordAccounting(arcs = [], extraction = {}) {
+  const status = summarizeArcStatusResolution(arcs);
+  const verification = summarizeArcSummaryVerification([], arcs);
+  const authoritative = arcs.length;
+  const lifecycleTotal = Object.values(status).reduce((total, value) => total + value, 0);
+  const verificationTotal = verification.supported + verification.pending_review + verification.rejected;
+  const staged = Number(extraction.staged_records ?? extraction.persisted_final_arcs ?? 0);
+  const rejectedBeforePersistence = Number(extraction.rejected_before_persistence ?? 0);
+  return {
+    raw_candidates: Number(extraction.parsed_candidates ?? 0),
+    consolidated_candidates: Number(extraction.consolidated_candidates ?? 0),
+    staged_records: staged,
+    rejected_before_persistence: rejectedBeforePersistence,
+    authoritative_records: authoritative,
+    open: status.open,
+    resolved: status.resolved,
+    abandoned: status.abandoned,
+    superseded: status.superseded,
+    reopened: status.reopened,
+    uncertain: status.uncertain,
+    verification_supported: verification.supported,
+    verification_pending_review: verification.pending_review,
+    verification_rejected: verification.rejected,
+    retired_intermediate_records: 0,
+    duplicate_versions_removed: Number(extraction.duplicate_candidates_merged ?? 0),
+    unaccounted_records: Math.max(0, authoritative - lifecycleTotal) + Math.max(0, authoritative - verificationTotal),
+    accounting_reconciled: lifecycleTotal === authoritative && verificationTotal === authoritative && staged === authoritative + rejectedBeforePersistence,
+  };
 }

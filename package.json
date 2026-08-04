@@ -1,6 +1,6 @@
 {
   "name": "smart-memory",
-  "version": "0.8.81",
+  "version": "0.8.82",
   "type": "module",
   "description": "Smart Memory - SillyTavern extension",
   "license": "AGPL-3.0-or-later",

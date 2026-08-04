@@ -89,8 +89,18 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     const opening = /^(?:\s|\*){0,12}(?:meanwhile|elsewhere|hours later|later that|the next)/im.test(value);
     return { strong, moderate: [time, travel, channel, opening].filter(Boolean).length, weak: /\b(?:then|now|after)\b/i.test(value) };
   };
-  const directContinuation = (previous, current) => /(?:\?|\b(?:would|could|should|do you|are you|will you)\b)/i.test(previous)
-    && /^(?:\s|[“"'*-])*(?:yes|no|i |we |that |it |you |he |she |they )/i.test(current);
+  const directContinuation = (previous, current) => {
+    const previousText = String(previous ?? '').trim();
+    const currentText = String(current ?? '').trim();
+    // This is intentionally a narrow local veto, not a scene classifier.
+    // It catches a reply that plainly continues the immediately preceding
+    // exchange, including an answer to a statement or emotional disclosure;
+    // explicit strong transitions still override it below.
+    const replyLead = /^(?:[“"'*-]\s*)?(?:yes|no|okay|ok|alright|of course|please|sorry|thanks|i(?:\s|['’](?:m|ll|ve|d))|we\s|that\s|it\s|you\s|he\s|she\s|they\s|but\s|and\s|because\s)/i.test(currentText);
+    if (!replyLead) return false;
+    const conversationalCue = /(?:\?|!|\b(?:said|asked|replied|answered|whispered|murmured|admitted|promised|confessed|told)\b|[”"']\s*$)/i.test(previousText);
+    return conversationalCue;
+  };
   for (let index = 1; index < messages.length; index++) {
     const current = String(messages[index]?.mes ?? '');
     const previous = String(messages[index - 1]?.mes ?? '');

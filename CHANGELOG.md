@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.82] - 2026-08-04
+
+### Fixed
+
+- Canonical entity merges now write a durable redirect before the absorbed
+  registry record is removed. Structured references can therefore be repaired
+  from merge provenance without unsafe text-based guessing.
+- Reconciliation now clears only provably malformed self-referential card IDs
+  and consolidates exact grounded-name copies across logical stores, including
+  harmless model type disagreements such as `concept` versus `character`.
+- Successful cross-store merges are no longer reported as unresolved duplicate
+  entities by the final audit.
+- Durable merge redirects are included in the local idempotence-state hash, so
+  redirect-only graph changes cannot be missed by the Developer check.
+- Arc diagnostics now separate staged candidates, records rejected before
+  persistence, and authoritative durable arcs; generated counts no longer
+  imply every candidate was saved.
+- Scene candidate selection now suppresses clear immediate conversational
+  replies while retaining explicit time, location, and delimiter transitions.
+
+### Added
+
+- Historical-persona recovery diagnostics now group unresolved identity review
+  items by actionable category rather than reporting one opaque total.
+- Final reconciliation exports bounded audit details for cleared malformed
+  identity fields and completed cross-store type normalizations.
+
+### Tests
+
+- Added regression coverage for redirect hashing, redirect lifecycle fields,
+  grounded cross-store type normalization, and truthful arc record accounting.
+  Full automated verification passed with 315 unit/integration tests. Live
+  replay validation remains pending.
+
 ## [0.8.81] - 2026-08-03
 
 ### Fixed
