@@ -1393,11 +1393,33 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
   for (const registry of registries) {
     for (let index = registry.length - 1; index >= 0; index--) if (registry[index]?.id === sourceId) registry.splice(index, 1);
   }
+  // Verify the physical rewrite contract after all live containers have been
+  // updated. Historical audit records deliberately retain former IDs and are
+  // not live graph references.
+  const countLiveReferences = (value, oldId, key = '') => {
+    if (/(?:audit|historical|old_canonical_id|former_id)/i.test(key)) return 0;
+    if (typeof value === 'string') return value === oldId ? 1 : 0;
+    if (!value || typeof value !== 'object') return 0;
+    if (Array.isArray(value)) return value.reduce((total, item) => total + countLiveReferences(item, oldId, key), 0);
+    return Object.entries(value).reduce((total, [childKey, item]) => total + countLiveReferences(item, oldId, childKey), 0);
+  };
   for (const source of sources) {
     const redirect = redirects[String(source.id)];
     if (!redirect) continue;
-    redirect.references_rewritten = true;
-    redirect.unresolved_reference_count = 0;
+    const liveReferencesRemaining = [
+      ...memoryStores, meta.sceneHistory, meta.storyArcs, meta.arcSummaries,
+      meta.profiles, meta.epistemic_knowledge, meta.state_ledger,
+      meta.card_local_relationships, meta.card_local_epistemic,
+    ].reduce((total, store) => total + countLiveReferences(store, source.id), 0);
+    redirect.redirect_reference_status = {
+      live_references_before: null,
+      live_references_rewritten: referencesRedirected,
+      live_references_remaining: liveReferencesRemaining,
+      historical_mentions_retained: true,
+      reload_verified: liveReferencesRemaining === 0,
+    };
+    redirect.references_rewritten = liveReferencesRemaining === 0;
+    redirect.unresolved_reference_count = liveReferencesRemaining;
   }
   return { merged: true, referencesRedirected, redirectsCreated: sources.length };
 }

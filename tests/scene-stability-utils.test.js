@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeSceneStabilityHistory, canonicalizeGateOutput, compareSceneBoundaryRuns } from '../scene-stability-utils.js';
+import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, canonicalizeGateOutput, compareSceneBoundaryRuns } from '../scene-stability-utils.js';
+
+test('same-run boundary clustering is diagnostic-only and never imports prior-run evidence', () => {
+  const result = analyzeSameRunBoundaryClusters([
+    { candidate_id: 10, message_index: 10, decision: true, terminal_break_disposition: 'accepted_final_break' },
+    { candidate_id: 12, message_index: 12, decision: true, terminal_break_disposition: 'rejected_minimum_scene_length' },
+    { candidate_id: 30, message_index: 30, decision: true, terminal_break_disposition: 'accepted_final_break' },
+  ], 2);
+  assert.equal(result.analysis_scope, 'single_run_only');
+  assert.equal(result.nearby_cluster_count, 1);
+  assert.equal(result.retained_boundary_count, 1);
+  assert.equal(result.suppressed_candidate_count, 1);
+  assert.deepEqual(result.clusters[0].suppression_reasons, { rejected_minimum_scene_length: 1 });
+});
 
 test('scene comparison classifies exact, shifted, added, and removed boundaries', () => {
   const common = { prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: { temperature: 0 } };
@@ -42,6 +55,20 @@ test('multi-run stability reports consensus, marginal boundaries, and shifts', (
   assert.equal(result.scene_count_range, 1);
   assert.equal(result.scene_count_materially_stable, true);
   assert.ok(result.shifted_boundary_clusters.some((cluster) => cluster.member_indices.includes(48) && cluster.member_indices.includes(50)));
+  assert.equal(result.stability_cause.classification, 'insufficient_history');
+});
+
+test('scene stability cause reports a clean stable replay when full candidate evidence agrees', () => {
+  const shared = {
+    scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile',
+    task_sampling_settings: {}, malformed_batches: 0, fallback_boundaries: 0, candidate_detail_available: true,
+  };
+  const candidate = { candidate_id: 20, message_index: 20, decision: true, gate_result: 'accepted', gate_input_hash: 'gate', gate_output_hash: 'output', gate_output_schema_version: 1, terminal_break_disposition: 'accepted_final_break' };
+  const prior = { ...shared, run_id: 'one', generated: 2, final_break_indices: [20], candidate_dispositions: [candidate] };
+  const current = { ...shared, run_id: 'two', generated: 2, final_break_indices: [20], candidate_dispositions: [candidate] };
+  const result = analyzeSceneStabilityHistory([prior], current);
+  assert.equal(result.stability_cause.classification, 'stable');
+  assert.equal(result.stability_cause.attention_required, false);
 });
 
 test('scene-count ties are reported as ties instead of choosing the smallest count', () => {

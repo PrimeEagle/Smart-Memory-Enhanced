@@ -29,6 +29,18 @@ const VOLATILE_KEYS = new Set([
   'final_audit_revision', 'developer_summary', 'status_card',
 ]);
 
+// These scene fields drive memory retrieval, provenance, canonical identity,
+// and validation. Everything else on a scene record is presentation,
+// detector/diagnostic provenance, or reproducible metadata and is deliberately
+// hashed separately. This keeps the semantic idempotence contract focused on
+// behavior rather than on a refreshed diagnostic timestamp or comparison card.
+const SCENE_SEMANTIC_FIELDS = new Set([
+  'id', 'summary', 'source_memory_ids', 'source_message_indices',
+  'source_start_index', 'source_end_index', 'source_messages',
+  'character_participants', 'participant_references', 'parent_memory_ids',
+  'grounding_status', 'validation_status', 'validation_issues',
+]);
+
 function fingerprint(value) {
   let hash = 2166136261;
   for (const char of String(value ?? '')) {
@@ -54,12 +66,45 @@ function canonicalize(value, { excludeVolatile = true } = {}) {
   }));
 }
 
+function splitSceneHistory(sceneHistory = []) {
+  const semantic = [];
+  const metadata = [];
+  for (const scene of Array.isArray(sceneHistory) ? sceneHistory : []) {
+    if (!scene || typeof scene !== 'object') continue;
+    const semanticRecord = {};
+    const metadataRecord = {};
+    for (const [key, value] of Object.entries(scene)) {
+      if (SCENE_SEMANTIC_FIELDS.has(key)) semanticRecord[key] = value;
+      else metadataRecord[key] = value;
+    }
+    semantic.push(semanticRecord);
+    metadata.push(metadataRecord);
+  }
+  return { semantic, metadata };
+}
+
+/** Scene history has explicit semantic and diagnostic hash boundaries. */
+export function sceneHistoryHashComponents(metadata = {}) {
+  const history = metadata?.sceneHistory ?? [];
+  const split = splitSceneHistory(history);
+  const semanticHistoryHash = fingerprint(JSON.stringify(canonicalize(split.semantic)));
+  const comparisonMetadataHash = fingerprint(JSON.stringify(canonicalize(split.metadata)));
+  const fullStoreHash = fingerprint(JSON.stringify(canonicalize(history)));
+  return {
+    semantic_history_hash: semanticHistoryHash,
+    comparison_metadata_hash: comparisonMetadataHash,
+    volatile_metadata_hash: comparisonMetadataHash,
+    full_store_hash: fullStoreHash,
+    semantic_record_count: split.semantic.length,
+  };
+}
+
 /** Return the reconciliation-relevant semantic subset of extension metadata. */
 export function canonicalizeDurableIdempotenceState(metadata = {}) {
   const source = metadata && typeof metadata === 'object' ? metadata : {};
   const selected = Object.fromEntries(Object.keys(source)
     .filter((key) => DURABLE_KEYS.has(key))
-    .map((key) => [key, source[key]]));
+    .map((key) => [key, key === 'sceneHistory' ? splitSceneHistory(source[key]).semantic : source[key]]));
   return canonicalize(selected);
 }
 
@@ -89,11 +134,23 @@ export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24
     }
   };
   visit(left, right);
+  const changesByCategory = paths.reduce((summary, entry) => {
+    const category = entry.path.startsWith('sceneHistory') ? 'scene_history_semantic'
+      : entry.path.startsWith('characters') ? 'character_store'
+        : 'other_durable_store';
+    summary[category] = (summary[category] ?? 0) + 1;
+    return summary;
+  }, {});
   return {
     changed: paths.length > 0,
     changed_top_level_stores: [...new Set(paths.map((entry) => entry.path.split('.')[0]))],
     path_count: paths.length,
     paths,
+    changed_path_count: paths.length,
+    changed_paths: paths,
+    changes_by_category: changesByCategory,
+    accounted_mutation_count: 0,
+    unaccounted_mutation_count: paths.length,
     truncated: paths.length >= limit,
   };
 }

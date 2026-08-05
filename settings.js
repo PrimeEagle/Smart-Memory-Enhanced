@@ -122,7 +122,7 @@ import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcs, loadAr
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import { evaluateDeterministicSceneGate } from './scene-gate-utils.js';
-import { analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
+import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
   PROMPT_TASK_LABELS,
@@ -147,6 +147,7 @@ import {
 import {
   deriveIdempotenceResult,
   durableStateHash,
+  sceneHistoryHashComponents,
   summarizeDurableStateChanges,
   diagnosticMetadataHash,
   revisionMetadataHash,
@@ -321,7 +322,14 @@ async function runStagedChatCleanup(context, mutate) {
 async function runFinalIntegrityReconciliation(characterName, { forceIdempotenceCheck = false } = {}) {
   const startedAt = performance.now();
   const metadataBefore = getContext().chatMetadata?.[META_KEY] ?? {};
-  const durableStateHashBefore = durableStateHash(idempotenceDurableState(metadataBefore));
+  const durableStateBefore = idempotenceDurableState(metadataBefore);
+  const durableStateHashBefore = durableStateHash(durableStateBefore);
+  const sceneHistoryHashesBefore = sceneHistoryHashComponents(durableStateBefore);
+  const developerCheckRequested = Boolean(extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck);
+  // There is currently no mutating preparation step. Keep this explicit
+  // snapshot before pass one so future preparation cannot hide a mutation.
+  const metadataAfterPreparation = getContext().chatMetadata?.[META_KEY] ?? {};
+  const durableStateAfterPreparation = idempotenceDurableState(metadataAfterPreparation);
   const diagnosticMetadataHashBefore = diagnosticMetadataHash(metadataBefore);
   const revisionMetadataHashBefore = revisionMetadataHash(metadataBefore);
   const reconciliation = await reconcileCanonicalEntities(characterName);
@@ -375,7 +383,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   // introduce new IDs. Diagnostic/revision metadata may change even when no
   // durable record changes, so the metadata hash is reported but is not by
   // itself a failed reconciliation.
-  if (extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck) {
+  if (developerCheckRequested) {
     const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const secondPass = await reconcileCanonicalEntities(characterName);
     const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
@@ -391,6 +399,10 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       groups[key] = group;
       return groups;
     }, {})).sort((left, right) => right.count - left.count || left.store.localeCompare(right.store));
+    const durableChangeSummary = summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
+    const accountedMutations = (repairs.actual_logical_mutations_this_run ?? 0) + (repairs.actual_physical_store_mutations_this_run ?? 0);
+    durableChangeSummary.accounted_mutation_count = accountedMutations;
+    durableChangeSummary.unaccounted_mutation_count = durableChangeSummary.changed ? Math.max(0, durableChangeSummary.changed_path_count - accountedMutations) : 0;
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: 2,
@@ -407,7 +419,21 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       unsafe_merge_candidates_after_second_pass: secondPass.integrity_audit?.unsafe_merge_candidates ?? 0,
       unresolved_integrity_failures_after_second_pass: secondPass.integrity_audit?.relationship_integrity_errors?.length ?? 0,
       stale_reference_summary: staleReferenceSummary,
-      durable_state_change_summary: summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass),
+      durable_state_change_summary: durableChangeSummary,
+      idempotence_hash_timeline: {
+        pre_preparation_hash: durableStateHashBefore,
+        post_preparation_hash: durableStateHash(durableStateAfterPreparation),
+        post_first_pass_hash: durableStateHashAfterFirstPass,
+        post_second_pass_hash: durableStateHash(durableStateAfterSecondPass),
+        changed_during_preparation: durableStateHashBefore !== durableStateHash(durableStateAfterPreparation),
+        changed_during_first_pass: durableStateHash(durableStateAfterPreparation) !== durableStateHashAfterFirstPass,
+        changed_during_second_pass: durableStateHashAfterFirstPass !== durableStateHash(durableStateAfterSecondPass),
+      },
+      scene_history_hashes: {
+        before: sceneHistoryHashesBefore,
+        after_first_pass: sceneHistoryHashComponents(durableStateAfterFirstPass),
+        after_second_pass: sceneHistoryHashComponents(durableStateAfterSecondPass),
+      },
     };
     result.idempotence = deriveIdempotenceResult(baseIdempotence);
     result.idempotence.hash_comparison = {
@@ -3897,6 +3923,13 @@ export function bindSettingsUI(ctrl) {
             }
             return counts;
           }, {});
+          // This records only proposals from this run.  It deliberately does
+          // not compare prior runs or alter scene decisions; cross-run
+          // stability remains a separate diagnostic concern.
+          sceneAudit.same_run_boundary_clusters = analyzeSameRunBoundaryClusters(
+            sceneAudit.candidate_dispositions ?? [],
+            minMessages,
+          );
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections
@@ -5188,7 +5221,10 @@ export function bindSettingsUI(ctrl) {
       return;
     }
     const normalized = normalizeIdempotenceResult(result);
-    const passed = normalized.idempotent === true;
+    const currentSemanticHash = durableStateHash(idempotenceDurableState(getContext().chatMetadata?.[META_KEY] ?? {}));
+    const evaluatedSemanticHash = normalized.evaluated_semantic_hash ?? normalized.durable_state_hash_after_second_pass ?? null;
+    const staleResult = Boolean(evaluatedSemanticHash && evaluatedSemanticHash !== currentSemanticHash);
+    const passed = normalized.idempotent === true && !staleResult;
     const unresolved = normalized.attention_required === true;
     const firstLogical = Number(normalized.first_pass_logical_mutations ?? 0);
     const firstPhysical = Number(normalized.first_pass_physical_mutations ?? 0);
@@ -5201,7 +5237,7 @@ export function bindSettingsUI(ctrl) {
       .removeClass('sme_idempotence_pass sme_idempotence_attention')
       .addClass(passed ? 'sme_idempotence_pass' : 'sme_idempotence_attention')
       .empty()
-      .append($('<strong>').text(passed ? 'Idempotence check passed' : unresolved ? 'Idempotence check needs attention' : 'Idempotence check incomplete'))
+      .append($('<strong>').text(staleResult ? 'Idempotence check is stale' : passed ? 'Idempotence check passed' : unresolved ? 'Idempotence check needs attention' : 'Idempotence check incomplete'))
       .append($('<div>').text(`First pass: ${firstLogical} logical and ${firstPhysical} physical changes.`))
       .append($('<div>').text(`Second pass: ${secondLogical} logical and ${secondPhysical} physical changes; ${stale} stale references; ${recreated} recreated links.`))
       .append($('<small>').text(passed
@@ -5210,6 +5246,7 @@ export function bindSettingsUI(ctrl) {
           : `The finalized state is stable.${normalized.metadata_only_changes ? ' Diagnostic metadata changed only.' : ''}`)
         : 'Do not start a long generation yet. Export diagnostics or inspect the current chat state before retrying.'))
       .show();
+    if (staleResult) panel.append($('<small>').text('The durable state changed after this check. Run the Developer idempotence check again before treating this result as current.'));
     if (unresolved && normalized.attention_reasons?.length) {
       panel.append($('<div>').append($('<strong>').text('Attention reason: ')).append(document.createTextNode(normalized.attention_reasons.join(', '))));
     }
@@ -5275,7 +5312,14 @@ export function bindSettingsUI(ctrl) {
           renderer_result: exportedResult.idempotent,
           values_consistent: [runnerResult.idempotent, persistedResult.idempotent, restoredResult.idempotent, exportedResult.idempotent].every((value) => value === runnerResult.idempotent),
         };
-        const finalResult = normalizeIdempotenceResult({ ...exportedResult, idempotence_result_lifecycle: lifecycle });
+        const finalResult = normalizeIdempotenceResult({
+          ...exportedResult,
+          evaluated_durable_hash: exportedResult.durable_state_hash_after_second_pass ?? null,
+          evaluated_semantic_hash: exportedResult.durable_state_hash_after_second_pass ?? null,
+          evaluated_scene_history_hash: exportedResult.scene_history_hashes?.after_second_pass?.semantic_history_hash ?? null,
+          evaluated_at: Date.now(),
+          idempotence_result_lifecycle: lifecycle,
+        });
         context.chatMetadata[META_KEY].developer_idempotence_check = finalResult;
         if (exportReport && typeof exportReport === 'object') {
           exportReport.developer_idempotence_check = finalResult;

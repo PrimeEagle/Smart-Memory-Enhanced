@@ -27,6 +27,14 @@ test('scene records preserve original source indices despite filtered-message ga
   assert.equal(scene.grounding_status, 'direct');
 });
 
+test('legacy scenes without IDs normalize to a deterministic durable ID', () => {
+  const legacy = { summary: 'Old scene', ts: 1, source_message_indices: [8, 3, 8] };
+  const first = normalizeSceneRecord(legacy);
+  const second = normalizeSceneRecord(legacy);
+  assert.equal(first.id, second.id);
+  assert.match(first.id, /^legacy-scene-/);
+});
+
 test('scene normalization removes parser artifacts from legacy participants', () => {
   const scene = normalizeSceneRecord({
     summary: 'A scene',

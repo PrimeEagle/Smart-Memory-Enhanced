@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.83] - 2026-08-05
+
+### Fixed
+
+- Legacy scene records without an ID now receive a deterministic ID derived
+  from their existing durable content and provenance. Loading or saving an
+  older scene no longer creates a fresh ID and falsely changes `sceneHistory`
+  during a Developer idempotence check.
+- The idempotence-state hash now uses a semantic scene-history projection.
+  Retrieval, provenance, participant, and validation fields remain durable;
+  detector and presentation metadata are compared separately and cannot
+  independently make a stable graph fail the check.
+- Developer idempotence results now retain a hash timeline, a privacy-safe
+  durable-store diff, and separate scene semantic/metadata hashes. The panel
+  identifies a stored result as stale if durable state changes after the
+  check, rather than presenting it as current.
+- Canonical merge redirects now verify whether any live structured references
+  to the absorbed identity remain after the rewrite. Historical audit evidence
+  is retained without being misclassified as an active graph reference.
+
+### Added
+
+- Scene diagnostics now include same-run nearby-boundary clustering. It is
+  intentionally diagnostic-only and never uses a prior run to alter the
+  current scene decisions.
+- Cross-run scene analysis now reports a bounded stability cause: stable,
+  incomplete history, measured candidate variance, changed pipeline
+  conditions, or a determinism concern.
+- Identity-review diagnostics now distinguish stale references, incompatible
+  scopes, safe retained distinctions, unsafe merge blocks, short-alias
+  ambiguity, full-name competition, and invalid generated candidates with a
+  reason, outcome, and severity.
+
+### Tests
+
+- Added deterministic legacy-scene-ID coverage plus same-run scene-cluster
+  and stability-cause regression tests. Full automated verification passed
+  with 318 unit/integration tests. Live replay validation remains required
+  before treating the new diagnostics as live-validated.
+
 ## [0.8.82] - 2026-08-04
 
 ### Fixed

@@ -1808,16 +1808,27 @@ export async function reconcileCanonicalEntities(characterName) {
   const classifyIdentityReviewItem = (item) => {
     const text = [item?.issue_type, item?.reason, item?.source, item?.source_store, item?.resolution_reason]
       .filter(Boolean).join(' ').toLowerCase();
-    if (/(?:persona|imported.author|historical.author|user.author)/.test(text)) return 'historical_persona_or_author';
-    if (/(?:stale|redirect|missing.registry|wrong.scope)/.test(text)) return 'stale_reference';
-    if (/(?:cross.store|card.local|scope.conflict)/.test(text)) return 'cross_store_scope';
-    if (/(?:ambiguous|multiple.candidate|competing)/.test(text)) return 'ambiguous_identity';
-    if (/(?:unsupported|invalid|synthetic|placeholder)/.test(text)) return 'unsupported_candidate';
-    return 'other_unresolved_identity';
+    if (/(?:stale|redirect|missing.registry|wrong.scope)/.test(text)) return { reason: 'unresolved_stale_reference', outcome: 'deferred_review', severity: 'quality_degrading' };
+    if (/(?:cross.store|card.local|scope.conflict)/.test(text)) return { reason: 'incompatible_store_scope', outcome: 'retained_distinct', severity: 'informational' };
+    if (/(?:different.*card|cross.card|unsafe.merge)/.test(text)) return { reason: 'blocked_cross_card_merge', outcome: 'blocked_unsafe', severity: 'informational' };
+    if (/(?:ambiguous.*short|first.name)/.test(text)) return { reason: 'ambiguous_short_alias', outcome: 'deferred_review', severity: 'actionable' };
+    if (/(?:ambiguous|multiple.candidate|competing)/.test(text)) return { reason: 'competing_full_name', outcome: 'deferred_review', severity: 'actionable' };
+    if (/(?:unsupported|invalid|synthetic|placeholder)/.test(text)) return { reason: 'unsupported_generated_candidate', outcome: 'discarded_invalid', severity: 'informational' };
+    if (/(?:grounded|evidence|unmatched|unresolved|persona|author)/.test(text)) return { reason: 'insufficient_shared_evidence', outcome: 'retained_distinct', severity: 'informational' };
+    return { reason: 'truly_unclassified', outcome: 'deferred_review', severity: 'actionable' };
   };
-  const identityReviewCategories = activeReviewQueue.reduce((summary, item) => {
-    const category = classifyIdentityReviewItem(item);
-    summary[category] = (summary[category] ?? 0) + 1;
+  const classifiedReviewQueue = activeReviewQueue.map((item) => ({ ...item, ...classifyIdentityReviewItem(item) }));
+  if (JSON.stringify(classifiedReviewQueue) !== JSON.stringify(activeReviewQueue)) getSettings().identity_review_queue = classifiedReviewQueue;
+  const identityReviewCategories = classifiedReviewQueue.reduce((summary, item) => {
+    summary[item.reason] = (summary[item.reason] ?? 0) + 1;
+    return summary;
+  }, {});
+  const identityReviewOutcomes = classifiedReviewQueue.reduce((summary, item) => {
+    summary[item.outcome] = (summary[item.outcome] ?? 0) + 1;
+    return summary;
+  }, {});
+  const identityReviewSeverities = classifiedReviewQueue.reduce((summary, item) => {
+    summary[item.severity] = (summary[item.severity] ?? 0) + 1;
     return summary;
   }, {});
   const sceneRewrites = await rewriteNarrativeRecords(scenes, ['summary']);
@@ -2368,6 +2379,8 @@ export async function reconcileCanonicalEntities(characterName) {
     global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
     identity_review_items: activeReviewQueue.length,
     identity_review_categories: identityReviewCategories,
+    identity_review_outcomes: identityReviewOutcomes,
+    identity_review_severities: identityReviewSeverities,
     resolved_review_items_removed: resolvedReviewItemsRemoved,
     reference_rewrite_revision: referenceRewriteRevision,
     index_rebuild_revision: indexRebuildRevision,

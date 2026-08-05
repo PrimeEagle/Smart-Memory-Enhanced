@@ -54,6 +54,63 @@ export function canonicalizeGateOutput(candidate = {}) {
   };
 }
 
+/**
+ * Describe nearby boundary proposals from one run without using another run
+ * as a suppression signal.  This is diagnostic-only: the deterministic gate
+ * remains the authority for accepting a boundary.
+ */
+export function analyzeSameRunBoundaryClusters(candidates = [], proximity = 1) {
+  const normalizedProximity = Math.max(1, Number.isFinite(Number(proximity)) ? Math.floor(Number(proximity)) : 1);
+  const proposals = candidates
+    .filter((candidate) => candidate?.decision === true)
+    .map((candidate) => ({
+      candidate_id: candidate.candidate_id ?? candidate.message_index ?? null,
+      message_index: candidate.message_index ?? candidate.candidate_id ?? null,
+      terminal_break_disposition: candidate.terminal_break_disposition ?? null,
+      gate_reason_code: candidate.gate_reason_code ?? null,
+      gate_result: candidate.gate_result ?? null,
+    }))
+    .filter((candidate) => Number.isInteger(candidate.message_index))
+    .sort((left, right) => left.message_index - right.message_index || String(left.candidate_id).localeCompare(String(right.candidate_id)));
+
+  const clusters = [];
+  for (const proposal of proposals) {
+    const current = clusters.at(-1);
+    if (current && proposal.message_index - current.members.at(-1).message_index <= normalizedProximity) current.members.push(proposal);
+    else clusters.push({ members: [proposal] });
+  }
+  const nearby = clusters.filter((cluster) => cluster.members.length > 1).map((cluster, index) => {
+    const members = cluster.members;
+    const retained = members.filter((item) => item.terminal_break_disposition === 'accepted_final_break');
+    const suppressed = members.filter((item) => item.terminal_break_disposition !== 'accepted_final_break');
+    return {
+      cluster_id: `same-run-${index + 1}`,
+      minimum_index: members[0].message_index,
+      maximum_index: members.at(-1).message_index,
+      candidate_count: members.length,
+      retained_boundary_count: retained.length,
+      suppressed_candidate_count: suppressed.length,
+      suppression_reasons: suppressed.reduce((counts, item) => {
+        const reason = item.terminal_break_disposition ?? 'not_finalized';
+        counts[reason] = (counts[reason] ?? 0) + 1;
+        return counts;
+      }, {}),
+      candidates: members,
+    };
+  });
+  return {
+    schema_version: 1,
+    analysis_scope: 'single_run_only',
+    proximity_messages: normalizedProximity,
+    proposed_boundary_count: proposals.length,
+    nearby_cluster_count: nearby.length,
+    clustered_candidate_count: nearby.reduce((count, cluster) => count + cluster.candidate_count, 0),
+    retained_boundary_count: nearby.reduce((count, cluster) => count + cluster.retained_boundary_count, 0),
+    suppressed_candidate_count: nearby.reduce((count, cluster) => count + cluster.suppressed_candidate_count, 0),
+    clusters: nearby,
+  };
+}
+
 export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance = 2) {
   const currentIndices = currentAudit.final_break_indices ?? [];
   const currentSceneCount = currentAudit.generated ?? null;
@@ -592,6 +649,21 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
   const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
  const identifiedPriorRuns = identifiedRuns.filter((run) => !run.current_run);
  const distinctPriorRunCount = identifiedPriorRuns.length;
+ const materiallyStable = counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false;
+ const boundariesMateriallyStable = entries.every(([index, count]) => count === runCount
+   || (clusterForIndex(index)?.distinct_run_count === runCount));
+ const varianceTotal = Object.values(measuredSceneVarianceSources).reduce((total, count) => total + count, 0);
+ const stabilityCause = !candidateHistoryComplete
+   ? { classification: 'insufficient_history', explanation: 'Comparable scene runs lack complete candidate-level diagnostics.', attention_required: false }
+   : gateDeterminismViolations.length
+     ? { classification: 'determinism_violation', explanation: 'Equivalent gate inputs produced different terminal outcomes.', attention_required: true }
+     : !pipelinesStable
+       ? { classification: 'pipeline_conditions_changed', explanation: 'At least one comparable run used malformed or fallback scene decisions.', attention_required: false }
+       : varianceTotal > 0
+         ? { classification: 'measured_candidate_variance', explanation: 'Boundary differences are attributed to recorded AI, gate, assembly, or input variance.', attention_required: false }
+         : materiallyStable && boundariesMateriallyStable
+           ? { classification: 'stable', explanation: 'Comparable runs have materially stable scene counts and boundary positions.', attention_required: false }
+           : { classification: 'boundary_difference_unexplained', explanation: 'Comparable runs differ without a recorded candidate-level cause.', attention_required: true };
  return {
    scene_run_input_accounting: {
      raw_prior_record_count: compatiblePriorRuns.length,
@@ -685,16 +757,16 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    all_run_candidate_stability: allRunCandidateStability,
    candidate_history_coverage: candidateHistoryCoverage,
    scene_variance_sources: candidateHistoryComplete ? measuredSceneVarianceSources : null,
+   stability_cause: stabilityCause,
    gate_determinism_violation_count: gateDeterminismViolations.length,
    gate_determinism_violations: gateDeterminismViolations,
    gate_determinism_coverage: gateDeterminismCoverage,
    gate_snapshot_coverage_by_run: gateSnapshotCoverageByRun,
    gate_schema_migration_progress: gateSchemaMigrationProgress,
    pipeline_stable: pipelinesStable, scene_count_exactly_stable: new Set(counts).size <= 1,
-   scene_count_materially_stable: counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false,
+   scene_count_materially_stable: materiallyStable,
    boundary_positions_exactly_stable: entries.every(([, count]) => count === runCount),
-   boundary_positions_materially_stable: entries.every(([index, count]) => count === runCount
-     || (clusterForIndex(index)?.distinct_run_count === runCount)),
+   boundary_positions_materially_stable: boundariesMateriallyStable,
    decision_pipeline_stable: pipelinesStable,
  };
 }

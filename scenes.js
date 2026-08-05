@@ -646,7 +646,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
  */
 export function loadSceneHistory() {
   const context = getContext();
-  return (context.chatMetadata?.[META_KEY]?.sceneHistory ?? []).map((scene) => normalizeSceneRecord(scene, generateMemoryId));
+  return (context.chatMetadata?.[META_KEY]?.sceneHistory ?? []).map((scene) => normalizeSceneRecord(scene));
 }
 
 /**
@@ -709,7 +709,7 @@ export async function saveSceneHistory(scenes) {
   const metadata = context.chatMetadata[META_KEY];
   const previous = metadata.sceneHistory;
   const staged = trimSceneArchive(scenes.map((scene) => {
-    const normalized = normalizeSceneRecord(scene, generateMemoryId);
+    const normalized = normalizeSceneRecord(scene);
     if (normalized.detected_by !== 'legacy') validateGeneratedRecord(normalized);
     return normalized;
   }), max);
