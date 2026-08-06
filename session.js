@@ -450,6 +450,29 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return `[${candidate.type}:${candidate.importance}:${candidate.expiration}:candidate_id=${candidate._citation_candidate_id}${entities}] ${candidate.content}`;
       }).join('\n');
       const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return exactly one line per supplied candidate_id. Preserve candidate_id, type, importance, expiration, entity tags, and factual content exactly. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories; do not reorder them. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
+      const parseRepairAssociations = (raw) => {
+        const bracketed = parseSessionOutput(raw);
+        if (bracketed.length) return bracketed;
+        const records = [];
+        const append = (id, sources) => {
+          const normalizedId = String(id ?? '').trim().replace(/^['"]|['"]$/g, '');
+          const indices = [...new Set((Array.isArray(sources) ? sources : String(sources ?? '').split(/[\s,]+/))
+            .map((value) => Number(value)).filter(Number.isInteger))];
+          if (normalizedId && indices.length) records.push({ _citation_candidate_id: normalizedId, source_message_indices: indices, _repair_association_only: true });
+        };
+        for (const line of String(raw ?? '').split(/\r?\n/)) {
+          try {
+            const parsed = JSON.parse(line);
+            if (Array.isArray(parsed)) for (const item of parsed) append(item?.candidate_id, item?.citations ?? item?.sources);
+            else append(parsed?.candidate_id, parsed?.citations ?? parsed?.sources);
+          } catch { /* XML or prose is handled below; never infer from text. */ }
+        }
+        for (const match of String(raw ?? '').matchAll(/<record\b[^>]*candidate_id=["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/record>/gi)) {
+          const sourceMatch = match[2].match(/<(?:citations|sources)>([^<]+)<\/(?:citations|sources)>/i);
+          append(match[1], sourceMatch?.[1]);
+        }
+        return records;
+      };
       try {
         const repairedResponse = await generateMemoryExtract(applyPromptOverride(repairPrompt, PROMPT_TASKS.SESSION_EXTRACTION, characterName), {
           responseLength: settings.session_response_length ?? 500,
@@ -460,22 +483,66 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           repairTerminalRecorded = true;
         } else {
           const originalsById = new Map(uncitedCandidates.map((candidate) => [candidate._citation_candidate_id, candidate]));
-          const parsedRepair = parseSessionOutput(repairedResponse);
+          // Local models occasionally preserve a repaired record but omit or
+          // slightly mangle its candidate_id.  Text is never a primary key:
+          // use it only as a bounded fallback when one and only one original
+          // has the exact same immutable type and content.  This keeps repair
+          // association deterministic without accepting a rewritten claim.
+          const originalsByExactRecord = new Map();
+          for (const original of uncitedCandidates) {
+            const key = `${original.type}\u0000${original.content}`;
+            const matches = originalsByExactRecord.get(key) ?? [];
+            matches.push(original);
+            originalsByExactRecord.set(key, matches);
+          }
+          const parsedRepair = parseRepairAssociations(repairedResponse);
           if (!parsedRepair.length && sessionDiagnostics) {
             sessionDiagnostics.repairMalformed = (sessionDiagnostics.repairMalformed ?? 0) + repairEligibleCount;
             repairTerminalRecorded = true;
           }
           if (!parsedRepair.length) repairMalformedCount = repairEligibleCount;
           const repairedIds = new Set();
+          let parserRecoveries = 0;
+          let unknownIdsReturned = 0;
+          let duplicateIdsReturned = 0;
           const repaired = parsedRepair.flatMap((candidate) => {
-            const original = originalsById.get(candidate._citation_candidate_id);
-            if (!original || repairedIds.has(candidate._citation_candidate_id) || !(candidate.source_message_indices ?? []).length) return [];
+            let candidateId = candidate._citation_candidate_id;
+            let original = originalsById.get(candidateId);
+            if (!original) {
+              const exactMatches = originalsByExactRecord.get(`${candidate.type}\u0000${candidate.content}`) ?? [];
+              if (exactMatches.length === 1) {
+                original = exactMatches[0];
+                candidateId = original._citation_candidate_id;
+                parserRecoveries++;
+              } else if (candidateId) unknownIdsReturned++;
+            }
+            if (!original || repairedIds.has(candidateId) || !(candidate.source_message_indices ?? []).length) {
+              if (original && repairedIds.has(candidateId)) duplicateIdsReturned++;
+              return [];
+            }
             // Never accept a repair that rewrites the claim, even if it copied
             // the ID. The repair operation is allowed to supply citations only.
-            if (candidate.type !== original.type || candidate.content !== original.content) return [];
-            repairedIds.add(candidate._citation_candidate_id);
+            if (!candidate._repair_association_only && (candidate.type !== original.type || candidate.content !== original.content)) return [];
+            repairedIds.add(candidateId);
             return [{ ...original, source_message_indices: candidate.source_message_indices, grounding_status: 'direct', validation_status: 'unvalidated' }];
           });
+          if (sessionDiagnostics) {
+            const matching = sessionDiagnostics.citation_repair_matching ??= {
+              candidates_sent: 0, ids_returned: 0, ids_matched: 0, ids_missing: 0,
+              unknown_ids_returned: 0, duplicate_ids_returned: 0, parser_recoveries: 0,
+              unmatched_after_retry: 0, batch_size_distribution: {}, recovery_rate: 0,
+            };
+            matching.candidates_sent += repairEligibleCount;
+            matching.ids_returned += parsedRepair.filter((candidate) => candidate._citation_candidate_id).length;
+            matching.ids_matched += repaired.length;
+            matching.ids_missing += parsedRepair.filter((candidate) => !candidate._citation_candidate_id).length;
+            matching.unknown_ids_returned += unknownIdsReturned;
+            matching.duplicate_ids_returned += duplicateIdsReturned;
+            matching.parser_recoveries += parserRecoveries;
+            matching.unmatched_after_retry += Math.max(0, repairEligibleCount - repaired.length);
+            matching.batch_size_distribution[repairEligibleCount] = (matching.batch_size_distribution[repairEligibleCount] ?? 0) + 1;
+            matching.recovery_rate = matching.candidates_sent ? Number((matching.ids_matched / matching.candidates_sent).toFixed(4)) : 0;
+          }
           if (repaired.length) {
             for (const candidate of repaired) candidate.__sme_citation_repair = true;
             const alreadyCited = parsedCandidates.filter((candidate) => (candidate.source_message_indices ?? []).length > 0);

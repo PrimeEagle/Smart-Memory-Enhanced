@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.84] - 2026-08-05
+
+### Fixed
+
+- Fresh Start now removes the current chat's stale redirects, prior run and
+  repair histories, cached diagnostics, Developer idempotence result, parser
+  cleanup state, and only those identity-review records linked to the cleared
+  chat. Reusable data for unrelated cards and chats is preserved.
+- Normal Memorize Chat now performs a provider-free local stabilization audit
+  after reconciliation and derives final integrity, quality, and exported
+  stale-reference results from that finalized graph rather than its first
+  mutating pass.
+- Ambiguous short-alias reviews that no longer reach a current durable record
+  are retained as informational history instead of degrading an unrelated
+  chat's quality.
+- Session citation repair now safely recovers unchanged candidates when a
+  provider omits or slightly damages its ID. Compact JSON and XML
+  ID/citation-only repair records are accepted without allowing claim text to
+  be altered.
+- Scene detection now rejects weak breaks during uninterrupted calls, text
+  exchanges, direct replies, and immediate reactions, while preserving
+  explicit transitions. Nearby direct-continuation proposals are coalesced
+  before they become final scene boundaries.
+
+### Added
+
+- Memorize Chat displays a rolling estimate of remaining chunk-processing
+  time, then switches to a finalization indicator after chunk processing.
+- Diagnostics include citation-repair matching counters, per-review graph
+  impact, a legacy global-scope audit, and final-state consistency fields.
+
+### Tests
+
+- Added coverage for stale Fresh Start cleanup, citation-repair association
+  fallbacks, conversational-continuity vetoes, explicit transition retention,
+  and operational nearby-boundary coalescing. Full automated verification
+  passed with 321 unit/integration tests. A fresh live replay remains required
+  to measure scene stability and citation-repair recovery on a real provider.
+
 ## [0.8.83] - 2026-08-05
 
 ### Fixed

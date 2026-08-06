@@ -2192,6 +2192,12 @@ body.sme-read-only .mes_edit_delete {
   color: var(--SmartReplyColor, #aaa);
 }
 
+#smart_memory_enhanced_settings #sme_catch_up_eta {
+  display: none;
+  color: var(--SmartReplyColor, #aaa);
+  opacity: 0.85;
+}
+
 #smart_memory_enhanced_settings #sme_status.sme_status_warning {
   color: #d6a300;
 }

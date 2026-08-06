@@ -731,6 +731,10 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   const settings = read('settings.js');
   const html = read('settings.html');
   assert.match(settings, /forceIdempotenceCheck/);
+  assert.match(settings, /Every catch-up needs one local stabilization audit/);
+  assert.match(settings, /result\.final_state_audit = secondPass\.integrity_audit/);
+  assert.match(settings, /reconciliation\.integrity_audit = result\.integrity_audit/);
+  assert.match(settings, /final_state_consistency/);
   assert.match(settings, /developer_manual_command/);
   assert.match(settings, /#sme_run_idempotence_check/);
   assert.match(settings, /developer_idempotence_check/);
@@ -1031,6 +1035,7 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   const html = read('settings.html');
   assert.match(html, /sme_preview_catch_up/);
   assert.match(html, /sme_export_diagnostics/);
+  assert.match(html, /sme_catch_up_eta/);
   assert.match(settings, /Preview complete - no memories or entities were saved/);
   assert.match(settings, /Preview is a fast provider preflight/);
   assert.match(settings, /const longterm = await extractAndStoreMemories/);
@@ -1040,6 +1045,8 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /raw provider output/);
   assert.match(settings, /reconcileCanonicalEntities\(characterName\)/);
   assert.match(settings, /identityResolution/);
+  assert.match(settings, /Estimated chunk-processing time remaining/);
+  assert.match(settings, /Finalizing remaining memory tiers/);
 });
 
 test('dry run: primary extraction returns grounded candidates before persistence', () => {
@@ -1091,6 +1098,10 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /clearCharacterMemories\(memberName\)/);
   assert.match(freshStart, /await clearProfiles\(memberName\)/);
   assert.match(freshStart, /clearCharacterDurableDataForFreshStart\(memberName\)/);
+  assert.match(freshStart, /clearFreshStartRunMetadata\(context, freshStartCharacterNames\)/);
+  assert.match(settings, /'entity_redirects'/);
+  assert.match(settings, /'developer_idempotence_check'/);
+  assert.match(settings, /identity_review_queue = reviewQueue\.filter/);
   assert.doesNotMatch(freshStart, /group\.disabled_members/);
   assert.match(freshStart, /clearChatLocalCharacterData\(context\);/);
   assert.match(freshStart, /injectRelationshipHistory\(characterName\)/);
@@ -1127,6 +1138,13 @@ test('session provenance maps prompt-visible messages and repairs partial citati
   assert.match(session, /repairEligibleCount = uncitedCandidates\.length/);
   assert.match(session, /applyDirectProvenance\(citedCandidates, sourceMessages/);
   assert.match(session, /provenanceMapping/);
+  assert.match(session, /originalsByExactRecord/);
+  assert.match(session, /parserRecoveries/);
+  assert.match(session, /citation_repair_matching/);
+  assert.match(session, /Never accept a repair that rewrites the claim/);
+  assert.match(session, /parseRepairAssociations/);
+  assert.match(session, /JSON\.parse\(line\)/);
+  assert.match(session, /_repair_association_only/);
 });
 
 test('changing the Short-Term Memory budget reinjects the current summary before refreshing token usage', () => {
@@ -1153,6 +1171,7 @@ test('manual budget allocation uses visible injected usage plus headroom and inc
 
 test('entity safeguards: reconciliation reports decisions, retains review candidates, and preserves aliases on rename', () => {
   const graph = read('graph-migration.js');
+  const ui = read('ui.js');
   assert.match(graph, /rejected_unsafe_merges/);
   assert.match(graph, /unsafe_merge_candidates_rejected/);
   assert.match(graph, /rejected_unsafe_identity_merge/);
@@ -1160,6 +1179,11 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(graph, /identity_review_queue/);
   assert.match(graph, /unmatched_review/);
   assert.match(graph, /grounded_unknown_preserved/);
+  assert.match(ui, /currentLiveRecordIds/);
+  assert.match(ui, /identity_review_impact/);
+  assert.match(ui, /ambiguous_short_alias.*live_links_affected === 0/s);
+  assert.match(ui, /legacyGlobalScopeAudit/);
+  assert.match(ui, /legacy_global_scope_audit/);
   const rename = graph.slice(graph.indexOf('export function renameEntityById'), graph.indexOf('export function deleteEntityById'));
   assert.match(rename, /aliases = \[\.\.\.new Set\(\[\.\.\.\(entity\.aliases \?\? \[\]\), oldName\]\)\]/);
   assert.match(rename, /if \(conflict\) return \{ renamed: false/);

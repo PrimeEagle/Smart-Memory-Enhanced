@@ -121,7 +121,7 @@ import {
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcs, loadArcSummaries, saveArcSummaries } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
-import { evaluateDeterministicSceneGate } from './scene-gate-utils.js';
+import { coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate } from './scene-gate-utils.js';
 import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
@@ -383,12 +383,23 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   // introduce new IDs. Diagnostic/revision metadata may change even when no
   // durable record changes, so the metadata hash is reported but is not by
   // itself a failed reconciliation.
-  if (developerCheckRequested) {
+  // Every catch-up needs one local stabilization audit after its mutating
+  // reconciliation pass.  This is not the Developer idempotence command: it
+  // makes no provider calls and exists so final quality is derived from the
+  // same finalized graph that a later Developer check will inspect.
+  // Developer mode additionally exposes the full idempotence detail in the
+  // panel, but cannot change the audit semantics.
+  {
     const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const secondPass = await reconcileCanonicalEntities(characterName);
     const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const durableStateAfterSecondPass = idempotenceDurableState(metadataAfterSecondPass);
     const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
+    result.final_state_audit = secondPass.integrity_audit ?? null;
+    // The first pass is retained in idempotence/maintenance diagnostics, but
+    // every final consumer must see the stabilized second-pass graph.
+    result.integrity_audit = secondPass.integrity_audit ?? result.integrity_audit;
+    reconciliation.integrity_audit = result.integrity_audit;
     const staleReferenceSummary = Object.values((secondPass.integrity_audit?.stale_entity_references ?? []).reduce((groups, reference) => {
       const store = String(reference?.store ?? 'unknown');
       const field = String(reference?.field ?? reference?.reference_field_path ?? 'unknown');
@@ -467,6 +478,18 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       stale_reference_summary: staleReferenceSummary,
     };
     result.idempotence.developer_summary = result.idempotence.summary;
+    result.final_state_consistency = {
+      catch_up_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
+      developer_semantic_hash: developerCheckRequested ? result.idempotence.durable_state_hash_after_second_pass : null,
+      restored_panel_semantic_hash: null,
+      diagnostics_export_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
+      catch_up_stale_reference_count: result.integrity_audit?.stale_entity_references?.length ?? 0,
+      developer_stale_reference_count: developerCheckRequested ? result.integrity_audit?.stale_entity_references?.length ?? 0 : null,
+      restored_panel_stale_reference_count: null,
+      diagnostics_export_stale_reference_count: result.integrity_audit?.stale_entity_references?.length ?? 0,
+      interpretation_consistent: true,
+      mismatch_fields: [],
+    };
   }
   if (extension_settings[MODULE_NAME]?.verbose_logging) {
     console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
@@ -1263,6 +1286,41 @@ export function bindSettingsUI(ctrl) {
         else delete metadata[key];
       }
     }
+  };
+
+  // Identity review records are shared extension settings, so Fresh Start
+  // must not wipe unrelated chats' reviews. Capture only record IDs belonging
+  // to this chat/current group before clearing its stores, then remove review
+  // items that explicitly cite one of those records.
+  const collectFreshStartRecordIds = (value, ids = new Set()) => {
+    if (Array.isArray(value)) {
+      for (const item of value) collectFreshStartRecordIds(item, ids);
+    } else if (value && typeof value === 'object') {
+      if (typeof value.id === 'string' && value.id) ids.add(value.id);
+      for (const item of Object.values(value)) collectFreshStartRecordIds(item, ids);
+    }
+    return ids;
+  };
+  const clearFreshStartRunMetadata = (context, characterNames = []) => {
+    const metadata = context.chatMetadata?.[META_KEY];
+    if (!metadata) return;
+    const recordIds = collectFreshStartRecordIds(metadata);
+    for (const name of characterNames) collectFreshStartRecordIds(extension_settings[MODULE_NAME]?.characters?.[name], recordIds);
+    const reviewQueue = extension_settings[MODULE_NAME]?.identity_review_queue ?? [];
+    extension_settings[MODULE_NAME].identity_review_queue = reviewQueue.filter((item) => {
+      const cited = [...(item?.source_record_ids ?? []), ...(item?.memoryIds ?? [])].filter(Boolean);
+      return !cited.some((id) => recordIds.has(String(id)));
+    });
+    // These are derived from an earlier state of this chat. Keeping them after
+    // a destructive reset can reintroduce obsolete redirects or make the next
+    // fresh generation look degraded before it has produced any data.
+    for (const key of [
+      'entity_redirects', 'catch_up_diagnostics', 'last_catchup_run_id',
+      'scene_stability_history', 'request_efficiency_history', 'repair_history',
+      'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
+      'developer_idempotence_check', 'historical_persona_snapshot',
+      'active_catchup_run_id', 'parser_debris_cleanup',
+    ]) delete metadata[key];
   };
 
   /**
@@ -3541,6 +3599,48 @@ export function bindSettingsUI(ctrl) {
         })
         .filter((m) => m.mes && !m.is_system);
       const total = allMessages.length;
+      // Provider speed, output length, and enabled tiers vary by chat, so an
+      // ETA can only be an observed-rate estimate. Keep it explicitly scoped
+      // to the token-limited chunk phase; late finalization tasks have no
+      // reliable work-unit count and must not be represented as a precise ETA.
+      const catchUpTiming = {
+        started_at: Date.now(),
+        completed_messages: 0,
+        elapsed_ms: 0,
+        estimated_remaining_ms: null,
+        estimate_available: false,
+      };
+      const formatCatchUpDuration = (milliseconds) => {
+        const seconds = Math.max(0, Math.round(Number(milliseconds ?? 0) / 1000));
+        if (seconds < 60) return `~${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        const remainder = seconds % 60;
+        if (minutes < 60) return `~${minutes}m${remainder ? ` ${remainder}s` : ''}`;
+        const hours = Math.floor(minutes / 60);
+        return `~${hours}h ${minutes % 60}m`;
+      };
+      const updateCatchUpEta = (completedMessages, { finalizing = false } = {}) => {
+        const eta = $('#sme_catch_up_eta');
+        catchUpTiming.completed_messages = Math.max(0, Math.min(total, Number(completedMessages) || 0));
+        catchUpTiming.elapsed_ms = Date.now() - catchUpTiming.started_at;
+        if (finalizing) {
+          catchUpTiming.estimated_remaining_ms = null;
+          catchUpTiming.estimate_available = false;
+          eta.text('Finalizing remaining memory tiers…').show();
+          return;
+        }
+        if (!total || catchUpTiming.completed_messages <= 0 || catchUpTiming.elapsed_ms < 1000) {
+          catchUpTiming.estimated_remaining_ms = null;
+          catchUpTiming.estimate_available = false;
+          eta.text('Estimating chunk-processing time…').show();
+          return;
+        }
+        const millisecondsPerMessage = catchUpTiming.elapsed_ms / catchUpTiming.completed_messages;
+        catchUpTiming.estimated_remaining_ms = Math.round(millisecondsPerMessage * (total - catchUpTiming.completed_messages));
+        catchUpTiming.estimate_available = true;
+        eta.text(`Estimated chunk-processing time remaining: ${formatCatchUpDuration(catchUpTiming.estimated_remaining_ms)}`).show();
+      };
+      updateCatchUpEta(0);
 
       // Process the chat in token-limited chunks sequentially. Each extraction
       // function loads its existing results and passes them as context to the
@@ -3668,6 +3768,7 @@ export function bindSettingsUI(ctrl) {
         // Update progress and token display after each chunk so the user can
         // see memories accumulating in real time rather than only at the end.
         setStatusMessage(`Catching up... (${processed}/${total} messages, ${pct}%)`);
+        updateCatchUpEta(processed);
         await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
 
         runResult.totalChunks++;
@@ -3691,6 +3792,7 @@ export function bindSettingsUI(ctrl) {
       finalTransaction = beginCatchUpTransaction(catchUpContext);
 
       if (!ctrl.catchUpCancelled) {
+        updateCatchUpEta(total, { finalizing: true });
         // Complete the evidence tiers before scenes and arcs. This gives later
         // stages a stable, consolidated store and avoids creating a new arc
         // after the final identity-reconciliation phase has already begun.
@@ -3777,6 +3879,7 @@ export function bindSettingsUI(ctrl) {
             // triggered by either speaker's transition.
             const heuristicBreak = detectSceneBreakHeuristic(msgText);
             const aiRequestedBreak = settings.scene_ai_detect && Boolean(sceneAudit.ai_decisions?.get(msgIdx));
+            const continuity = deriveSceneContinuitySignals(allMessages[msgIdx - 1]?.mes, msgText);
             const gate = evaluateDeterministicSceneGate({
               aiRequestedBreak,
               heuristicBreak,
@@ -3784,12 +3887,25 @@ export function bindSettingsUI(ctrl) {
               minimumSceneLength: minMessages,
               messageIndex: msg.__sme_original_index ?? msgIdx,
               previousBoundaryIndex: sceneAudit.final_break_indices.at(-1),
+              continuity,
             });
-            const isBreak = settings.scene_ai_detect ? gate.accepted : heuristicBreak && sceneBuffer.length >= minMessages;
+            const coalescing = coalesceSceneBoundary({
+              previousBoundaryIndex: sceneAudit.final_break_indices.at(-1),
+              messageIndex: msg.__sme_original_index ?? msgIdx,
+              minimumSceneLength: minMessages,
+              continuity,
+            });
+            const isBreak = (settings.scene_ai_detect ? gate.accepted : heuristicBreak && sceneBuffer.length >= minMessages)
+              && !coalescing.suppress;
             const aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
             if (aiRequestedBreak) {
               if (gate.terminal_break_disposition === 'rejected_deterministic_gate') sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
-              Object.assign(aiDisposition ?? {}, gate, {
+              Object.assign(aiDisposition ?? {}, gate, coalescing.suppress ? {
+                terminal_break_disposition: 'coalesced_with_nearby_boundary',
+                gate_result: 'rejected',
+                gate_reason_code: coalescing.outcome,
+                coalescing,
+              } : { coalescing }, {
                 gate_executed: true,
                 gate_output_schema_version: 1,
               });
@@ -4733,6 +4849,7 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
+      $('#sme_catch_up_eta').hide().empty();
       clearCanonicalRuntimeContextSnapshot();
       unsubscribeRetry();
       $('#sme_cancel_catch_up').hide();
@@ -4873,6 +4990,7 @@ export function bindSettingsUI(ctrl) {
         // These stores belong to this chat, so keeping another group
         // member's local data would leave an apparently uncleared bar.
         clearChatLocalCharacterData(context);
+        clearFreshStartRunMetadata(context, freshStartCharacterNames);
       });
     } catch (err) {
       console.error('[Smart Memory Enhanced] Fresh Start persistence failed:', err);

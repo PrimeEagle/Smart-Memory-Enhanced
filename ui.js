@@ -1817,7 +1817,46 @@ export async function reconcileCanonicalEntities(characterName) {
     if (/(?:grounded|evidence|unmatched|unresolved|persona|author)/.test(text)) return { reason: 'insufficient_shared_evidence', outcome: 'retained_distinct', severity: 'informational' };
     return { reason: 'truly_unclassified', outcome: 'deferred_review', severity: 'actionable' };
   };
-  const classifiedReviewQueue = activeReviewQueue.map((item) => ({ ...item, ...classifyIdentityReviewItem(item) }));
+  // A global review queue can retain evidence from other chats long after its
+  // originating records have been reset.  Keep that history visible, but do
+  // not make an ambiguous short alias actionable unless it still reaches a
+  // current durable record.  This is deliberately record-ID based: text and
+  // first-name coincidence are never used to upgrade a review's severity.
+  const currentLiveRecordIds = new Set([
+    ...longtermMemories,
+    ...sessionMemories,
+    ...Object.values(meta.card_local_memories ?? {}).flat(),
+    ...scenes,
+    ...arcs,
+    ...summaries,
+  ].map((record) => String(record?.id ?? '')).filter(Boolean));
+  const reviewImpact = (item) => {
+    const sourceIds = [...new Set([
+      ...(item?.source_record_ids ?? []),
+      ...(item?.memoryIds ?? []),
+      item?.source_record_id,
+    ].filter(Boolean).map(String))];
+    const liveLinksAffected = sourceIds.filter((id) => currentLiveRecordIds.has(id)).length;
+    return {
+      review_id: item?.id ?? item?.review_key ?? null,
+      reason: item?.reason ?? null,
+      candidate_count: Array.isArray(item?.candidate_canonical_ids) ? item.candidate_canonical_ids.length : null,
+      live_links_affected: liveLinksAffected,
+      relationship_pairs_affected: 0,
+      profile_targets_affected: 0,
+      scene_participants_affected: 0,
+      arc_participants_affected: 0,
+    };
+  };
+  const classifiedReviewQueue = activeReviewQueue.map((item) => {
+    const classification = classifyIdentityReviewItem(item);
+    const impact = reviewImpact(item);
+    if (classification.reason === 'ambiguous_short_alias' && impact.live_links_affected === 0) {
+      classification.outcome = 'retained_distinct';
+      classification.severity = 'informational';
+    }
+    return { ...item, ...classification, identity_review_impact: { ...impact, final_severity: classification.severity, final_outcome: classification.outcome } };
+  });
   if (JSON.stringify(classifiedReviewQueue) !== JSON.stringify(activeReviewQueue)) getSettings().identity_review_queue = classifiedReviewQueue;
   const identityReviewCategories = classifiedReviewQueue.reduce((summary, item) => {
     summary[item.reason] = (summary[item.reason] ?? 0) + 1;
@@ -1885,6 +1924,16 @@ export async function reconcileCanonicalEntities(characterName) {
     relationship_pairs: Object.keys(loadRelationshipHistory(name)).length,
     epistemic_records: loadEpistemicKnowledge(name).length,
   })).filter((entry) => entry.relationship_pairs || entry.epistemic_records);
+  const legacyGlobalScopeAudit = {
+    total_legacy_records: globalLegacyIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
+    current_chat_reachable: 0,
+    current_chat_unreachable: globalLegacyIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
+    malformed: 0,
+    migration_eligible: 0,
+    informational_only: globalLegacyIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
+    quality_degrading: 0,
+    affected_characters: globalLegacyIntegrity.map((entry) => entry.character),
+  };
   let relationshipStoresReconciled = 0;
   let persistentRelationshipPairsMerged = 0;
   let epistemicStoresReconciled = 0;
@@ -2377,6 +2426,7 @@ export async function reconcileCanonicalEntities(characterName) {
     // an unrelated legacy card to make the active run look degraded.
     global_legacy_integrity: globalLegacyIntegrity,
     global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
+    legacy_global_scope_audit: legacyGlobalScopeAudit,
     identity_review_items: activeReviewQueue.length,
     identity_review_categories: identityReviewCategories,
     identity_review_outcomes: identityReviewOutcomes,
