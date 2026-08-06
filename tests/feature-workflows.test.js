@@ -735,6 +735,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /result\.final_state_audit = secondPass\.integrity_audit/);
   assert.match(settings, /reconciliation\.integrity_audit = result\.integrity_audit/);
   assert.match(settings, /final_state_consistency/);
+  assert.match(settings, /finalReconciliation\.final_state_consistency = reconciliation\.final_state_consistency/);
   assert.match(settings, /developer_manual_command/);
   assert.match(settings, /#sme_run_idempotence_check/);
   assert.match(settings, /developer_idempotence_check/);
@@ -1141,10 +1142,12 @@ test('session provenance maps prompt-visible messages and repairs partial citati
   assert.match(session, /originalsByExactRecord/);
   assert.match(session, /parserRecoveries/);
   assert.match(session, /citation_repair_matching/);
-  assert.match(session, /Never accept a repair that rewrites the claim/);
+  assert.match(session, /The stored candidate is authoritative/);
   assert.match(session, /parseRepairAssociations/);
   assert.match(session, /JSON\.parse\(line\)/);
   assert.match(session, /_repair_association_only/);
+  assert.match(session, /contentRewritesIgnored/);
+  assert.match(session, /The stored candidate is authoritative/);
 });
 
 test('changing the Short-Term Memory budget reinjects the current summary before refreshing token usage', () => {

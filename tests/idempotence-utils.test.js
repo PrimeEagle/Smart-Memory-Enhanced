@@ -5,6 +5,7 @@ import {
   deriveIdempotenceResult,
   durableStateHash,
   summarizeDurableStateChanges,
+  summarizeSessionMemoryChanges,
   normalizeIdempotenceResult,
 } from '../idempotence-utils.js';
 
@@ -118,6 +119,33 @@ test('durable-state diagnostics expose changed store paths without content', () 
   );
   assert.equal(summary.changed, true);
   assert.deepEqual(summary.changed_top_level_stores, ['sessionMemories']);
+  assert.equal(JSON.stringify(summary).includes('private before'), false);
+  assert.equal(JSON.stringify(summary).includes('private after'), false);
+});
+
+test('session-memory canonicalization is stable across legacy default backfill', () => {
+  const legacy = { sessionMemories: [{ type: 'fact', content: 'Private claim', ts: 4, source_message_indices: [2, 1] }] };
+  const normalized = { sessionMemories: [{
+    type: 'fact', content: 'Private claim', ts: 4, source_message_indices: [1, 2],
+    id: 'sme-session-fnv1a-94f5c4bf', consolidated: true, importance: 2, expiration: 'session',
+    confidence: 0.7, persona_relevance: 1, intimacy_relevance: 1, retrieval_count: 0,
+    last_confirmed_ts: 4, source_messages: [], source_chat_id: null, entities: [], time_scope: 'global',
+    valid_from: null, valid_to: null, supersedes: [], superseded_by: null, contradicts: [], unconfirmed_since: 0,
+  }] };
+  // An existing deterministic legacy ID must agree with the pre-backfill
+  // semantic representation.  Use the canonicalizer rather than live state.
+  const canonical = canonicalizeDurableIdempotenceState(legacy).sessionMemories[0];
+  normalized.sessionMemories[0].id = canonical.id;
+  assert.equal(durableStateHash(legacy), durableStateHash(normalized));
+});
+
+test('session-memory diff is privacy-safe and identifies changed record fields', () => {
+  const summary = summarizeSessionMemoryChanges(
+    { sessionMemories: [{ id: 'one', type: 'fact', content: 'private before', source_message_indices: [1] }] },
+    { sessionMemories: [{ id: 'one', type: 'fact', content: 'private after', source_message_indices: [1] }] },
+  );
+  assert.equal(summary.changed, true);
+  assert.deepEqual(summary.changed_record_ids, ['one']);
   assert.equal(JSON.stringify(summary).includes('private before'), false);
   assert.equal(JSON.stringify(summary).includes('private after'), false);
 });

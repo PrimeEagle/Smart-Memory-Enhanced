@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.85] - 2026-08-06
+
+### Fixed
+
+- Session-memory idempotence hashing now normalizes legacy/default graph
+  fields and derives a deterministic legacy record ID. Reading, hashing, and
+  auditing no longer generate a new random identifier or treat a one-time
+  schema backfill as a repeat reconciliation mutation.
+- Citation repair now sends a stable claim fingerprint alongside the candidate
+  ID and reports the full association funnel. A repair can attach valid
+  citations by exact ID or unique claim fingerprint, while the pre-existing
+  memory claim remains authoritative and provider-rewritten text is discarded.
+- Final reconciliation diagnostics now retain the final-state consistency
+  block after catch-up, including stabilized semantic hashes and integrity
+  status rather than losing that data during compact export construction.
+- Newly extracted arcs now preserve evidence-based lifecycle traces. Explicit
+  abandonment and supersession evidence produces durable terminal history
+  without injecting those arcs as active unresolved threads.
+
+### Added
+
+- Diagnostics include privacy-safe record/field fingerprints for any changed
+  session-memory records, plus a session-memory hash timeline to locate drift
+  during preparation, reconciliation, persistence, or reload.
+- Citation-repair diagnostics distinguish valid citations, invalid citations,
+  unknown/duplicate IDs, claim-hash recovery, ignored provider rewrites, and
+  unmatched candidates.
+
+### Tests
+
+- Added coverage for deterministic session-memory legacy normalization,
+  privacy-safe record-level session diffs, and citation-repair claim-hash
+  parsing. Full automated verification passed with 323 tests.
+- A new live replay is still required to measure real-provider citation
+  recovery and confirm session-memory hash stability after persistence.
+
 ## [0.8.84] - 2026-08-05
 
 ### Fixed

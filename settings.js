@@ -149,6 +149,7 @@ import {
   durableStateHash,
   sceneHistoryHashComponents,
   summarizeDurableStateChanges,
+  summarizeSessionMemoryChanges,
   diagnosticMetadataHash,
   revisionMetadataHash,
   normalizeIdempotenceResult,
@@ -411,9 +412,13 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       return groups;
     }, {})).sort((left, right) => right.count - left.count || left.store.localeCompare(right.store));
     const durableChangeSummary = summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
+    const sessionMemoryChangeSummary = summarizeSessionMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const accountedMutations = (repairs.actual_logical_mutations_this_run ?? 0) + (repairs.actual_physical_store_mutations_this_run ?? 0);
     durableChangeSummary.accounted_mutation_count = accountedMutations;
     durableChangeSummary.unaccounted_mutation_count = durableChangeSummary.changed ? Math.max(0, durableChangeSummary.changed_path_count - accountedMutations) : 0;
+    sessionMemoryChangeSummary.accounted_mutation_count = accountedMutations;
+    sessionMemoryChangeSummary.unaccounted_mutation_count = sessionMemoryChangeSummary.changed
+      ? Math.max(0, sessionMemoryChangeSummary.changed_path_count - accountedMutations) : 0;
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: 2,
@@ -431,6 +436,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       unresolved_integrity_failures_after_second_pass: secondPass.integrity_audit?.relationship_integrity_errors?.length ?? 0,
       stale_reference_summary: staleReferenceSummary,
       durable_state_change_summary: durableChangeSummary,
+      session_memory_change_summary: sessionMemoryChangeSummary,
       idempotence_hash_timeline: {
         pre_preparation_hash: durableStateHashBefore,
         post_preparation_hash: durableStateHash(durableStateAfterPreparation),
@@ -439,6 +445,18 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         changed_during_preparation: durableStateHashBefore !== durableStateHash(durableStateAfterPreparation),
         changed_during_first_pass: durableStateHash(durableStateAfterPreparation) !== durableStateHashAfterFirstPass,
         changed_during_second_pass: durableStateHashAfterFirstPass !== durableStateHash(durableStateAfterSecondPass),
+      },
+      session_memory_hash_timeline: {
+        pre_preparation: durableStateHash({ sessionMemories: metadataBefore.sessionMemories ?? [] }),
+        post_preparation: durableStateHash({ sessionMemories: metadataAfterPreparation.sessionMemories ?? [] }),
+        pre_first_pass: durableStateHash({ sessionMemories: metadataAfterPreparation.sessionMemories ?? [] }),
+        post_first_pass_pre_persist: durableStateHash({ sessionMemories: metadataAfterFirstPass.sessionMemories ?? [] }),
+        post_first_pass_persisted: null,
+        post_first_pass_reloaded: null,
+        pre_second_pass: durableStateHash({ sessionMemories: metadataBeforeSecondPass.sessionMemories ?? [] }),
+        post_second_pass_pre_persist: durableStateHash({ sessionMemories: metadataAfterSecondPass.sessionMemories ?? [] }),
+        post_second_pass_persisted: null,
+        post_second_pass_reloaded: null,
       },
       scene_history_hashes: {
         before: sceneHistoryHashesBefore,
@@ -480,9 +498,16 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     result.idempotence.developer_summary = result.idempotence.summary;
     result.final_state_consistency = {
       catch_up_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
-      developer_semantic_hash: developerCheckRequested ? result.idempotence.durable_state_hash_after_second_pass : null,
+      post_stabilization_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
+      developer_check_semantic_hash: developerCheckRequested ? result.idempotence.durable_state_hash_after_second_pass : null,
       restored_panel_semantic_hash: null,
       diagnostics_export_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
+      catch_up_integrity_status: (result.integrity_audit?.stale_entity_references?.length ?? 0) === 0 ? 'clean' : 'needs_attention',
+      post_stabilization_integrity_status: (result.integrity_audit?.stale_entity_references?.length ?? 0) === 0 ? 'clean' : 'needs_attention',
+      restored_panel_integrity_status: null,
+      diagnostics_export_integrity_status: (result.integrity_audit?.stale_entity_references?.length ?? 0) === 0 ? 'clean' : 'needs_attention',
+      developer_check_integrity_status: developerCheckRequested ? ((result.integrity_audit?.stale_entity_references?.length ?? 0) === 0 ? 'clean' : 'needs_attention') : null,
+      developer_result_current: developerCheckRequested ? result.idempotence.idempotent : null,
       catch_up_stale_reference_count: result.integrity_audit?.stale_entity_references?.length ?? 0,
       developer_stale_reference_count: developerCheckRequested ? result.integrity_audit?.stale_entity_references?.length ?? 0 : null,
       restored_panel_stale_reference_count: null,
@@ -4423,6 +4448,8 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.resolved_review_items_removed = reconciliation.resolved_review_items_removed ?? 0;
       runResult.finalReconciliation.integrity_audit = reconciliation.integrity_audit ?? null;
       runResult.finalReconciliation.idempotence = reconciliation.idempotence ?? null;
+      runResult.finalReconciliation.final_state_audit = reconciliation.final_state_audit ?? reconciliation.integrity_audit ?? null;
+      runResult.finalReconciliation.final_state_consistency = reconciliation.final_state_consistency ?? null;
       runResult.finalReconciliation.duration_ms = reconciliation.duration_ms ?? null;
       runResult.finalReconciliation.stale_entity_references = reconciliation.integrity_audit?.stale_entity_references?.length ?? 0;
       runResult.finalReconciliation.unsafe_merge_candidates = reconciliation.integrity_audit?.unsafe_merge_candidates ?? 0;

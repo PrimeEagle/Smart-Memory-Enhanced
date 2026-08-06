@@ -180,24 +180,67 @@ export function deriveArcStatusFromTimeline(arc, messages = []) {
     text: String(message?.mes ?? ''),
   }));
   const later = indexed.filter((entry) => entry.index > latestSourceIndex);
-  if (!later.length) return { status: 'open', confidence: 'candidate', last_status_change_index: latestSourceIndex, reason_code: 'no_later_evidence' };
+  const trace = {
+    arc_id: arc?.id ?? null,
+    initial_status: arc?.status ?? 'open',
+    creation_evidence_count: sourceIndices.length,
+    continuation_evidence_count: 0,
+    resolution_evidence_count: 0,
+    abandonment_evidence_count: 0,
+    supersession_evidence_count: 0,
+    reopening_evidence_count: 0,
+    contradictory_evidence_count: 0,
+    transition_count: 0,
+    terminal_reason: null,
+    verification_outcome: 'pending',
+  };
+  if (!later.length) return { status: 'open', confidence: 'candidate', last_status_change_index: latestSourceIndex, reason_code: 'no_later_evidence', arc_status_trace: trace };
   const keywords = [...new Set(String(arc?.content ?? '').toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [])]
     .filter((word) => !ARC_STATUS_STOPWORDS.has(word));
   const laterText = later.map((entry) => entry.text).join('\n').toLowerCase();
   const overlap = keywords.filter((word) => laterText.includes(word));
   // One generic word is not enough to attach a later event to this arc.
   const topical = overlap.length >= Math.min(2, Math.max(1, keywords.length));
-  if (!topical) return { status: 'uncertain', confidence: 'low', last_status_change_index: latestSourceIndex, reason_code: 'no_supported_later_continuation', topical_overlap: overlap.length };
+  if (!topical) {
+    trace.terminal_reason = 'no_supported_later_continuation';
+    trace.verification_outcome = 'insufficient_evidence';
+    return { status: 'uncertain', confidence: 'low', last_status_change_index: latestSourceIndex, reason_code: 'no_supported_later_continuation', topical_overlap: overlap.length, arc_status_trace: trace };
+  }
   const lastRelevant = [...later].reverse().find((entry) => overlap.some((word) => entry.text.toLowerCase().includes(word))) ?? later.at(-1);
   const lastText = lastRelevant.text;
+  trace.continuation_evidence_count = later.filter((entry) => overlap.some((word) => entry.text.toLowerCase().includes(word))).length;
   if (/\b(?:reopened|again|returns?|returned|resumed|renewed|still unresolved)\b/i.test(lastText)
     && /\b(?:issue|question|plan|conflict|relationship|decision|promise|search|fear|goal)\b/i.test(lastText)) {
-    return { status: 'reopened', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_reopening_evidence', topical_overlap: overlap.length };
+    trace.reopening_evidence_count = 1;
+    trace.transition_count = 1;
+    trace.terminal_reason = 'later_reopening_evidence';
+    trace.verification_outcome = 'supported';
+    return { status: 'reopened', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_reopening_evidence', topical_overlap: overlap.length, arc_status_trace: trace };
+  }
+  if (/\b(?:abandoned|dropped|cancelled|canceled|gave up|no longer pursu(?:e|ing)|refused)\b/i.test(lastText)) {
+    trace.abandonment_evidence_count = 1;
+    trace.transition_count = 1;
+    trace.terminal_reason = 'later_abandonment_evidence';
+    trace.verification_outcome = 'supported';
+    return { status: 'abandoned', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_abandonment_evidence', topical_overlap: overlap.length, arc_status_trace: trace };
+  }
+  if (/\b(?:instead|rather than|replaced|superseded|new plan|changed plans?|different plan)\b/i.test(lastText)) {
+    trace.supersession_evidence_count = 1;
+    trace.transition_count = 1;
+    trace.terminal_reason = 'later_supersession_evidence';
+    trace.verification_outcome = 'supported';
+    return { status: 'superseded', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_supersession_evidence', topical_overlap: overlap.length, arc_status_trace: trace };
   }
   if (/\b(?:resolved|settled|concluded|completed|decided|agreed|confessed|revealed|found|answered|ended)\b/i.test(lastText)) {
-    return { status: 'resolved', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_terminal_evidence', topical_overlap: overlap.length };
+    trace.resolution_evidence_count = 1;
+    trace.transition_count = 1;
+    trace.terminal_reason = 'later_terminal_evidence';
+    trace.verification_outcome = 'supported';
+    return { status: 'resolved', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_terminal_evidence', topical_overlap: overlap.length, arc_status_trace: trace };
   }
-  return { status: 'open', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_continuation_evidence', topical_overlap: overlap.length };
+  trace.terminal_reason = 'later_continuation_evidence';
+  trace.verification_outcome = 'supported';
+  return { status: 'open', confidence: 'grounded', last_status_change_index: lastRelevant.index, reason_code: 'later_continuation_evidence', topical_overlap: overlap.length, arc_status_trace: trace };
 }
 
 /**
@@ -1370,10 +1413,13 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
           source_memory_ids: [],
           parent_memory_ids: [],
           status: statusDecision.status,
-          resolved: statusDecision.status === 'resolved',
+          // Terminal historical arcs are retained for audit/history but must
+          // not compete with unresolved threads for active injection capacity.
+          resolved: ['resolved', 'abandoned', 'superseded'].includes(statusDecision.status),
           status_confidence_class: statusDecision.confidence,
           status_reason_code: statusDecision.reason_code,
           last_status_change_index: statusDecision.last_status_change_index,
+          arc_status_trace: { ...statusDecision.arc_status_trace, final_status: statusDecision.status },
           verification: {
             outcome: arc.source_message_indices?.length && arc.character_participants?.length ? 'supported' : 'pending_review',
             reason_code: arc.source_message_indices?.length ? 'provenance_and_participants_attached' : 'missing_source_provenance',

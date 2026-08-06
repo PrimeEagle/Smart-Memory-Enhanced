@@ -689,8 +689,9 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
 });
 
 test('parseSessionOutput preserves a bounded citation-repair candidate ID', () => {
-  const [record] = parseSessionOutput('[detail:2:session:candidate_id=session-4:sources=1] A supported detail.');
+  const [record] = parseSessionOutput('[detail:2:session:candidate_id=session-4:claim_hash=claim-fnv1a-1234:sources=1] A supported detail.');
   assert.equal(record._citation_candidate_id, 'session-4');
+  assert.equal(record._citation_claim_hash, 'claim-fnv1a-1234');
   assert.deepEqual(record.source_message_indices, [1]);
 });
 

@@ -155,6 +155,41 @@ async function verifySessionCandidates(candidates, existing) {
 // ---- Storage (chatMetadata) ---------------------------------------------
 
 /**
+ * Legacy session records sometimes predate graph IDs.  A random ID created on
+ * every read made an otherwise no-op reconciliation look like a durable graph
+ * change.  Derive the legacy ID from stable record identity instead; the next
+ * ordinary save persists it once without changing its future value.
+ */
+function deterministicLegacySessionMemoryId(memory = {}) {
+  const identity = JSON.stringify({
+    type: memory.type ?? 'session',
+    content: memory.content ?? '',
+    ts: memory.ts ?? 0,
+    source_message_indices: [...new Set((memory.source_message_indices ?? []).map(Number).filter(Number.isInteger))].sort((a, b) => a - b),
+    source_messages: [...new Set((memory.source_messages ?? []).map(String))].sort(),
+  });
+  let hash = 2166136261;
+  for (const char of identity) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `sme-session-fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+// Privacy-safe and stable across harmless whitespace changes.  It is used
+// only to associate a citation-repair response with an already extracted
+// candidate; the provider's returned claim text is never persisted.
+function stableCitationClaimHash(candidate = {}) {
+  const identity = `${String(candidate.type ?? '').trim().toLowerCase()}\u0000${String(candidate.content ?? '').trim().replace(/\s+/g, ' ')}`;
+  let hash = 2166136261;
+  for (const char of identity) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `claim-fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/**
  * Returns the session memory array for the current chat.
  * Migrates legacy entries (no consolidated flag) to consolidated: true on load
  * so existing memories are treated as the stable base.
@@ -171,6 +206,7 @@ export function loadSessionMemories() {
   return memories.map((m) =>
     applyGraphDefaults({
       ...m,
+      id: m.id ?? deterministicLegacySessionMemoryId(m),
       consolidated: m.consolidated ?? true,
       importance: m.importance ?? 2,
       expiration: m.expiration ?? 'session',
@@ -447,29 +483,31 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }
       const uncitedLines = uncitedCandidates.map((candidate) => {
         const entities = (candidate._raw_entity_names ?? []).length ? `:entity=${candidate._raw_entity_names.join(',')}` : '';
-        return `[${candidate.type}:${candidate.importance}:${candidate.expiration}:candidate_id=${candidate._citation_candidate_id}${entities}] ${candidate.content}`;
+        candidate._citation_claim_hash ??= stableCitationClaimHash(candidate);
+        return `[${candidate.type}:${candidate.importance}:${candidate.expiration}:candidate_id=${candidate._citation_candidate_id}:claim_hash=${candidate._citation_claim_hash}${entities}] ${candidate.content}`;
       }).join('\n');
-      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return exactly one line per supplied candidate_id. Preserve candidate_id, type, importance, expiration, entity tags, and factual content exactly. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories; do not reorder them. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
+      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return exactly one line per supplied candidate_id. Preserve candidate_id and claim_hash exactly. The original stored candidate is authoritative: its claim will never be replaced from your response. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories; do not reorder them. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
       const parseRepairAssociations = (raw) => {
         const bracketed = parseSessionOutput(raw);
         if (bracketed.length) return bracketed;
         const records = [];
-        const append = (id, sources) => {
+        const append = (id, sources, claimHash = null) => {
           const normalizedId = String(id ?? '').trim().replace(/^['"]|['"]$/g, '');
           const indices = [...new Set((Array.isArray(sources) ? sources : String(sources ?? '').split(/[\s,]+/))
             .map((value) => Number(value)).filter(Number.isInteger))];
-          if (normalizedId && indices.length) records.push({ _citation_candidate_id: normalizedId, source_message_indices: indices, _repair_association_only: true });
+          if (normalizedId && indices.length) records.push({ _citation_candidate_id: normalizedId, _citation_claim_hash: claimHash ? String(claimHash).trim() : null, source_message_indices: indices, _repair_association_only: true });
         };
         for (const line of String(raw ?? '').split(/\r?\n/)) {
           try {
             const parsed = JSON.parse(line);
-            if (Array.isArray(parsed)) for (const item of parsed) append(item?.candidate_id, item?.citations ?? item?.sources);
-            else append(parsed?.candidate_id, parsed?.citations ?? parsed?.sources);
+            if (Array.isArray(parsed)) for (const item of parsed) append(item?.candidate_id, item?.citations ?? item?.sources, item?.claim_hash);
+            else append(parsed?.candidate_id, parsed?.citations ?? parsed?.sources, parsed?.claim_hash);
           } catch { /* XML or prose is handled below; never infer from text. */ }
         }
         for (const match of String(raw ?? '').matchAll(/<record\b[^>]*candidate_id=["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/record>/gi)) {
           const sourceMatch = match[2].match(/<(?:citations|sources)>([^<]+)<\/(?:citations|sources)>/i);
-          append(match[1], sourceMatch?.[1]);
+          const hashMatch = match[0].match(/claim_hash=["']?([^"'\s>]+)/i);
+          append(match[1], sourceMatch?.[1], hashMatch?.[1]);
         }
         return records;
       };
@@ -483,6 +521,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           repairTerminalRecorded = true;
         } else {
           const originalsById = new Map(uncitedCandidates.map((candidate) => [candidate._citation_candidate_id, candidate]));
+          const originalsByClaimHash = new Map(uncitedCandidates.map((candidate) => [candidate._citation_claim_hash, candidate]));
           // Local models occasionally preserve a repaired record but omit or
           // slightly mangle its candidate_id.  Text is never a primary key:
           // use it only as a bounded fallback when one and only one original
@@ -505,9 +544,22 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           let parserRecoveries = 0;
           let unknownIdsReturned = 0;
           let duplicateIdsReturned = 0;
+          let contentRewritesIgnored = 0;
+          let claimHashRecoveries = 0;
+          let invalidCitations = 0;
+          let unmatchedCandidates = 0;
           const repaired = parsedRepair.flatMap((candidate) => {
             let candidateId = candidate._citation_candidate_id;
             let original = originalsById.get(candidateId);
+            const directIdMatch = Boolean(original);
+            if (!original) {
+              const hashed = originalsByClaimHash.get(candidate._citation_claim_hash);
+              if (hashed) {
+                original = hashed;
+                candidateId = original._citation_candidate_id;
+                claimHashRecoveries++;
+              }
+            }
             if (!original) {
               const exactMatches = originalsByExactRecord.get(`${candidate.type}\u0000${candidate.content}`) ?? [];
               if (exactMatches.length === 1) {
@@ -518,11 +570,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             }
             if (!original || repairedIds.has(candidateId) || !(candidate.source_message_indices ?? []).length) {
               if (original && repairedIds.has(candidateId)) duplicateIdsReturned++;
+              else if (original) invalidCitations++;
+              else unmatchedCandidates++;
               return [];
             }
-            // Never accept a repair that rewrites the claim, even if it copied
-            // the ID. The repair operation is allowed to supply citations only.
-            if (!candidate._repair_association_only && (candidate.type !== original.type || candidate.content !== original.content)) return [];
+            // The stored candidate is authoritative. When the provider returns
+            // its exact stable ID, accept only its citations and deliberately
+            // discard any paraphrased text; it can never rewrite the claim.
+            // Without an exact ID, retain the stricter immutable-text fallback.
+            if (!candidate._repair_association_only && !directIdMatch && (candidate.type !== original.type || candidate.content !== original.content)) return [];
+            if (directIdMatch && !candidate._repair_association_only && (candidate.type !== original.type || candidate.content !== original.content)) contentRewritesIgnored++;
             repairedIds.add(candidateId);
             return [{ ...original, source_message_indices: candidate.source_message_indices, grounding_status: 'direct', validation_status: 'unvalidated' }];
           });
@@ -530,6 +587,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             const matching = sessionDiagnostics.citation_repair_matching ??= {
               candidates_sent: 0, ids_returned: 0, ids_matched: 0, ids_missing: 0,
               unknown_ids_returned: 0, duplicate_ids_returned: 0, parser_recoveries: 0,
+              claim_hash_recoveries: 0, records_with_valid_citations: 0, records_with_invalid_citations: 0,
+              records_rejected_candidate_unmatched: 0, records_rejected_claim_changed: 0,
               unmatched_after_retry: 0, batch_size_distribution: {}, recovery_rate: 0,
             };
             matching.candidates_sent += repairEligibleCount;
@@ -539,6 +598,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             matching.unknown_ids_returned += unknownIdsReturned;
             matching.duplicate_ids_returned += duplicateIdsReturned;
             matching.parser_recoveries += parserRecoveries;
+            matching.claim_hash_recoveries += claimHashRecoveries;
+            matching.records_with_valid_citations += repaired.length;
+            matching.records_with_invalid_citations += invalidCitations;
+            matching.records_rejected_candidate_unmatched += unmatchedCandidates;
+            matching.content_rewrites_ignored = (matching.content_rewrites_ignored ?? 0) + contentRewritesIgnored;
             matching.unmatched_after_retry += Math.max(0, repairEligibleCount - repaired.length);
             matching.batch_size_distribution[repairEligibleCount] = (matching.batch_size_distribution[repairEligibleCount] ?? 0) + 1;
             matching.recovery_rate = matching.candidates_sent ? Number((matching.ids_matched / matching.candidates_sent).toFixed(4)) : 0;

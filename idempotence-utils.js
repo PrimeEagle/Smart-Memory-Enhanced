@@ -50,6 +50,47 @@ function fingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+// Session records predate several graph fields.  Their normalized form must
+// be identical before and after a reconciliation pass, even when a later
+// writer persists the one-time schema backfill.  This function is deliberately
+// pure: hashing or auditing never edits the live chat metadata.
+function deterministicLegacySessionId(record = {}) {
+  const identity = {
+    type: record.type ?? 'session',
+    content: record.content ?? '',
+    ts: record.ts ?? 0,
+    source_message_indices: [...new Set((record.source_message_indices ?? []).map(Number).filter(Number.isInteger))].sort((a, b) => a - b),
+    source_messages: [...new Set((record.source_messages ?? []).map(String))].sort(),
+  };
+  return `sme-session-${fingerprint(JSON.stringify(identity))}`;
+}
+
+function canonicalizeSessionMemory(record = {}) {
+  const value = record && typeof record === 'object' ? record : {};
+  return {
+    ...value,
+    id: value.id ?? deterministicLegacySessionId(value),
+    consolidated: value.consolidated ?? true,
+    importance: value.importance ?? 2,
+    expiration: value.expiration ?? 'session',
+    confidence: value.confidence ?? 0.7,
+    persona_relevance: value.persona_relevance ?? (value.type === 'development' ? 2 : 1),
+    intimacy_relevance: value.intimacy_relevance ?? (value.type === 'development' ? 2 : 1),
+    retrieval_count: value.retrieval_count ?? 0,
+    last_confirmed_ts: value.last_confirmed_ts ?? value.ts ?? 0,
+    source_messages: value.source_messages ?? [],
+    source_chat_id: value.source_chat_id ?? null,
+    entities: value.entities ?? [],
+    time_scope: value.time_scope ?? 'global',
+    valid_from: value.valid_from ?? null,
+    valid_to: value.valid_to ?? null,
+    supersedes: value.supersedes ?? [],
+    superseded_by: value.superseded_by ?? null,
+    contradicts: value.contradicts ?? [],
+    unconfirmed_since: value.unconfirmed_since ?? 0,
+  };
+}
+
 function canonicalize(value, { excludeVolatile = true } = {}) {
   if (Array.isArray(value)) {
     // Reconciliation treats store collections as sets keyed by durable record
@@ -104,7 +145,11 @@ export function canonicalizeDurableIdempotenceState(metadata = {}) {
   const source = metadata && typeof metadata === 'object' ? metadata : {};
   const selected = Object.fromEntries(Object.keys(source)
     .filter((key) => DURABLE_KEYS.has(key))
-    .map((key) => [key, key === 'sceneHistory' ? splitSceneHistory(source[key]).semantic : source[key]]));
+    .map((key) => [key,
+      key === 'sceneHistory' ? splitSceneHistory(source[key]).semantic
+        : key === 'sessionMemories' ? (Array.isArray(source[key]) ? source[key].map(canonicalizeSessionMemory) : [])
+          : source[key],
+    ]));
   return canonicalize(selected);
 }
 
@@ -152,6 +197,60 @@ export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24
     accounted_mutation_count: 0,
     unaccounted_mutation_count: paths.length,
     truncated: paths.length >= limit,
+  };
+}
+
+/**
+ * Privacy-safe session-memory diff.  It exposes IDs, paths, categories, and
+ * value fingerprints only; claim text is never included in diagnostics.
+ */
+export function summarizeSessionMemoryChanges(before = {}, after = {}, limit = 32) {
+  const beforeRecords = new Map((before?.sessionMemories ?? []).map((record) => {
+    const normalized = canonicalizeSessionMemory(record);
+    return [normalized.id, canonicalize(normalized)];
+  }));
+  const afterRecords = new Map((after?.sessionMemories ?? []).map((record) => {
+    const normalized = canonicalizeSessionMemory(record);
+    return [normalized.id, canonicalize(normalized)];
+  }));
+  const added = [...afterRecords.keys()].filter((id) => !beforeRecords.has(id)).sort();
+  const removed = [...beforeRecords.keys()].filter((id) => !afterRecords.has(id)).sort();
+  const changedRecordIds = [];
+  const changedPaths = [];
+  const categories = {};
+  const visit = (left, right, path, id) => {
+    if (changedPaths.length >= limit || JSON.stringify(left) === JSON.stringify(right)) return;
+    const leftObject = left && typeof left === 'object' && !Array.isArray(left);
+    const rightObject = right && typeof right === 'object' && !Array.isArray(right);
+    if (!leftObject || !rightObject) {
+      const field = path || 'record';
+      const category = /(?:source|citation|provenance)/i.test(field) ? 'provenance_semantic'
+        : /(?:id|type|content|valid|supersed|contradict|entity)/i.test(field) ? 'semantic_durable'
+          : /(?:terminal|disposition|validation)/i.test(field) ? 'deterministic_derived' : 'other_durable';
+      categories[category] = (categories[category] ?? 0) + 1;
+      changedPaths.push({ record_id: id, field_path: field, change_category: category,
+        before_value_hash: fingerprint(JSON.stringify(left)), after_value_hash: fingerprint(JSON.stringify(right)),
+        semantic: true, mutation_counted: false, lifecycle_stage: 'comparison' });
+      return;
+    }
+    for (const key of [...new Set([...Object.keys(left), ...Object.keys(right)])].sort()) visit(left[key], right[key], path ? `${path}.${key}` : key, id);
+  };
+  for (const id of [...beforeRecords.keys()].filter((key) => afterRecords.has(key)).sort()) {
+    const start = changedPaths.length;
+    visit(beforeRecords.get(id), afterRecords.get(id), '', id);
+    if (changedPaths.length > start) changedRecordIds.push(id);
+  }
+  return {
+    changed: Boolean(added.length || removed.length || changedRecordIds.length),
+    record_count_before: beforeRecords.size,
+    record_count_after: afterRecords.size,
+    added_record_ids: added.slice(0, limit), removed_record_ids: removed.slice(0, limit),
+    changed_record_ids: changedRecordIds.slice(0, limit),
+    reordered_only: !added.length && !removed.length && !changedRecordIds.length
+      && JSON.stringify((before?.sessionMemories ?? []).map((record) => canonicalizeSessionMemory(record).id)) !== JSON.stringify((after?.sessionMemories ?? []).map((record) => canonicalizeSessionMemory(record).id)),
+    changed_path_count: changedPaths.length, changed_paths: changedPaths, changes_by_category: categories,
+    accounted_mutation_count: 0, unaccounted_mutation_count: changedPaths.length,
+    truncated: changedPaths.length >= limit || added.length > limit || removed.length > limit || changedRecordIds.length > limit,
   };
 }
 

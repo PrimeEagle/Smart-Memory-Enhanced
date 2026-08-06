@@ -49,7 +49,7 @@
 import { MEMORY_TYPES, SESSION_TYPES, generateMemoryId } from './constants.js';
 import { sanitizeStructuredModelOutput } from './record-validation.js';
 
-const MODIFIER_KEYS = new Set(['entity', 'entities', 'source', 'sources', 'source_messages', 'source_indices', 'candidate_id', 'witnessed_by', 'score', 'expiration', 'expires', 'trigger', 'triggers']);
+const MODIFIER_KEYS = new Set(['entity', 'entities', 'source', 'sources', 'source_messages', 'source_indices', 'candidate_id', 'claim_hash', 'witnessed_by', 'score', 'expiration', 'expires', 'trigger', 'triggers']);
 const ENTITY_CONTROL_WORDS = new Set([...MEMORY_TYPES, ...SESSION_TYPES, 'arc', 'resolved', 'scene', 'session', 'permanent', 'none', 'source', 'sources', 'source_messages', 'source_indices', 'score', 'expiration', 'expires', 'entity', 'entities', 'witnessed_by', 'trigger', 'triggers']);
 const COLLECTIVE_ENTITY_NAMES = new Set(['all three', 'all four', 'both of them', 'the two of them', 'the couple', 'the group', 'everyone', 'everybody', 'the others', 'the trio', 'the family', 'the roommates', 'the partners']);
 const ROLE_PLACEHOLDER_ENTITY_NAMES = new Set(['supporting_character', 'supporting character', 'side_character', 'side character', 'character', 'person', 'npc', 'unknown character', 'minor character']);
@@ -85,6 +85,7 @@ export function parseBracketModifiers(rawModifiers = '') {
     if (key === 'entity' || key === 'entities') result.entityNames.push(...value.split(',').map((name) => name.trim()).filter(isPlausibleEntityName));
     else if (key === 'source' || key === 'sources' || key === 'source_messages' || key === 'source_indices') result.sourceIndices.push(...value.split(',').map((entry) => Number(entry.trim())).filter((entry) => Number.isInteger(entry) && entry >= 0));
     else if (key === 'candidate_id' && /^[A-Za-z0-9_-]{1,80}$/.test(value)) result.candidateId = value;
+    else if (key === 'claim_hash' && /^[A-Za-z0-9_-]{1,100}$/.test(value)) result.claimHash = value;
     else if (key === 'witnessed_by') result.witnessedBy.push(...value.split(',').map((name) => name.trim()).filter(isPlausibleEntityName));
     else if (key === 'trigger' || key === 'triggers') result.triggers.push(...value.split(',').map((trigger) => trigger.trim()).filter(Boolean));
     else if (key === 'score' && /^[123]$/.test(value)) result.score = Number(value);
@@ -219,6 +220,7 @@ export function parseSessionOutput(text) {
       consolidated: false,
       _raw_entity_names: rawEntityNames,
       _citation_candidate_id: parsedModifiers.candidateId,
+      _citation_claim_hash: parsedModifiers.claimHash,
       // Graph fields - session memories use 'session' scope by default.
       id: generateMemoryId(),
       source_messages: [],
