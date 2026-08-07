@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.86] - 2026-08-06
+
+### Fixed
+
+- Diagnostics exported after a manual Developer idempotence check now prefer
+  the current saved chat report over a stale pre-check in-memory snapshot.
+  The export therefore retains the current Developer semantic hash, clean
+  integrity status, restored-panel status, and current-result flag.
+- Citation repair now validates every returned source index against the exact
+  prompt-visible source list before provenance expansion. Out-of-range,
+  empty, unmatched, duplicate, altered-claim, and later-validation outcomes
+  receive explicit terminal reasons rather than collapsing into one invalid
+  count.
+
+### Added
+
+- Citation diagnostics now export a cumulative repair-validation funnel,
+  bounded source-mapping signatures, claim-hash association data, and
+  recovered-versus-accepted-versus-persisted accounting.
+- Diagnostics now include compact `arc_status_traces` for authoritative arcs
+  and explicit zero-count coverage for lifecycle statuses not evidenced by the
+  chat.
+- Scene diagnostics now expose pre/post-coalescing boundaries, clusters,
+  suppressed members, suppression reasons, and reconciliation accounting.
+
+### Tests
+
+- Full automated verification passed with 323 tests. A live Memorize Chat run
+  remains required to measure provider citation quality with the new detailed
+  rejection categories.
+
 ## [0.8.85] - 2026-08-06
 
 ### Fixed

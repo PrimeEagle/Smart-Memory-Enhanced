@@ -1704,7 +1704,10 @@ export function bindSettingsUI(ctrl) {
   let latestExportDiagnostics = null;
   const exportCatchUpDiagnostics = () => {
     const metadata = getContext().chatMetadata?.[META_KEY];
-    const report = latestExportDiagnostics ?? metadata?.catch_up_diagnostics;
+    // A manual Developer check updates persisted chat diagnostics after the
+    // catch-up has finished. Prefer that current saved report over the
+    // in-memory pre-check snapshot so an export reflects the restored result.
+    const report = metadata?.catch_up_diagnostics ?? latestExportDiagnostics;
     if (!report) return toastr.info('No Memorize Chat diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
@@ -4071,6 +4074,32 @@ export function bindSettingsUI(ctrl) {
             sceneAudit.candidate_dispositions ?? [],
             minMessages,
           );
+          const preCoalescing = gatedCandidates
+            .filter((item) => item.terminal_break_disposition === 'accepted_final_break' || item.terminal_break_disposition === 'coalesced_with_nearby_boundary')
+            .map((item) => item.message_index ?? item.candidate_id)
+            .filter(Number.isInteger);
+          const suppressed = gatedCandidates
+            .filter((item) => item.terminal_break_disposition === 'coalesced_with_nearby_boundary')
+            .map((item) => ({
+              index: item.message_index ?? item.candidate_id,
+              reason: item.gate_reason_code ?? item.coalescing?.outcome ?? 'no_independent_state_reset',
+            }));
+          sceneAudit.scene_coalescing = {
+            pre_coalescing_break_indices: preCoalescing,
+            post_coalescing_break_indices: [...sceneAudit.final_break_indices],
+            clusters_found: sceneAudit.same_run_boundary_clusters?.clusters?.length ?? 0,
+            candidates_clustered: sceneAudit.same_run_boundary_clusters?.clusters?.reduce((total, cluster) => total + (cluster.members?.length ?? 0), 0) ?? 0,
+            boundaries_retained: sceneAudit.final_break_indices.length,
+            boundaries_suppressed: suppressed.length,
+            accounting_reconciled: preCoalescing.length === sceneAudit.final_break_indices.length + suppressed.length,
+            clusters: (sceneAudit.same_run_boundary_clusters?.clusters ?? []).map((cluster, index) => ({
+              cluster_id: `cluster-${index + 1}`,
+              member_indices: cluster.members ?? [],
+              retained_indices: (cluster.members ?? []).filter((member) => sceneAudit.final_break_indices.includes(member)),
+              suppressed_indices: suppressed.filter((item) => (cluster.members ?? []).includes(item.index)).map((item) => item.index),
+              suppression_reasons: suppressed.filter((item) => (cluster.members ?? []).includes(item.index)).map((item) => ({ index: item.index, reason: item.reason })),
+            })),
+          };
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections
@@ -4671,6 +4700,7 @@ export function bindSettingsUI(ctrl) {
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries(), loadArcs()),
         arcResolution: summarizeArcStatusResolution(loadArcs(), runResult.arcResolution),
         arc_record_accounting: summarizeArcRecordAccounting(loadArcs(), runResult.arcExtraction),
+        arc_status_traces: summarizeArcStatusTraces(loadArcs()),
         arcExtraction: runResult.arcExtraction,
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
@@ -5470,6 +5500,18 @@ export function bindSettingsUI(ctrl) {
           exportReport.developer_idempotence_check = finalResult;
           exportReport.finalReconciliation ??= {};
           exportReport.finalReconciliation.idempotence = finalResult;
+          exportReport.finalReconciliation.final_state_consistency ??= {};
+          Object.assign(exportReport.finalReconciliation.final_state_consistency, {
+            developer_check_semantic_hash: finalResult.evaluated_semantic_hash ?? null,
+            restored_panel_semantic_hash: finalResult.evaluated_semantic_hash ?? null,
+            developer_check_integrity_status: finalResult.attention_required ? 'needs_attention' : 'clean',
+            restored_panel_integrity_status: finalResult.attention_required ? 'needs_attention' : 'clean',
+            developer_result_current: finalResult.idempotent === true,
+            developer_stale_reference_count: Number(finalResult.stale_references_after_second_pass ?? 0),
+            restored_panel_stale_reference_count: Number(finalResult.stale_references_after_second_pass ?? 0),
+            interpretation_consistent: finalResult.idempotence_result_lifecycle_mismatch !== true,
+            mismatch_fields: finalResult.idempotence_result_lifecycle_mismatch ? ['idempotence_result_lifecycle'] : [],
+          });
           latestExportDiagnostics = exportReport;
           context.chatMetadata[META_KEY].catch_up_diagnostics = exportReport;
         }
@@ -5742,5 +5784,42 @@ function summarizeArcRecordAccounting(arcs = [], extraction = {}) {
     duplicate_versions_removed: Number(extraction.duplicate_candidates_merged ?? 0),
     unaccounted_records: Math.max(0, authoritative - lifecycleTotal) + Math.max(0, authoritative - verificationTotal),
     accounting_reconciled: lifecycleTotal === authoritative && verificationTotal === authoritative && staged === authoritative + rejectedBeforePersistence,
+  };
+}
+
+/** Compact, text-free lifecycle evidence for every authoritative arc. */
+function summarizeArcStatusTraces(arcs = []) {
+  const byFinalStatus = summarizeArcStatusResolution(arcs);
+  const coverage = ['abandoned', 'superseded', 'reopened', 'uncertain'].map((status) => ({
+    status,
+    evidence_candidates_found: arcs.filter((arc) => arc?.arc_status_trace?.[`${status === 'superseded' ? 'supersession' : status}_evidence_count`] > 0).length,
+    matched_to_existing_arcs: byFinalStatus[status] ?? 0,
+    authoritative_records_created: byFinalStatus[status] ?? 0,
+    zero_count_reason: (byFinalStatus[status] ?? 0) ? null : 'no_source_evidence',
+  }));
+  return {
+    total: arcs.length,
+    by_final_status: byFinalStatus,
+    records: arcs.map((arc) => {
+      const trace = arc?.arc_status_trace ?? {};
+      return {
+        arc_id: arc?.id ?? null,
+        logical_signature_hash: diagnosticFingerprint(String(arc?.content ?? '')),
+        initial_status: trace.initial_status ?? 'open',
+        final_status: arc?.status ?? (arc?.resolved ? 'resolved' : 'open'),
+        creation_evidence_count: trace.creation_evidence_count ?? 0,
+        continuation_evidence_count: trace.continuation_evidence_count ?? 0,
+        resolution_evidence_count: trace.resolution_evidence_count ?? 0,
+        abandonment_evidence_count: trace.abandonment_evidence_count ?? 0,
+        supersession_evidence_count: trace.supersession_evidence_count ?? 0,
+        reopening_evidence_count: trace.reopening_evidence_count ?? 0,
+        contradictory_evidence_count: trace.contradictory_evidence_count ?? 0,
+        latest_evidence_position: arc?.last_status_change_index ?? null,
+        terminal_reason_code: arc?.status_reason_code ?? trace.terminal_reason ?? null,
+        active_for_injection: !arc?.resolved && ['open', 'reopened'].includes(arc?.status ?? 'open'),
+        verification_outcome: trace.verification_outcome ?? arc?.verification?.outcome ?? 'unavailable',
+      };
+    }),
+    zero_status_coverage: coverage,
   };
 }

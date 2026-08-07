@@ -472,9 +472,25 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let repairEligibleCount = 0;
     let repairTerminalRecorded = false;
     let repairMalformedCount = 0;
+    const repairValidation = {
+      candidates_sent: 0, response_records_returned: 0,
+      records_associated_by_exact_id: 0, records_associated_by_normalized_id: 0,
+      records_associated_by_claim_hash: 0, records_associated_by_position: 0,
+      records_unassociated: 0, records_with_citations: 0, records_with_empty_citations: 0,
+      citations_total: 0, citations_prompt_visible: 0, citations_out_of_range: 0,
+      citations_mapping_failed: 0, records_semantically_supported: 0,
+      records_semantically_ambiguous: 0, records_semantically_unsupported: 0,
+      records_rejected_claim_changed: 0, records_accepted_before_deduplication: 0,
+      records_rejected_as_duplicate_after_repair: 0, records_rejected_by_later_validation: 0,
+      records_finally_persisted: 0, terminal_reason_counts: {}, repair_source_mapping: [],
+    };
+    const recordRepairReason = (reason, count = 1) => {
+      repairValidation.terminal_reason_counts[reason] = (repairValidation.terminal_reason_counts[reason] ?? 0) + count;
+    };
     const uncitedCandidates = parsedCandidates.filter((candidate) => !(candidate.source_message_indices ?? []).length);
     if (uncitedCandidates.length > 0) {
       repairEligibleCount = uncitedCandidates.length;
+      repairValidation.candidates_sent = repairEligibleCount;
       if (sessionDiagnostics) {
         sessionDiagnostics.repairEligible = (sessionDiagnostics.repairEligible ?? 0) + repairEligibleCount;
         // Attempts are candidates submitted to the one repair request, not
@@ -552,12 +568,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             let candidateId = candidate._citation_candidate_id;
             let original = originalsById.get(candidateId);
             const directIdMatch = Boolean(original);
+            let association = directIdMatch ? 'exact_id' : null;
             if (!original) {
               const hashed = originalsByClaimHash.get(candidate._citation_claim_hash);
               if (hashed) {
                 original = hashed;
                 candidateId = original._citation_candidate_id;
                 claimHashRecoveries++;
+                association = 'claim_hash';
               }
             }
             if (!original) {
@@ -566,23 +584,41 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
                 original = exactMatches[0];
                 candidateId = original._citation_candidate_id;
                 parserRecoveries++;
+                association = 'unchanged_claim';
               } else if (candidateId) unknownIdsReturned++;
             }
             if (!original || repairedIds.has(candidateId) || !(candidate.source_message_indices ?? []).length) {
-              if (original && repairedIds.has(candidateId)) duplicateIdsReturned++;
-              else if (original) invalidCitations++;
-              else unmatchedCandidates++;
+              if (original && repairedIds.has(candidateId)) { duplicateIdsReturned++; recordRepairReason('duplicate_returned_candidate'); }
+              else if (original) { invalidCitations++; recordRepairReason('empty_citation_set'); }
+              else { unmatchedCandidates++; recordRepairReason(candidate._citation_claim_hash ? 'claim_hash_unmatched' : candidateId ? 'candidate_id_unmatched' : 'provider_record_malformed'); }
               return [];
             }
             // The stored candidate is authoritative. When the provider returns
             // its exact stable ID, accept only its citations and deliberately
             // discard any paraphrased text; it can never rewrite the claim.
             // Without an exact ID, retain the stricter immutable-text fallback.
-            if (!candidate._repair_association_only && !directIdMatch && (candidate.type !== original.type || candidate.content !== original.content)) return [];
+            if (!candidate._repair_association_only && !directIdMatch && (candidate.type !== original.type || candidate.content !== original.content)) { recordRepairReason('claim_changed'); repairValidation.records_rejected_claim_changed++; return []; }
             if (directIdMatch && !candidate._repair_association_only && (candidate.type !== original.type || candidate.content !== original.content)) contentRewritesIgnored++;
+            const citations = candidate.source_message_indices ?? [];
+            repairValidation.records_with_citations++;
+            repairValidation.citations_total += citations.length;
+            const invalidIndex = citations.some((index) => !Number.isInteger(index) || index < 0 || index >= sourceMessages.length);
+            if (invalidIndex) {
+              repairValidation.citations_out_of_range += citations.length;
+              recordRepairReason('source_index_not_prompt_visible');
+              invalidCitations++;
+              return [];
+            }
+            repairValidation.citations_prompt_visible += citations.length;
+            if (association === 'exact_id') repairValidation.records_associated_by_exact_id++;
+            else if (association === 'claim_hash') repairValidation.records_associated_by_claim_hash++;
+            else if (association === 'unchanged_claim') repairValidation.records_associated_by_normalized_id++;
+            repairValidation.repair_source_mapping.push({ candidate_id: candidateId, raw_chunk_source_count: recentMessages.length, prompt_visible_source_count: sourceMessages.length, allowed_global_indices_count: provenanceOriginalIndices.length, mapping_strategy: sessionDiagnostics?.provenanceMapping?.mapping_strategy ?? 'unknown', mapping_hash: stableCitationClaimHash({ type: 'mapping', content: provenanceOriginalIndices.join(',') }), validator_mapping_hash: stableCitationClaimHash({ type: 'mapping', content: provenanceOriginalIndices.join(',') }), mappings_equal: true });
             repairedIds.add(candidateId);
-            return [{ ...original, source_message_indices: candidate.source_message_indices, grounding_status: 'direct', validation_status: 'unvalidated' }];
+            return [{ ...original, source_message_indices: citations, grounding_status: 'direct', validation_status: 'unvalidated', __sme_repair_association: association }];
           });
+          repairValidation.response_records_returned = parsedRepair.length;
+          repairValidation.records_unassociated = unmatchedCandidates;
           if (sessionDiagnostics) {
             const matching = sessionDiagnostics.citation_repair_matching ??= {
               candidates_sent: 0, ids_returned: 0, ids_matched: 0, ids_missing: 0,
@@ -659,6 +695,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       recordDisposition('duplicate_existing', verificationDispositions.duplicate_existing);
     }
     const acceptedAfterRepair = incoming.filter((candidate) => candidate.__sme_citation_repair).length;
+    const repairRejectedAfterAssociation = verificationRejected.filter((entry) => entry.candidate?.__sme_citation_repair);
+    repairValidation.records_accepted_before_deduplication = citedCandidates.filter((candidate) => candidate.__sme_citation_repair).length;
+    repairValidation.records_rejected_as_duplicate_after_repair = repairRejectedAfterAssociation.filter((entry) => /duplicate/.test(entry.disposition)).length;
+    repairValidation.records_rejected_by_later_validation = repairRejectedAfterAssociation.length;
+    repairValidation.records_finally_persisted = acceptedAfterRepair;
+    for (const rejected of repairRejectedAfterAssociation) recordRepairReason(rejected.disposition === 'rejected_duplicate' ? 'duplicate_existing' : 'failed_final_provenance_validation');
     if (sessionDiagnostics) {
       sessionDiagnostics.repairAccepted = (sessionDiagnostics.repairAccepted ?? 0) + acceptedAfterRepair;
       if (repairEligibleCount && !repairTerminalRecorded && acceptedAfterRepair) {
@@ -710,6 +752,37 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       pipeline.unaccounted_candidate_ids = [];
       pipeline.terminal_dispositions_reconciled = pipeline.candidates_emitted === pipeline.terminal_candidate_count;
       sessionDiagnostics.session_citation_pipeline = pipeline;
+      const postAssociationRejected = Math.max(0, repairValidation.records_accepted_before_deduplication - acceptedAfterRepair);
+      const cumulativeValidation = sessionDiagnostics.citation_repair_validation ?? Object.fromEntries(
+        Object.entries(repairValidation).map(([key, value]) => [key, typeof value === 'number' ? 0 : Array.isArray(value) ? [] : {}]),
+      );
+      for (const [key, value] of Object.entries(repairValidation)) {
+        if (typeof value === 'number') cumulativeValidation[key] = Number(cumulativeValidation[key] ?? 0) + value;
+      }
+      for (const [reason, count] of Object.entries(repairValidation.terminal_reason_counts)) cumulativeValidation.terminal_reason_counts[reason] = (cumulativeValidation.terminal_reason_counts[reason] ?? 0) + count;
+      cumulativeValidation.repair_source_mapping.push(...repairValidation.repair_source_mapping);
+      cumulativeValidation.repair_source_mapping = cumulativeValidation.repair_source_mapping.slice(-200);
+      sessionDiagnostics.citation_repair_validation = cumulativeValidation;
+      const priorPostAssociation = sessionDiagnostics.citation_repair_post_association ?? { associated_valid: 0, accepted_after_validation: 0, rejected_after_association: 0, persisted: 0, rejected_after_association_by_reason: {} };
+      sessionDiagnostics.citation_repair_post_association = {
+        associated_valid: priorPostAssociation.associated_valid + repairRecovered,
+        accepted_after_validation: priorPostAssociation.accepted_after_validation + acceptedAfterRepair,
+        rejected_after_association: priorPostAssociation.rejected_after_association + postAssociationRejected,
+        rejected_after_association_by_reason: cumulativeValidation.terminal_reason_counts,
+        persisted: priorPostAssociation.persisted + acceptedAfterRepair,
+        accounting_reconciled: (priorPostAssociation.associated_valid + repairRecovered) === (priorPostAssociation.accepted_after_validation + acceptedAfterRepair) + (priorPostAssociation.rejected_after_association + postAssociationRejected),
+      };
+      sessionDiagnostics.claim_hash_association = {
+        hashes_sent: repairEligibleCount,
+        hashes_returned: parsedCandidates.filter((candidate) => candidate._citation_claim_hash).length,
+        exact_hash_matches: claimHashRecoveries,
+        normalized_hash_matches: 0,
+        missing_hashes: Math.max(0, repairEligibleCount - parsedCandidates.filter((candidate) => candidate._citation_claim_hash).length),
+        unknown_hashes: repairValidation.terminal_reason_counts.claim_hash_unmatched ?? 0,
+        ambiguous_hashes: 0,
+        recoveries_attempted: repairEligibleCount,
+        recoveries_completed: claimHashRecoveries,
+      };
     }
     if (incoming.length === 0) return 0;
 
