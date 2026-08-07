@@ -475,6 +475,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // Must be visible to the final per-chunk diagnostics even when this
     // provider response contains no repairable candidates or returns NONE.
     let claimHashRecoveries = 0;
+    let repairHashesReturned = 0;
+    const claimHashRecoveryTrace = [];
     const repairValidation = {
       candidates_sent: 0, response_records_returned: 0,
       records_associated_by_exact_id: 0, records_associated_by_normalized_id: 0,
@@ -500,27 +502,28 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         // merely the count of provider calls.
         sessionDiagnostics.repairAttempts = (sessionDiagnostics.repairAttempts ?? 0) + repairEligibleCount;
       }
-      const uncitedLines = uncitedCandidates.map((candidate) => {
+      const formatRepairLines = (candidates) => candidates.map((candidate) => {
         const entities = (candidate._raw_entity_names ?? []).length ? `:entity=${candidate._raw_entity_names.join(',')}` : '';
         candidate._citation_claim_hash ??= stableCitationClaimHash(candidate);
         return `[${candidate.type}:${candidate.importance}:${candidate.expiration}:candidate_id=${candidate._citation_candidate_id}:claim_hash=${candidate._citation_claim_hash}${entities}] ${candidate.content}`;
       }).join('\n');
-      const repairPrompt = `[SESSION CITATION REPAIR - Output structured data only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return exactly one line per supplied candidate_id. Preserve candidate_id and claim_hash exactly. The original stored candidate is authoritative: its claim will never be replaced from your response. Add :sources= with one or more supporting indices from the excerpt inside every bracket. Do not add, remove, reword, or combine memories; do not reorder them. Output NONE only if none can be cited.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${uncitedLines}\n\nOutput only corrected bracketed memory lines.`;
+      const buildRepairPrompt = (candidates, retry = false) => `[SESSION CITATION REPAIR${retry ? ' - single candidate retry' : ''} - strict JSON lines only.]\n\nThe following session-memory items were already extracted from the numbered source excerpt below, but their required citations were omitted. Return exactly one JSON object per supplied candidate_id and no prose or markdown. Preserve candidate_id and claim_hash exactly. The original stored candidate is authoritative: its claim will never be replaced from your response. For every item return either {"candidate_id":"...","claim_hash":"...","citations":[12,15],"failure_reason":null} using one or more supporting excerpt indices, or {"candidate_id":"...","claim_hash":"...","citations":[],"failure_reason":"unsupported_by_provided_sources"}. Do not add, remove, reword, or combine memories; do not reorder them.\n\nSOURCE EXCERPT:\n${chatHistory}\n\nITEMS TO CITE:\n${formatRepairLines(candidates)}`;
+      const repairPrompt = buildRepairPrompt(uncitedCandidates);
       const parseRepairAssociations = (raw) => {
         const bracketed = parseSessionOutput(raw);
         if (bracketed.length) return bracketed;
         const records = [];
-        const append = (id, sources, claimHash = null) => {
+        const append = (id, sources, claimHash = null, failureReason = null) => {
           const normalizedId = String(id ?? '').trim().replace(/^['"]|['"]$/g, '');
           const indices = [...new Set((Array.isArray(sources) ? sources : String(sources ?? '').split(/[\s,]+/))
             .map((value) => Number(value)).filter(Number.isInteger))];
-          if (normalizedId && indices.length) records.push({ _citation_candidate_id: normalizedId, _citation_claim_hash: claimHash ? String(claimHash).trim() : null, source_message_indices: indices, _repair_association_only: true });
+          if (normalizedId || claimHash) records.push({ _citation_candidate_id: normalizedId || null, _citation_claim_hash: claimHash ? String(claimHash).trim() : null, source_message_indices: indices, _repair_failure_reason: failureReason ? String(failureReason).trim() : null, _repair_association_only: true });
         };
         for (const line of String(raw ?? '').split(/\r?\n/)) {
           try {
             const parsed = JSON.parse(line);
-            if (Array.isArray(parsed)) for (const item of parsed) append(item?.candidate_id, item?.citations ?? item?.sources, item?.claim_hash);
-            else append(parsed?.candidate_id, parsed?.citations ?? parsed?.sources, parsed?.claim_hash);
+            if (Array.isArray(parsed)) for (const item of parsed) append(item?.candidate_id, item?.citations ?? item?.sources, item?.claim_hash, item?.failure_reason);
+            else append(parsed?.candidate_id, parsed?.citations ?? parsed?.sources, parsed?.claim_hash, parsed?.failure_reason);
           } catch { /* XML or prose is handled below; never infer from text. */ }
         }
         for (const match of String(raw ?? '').matchAll(/<record\b[^>]*candidate_id=["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/record>/gi)) {
@@ -553,7 +556,28 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             matches.push(original);
             originalsByExactRecord.set(key, matches);
           }
-          const parsedRepair = parseRepairAssociations(repairedResponse);
+          let parsedRepair = parseRepairAssociations(repairedResponse);
+          // A large repair batch can be syntactically valid yet yield no
+          // usable citations. Retry only the first candidate once, which
+          // probes provider adherence without turning one bad batch into an
+          // unbounded series of calls.
+          if (!parsedRepair.some((candidate) => candidate.source_message_indices?.length) && uncitedCandidates.length) {
+            const retryCandidate = uncitedCandidates[0];
+            if (sessionDiagnostics) {
+              sessionDiagnostics.citation_repair_adaptive_retry ??= { attempted: 0, recovered: 0, exhausted: 0 };
+              sessionDiagnostics.citation_repair_adaptive_retry.attempted++;
+            }
+            const retryResponse = await generateMemoryExtract(applyPromptOverride(buildRepairPrompt([retryCandidate], true), PROMPT_TASKS.SESSION_EXTRACTION, characterName), {
+              responseLength: settings.session_response_length ?? 500,
+              task: 'session-citation-repair-single-candidate',
+            });
+            const retryRecords = parseRepairAssociations(retryResponse);
+            if (retryRecords.some((candidate) => candidate.source_message_indices?.length)) {
+              parsedRepair = [...parsedRepair, ...retryRecords];
+              if (sessionDiagnostics) sessionDiagnostics.citation_repair_adaptive_retry.recovered++;
+            } else if (sessionDiagnostics) sessionDiagnostics.citation_repair_adaptive_retry.exhausted++;
+          }
+          repairHashesReturned = parsedRepair.filter((candidate) => candidate._citation_claim_hash).length;
           if (!parsedRepair.length && sessionDiagnostics) {
             sessionDiagnostics.repairMalformed = (sessionDiagnostics.repairMalformed ?? 0) + repairEligibleCount;
             repairTerminalRecorded = true;
@@ -591,8 +615,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             }
             if (!original || repairedIds.has(candidateId) || !(candidate.source_message_indices ?? []).length) {
               if (original && repairedIds.has(candidateId)) { duplicateIdsReturned++; recordRepairReason('duplicate_returned_candidate'); }
-              else if (original) { invalidCitations++; recordRepairReason('empty_citation_set'); }
+              else if (original) { invalidCitations++; recordRepairReason(candidate._repair_failure_reason === 'unsupported_by_provided_sources' ? 'unsupported_by_provided_sources' : 'empty_citation_set'); }
               else { unmatchedCandidates++; recordRepairReason(candidate._citation_claim_hash ? 'claim_hash_unmatched' : candidateId ? 'candidate_id_unmatched' : 'provider_record_malformed'); }
+              claimHashRecoveryTrace.push({
+                candidate_id: candidateId ?? null,
+                hash_returned: Boolean(candidate._citation_claim_hash),
+                association: association ?? 'unassociated',
+                citations_present: Boolean(candidate.source_message_indices?.length),
+                terminal_outcome: original ? 'rejected_before_validation' : 'unassociated',
+              });
               return [];
             }
             // The stored candidate is authoritative. When the provider returns
@@ -617,6 +648,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             else if (association === 'unchanged_claim') repairValidation.records_associated_by_normalized_id++;
             repairValidation.repair_source_mapping.push({ candidate_id: candidateId, raw_chunk_source_count: recentMessages.length, prompt_visible_source_count: sourceMessages.length, allowed_global_indices_count: provenanceOriginalIndices.length, mapping_strategy: sessionDiagnostics?.provenanceMapping?.mapping_strategy ?? 'unknown', mapping_hash: stableCitationClaimHash({ type: 'mapping', content: provenanceOriginalIndices.join(',') }), validator_mapping_hash: stableCitationClaimHash({ type: 'mapping', content: provenanceOriginalIndices.join(',') }), mappings_equal: true });
             repairedIds.add(candidateId);
+            claimHashRecoveryTrace.push({
+              candidate_id: candidateId,
+              hash_returned: Boolean(candidate._citation_claim_hash),
+              association,
+              citations_present: true,
+              terminal_outcome: 'associated_for_validation',
+            });
             return [{ ...original, source_message_indices: citations, grounding_status: 'direct', validation_status: 'unvalidated', __sme_repair_association: association }];
           });
           repairValidation.response_records_returned = parsedRepair.length;
@@ -755,6 +793,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       pipeline.terminal_dispositions_reconciled = pipeline.candidates_emitted === pipeline.terminal_candidate_count;
       sessionDiagnostics.session_citation_pipeline = pipeline;
       const postAssociationRejected = Math.max(0, repairValidation.records_accepted_before_deduplication - acceptedAfterRepair);
+      const postAssociationReasonCounts = repairRejectedAfterAssociation.reduce((counts, rejected) => {
+        const reason = rejected.disposition === 'rejected_duplicate' ? 'duplicate_existing' : 'failed_final_provenance_validation';
+        counts[reason] = (counts[reason] ?? 0) + 1;
+        return counts;
+      }, {});
       const cumulativeValidation = sessionDiagnostics.citation_repair_validation ?? Object.fromEntries(
         Object.entries(repairValidation).map(([key, value]) => [key, typeof value === 'number' ? 0 : Array.isArray(value) ? [] : {}]),
       );
@@ -770,20 +813,24 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         associated_valid: priorPostAssociation.associated_valid + repairRecovered,
         accepted_after_validation: priorPostAssociation.accepted_after_validation + acceptedAfterRepair,
         rejected_after_association: priorPostAssociation.rejected_after_association + postAssociationRejected,
-        rejected_after_association_by_reason: cumulativeValidation.terminal_reason_counts,
+        rejected_after_association_by_reason: Object.entries(postAssociationReasonCounts).reduce((counts, [reason, count]) => {
+          counts[reason] = (priorPostAssociation.rejected_after_association_by_reason?.[reason] ?? 0) + count;
+          return counts;
+        }, { ...(priorPostAssociation.rejected_after_association_by_reason ?? {}) }),
         persisted: priorPostAssociation.persisted + acceptedAfterRepair,
         accounting_reconciled: (priorPostAssociation.associated_valid + repairRecovered) === (priorPostAssociation.accepted_after_validation + acceptedAfterRepair) + (priorPostAssociation.rejected_after_association + postAssociationRejected),
       };
       sessionDiagnostics.claim_hash_association = {
         hashes_sent: repairEligibleCount,
-        hashes_returned: parsedCandidates.filter((candidate) => candidate._citation_claim_hash).length,
+        hashes_returned: repairHashesReturned,
         exact_hash_matches: claimHashRecoveries,
         normalized_hash_matches: 0,
-        missing_hashes: Math.max(0, repairEligibleCount - parsedCandidates.filter((candidate) => candidate._citation_claim_hash).length),
+        missing_hashes: Math.max(0, repairEligibleCount - repairHashesReturned),
         unknown_hashes: repairValidation.terminal_reason_counts.claim_hash_unmatched ?? 0,
         ambiguous_hashes: 0,
         recoveries_attempted: repairEligibleCount,
         recoveries_completed: claimHashRecoveries,
+        recovery_trace: claimHashRecoveryTrace.slice(-100),
       };
     }
     if (incoming.length === 0) return 0;

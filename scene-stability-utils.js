@@ -649,11 +649,14 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
   const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
  const identifiedPriorRuns = identifiedRuns.filter((run) => !run.current_run);
  const distinctPriorRunCount = identifiedPriorRuns.length;
+ const comparisonAvailable = distinctPriorRunCount > 0;
  const materiallyStable = counts.length ? Math.max(...counts) - Math.min(...counts) <= 1 : false;
  const boundariesMateriallyStable = entries.every(([index, count]) => count === runCount
    || (clusterForIndex(index)?.distinct_run_count === runCount));
  const varianceTotal = Object.values(measuredSceneVarianceSources).reduce((total, count) => total + count, 0);
- const stabilityCause = !candidateHistoryComplete
+ const stabilityCause = !comparisonAvailable
+   ? { classification: 'comparison_unavailable', explanation: 'No comparable prior scene run is retained; stability cannot be measured from one run.', attention_required: false }
+   : !candidateHistoryComplete
    ? { classification: 'insufficient_history', explanation: 'Comparable scene runs lack complete candidate-level diagnostics.', attention_required: false }
    : gateDeterminismViolations.length
      ? { classification: 'determinism_violation', explanation: 'Equivalent gate inputs produced different terminal outcomes.', attention_required: true }
@@ -703,6 +706,8 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    // can still appear as a retained prior run in exported diagnostics.
    comparable_prior_run_count: identifiedPriorRuns.length,
    prior_comparable_run_count: identifiedPriorRuns.length,
+   comparison_available: comparisonAvailable,
+   comparison_unavailable_reason: comparisonAvailable ? null : 'no_comparable_prior_run',
    comparable_total_run_count: runCount,
    total_comparable_run_count: runCount,
    comparable_run_count: runCount,
@@ -763,10 +768,11 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    gate_determinism_coverage: gateDeterminismCoverage,
    gate_snapshot_coverage_by_run: gateSnapshotCoverageByRun,
    gate_schema_migration_progress: gateSchemaMigrationProgress,
-   pipeline_stable: pipelinesStable, scene_count_exactly_stable: new Set(counts).size <= 1,
-   scene_count_materially_stable: materiallyStable,
-   boundary_positions_exactly_stable: entries.every(([, count]) => count === runCount),
-   boundary_positions_materially_stable: boundariesMateriallyStable,
-   decision_pipeline_stable: pipelinesStable,
+   pipeline_stable: comparisonAvailable ? pipelinesStable : null,
+   scene_count_exactly_stable: comparisonAvailable ? new Set(counts).size <= 1 : null,
+   scene_count_materially_stable: comparisonAvailable ? materiallyStable : null,
+   boundary_positions_exactly_stable: comparisonAvailable ? entries.every(([, count]) => count === runCount) : null,
+   boundary_positions_materially_stable: comparisonAvailable ? boundariesMateriallyStable : null,
+   decision_pipeline_stable: comparisonAvailable ? pipelinesStable : null,
  };
 }

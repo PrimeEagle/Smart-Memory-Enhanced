@@ -326,7 +326,9 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   const durableStateBefore = idempotenceDurableState(metadataBefore);
   const durableStateHashBefore = durableStateHash(durableStateBefore);
   const sceneHistoryHashesBefore = sceneHistoryHashComponents(durableStateBefore);
-  const developerCheckRequested = Boolean(extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck);
+  // Verbose logging increases local diagnostics only. It must never make an
+  // automatic reconciliation masquerade as the explicit Developer command.
+  const developerCheckRequested = Boolean(forceIdempotenceCheck);
   // There is currently no mutating preparation step. Keep this explicit
   // snapshot before pass one so future preparation cannot hide a mutation.
   const metadataAfterPreparation = getContext().chatMetadata?.[META_KEY] ?? {};
@@ -358,9 +360,12 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   const durableStateHashAfterFirstPass = durableStateHash(durableStateAfterFirstPass);
   result.idempotence = {
     available: true,
-    attempted: Boolean(extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck),
-    enabled_by: forceIdempotenceCheck ? 'developer_manual_command' : extension_settings[MODULE_NAME]?.verbose_logging ? 'developer_verbose_logging' : null,
-    not_attempted_reason: extension_settings[MODULE_NAME]?.verbose_logging || forceIdempotenceCheck ? null : 'developer_check_disabled',
+    audit_type: forceIdempotenceCheck ? 'manual_developer_idempotence_check' : 'automatic_post_catchup_stabilization',
+    is_manual_developer_check: forceIdempotenceCheck,
+    automatic_stabilization: !forceIdempotenceCheck,
+    attempted: true,
+    enabled_by: forceIdempotenceCheck ? 'developer_manual_command' : 'automatic_post_catchup_stabilization',
+    not_attempted_reason: null,
     pass_count: 1,
     durable_state_hash_before: durableStateHashBefore,
     durable_state_hash_after_first_pass: durableStateHashAfterFirstPass,
@@ -465,6 +470,12 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       },
     };
     result.idempotence = deriveIdempotenceResult(baseIdempotence);
+    // This local second-pass audit protects the completed catch-up state, but
+    // it is deliberately not presented as a user-invoked Developer result.
+    // The manual path below persists its own lifecycle-verified record.
+    result.idempotence.audit_type = forceIdempotenceCheck ? 'manual_developer_idempotence_check' : 'automatic_post_catchup_stabilization';
+    result.idempotence.is_manual_developer_check = forceIdempotenceCheck;
+    result.idempotence.automatic_stabilization = !forceIdempotenceCheck;
     result.idempotence.hash_comparison = {
       durable_before: result.idempotence.durable_state_hash_before,
       durable_after_first_pass: result.idempotence.durable_state_hash_after_first_pass,
@@ -495,7 +506,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       stale_entity_references: result.idempotence.stale_references_after_second_pass,
       stale_reference_summary: staleReferenceSummary,
     };
-    result.idempotence.developer_summary = result.idempotence.summary;
+    result.idempotence.stabilization_summary = result.idempotence.summary;
+    if (forceIdempotenceCheck) result.idempotence.developer_summary = result.idempotence.summary;
     result.final_state_consistency = {
       catch_up_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
       post_stabilization_semantic_hash: result.idempotence.durable_state_hash_after_second_pass,
@@ -1345,6 +1357,7 @@ export function bindSettingsUI(ctrl) {
       'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
       'developer_idempotence_check', 'historical_persona_snapshot',
       'active_catchup_run_id', 'parser_debris_cleanup',
+      'fresh_start_postcondition_audit',
     ]) delete metadata[key];
   };
 
@@ -1721,9 +1734,9 @@ export function bindSettingsUI(ctrl) {
     const report = latestExportDiagnostics ?? getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
     const stability = report?.sceneDetection?.scene_stability_history;
     if (!stability) return toastr.info('No comparable scene-run history is available for this chat yet.', 'Smart Memory Enhanced');
-    const yesNo = (value) => value ? 'yes' : 'no';
+    const yesNo = (value) => value === null || value === undefined ? 'not available' : value ? 'yes' : 'no';
     callGenericPopup(
-      `Comparable runs: ${stability.total_comparable_run_count ?? stability.comparable_run_count}\nPrior retained runs: ${stability.prior_comparable_run_count ?? stability.comparable_prior_run_count ?? 0}\nCurrent run included: ${yesNo(stability.current_run_included)}\nScene counts: ${(stability.scene_counts ?? []).join(', ') || 'none'}\nUnique mode: ${stability.scene_count_mode_is_unique ? stability.scene_count_mode : 'none'}\nScene-count range: ${stability.scene_count_range ?? 'n/a'}\nExact consensus boundaries: ${(stability.exact_consensus_boundaries ?? stability.stable_consensus_boundaries ?? []).length}\nShift-tolerant consensus transitions: ${(stability.clustered_consensus_transitions ?? []).length}\nExact majority boundaries: ${(stability.exact_majority_boundaries ?? stability.majority_boundaries ?? []).length}\nClustered majority transitions: ${(stability.clustered_majority_transitions ?? []).length}\nMarginal transitions: ${(stability.clustered_marginal_transitions ?? stability.marginal_boundaries ?? []).length}\nShifted clusters: ${(stability.shifted_boundary_clusters ?? []).length}\nPipeline stable: ${yesNo(stability.pipeline_stable)}\nScene count materially stable: ${yesNo(stability.scene_count_materially_stable)}\nBoundary positions materially stable: ${yesNo(stability.boundary_positions_materially_stable)}`,
+      `Comparable runs: ${stability.total_comparable_run_count ?? stability.comparable_run_count}\nPrior retained runs: ${stability.prior_comparable_run_count ?? stability.comparable_prior_run_count ?? 0}\nComparison available: ${yesNo(stability.comparison_available)}${stability.comparison_unavailable_reason ? ` (${stability.comparison_unavailable_reason})` : ''}\nCurrent run included: ${yesNo(stability.current_run_included)}\nScene counts: ${(stability.scene_counts ?? []).join(', ') || 'none'}\nUnique mode: ${stability.scene_count_mode_is_unique ? stability.scene_count_mode : 'none'}\nScene-count range: ${stability.scene_count_range ?? 'n/a'}\nExact consensus boundaries: ${(stability.exact_consensus_boundaries ?? stability.stable_consensus_boundaries ?? []).length}\nShift-tolerant consensus transitions: ${(stability.clustered_consensus_transitions ?? []).length}\nExact majority boundaries: ${(stability.exact_majority_boundaries ?? stability.majority_boundaries ?? []).length}\nClustered majority transitions: ${(stability.clustered_majority_transitions ?? []).length}\nMarginal transitions: ${(stability.clustered_marginal_transitions ?? stability.marginal_boundaries ?? []).length}\nShifted clusters: ${(stability.shifted_boundary_clusters ?? []).length}\nPipeline stable: ${yesNo(stability.pipeline_stable)}\nScene count materially stable: ${yesNo(stability.scene_count_materially_stable)}\nBoundary positions materially stable: ${yesNo(stability.boundary_positions_materially_stable)}`,
       POPUP_TYPE.DISPLAY,
     );
   };
@@ -4088,17 +4101,29 @@ export function bindSettingsUI(ctrl) {
             pre_coalescing_break_indices: preCoalescing,
             post_coalescing_break_indices: [...sceneAudit.final_break_indices],
             clusters_found: sceneAudit.same_run_boundary_clusters?.clusters?.length ?? 0,
-            candidates_clustered: sceneAudit.same_run_boundary_clusters?.clusters?.reduce((total, cluster) => total + (cluster.members?.length ?? 0), 0) ?? 0,
+            // `analyzeSameRunBoundaryClusters` intentionally exports rich
+            // candidate records under `candidates`, not a lossy `members`
+            // array.  Reading the latter made valid clusters look empty in
+            // exported diagnostics.
+            candidates_clustered: sceneAudit.same_run_boundary_clusters?.clusters?.reduce((total, cluster) => total + (cluster.candidates?.length ?? 0), 0) ?? 0,
             boundaries_retained: sceneAudit.final_break_indices.length,
             boundaries_suppressed: suppressed.length,
             accounting_reconciled: preCoalescing.length === sceneAudit.final_break_indices.length + suppressed.length,
-            clusters: (sceneAudit.same_run_boundary_clusters?.clusters ?? []).map((cluster, index) => ({
-              cluster_id: `cluster-${index + 1}`,
-              member_indices: cluster.members ?? [],
-              retained_indices: (cluster.members ?? []).filter((member) => sceneAudit.final_break_indices.includes(member)),
-              suppressed_indices: suppressed.filter((item) => (cluster.members ?? []).includes(item.index)).map((item) => item.index),
-              suppression_reasons: suppressed.filter((item) => (cluster.members ?? []).includes(item.index)).map((item) => ({ index: item.index, reason: item.reason })),
-            })),
+            clusters: (sceneAudit.same_run_boundary_clusters?.clusters ?? []).map((cluster, index) => {
+              const members = (cluster.candidates ?? []).map((candidate) => candidate.message_index ?? candidate.candidate_id).filter(Number.isInteger);
+              return {
+                cluster_id: cluster.cluster_id ?? `cluster-${index + 1}`,
+                member_indices: members,
+                retained_indices: members.filter((member) => sceneAudit.final_break_indices.includes(member)),
+                suppressed_indices: suppressed.filter((item) => members.includes(item.index)).map((item) => item.index),
+                suppression_reasons: suppressed.filter((item) => members.includes(item.index)).map((item) => ({ index: item.index, reason: item.reason })),
+                candidate_terminal_dispositions: (cluster.candidates ?? []).map((candidate) => ({
+                  index: candidate.message_index ?? candidate.candidate_id ?? null,
+                  terminal_break_disposition: candidate.terminal_break_disposition ?? null,
+                  gate_reason_code: candidate.gate_reason_code ?? null,
+                })),
+              };
+            }),
           };
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
@@ -4476,6 +4501,10 @@ export function bindSettingsUI(ctrl) {
       runResult.finalReconciliation.participant_lists_rewritten = reconciliation.participant_lists_rewritten ?? 0;
       runResult.finalReconciliation.resolved_review_items_removed = reconciliation.resolved_review_items_removed ?? 0;
       runResult.finalReconciliation.integrity_audit = reconciliation.integrity_audit ?? null;
+      // The catch-up path records a local stabilization audit. Keep it under
+      // its own explicit name so exported diagnostics do not imply that the
+      // user has already run the optional Developer command.
+      runResult.finalReconciliation.stabilization = reconciliation.idempotence ?? null;
       runResult.finalReconciliation.idempotence = reconciliation.idempotence ?? null;
       runResult.finalReconciliation.final_state_audit = reconciliation.final_state_audit ?? reconciliation.integrity_audit ?? null;
       runResult.finalReconciliation.final_state_consistency = reconciliation.final_state_consistency ?? null;
@@ -5048,6 +5077,28 @@ export function bindSettingsUI(ctrl) {
         // member's local data would leave an apparently uncleared bar.
         clearChatLocalCharacterData(context);
         clearFreshStartRunMetadata(context, freshStartCharacterNames);
+        // Save a compact postcondition in the same transaction as the
+        // destructive reset.  This makes a failed or incomplete reset visible
+        // before a costly historical rebuild is started.
+        const clearedMetadata = context.chatMetadata[META_KEY] ?? {};
+        const remainingStores = {
+          long_term_summary: Boolean(clearedMetadata.summary),
+          session_memories: (clearedMetadata.sessionMemories ?? []).length,
+          scenes: (clearedMetadata.sceneHistory ?? []).length,
+          arcs: (clearedMetadata.arcs ?? []).length,
+          arc_summaries: (clearedMetadata.arcSummaries ?? []).length,
+          state_ledger: Object.keys(clearedMetadata.stateLedger ?? {}).length,
+          developer_check: Boolean(clearedMetadata.developer_idempotence_check),
+          catchup_diagnostics: Boolean(clearedMetadata.catch_up_diagnostics),
+        };
+        clearedMetadata.fresh_start_postcondition_audit = {
+          schema_version: 1,
+          completed: true,
+          remaining_store_counts: remainingStores,
+          clean: !remainingStores.long_term_summary && Object.entries(remainingStores)
+            .filter(([key]) => key !== 'long_term_summary')
+            .every(([, value]) => value === 0 || value === false),
+        };
       });
     } catch (err) {
       console.error('[Smart Memory Enhanced] Fresh Start persistence failed:', err);
@@ -5489,6 +5540,9 @@ export function bindSettingsUI(ctrl) {
         };
         const finalResult = normalizeIdempotenceResult({
           ...exportedResult,
+          audit_type: 'manual_developer_idempotence_check',
+          is_manual_developer_check: true,
+          automatic_stabilization: false,
           evaluated_durable_hash: exportedResult.durable_state_hash_after_second_pass ?? null,
           evaluated_semantic_hash: exportedResult.durable_state_hash_after_second_pass ?? null,
           evaluated_scene_history_hash: exportedResult.scene_history_hashes?.after_second_pass?.semantic_history_hash ?? null,
@@ -5817,7 +5871,11 @@ function summarizeArcStatusTraces(arcs = []) {
         latest_evidence_position: arc?.last_status_change_index ?? null,
         terminal_reason_code: arc?.status_reason_code ?? trace.terminal_reason ?? null,
         active_for_injection: !arc?.resolved && ['open', 'reopened'].includes(arc?.status ?? 'open'),
-        verification_outcome: trace.verification_outcome ?? arc?.verification?.outcome ?? 'unavailable',
+        // Lifecycle status answers whether later chat evidence advanced an
+        // arc; summary verification answers whether the stored arc itself is
+        // grounded.  They are related but not interchangeable.
+        lifecycle_evidence_status: trace.verification_outcome ?? 'unavailable',
+        summary_verification_status: arc?.verification?.outcome ?? 'unavailable',
       };
     }),
     zero_status_coverage: coverage,

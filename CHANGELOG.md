@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.88] - 2026-08-07
+
+### Fixed
+
+- Scene-stability analysis no longer treats a single scene-detection run as a
+  stable replay. It now reports that comparison is unavailable until a
+  compatible prior run exists, and the Developer dialog renders that state
+  clearly instead of showing it as a negative result.
+- Fixed scene-coalescing export records that discarded the helper's candidate
+  collection and displayed empty clusters despite valid same-run analysis.
+  Diagnostics now retain member indices and terminal dispositions.
+- Separated arc lifecycle evidence from stored-summary grounding verification
+  so a still-open arc is not misreported as an unverified summary.
+- Verbose logging and automatic post-catch-up stabilization no longer present
+  themselves as an explicit manual Developer idempotence check. Exported final
+  reconciliation now records the automatic audit under `stabilization`.
+- Fresh Start now writes a transactional postcondition audit covering the
+  chat-scoped stores it cleared, avoiding silent stale-data ambiguity before a
+  historical rebuild.
+- Citation-repair diagnostics no longer classify pre-association empty
+  citation responses as later validation failures. Returned claim-hash counts
+  now measure provider output rather than the original candidates.
+
+### Added
+
+- Citation repair now requests strict JSON-line citation records, supports an
+  explicit `unsupported_by_provided_sources` outcome, and records a bounded
+  privacy-safe claim-hash association trace.
+- When a repair batch yields no usable citation at all, the extension makes at
+  most one single-candidate retry. This probes provider formatting adherence
+  without expanding one poor batch into an unbounded provider workload.
+
+### Tests
+
+- Added first-run scene-stability regression coverage. Full automated
+  verification passed with 324 tests.
+
 ## [0.8.87] - 2026-08-06
 
 ### Fixed

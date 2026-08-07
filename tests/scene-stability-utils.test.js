@@ -254,3 +254,17 @@ test('canonical gate migration normalizes structured records and refuses opaque 
   assert.equal(opaque.classification, 'legacy_output_incomplete');
   assert.equal(opaque.canonical_gate_output_hash, null);
 });
+
+test('one scene run reports comparison unavailable instead of a stable replay', () => {
+  const current = {
+    run_id: 'only-run', scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt',
+    model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {},
+    generated: 3, final_break_indices: [10, 20], candidate_detail_available: true, candidate_dispositions: [],
+  };
+  const result = analyzeSceneStabilityHistory([], current);
+  assert.equal(result.comparison_available, false);
+  assert.equal(result.comparison_unavailable_reason, 'no_comparable_prior_run');
+  assert.equal(result.scene_count_materially_stable, null);
+  assert.equal(result.boundary_positions_materially_stable, null);
+  assert.equal(result.stability_cause.classification, 'comparison_unavailable');
+});

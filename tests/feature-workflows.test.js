@@ -732,6 +732,11 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   const html = read('settings.html');
   assert.match(settings, /forceIdempotenceCheck/);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
+  assert.match(settings, /automatic_post_catchup_stabilization/);
+  assert.match(settings, /finalReconciliation\.stabilization/);
+  assert.match(settings, /manual_developer_idempotence_check/);
+  assert.match(settings, /Verbose logging increases local diagnostics only/);
+  assert.match(settings, /Comparison available:/);
   assert.match(settings, /result\.final_state_audit = secondPass\.integrity_audit/);
   assert.match(settings, /reconciliation\.integrity_audit = result\.integrity_audit/);
   assert.match(settings, /final_state_consistency/);
@@ -844,6 +849,8 @@ test('session extraction repairs citation-only omissions once and never persists
   const settings = read('settings.js');
   assert.match(prompts, /Every output item MUST include one or more source message indices/);
   assert.match(session, /SESSION CITATION REPAIR/);
+  assert.match(session, /session-citation-repair-single-candidate/);
+  assert.match(session, /citation_repair_adaptive_retry/);
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
   assert.match(session, /Session extraction returned no parseable structured records/);
