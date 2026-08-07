@@ -472,6 +472,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let repairEligibleCount = 0;
     let repairTerminalRecorded = false;
     let repairMalformedCount = 0;
+    // Must be visible to the final per-chunk diagnostics even when this
+    // provider response contains no repairable candidates or returns NONE.
+    let claimHashRecoveries = 0;
     const repairValidation = {
       candidates_sent: 0, response_records_returned: 0,
       records_associated_by_exact_id: 0, records_associated_by_normalized_id: 0,
@@ -561,7 +564,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           let unknownIdsReturned = 0;
           let duplicateIdsReturned = 0;
           let contentRewritesIgnored = 0;
-          let claimHashRecoveries = 0;
           let invalidCitations = 0;
           let unmatchedCandidates = 0;
           const repaired = parsedRepair.flatMap((candidate) => {

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.87] - 2026-08-06
+
+### Fixed
+
+- Fixed a session-extraction crash in v0.8.86: claim-hash recovery telemetry
+  was read outside the provider-repair branch where it had been declared.
+  Chunks with no repair response now report zero recoveries normally instead
+  of throwing `ReferenceError: claimHashRecoveries is not defined`.
+
+### Tests
+
+- Added regression coverage for the claim-hash recovery counter scope. Full
+  automated verification passed with 323 tests.
+
 ## [0.8.86] - 2026-08-06
 
 ### Fixed

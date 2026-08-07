@@ -1148,6 +1148,9 @@ test('session provenance maps prompt-visible messages and repairs partial citati
   assert.match(session, /_repair_association_only/);
   assert.match(session, /contentRewritesIgnored/);
   assert.match(session, /The stored candidate is authoritative/);
+  // Per-chunk diagnostics run even if a provider returns NONE or no repair
+  // candidates, so this counter must be declared outside the response branch.
+  assert.match(session, /let claimHashRecoveries = 0;/);
 });
 
 test('changing the Short-Term Memory budget reinjects the current summary before refreshing token usage', () => {
