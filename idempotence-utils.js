@@ -67,9 +67,32 @@ function deterministicLegacySessionId(record = {}) {
 
 function canonicalizeSessionMemory(record = {}) {
   const value = record && typeof record === 'object' ? record : {};
+  const id = value.id ?? deterministicLegacySessionId(value);
+  const entities = value.entities ?? [];
+  // `applyGraphDefaults` backfills this exact stable legacy object during
+  // ordinary reconciliation. Treat an omitted legacy entry and its later
+  // deterministic backfill as the same durable state; otherwise an automatic
+  // second pass can false-fail solely because it serialized default metadata.
+  const existingLinkProvenance = value.entity_link_provenance ?? {};
+  const entityLinkProvenance = Object.fromEntries(entities.map((entityId) => [entityId, {
+    link_id: `legacy:${id}:${entityId}`,
+    link_created_run_id: null,
+    link_created_at: null,
+    link_created_stage: null,
+    link_created_store: null,
+    underlying_record_id: id,
+    source_candidate_id: null,
+    source_chunk_number: null,
+    source_message_indices: [],
+    source_extraction_type: null,
+    creation_method: 'unknown_legacy',
+    canonical_identity_at_creation: null,
+    entity_registry_id_at_creation: entityId,
+    ...(existingLinkProvenance[entityId] ?? {}),
+  }]));
   return {
     ...value,
-    id: value.id ?? deterministicLegacySessionId(value),
+    id,
     consolidated: value.consolidated ?? true,
     importance: value.importance ?? 2,
     expiration: value.expiration ?? 'session',
@@ -80,7 +103,8 @@ function canonicalizeSessionMemory(record = {}) {
     last_confirmed_ts: value.last_confirmed_ts ?? value.ts ?? 0,
     source_messages: value.source_messages ?? [],
     source_chat_id: value.source_chat_id ?? null,
-    entities: value.entities ?? [],
+    entities,
+    entity_link_provenance: entityLinkProvenance,
     time_scope: value.time_scope ?? 'global',
     valid_from: value.valid_from ?? null,
     valid_to: value.valid_to ?? null,

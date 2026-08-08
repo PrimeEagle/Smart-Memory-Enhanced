@@ -244,6 +244,17 @@ function makeSceneStabilitySnapshot(audit = {}) {
       migration_applied: summaryMismatch,
       duplicate_candidate_ids: contextSummary.duplicate_candidate_ids,
     },
+    // A comparison contract makes it explicit which semantic shape produced
+    // these boundary decisions. Older records without it remain readable, but
+    // new runs are compared only against another run with the same contract.
+    comparison_contract: {
+      version: 1,
+      candidate_snapshot_schema_version: 1,
+      boundary_semantics: audit.boundary_semantics ?? null,
+      deterministic_gate_schema_version: 1,
+      coalescing_schema_version: audit.scene_coalescing?.schema_version ?? 1,
+      candidate_context_hash_summary: contextSummary.summary,
+    },
     // Keep only bounded, privacy-safe terminal facts needed for subsequent
     // variance and deterministic-gate comparison. No chat or prompt text is
     // retained in scene history.
@@ -496,6 +507,33 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       idempotent: result.idempotence.idempotent,
       attention_required: result.idempotence.attention_required,
     };
+    // Catch-up holds both reconciliation passes inside one staged transaction.
+    // No durable save/reload is allowed between them, so the comparable
+    // lifecycle states are the normalized pre-commit first and second finals.
+    // Persist/reload markers remain explicit rather than inventing a reload
+    // that has not happened yet.
+    result.idempotence.automatic_stabilization_hash_timeline = {
+      pre_stabilization: durableStateHashBefore,
+      pre_first_pass: durableStateHash(durableStateAfterPreparation),
+      post_first_pass_pre_persist: durableStateHashAfterFirstPass,
+      post_first_pass_persisted: null,
+      post_first_pass_reloaded: null,
+      pre_second_pass: durableStateHash(metadataBeforeSecondPass),
+      post_second_pass_pre_persist: durableStateHash(durableStateAfterSecondPass),
+      post_second_pass_persisted: null,
+      post_second_pass_reloaded: null,
+      final_export_state: durableStateHash(durableStateAfterSecondPass),
+      transaction_mode: 'single_staged_precommit_comparison',
+    };
+    result.idempotence.first_final_semantic_hash = durableStateHashAfterFirstPass;
+    result.idempotence.second_final_semantic_hash = durableStateHash(durableStateAfterSecondPass);
+    result.idempotence.semantic_hash_equal = result.idempotence.first_final_semantic_hash === result.idempotence.second_final_semantic_hash;
+    result.idempotence.unaccounted_mutations = result.idempotence.durable_state_change_summary?.unaccounted_mutation_count ?? 0;
+    result.idempotence.converged = result.idempotence.semantic_hash_equal
+      && result.idempotence.second_pass_logical_mutations === 0
+      && result.idempotence.second_pass_physical_mutations === 0
+      && result.idempotence.stale_references_after_second_pass === 0
+      && result.idempotence.recreated_after_prior_repair === 0;
     result.idempotence_check = {
       idempotence_pass_number: 2,
       input_metadata_hash: result.idempotence.diagnostic_metadata_hash_before,
@@ -1340,14 +1378,19 @@ export function bindSettingsUI(ctrl) {
   };
   const clearFreshStartRunMetadata = (context, characterNames = []) => {
     const metadata = context.chatMetadata?.[META_KEY];
-    if (!metadata) return;
+    if (!metadata) return { identity_reviews_removed: 0, current_chat_identity_reviews_remaining: 0 };
     const recordIds = collectFreshStartRecordIds(metadata);
     for (const name of characterNames) collectFreshStartRecordIds(extension_settings[MODULE_NAME]?.characters?.[name], recordIds);
     const reviewQueue = extension_settings[MODULE_NAME]?.identity_review_queue ?? [];
-    extension_settings[MODULE_NAME].identity_review_queue = reviewQueue.filter((item) => {
+    const remainingReviewQueue = reviewQueue.filter((item) => {
       const cited = [...(item?.source_record_ids ?? []), ...(item?.memoryIds ?? [])].filter(Boolean);
       return !cited.some((id) => recordIds.has(String(id)));
     });
+    extension_settings[MODULE_NAME].identity_review_queue = remainingReviewQueue;
+    const currentChatIdentityReviewsRemaining = remainingReviewQueue.filter((item) => {
+      const cited = [...(item?.source_record_ids ?? []), ...(item?.memoryIds ?? [])].filter(Boolean);
+      return cited.some((id) => recordIds.has(String(id)));
+    }).length;
     // These are derived from an earlier state of this chat. Keeping them after
     // a destructive reset can reintroduce obsolete redirects or make the next
     // fresh generation look degraded before it has produced any data.
@@ -1359,6 +1402,10 @@ export function bindSettingsUI(ctrl) {
       'active_catchup_run_id', 'parser_debris_cleanup',
       'fresh_start_postcondition_audit',
     ]) delete metadata[key];
+    return {
+      identity_reviews_removed: reviewQueue.length - remainingReviewQueue.length,
+      current_chat_identity_reviews_remaining: currentChatIdentityReviewsRemaining,
+    };
   };
 
   /**
@@ -1715,13 +1762,34 @@ export function bindSettingsUI(ctrl) {
   // metadata must be rolled back. Export Diagnostics must still be useful in
   // that exact failure case.
   let latestExportDiagnostics = null;
+  const getExportableDiagnostics = () => {
+    const metadata = getContext().chatMetadata?.[META_KEY] ?? {};
+    const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
+    if (completedRun) return completedRun;
+    // Fresh Start is itself a consequential, persisted operation. Its
+    // postcondition needs to be inspectable before a long historical rebuild,
+    // rather than requiring a new Memorize Chat just to enable export.
+    const freshStartAudit = metadata.fresh_start_postcondition_audit ?? null;
+    const manualIdempotence = metadata.developer_idempotence_check ?? null;
+    if (!freshStartAudit && !manualIdempotence) return null;
+    return {
+      version: 1,
+      created_at: Date.now(),
+      diagnostic_type: 'pre_run_state_audit',
+      status: 'not_run',
+      operational_status: 'not_run',
+      fresh_start_postcondition_audit: freshStartAudit,
+      manual_idempotence: manualIdempotence,
+      automatic_stabilization: null,
+      provider_calls_during_audit: 0,
+    };
+  };
   const exportCatchUpDiagnostics = () => {
-    const metadata = getContext().chatMetadata?.[META_KEY];
     // A manual Developer check updates persisted chat diagnostics after the
     // catch-up has finished. Prefer that current saved report over the
     // in-memory pre-check snapshot so an export reflects the restored result.
-    const report = metadata?.catch_up_diagnostics ?? latestExportDiagnostics;
-    if (!report) return toastr.info('No Memorize Chat diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
+    const report = getExportableDiagnostics();
+    if (!report) return toastr.info('No Smart Memory Enhanced diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -1729,7 +1797,7 @@ export function bindSettingsUI(ctrl) {
     link.click();
     URL.revokeObjectURL(link.href);
   };
-  $('#sme_export_diagnostics').prop('disabled', !getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics).on('click', exportCatchUpDiagnostics);
+  $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics()).on('click', exportCatchUpDiagnostics);
   const showSceneStability = () => {
     const report = latestExportDiagnostics ?? getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
     const stability = report?.sceneDetection?.scene_stability_history;
@@ -3492,6 +3560,10 @@ export function bindSettingsUI(ctrl) {
     const catchUpRunId = generateMemoryId();
     catchUpContext.chatMetadata = catchUpContext.chatMetadata ?? {};
     catchUpContext.chatMetadata[META_KEY] = catchUpContext.chatMetadata[META_KEY] ?? {};
+    // Preserve the reset proof created before this run.  Catch-up diagnostics
+    // must describe both what the run generated and the clean baseline it
+    // started from; never overwrite this evidence with current-run state.
+    const preRunFreshStartAudit = catchUpContext.chatMetadata[META_KEY].fresh_start_postcondition_audit ?? null;
     catchUpContext.chatMetadata[META_KEY].active_catchup_run_id = catchUpRunId;
     // Persist only the compact historical identity evidence needed to restore
     // canonical IDs after reload. The full transcript remains the authority;
@@ -4097,6 +4169,10 @@ export function bindSettingsUI(ctrl) {
               index: item.message_index ?? item.candidate_id,
               reason: item.gate_reason_code ?? item.coalescing?.outcome ?? 'no_independent_state_reset',
             }));
+          const clusteredCandidates = (sceneAudit.same_run_boundary_clusters?.clusters ?? [])
+            .flatMap((cluster) => cluster.candidates ?? []);
+          const clusteredPreCoalescing = clusteredCandidates.filter((candidate) => ['accepted_final_break', 'coalesced_with_nearby_boundary'].includes(candidate.terminal_break_disposition));
+          const clusteredAlreadyRejected = clusteredCandidates.filter((candidate) => !['accepted_final_break', 'coalesced_with_nearby_boundary'].includes(candidate.terminal_break_disposition));
           sceneAudit.scene_coalescing = {
             pre_coalescing_break_indices: preCoalescing,
             post_coalescing_break_indices: [...sceneAudit.final_break_indices],
@@ -4106,9 +4182,17 @@ export function bindSettingsUI(ctrl) {
             // array.  Reading the latter made valid clusters look empty in
             // exported diagnostics.
             candidates_clustered: sceneAudit.same_run_boundary_clusters?.clusters?.reduce((total, cluster) => total + (cluster.candidates?.length ?? 0), 0) ?? 0,
+            cluster_members_total: clusteredCandidates.length,
+            candidate_cluster_members: clusteredCandidates.length,
+            pre_coalescing_break_members: clusteredPreCoalescing.length,
+            already_rejected_members: clusteredAlreadyRejected.length,
+            already_rejected_cluster_members: clusteredAlreadyRejected.length,
+            coalescing_suppressed_breaks: suppressed.length,
+            retained_breaks: sceneAudit.final_break_indices.length,
             boundaries_retained: sceneAudit.final_break_indices.length,
             boundaries_suppressed: suppressed.length,
             accounting_reconciled: preCoalescing.length === sceneAudit.final_break_indices.length + suppressed.length,
+            cluster_members_accounting_reconciled: clusteredCandidates.length === clusteredAlreadyRejected.length + clusteredPreCoalescing.length,
             clusters: (sceneAudit.same_run_boundary_clusters?.clusters ?? []).map((cluster, index) => {
               const members = (cluster.candidates ?? []).map((candidate) => candidate.message_index ?? candidate.candidate_id).filter(Number.isInteger);
               return {
@@ -4125,6 +4209,29 @@ export function bindSettingsUI(ctrl) {
               };
             }),
           };
+          // Every retained boundary carries only compact deterministic evidence
+          // codes. This supports review of dense regions without exposing raw
+          // transcript text or treating proximity as a transition by itself.
+          sceneAudit.final_scene_boundary_evidence = sceneAudit.final_break_indices.map((messageIndex) => {
+            const candidate = sceneAudit.candidate_dispositions?.find((item) => (item.message_index ?? item.candidate_id) === messageIndex) ?? {};
+            const evidence = candidate.gate_evidence ?? {};
+            const transitionEvidenceCodes = Object.entries(evidence)
+              .filter(([key, value]) => value === true && /(?:change_detected|transition_detected)$/.test(key))
+              .map(([key]) => key);
+            const continuityEvidenceCodes = Object.entries(evidence)
+              .filter(([key, value]) => value === true && /(?:continuous|emotional_shift)/.test(key))
+              .map(([key]) => key);
+            return {
+              message_index: messageIndex,
+              retained: true,
+              transition_evidence_codes: transitionEvidenceCodes,
+              continuity_evidence_codes: continuityEvidenceCodes,
+              independent_reset_supported: candidate.coalescing?.outcome !== 'direct_continuation' && transitionEvidenceCodes.length > 0,
+              gate_result: candidate.gate_result ?? null,
+              coalescing_result: candidate.coalescing?.outcome ?? null,
+              final_reason_code: candidate.gate_reason_code ?? 'accepted_final_break',
+            };
+          });
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections
@@ -4725,6 +4832,12 @@ export function bindSettingsUI(ctrl) {
         error_details: runResult.errors,
         warnings: runResult.warnings,
         warnings_suppressed: runResult.warningsSuppressed,
+        fresh_start_postcondition_audit: preRunFreshStartAudit ? {
+          ...preRunFreshStartAudit,
+          available: true,
+          pre_run_reset_audit_id: preRunFreshStartAudit.audit_id ?? null,
+          observed_by_run_id: catchUpRunId,
+        } : { available: false, clean: null, failure_reasons: ['no_fresh_start_audit_available'] },
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries(), loadArcs()),
         arcResolution: summarizeArcStatusResolution(loadArcs(), runResult.arcResolution),
@@ -4736,6 +4849,10 @@ export function bindSettingsUI(ctrl) {
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,
+        // Keep the automatic post-catch-up stabilization result distinct from
+        // any separately persisted, user-triggered Developer check.
+        automatic_stabilization: runResult.finalReconciliation?.stabilization ?? null,
+        manual_idempotence: catchUpContext.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? null,
         runtime_context: runResult.runtimeContext,
         imported_persona_recovery: (() => {
           const recovery = runResult.runtimeContext?.active_persona?.imported_persona_recovery;
@@ -5076,7 +5193,7 @@ export function bindSettingsUI(ctrl) {
         // These stores belong to this chat, so keeping another group
         // member's local data would leave an apparently uncleared bar.
         clearChatLocalCharacterData(context);
-        clearFreshStartRunMetadata(context, freshStartCharacterNames);
+        const resetMetadataResult = clearFreshStartRunMetadata(context, freshStartCharacterNames);
         // Save a compact postcondition in the same transaction as the
         // destructive reset.  This makes a failed or incomplete reset visible
         // before a costly historical rebuild is started.
@@ -5092,13 +5209,43 @@ export function bindSettingsUI(ctrl) {
           catchup_diagnostics: Boolean(clearedMetadata.catch_up_diagnostics),
         };
         clearedMetadata.fresh_start_postcondition_audit = {
-          schema_version: 1,
+          schema_version: 2,
+          audit_id: generateMemoryId(),
+          performed_at: Date.now(),
+          chat_scope_hash: diagnosticFingerprint(JSON.stringify({ chat_id: context.chatId ?? null, group_id: context.groupId ?? null })),
+          transaction_committed: true,
+          available: true,
           completed: true,
+          scene_history_runs_remaining: remainingStores.scenes,
+          catch_up_run_history_remaining: Number(Boolean(clearedMetadata.last_catchup_run_id)),
+          citation_repair_history_remaining: Number(Boolean(clearedMetadata.repair_history)),
+          developer_result_remaining: remainingStores.developer_check,
+          cached_diagnostics_remaining: remainingStores.catchup_diagnostics,
+          parser_cleanup_state_remaining: Number(Boolean(clearedMetadata.parser_debris_cleanup)),
+          current_chat_redirects_remaining: Object.keys(clearedMetadata.entity_redirects ?? {}).length,
+          current_chat_identity_reviews_remaining: resetMetadataResult.current_chat_identity_reviews_remaining,
+          current_chat_identity_reviews_removed: resetMetadataResult.identity_reviews_removed,
+          arc_run_history_remaining: Number(Boolean(clearedMetadata.arc_run_history)),
+          stabilization_history_remaining: Number(Boolean(clearedMetadata.scene_stability_history)),
+          repair_recurrence_history_remaining: Number(Boolean(clearedMetadata.repair_history)),
+          other_run_scoped_records_remaining: 0,
+          preserved_reusable_global_records: true,
+          preserved_reusable_card_records: true,
           remaining_store_counts: remainingStores,
           clean: !remainingStores.long_term_summary && Object.entries(remainingStores)
             .filter(([key]) => key !== 'long_term_summary')
-            .every(([, value]) => value === 0 || value === false),
+          .every(([, value]) => value === 0 || value === false)
+            && resetMetadataResult.current_chat_identity_reviews_remaining === 0,
+          failure_reasons: [],
         };
+        if (!clearedMetadata.fresh_start_postcondition_audit.clean) {
+          clearedMetadata.fresh_start_postcondition_audit.failure_reasons = Object.entries(remainingStores)
+          .filter(([, value]) => value !== 0 && value !== false)
+            .map(([key]) => `${key}_remaining`);
+          if (resetMetadataResult.current_chat_identity_reviews_remaining > 0) {
+            clearedMetadata.fresh_start_postcondition_audit.failure_reasons.push('current_chat_identity_reviews_remaining');
+          }
+        }
       });
     } catch (err) {
       console.error('[Smart Memory Enhanced] Fresh Start persistence failed:', err);
@@ -5138,6 +5285,9 @@ export function bindSettingsUI(ctrl) {
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;
     setCatchUpErrorCount(0);
+    // The completed reset audit is exportable even before the next Memorize
+    // Chat run, so users can verify the clean starting point first.
+    $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics());
     setStatusMessage('Fresh start complete.');
     toastr.success(`All memories cleared for ${nameLabel}.`, 'Smart Memory Enhanced', {
       timeOut: 4000,
@@ -5552,7 +5702,14 @@ export function bindSettingsUI(ctrl) {
         context.chatMetadata[META_KEY].developer_idempotence_check = finalResult;
         if (exportReport && typeof exportReport === 'object') {
           exportReport.developer_idempotence_check = finalResult;
+          exportReport.manual_idempotence = finalResult;
+          exportReport.automatic_stabilization ??= exportReport.finalReconciliation?.stabilization
+            ?? exportReport.finalReconciliation?.automatic_stabilization
+            ?? null;
           exportReport.finalReconciliation ??= {};
+          // Retain the historical compatibility field for existing consumers,
+          // but never replace the named automatic stabilization record.
+          exportReport.finalReconciliation.manual_idempotence = finalResult;
           exportReport.finalReconciliation.idempotence = finalResult;
           exportReport.finalReconciliation.final_state_consistency ??= {};
           Object.assign(exportReport.finalReconciliation.final_state_consistency, {

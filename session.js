@@ -519,6 +519,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             .map((value) => Number(value)).filter(Number.isInteger))];
           if (normalizedId || claimHash) records.push({ _citation_candidate_id: normalizedId || null, _citation_claim_hash: claimHash ? String(claimHash).trim() : null, source_message_indices: indices, _repair_failure_reason: failureReason ? String(failureReason).trim() : null, _repair_association_only: true });
         };
+        // Local providers often honor the JSON contract but wrap the complete
+        // response in a pretty-printed array. Parse the full payload before
+        // falling back to JSON-lines, rather than discarding every valid
+        // record and needlessly triggering the single-candidate retry.
+        const cleanRaw = String(raw ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+        try {
+          const parsedWhole = JSON.parse(cleanRaw);
+          const values = Array.isArray(parsedWhole) ? parsedWhole : [parsedWhole];
+          for (const item of values) append(item?.candidate_id, item?.citations ?? item?.sources, item?.claim_hash, item?.failure_reason);
+          if (records.length) return records;
+        } catch { /* JSON-lines and XML remain supported below. */ }
         for (const line of String(raw ?? '').split(/\r?\n/)) {
           try {
             const parsed = JSON.parse(line);

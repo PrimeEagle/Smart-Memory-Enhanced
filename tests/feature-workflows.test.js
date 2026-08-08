@@ -733,6 +733,12 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /forceIdempotenceCheck/);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
+  assert.match(settings, /automatic_stabilization_hash_timeline/);
+  assert.match(settings, /single_staged_precommit_comparison/);
+  assert.match(settings, /automatic_stabilization: runResult\.finalReconciliation/);
+  assert.match(settings, /manual_idempotence: catchUpContext\.chatMetadata/);
+  assert.match(settings, /final_scene_boundary_evidence/);
+  assert.match(settings, /cluster_members_accounting_reconciled/);
   assert.match(settings, /finalReconciliation\.stabilization/);
   assert.match(settings, /manual_developer_idempotence_check/);
   assert.match(settings, /Verbose logging increases local diagnostics only/);
@@ -851,6 +857,7 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /SESSION CITATION REPAIR/);
   assert.match(session, /session-citation-repair-single-candidate/);
   assert.match(session, /citation_repair_adaptive_retry/);
+  assert.match(session, /pretty-printed array/);
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
   assert.match(session, /Session extraction returned no parseable structured records/);
@@ -1107,9 +1114,15 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /await clearProfiles\(memberName\)/);
   assert.match(freshStart, /clearCharacterDurableDataForFreshStart\(memberName\)/);
   assert.match(freshStart, /clearFreshStartRunMetadata\(context, freshStartCharacterNames\)/);
+  assert.match(freshStart, /fresh_start_postcondition_audit/);
+  assert.match(freshStart, /current_chat_identity_reviews_removed/);
+  assert.match(freshStart, /sme_export_diagnostics/);
+  assert.match(settings, /preRunFreshStartAudit/);
+  assert.match(settings, /diagnostic_type: 'pre_run_state_audit'/);
+  assert.match(settings, /provider_calls_during_audit: 0/);
   assert.match(settings, /'entity_redirects'/);
   assert.match(settings, /'developer_idempotence_check'/);
-  assert.match(settings, /identity_review_queue = reviewQueue\.filter/);
+  assert.match(settings, /remainingReviewQueue/);
   assert.doesNotMatch(freshStart, /group\.disabled_members/);
   assert.match(freshStart, /clearChatLocalCharacterData\(context\);/);
   assert.match(freshStart, /injectRelationshipHistory\(characterName\)/);

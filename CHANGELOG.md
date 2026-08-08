@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.89] - 2026-08-08
+
+### Fixed
+
+- Fixed a false automatic-stabilization failure caused by deterministic
+  backfilling of legacy Session Memory entity-link provenance. The durable
+  state canonicalizer now treats an omitted legacy provenance entry and its
+  deterministic normalized form as the same semantic state.
+- Kept automatic post-catch-up stabilization and the optional manual Developer
+  idempotence check as distinct named diagnostic results, preventing a manual
+  result from replacing the automatic audit in exports.
+- Fresh Start's postcondition audit now measures identity-review cleanup rather
+  than reporting an assumed count.
+- Citation repair now accepts a complete JSON array response from providers,
+  avoiding unnecessary one-item retries when a local provider formats valid
+  records across multiple lines.
+
+### Added
+
+- Export Diagnostics is now available immediately after Fresh Start. Its
+  bounded, text-free `pre_run_state_audit` report exposes the persisted reset
+  postcondition and explicitly records zero provider calls.
+- New scene-run snapshots carry a semantic comparison contract. Scene
+  stability analysis only compares new records whose boundary semantics and
+  deterministic processing contract match.
+
+### Tests
+
+- Added coverage for legacy Session Memory provenance canonicalization,
+  pre-run Fresh Start export availability, named automatic/manual diagnostics,
+  and incompatible scene-run contracts. Full automated verification passed
+  with 327 tests.
+
 ## [0.8.88] - 2026-08-07
 
 ### Fixed

@@ -139,6 +139,23 @@ test('session-memory canonicalization is stable across legacy default backfill',
   assert.equal(durableStateHash(legacy), durableStateHash(normalized));
 });
 
+test('session link-provenance legacy backfill does not change durable state', () => {
+  const base = { sessionMemories: [{ id: 'memory-1', type: 'fact', content: 'A fact', entities: ['entity-1'] }] };
+  const backfilled = { sessionMemories: [{
+    ...base.sessionMemories[0],
+    entity_link_provenance: {
+      'entity-1': {
+        link_id: 'legacy:memory-1:entity-1', link_created_run_id: null, link_created_at: null,
+        link_created_stage: null, link_created_store: null, underlying_record_id: 'memory-1',
+        source_candidate_id: null, source_chunk_number: null, source_message_indices: [],
+        source_extraction_type: null, creation_method: 'unknown_legacy', canonical_identity_at_creation: null,
+        entity_registry_id_at_creation: 'entity-1',
+      },
+    },
+  }] };
+  assert.equal(durableStateHash(base), durableStateHash(backfilled));
+});
+
 test('session-memory diff is privacy-safe and identifies changed record fields', () => {
   const summary = summarizeSessionMemoryChanges(
     { sessionMemories: [{ id: 'one', type: 'fact', content: 'private before', source_message_indices: [1] }] },

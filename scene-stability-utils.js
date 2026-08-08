@@ -131,6 +131,31 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
   }
   const previousDispositions = new Map((previous.candidate_dispositions ?? []).map((item) => [item.message_index ?? item.candidate_id, item]));
   const currentDispositions = new Map((currentAudit.candidate_dispositions ?? []).map((item) => [item.message_index ?? item.candidate_id, item]));
+  const compareLayer = (selector) => {
+    const previousValues = new Map([...previousDispositions.entries()].map(([id, candidate]) => [id, selector(candidate)]).filter(([, value]) => value !== null));
+    const currentValues = new Map([...currentDispositions.entries()].map(([id, candidate]) => [id, selector(candidate)]).filter(([, value]) => value !== null));
+    const shared = [...previousValues.keys()].filter((id) => currentValues.has(id));
+    const changed = shared.filter((id) => JSON.stringify(previousValues.get(id)) !== JSON.stringify(currentValues.get(id)));
+    const additions = [...currentValues.keys()].filter((id) => !previousValues.has(id)).sort((a, b) => Number(a) - Number(b));
+    const removals = [...previousValues.keys()].filter((id) => !currentValues.has(id)).sort((a, b) => Number(a) - Number(b));
+    return {
+      exact_match_count: shared.length - changed.length,
+      changed_count: changed.length,
+      additions,
+      removals,
+      shifted_pairs: [],
+      variance_rate: shared.length ? Number((changed.length / shared.length).toFixed(4)) : null,
+    };
+  };
+  const sceneStabilityLayers = {
+    candidate_set: compareLayer(() => true),
+    raw_ai_decisions: compareLayer((candidate) => typeof candidate.decision === 'boolean' ? candidate.decision : null),
+    deterministic_gate_outputs: compareLayer((candidate) => candidate.gate_executed === true || candidate.gate_result
+      ? [candidate.gate_result ?? null, candidate.gate_reason_code ?? null] : null),
+    pre_coalescing_boundaries: compareLayer((candidate) => ['accepted_final_break', 'coalesced_with_nearby_boundary'].includes(candidate.terminal_break_disposition) ? true : false),
+    post_coalescing_boundaries: compareLayer((candidate) => candidate.terminal_break_disposition === 'accepted_final_break'),
+    final_boundaries: compareLayer((candidate) => candidate.terminal_break_disposition === 'accepted_final_break'),
+  };
   const previousContextHashes = new Map((previous.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const currentContextHashes = new Map((currentAudit.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const marginalRecord = (previousIndex, currentIndex, classification) => {
@@ -173,6 +198,13 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
       settings_equal: JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),
     };
   };
+  const boundaryPositionsExactlyStable = !shifted.length && !unmatchedAdded.length && !remainingPrevious.size;
+  const boundaryPositionsMateriallyStable = !unmatchedAdded.length && !remainingPrevious.size;
+  const sceneStabilityClassification = boundaryPositionsExactlyStable
+    ? 'exact_stable'
+    : boundaryPositionsMateriallyStable
+      ? 'shift_tolerant_stable'
+      : 'materially_unstable';
   return {
     compared_to_prior: true,
     comparison_tolerance_messages: tolerance,
@@ -185,8 +217,9 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
     added_boundaries: unmatchedAdded,
     removed_boundaries: [...remainingPrevious],
     scene_count_stable: Number.isInteger(currentSceneCount) && Number.isInteger(previous.generated) ? currentSceneCount === previous.generated : null,
-    boundary_positions_exactly_stable: !shifted.length && !unmatchedAdded.length && !remainingPrevious.size,
-    boundary_positions_materially_stable: !unmatchedAdded.length && !remainingPrevious.size,
+    boundary_positions_exactly_stable: boundaryPositionsExactlyStable,
+    boundary_positions_materially_stable: boundaryPositionsMateriallyStable,
+    stability_classification: sceneStabilityClassification,
     decision_pipeline_stable: (previous.malformed_batches ?? 0) === 0
       && (previous.fallback_boundaries ?? previous.heuristic_fallback_candidates ?? 0) === 0
       && (currentAudit.malformed_batches ?? 0) === 0
@@ -195,6 +228,7 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
       && previous.model_identifier === currentAudit.model_identifier
       && previous.connection_profile_identifier === currentAudit.connection_profile_identifier
       && JSON.stringify(previous.task_sampling_settings ?? {}) === JSON.stringify(currentAudit.task_sampling_settings ?? {}),
+    scene_stability_layers: sceneStabilityLayers,
     marginal_boundary_comparison: [
       ...shifted.map((shift) => ({ ...marginalRecord(shift.previous_index, shift.current_index, 'shifted'), offset: shift.offset })),
       ...unmatchedAdded.map((index) => marginalRecord(null, index, 'added')),
@@ -206,6 +240,16 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
 /** Analyze every retained run that is comparable to the current scene pass. */
 export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, tolerance = 2) {
  const stableJson = (value) => JSON.stringify(value ?? {});
+ const comparisonContractMatches = (run) => {
+   const currentContract = currentAudit?.comparison_contract ?? null;
+   const priorContract = run?.comparison_contract ?? null;
+   // Legacy compact records predate the explicit contract. They retain the
+   // original strict signature checks below; new records must agree on every
+   // declared semantic field before a stability comparison is meaningful.
+   if (!currentContract && !priorContract) return true;
+   if (!currentContract || !priorContract) return false;
+   return stableJson(currentContract) === stableJson(priorContract);
+ };
  const runSignature = (run) => run?.run_signature ?? run?.scene_detection_run_signature ?? null;
  const currentSignature = runSignature(currentAudit);
  // Treat the supplied history as prior-only. Some older callers persisted the
@@ -217,7 +261,8 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    && run.prompt_shape_hash === currentAudit.prompt_shape_hash
    && run.model_identifier === currentAudit.model_identifier
    && run.connection_profile_identifier === currentAudit.connection_profile_identifier
-   && stableJson(run.task_sampling_settings) === stableJson(currentAudit.task_sampling_settings);
+   && stableJson(run.task_sampling_settings) === stableJson(currentAudit.task_sampling_settings)
+   && comparisonContractMatches(run);
  const compatiblePriorRuns = priorRuns.filter(isComparable);
  const currentRunIncluded = isComparable(currentAudit);
  const compatible = currentRunIncluded ? [...compatiblePriorRuns, currentAudit] : compatiblePriorRuns;

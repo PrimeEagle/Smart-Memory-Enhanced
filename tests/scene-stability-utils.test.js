@@ -26,6 +26,7 @@ test('scene comparison classifies exact, shifted, added, and removed boundaries'
   assert.equal(comparison.breaks_shifted, 0);
   assert.equal(comparison.scene_count_stable, false);
   assert.equal(comparison.decision_pipeline_stable, true);
+  assert.equal(comparison.stability_classification, 'materially_unstable');
   assert.deepEqual(comparison.removed_boundaries, [206, 276]);
 });
 
@@ -33,11 +34,29 @@ test('scene comparison matches nearest unmatched boundary within tolerance', () 
   const base = { generated: 3, prompt_shape_hash: 'p', model_identifier: 'm', connection_profile_identifier: 'c', task_sampling_settings: {} };
   const comparison = compareSceneBoundaryRuns({ ...base, final_break_indices: [100] }, { ...base, final_break_indices: [101] }, 2);
   assert.equal(comparison.breaks_shifted, 1);
+  assert.equal(comparison.stability_classification, 'shift_tolerant_stable');
   assert.equal(comparison.boundary_positions_materially_stable, true);
   assert.equal(comparison.decision_pipeline_stable, true);
   assert.equal(comparison.marginal_boundary_comparison[0].classification, 'shifted');
   assert.equal(comparison.marginal_boundary_comparison[0].cross_candidate_context_equal, false);
   assert.equal(comparison.marginal_boundary_comparison[0].previous_candidate_context_stable_across_runs, false);
+});
+
+test('scene comparison reports layer-specific variance without self-comparison', () => {
+  const base = { generated: 3, prompt_shape_hash: 'p', model_identifier: 'm', connection_profile_identifier: 'c', task_sampling_settings: {} };
+  const previous = { ...base, final_break_indices: [10], candidate_dispositions: [
+    { candidate_id: 10, decision: true, gate_executed: true, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' },
+    { candidate_id: 20, decision: false, gate_executed: true, gate_result: 'not_requested', terminal_break_disposition: null },
+  ] };
+  const current = { ...base, final_break_indices: [10], candidate_dispositions: [
+    { candidate_id: 10, decision: true, gate_executed: true, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' },
+    { candidate_id: 20, decision: true, gate_executed: true, gate_result: 'rejected', gate_reason_code: 'strong_continuity_veto', terminal_break_disposition: 'rejected_deterministic_gate' },
+  ] };
+  const comparison = compareSceneBoundaryRuns(previous, current, 2);
+  assert.equal(comparison.scene_stability_layers.candidate_set.changed_count, 0);
+  assert.equal(comparison.scene_stability_layers.raw_ai_decisions.changed_count, 1);
+  assert.equal(comparison.scene_stability_layers.deterministic_gate_outputs.changed_count, 1);
+  assert.equal(comparison.scene_stability_layers.final_boundaries.changed_count, 0);
 });
 
 test('multi-run stability reports consensus, marginal boundaries, and shifts', () => {
@@ -267,4 +286,17 @@ test('one scene run reports comparison unavailable instead of a stable replay', 
   assert.equal(result.scene_count_materially_stable, null);
   assert.equal(result.boundary_positions_materially_stable, null);
   assert.equal(result.stability_cause.classification, 'comparison_unavailable');
+});
+
+test('new scene comparison contracts must match before runs are compared', () => {
+  const shared = {
+    scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model',
+    connection_profile_identifier: 'profile', task_sampling_settings: {}, generated: 2,
+    final_break_indices: [10], candidate_detail_available: true, candidate_dispositions: [],
+  };
+  const current = { ...shared, run_id: 'current', comparison_contract: { version: 1, boundary_semantics: 'before_message' } };
+  const incompatiblePrior = { ...shared, run_id: 'prior', comparison_contract: { version: 1, boundary_semantics: 'after_message' } };
+  const result = analyzeSceneStabilityHistory([incompatiblePrior], current);
+  assert.equal(result.comparison_available, false);
+  assert.equal(result.comparable_prior_run_count, 0);
 });
