@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.90] - 2026-08-08
+
+### Fixed
+
+- Refined the idempotence durable-state projection for Story Arcs. Repeated
+  reconciliation now ignores nonsemantic annotations such as status traces,
+  verification timestamps, participant explanations, and identity-rewrite
+  display records, while still detecting changes to arc content, status,
+  participants, provenance, validation, and persistence.
+- Improved conversational scene-boundary gating so short `Text:` / `Message:`
+  replies and markup-wrapped replies remain part of the current scene, while
+  explicit sleep transitions remain eligible scene boundaries.
+
+### Added
+
+- Automatic stabilization exports now include a privacy-safe Story Arc change
+  summary that identifies record IDs and changed field paths without exposing
+  arc text.
+- Diagnostics now carry an explicit pre-run state audit and run-origin record,
+  alongside shared automatic/manual durable-hash consistency metadata.
+
+### Tests
+
+- Added regression coverage for Story Arc legacy normalization, annotation-only
+  hash stability, semantic Arc changes, pre-run audit export, automatic/manual
+  projection consistency, and reply-versus-sleep scene gating. Full automated
+  verification passed with 333 tests.
+
 ## [0.8.89] - 2026-08-08
 
 ### Fixed

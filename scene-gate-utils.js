@@ -9,12 +9,14 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   const previous = String(previousMessage ?? '').trim();
   const current = String(currentMessage ?? '').trim();
   const combined = `${previous}\n${current}`.toLowerCase();
-  const explicitTransition = /\b(?:the next (?:morning|day|evening)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day|arrived at|returned to|left for|woke up|fell asleep)\b/.test(combined);
+  const explicitTransition = /\b(?:the next (?:morning|day|evening)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day|arrived at|returned to|left for|woke up|fell asleep|go(?:es|ing)? to sleep|went to sleep)\b/.test(combined);
   const sameChannel = /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line)\b/.test(previous)
     && /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line|he said|she said|they said)\b/.test(current);
   const directResponse = /^(?:["'“”‘’\-–—\s]*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b)/i.test(current);
+  const directTextReply = /^\s*(?:text|message)(?:\s+(?:him|her|them|back))?\s*:/i.test(current);
+  const markupWrappedReply = /^\s*\*\s*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b/i.test(current);
   const emotionalOrReactive = /\b(?:smiled|laughed|cried|sighed|nodded|shook|hugged|kissed|flinched|stared|whispered|replied|answered)\b/i.test(current);
-  const strongContinuity = !explicitTransition && (sameChannel || directResponse || emotionalOrReactive);
+  const strongContinuity = !explicitTransition && (sameChannel || directResponse || directTextReply || markupWrappedReply || emotionalOrReactive);
   return { explicit_transition: explicitTransition, same_channel: sameChannel, direct_response: directResponse, emotional_or_reactive: emotionalOrReactive, strong_continuity: strongContinuity };
 }
 

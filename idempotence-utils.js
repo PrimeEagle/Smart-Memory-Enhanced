@@ -20,6 +20,8 @@ const DURABLE_KEYS = new Set([
   'characters',
 ]);
 
+export const DURABLE_SEMANTIC_PROJECTION_VERSION = 1;
+
 const VOLATILE_KEYS = new Set([
   'lastActive', 'catch_up_diagnostics', 'developer_idempotence_check',
   'repair_history', 'request_efficiency_history', 'last_catchup_run_id',
@@ -115,6 +117,41 @@ function canonicalizeSessionMemory(record = {}) {
   };
 }
 
+// Story Arc records contain both the actual open-thread state and an expanding
+// set of reconciliation, review, and rendering annotations.  Only the former
+// belongs in the durable-state hash.  In particular, a refreshed status trace,
+// verification timestamp, or display-only participant explanation must not
+// make an otherwise stable second reconciliation pass appear non-idempotent.
+function canonicalizeStoryArc(record = {}) {
+  const value = record && typeof record === 'object' ? record : {};
+  return {
+    id: value.id ?? null,
+    content: value.content ?? '',
+    ts: value.ts ?? 0,
+    persistent: Boolean(value.persistent),
+    resolved: Boolean(value.resolved),
+    status: value.status ?? (value.resolved ? 'resolved' : 'open'),
+    status_confidence_class: value.status_confidence_class ?? null,
+    status_reason_code: value.status_reason_code ?? null,
+    last_status_change_index: value.last_status_change_index ?? null,
+    source_memory_ids: value.source_memory_ids ?? [],
+    parent_memory_ids: value.parent_memory_ids ?? [],
+    source_message_indices: value.source_message_indices ?? [],
+    source_window_start_index: value.source_window_start_index ?? null,
+    source_window_end_index: value.source_window_end_index ?? null,
+    source_messages: value.source_messages ?? [],
+    character_participants: value.character_participants ?? [],
+    participant_references: value.participant_references ?? [],
+    grounding_status: value.grounding_status ?? null,
+    validation_status: value.validation_status ?? null,
+    validation_issues: value.validation_issues ?? [],
+    verification: {
+      outcome: value.verification?.outcome ?? null,
+      reason_code: value.verification?.reason_code ?? null,
+    },
+  };
+}
+
 function canonicalize(value, { excludeVolatile = true } = {}) {
   if (Array.isArray(value)) {
     // Reconciliation treats store collections as sets keyed by durable record
@@ -165,20 +202,26 @@ export function sceneHistoryHashComponents(metadata = {}) {
 }
 
 /** Return the reconciliation-relevant semantic subset of extension metadata. */
-export function canonicalizeDurableIdempotenceState(metadata = {}) {
+export function buildCanonicalDurableSemanticState(metadata = {}) {
   const source = metadata && typeof metadata === 'object' ? metadata : {};
   const selected = Object.fromEntries(Object.keys(source)
     .filter((key) => DURABLE_KEYS.has(key))
     .map((key) => [key,
       key === 'sceneHistory' ? splitSceneHistory(source[key]).semantic
         : key === 'sessionMemories' ? (Array.isArray(source[key]) ? source[key].map(canonicalizeSessionMemory) : [])
-          : source[key],
+          : key === 'storyArcs' ? (Array.isArray(source[key]) ? source[key].map(canonicalizeStoryArc) : [])
+            : source[key],
     ]));
   return canonicalize(selected);
 }
 
+// Backward-compatible export name. All callers should use the named semantic
+// projection above so automatic, manual, UI, and export hashes share one
+// explicit contract.
+export const canonicalizeDurableIdempotenceState = buildCanonicalDurableSemanticState;
+
 export function durableStateHash(metadata = {}) {
-  return fingerprint(JSON.stringify(canonicalizeDurableIdempotenceState(metadata)));
+  return fingerprint(JSON.stringify(buildCanonicalDurableSemanticState(metadata)));
 }
 
 /**
@@ -275,6 +318,49 @@ export function summarizeSessionMemoryChanges(before = {}, after = {}, limit = 3
     changed_path_count: changedPaths.length, changed_paths: changedPaths, changes_by_category: categories,
     accounted_mutation_count: 0, unaccounted_mutation_count: changedPaths.length,
     truncated: changedPaths.length >= limit || added.length > limit || removed.length > limit || changedRecordIds.length > limit,
+  };
+}
+
+/**
+ * Privacy-safe Story Arc diff for automatic-stabilization diagnostics. Arc
+ * content is deliberately never exported; only stable record labels and field
+ * paths are retained so a legacy normalizer can be diagnosed precisely.
+ */
+export function summarizeStoryArcChanges(before = {}, after = {}, limit = 32) {
+  const recordId = (record, index) => String(record?.id ?? `legacy-arc:${record?.ts ?? 0}:${fingerprint(record?.content ?? '').slice(-8)}:${index}`);
+  const beforeRecords = new Map((before?.storyArcs ?? []).map((record, index) => [recordId(record, index), canonicalize(canonicalizeStoryArc(record))]));
+  const afterRecords = new Map((after?.storyArcs ?? []).map((record, index) => [recordId(record, index), canonicalize(canonicalizeStoryArc(record))]));
+  const added = [...afterRecords.keys()].filter((id) => !beforeRecords.has(id)).sort();
+  const removed = [...beforeRecords.keys()].filter((id) => !afterRecords.has(id)).sort();
+  const changedRecordIds = [];
+  const changedPaths = [];
+  for (const [id, beforeRecord] of beforeRecords) {
+    const afterRecord = afterRecords.get(id);
+    if (!afterRecord || JSON.stringify(beforeRecord) === JSON.stringify(afterRecord)) continue;
+    changedRecordIds.push(id);
+    for (const fieldPath of [...new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])].sort()) {
+      if (JSON.stringify(beforeRecord[fieldPath]) === JSON.stringify(afterRecord[fieldPath])) continue;
+      changedPaths.push({
+        record_id: id,
+        field_path: fieldPath,
+        change_category: /(?:provenance|created|stage|store)/.test(fieldPath) ? 'provenance_or_lifecycle' : 'semantic_or_unknown',
+        before_value_hash: fingerprint(JSON.stringify(beforeRecord[fieldPath] ?? null)),
+        after_value_hash: fingerprint(JSON.stringify(afterRecord[fieldPath] ?? null)),
+      });
+      if (changedPaths.length >= limit) break;
+    }
+    if (changedPaths.length >= limit) break;
+  }
+  return {
+    changed: Boolean(added.length || removed.length || changedRecordIds.length),
+    record_count_before: beforeRecords.size,
+    record_count_after: afterRecords.size,
+    added_record_ids: added.slice(0, limit),
+    removed_record_ids: removed.slice(0, limit),
+    changed_record_ids: changedRecordIds.slice(0, limit),
+    changed_path_count: changedPaths.length,
+    changed_paths: changedPaths,
+    truncated: added.length > limit || removed.length > limit || changedRecordIds.length > limit || changedPaths.length >= limit,
   };
 }
 

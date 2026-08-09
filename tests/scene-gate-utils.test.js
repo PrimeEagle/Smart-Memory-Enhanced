@@ -47,6 +47,14 @@ test('an explicit time transition overrides conversational continuity', () => {
   assert.equal(result.accepted, true);
 });
 
+test('text and markup-wrapped replies remain continuous while sleep is a transition', () => {
+  assert.equal(deriveSceneContinuitySignals('Okay. Good.', 'Text: "Thanks"').strong_continuity, true);
+  assert.equal(deriveSceneContinuitySignals('What do you mean?', '*But?*').strong_continuity, true);
+  const sleep = deriveSceneContinuitySignals('The conversation continued late into the night.', '*I go to sleep*');
+  assert.equal(sleep.explicit_transition, true);
+  assert.equal(sleep.strong_continuity, false);
+});
+
 test('same-run coalescing suppresses only a nearby direct continuation', () => {
   const continuity = deriveSceneContinuitySignals('They were still on the phone.', '"I understand," she replied on the call.');
   const directContinuation = coalesceSceneBoundary({ previousBoundaryIndex: 100, messageIndex: 104, minimumSceneLength: 3, continuity });

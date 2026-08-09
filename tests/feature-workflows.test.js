@@ -1310,3 +1310,16 @@ test('lower navigation sections have distinct theme-neutral header icons', () =>
   const css = read('style.css');
   assert.match(css, /\.sme_section_icon \{[\s\S]*opacity: 0\.72/);
 });
+
+test('pre-run diagnostics and automatic stabilization share the durable semantic projection', () => {
+  const settings = read('settings.js');
+  const idempotence = read('idempotence-utils.js');
+  assert.match(settings, /pre_run_state_audit/);
+  assert.match(settings, /run_origin/);
+  assert.match(settings, /story_arc_change_summary/);
+  assert.match(settings, /buildFinalStateConsistency/);
+  assert.match(settings, /DURABLE_SEMANTIC_PROJECTION_VERSION/);
+  assert.match(idempotence, /buildCanonicalDurableSemanticState/);
+  assert.match(idempotence, /canonicalizeStoryArc/);
+  assert.match(idempotence, /summarizeStoryArcChanges/);
+});

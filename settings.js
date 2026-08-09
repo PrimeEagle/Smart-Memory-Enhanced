@@ -146,10 +146,12 @@ import {
 } from './prompt-config.js';
 import {
   deriveIdempotenceResult,
+  DURABLE_SEMANTIC_PROJECTION_VERSION,
   durableStateHash,
   sceneHistoryHashComponents,
   summarizeDurableStateChanges,
   summarizeSessionMemoryChanges,
+  summarizeStoryArcChanges,
   diagnosticMetadataHash,
   revisionMetadataHash,
   normalizeIdempotenceResult,
@@ -180,6 +182,30 @@ function idempotenceDurableState(metadata = {}) {
     ...(metadata && typeof metadata === 'object' ? metadata : {}),
     characters: settings.characters ?? {},
     entityRegistry: metadata?.entityRegistry ?? settings.entityRegistry ?? settings.entity_registry ?? [],
+  };
+}
+
+function buildFinalStateConsistency({ automatic = null, manual = null, currentHash = null } = {}) {
+  const automaticHash = automatic?.durable_state_hash_after_second_pass ?? null;
+  const manualHash = manual?.evaluated_semantic_hash ?? manual?.durable_state_hash_after_second_pass ?? null;
+  const comparable = [
+    ['catch_up', automaticHash], ['post_stabilization', automaticHash],
+    ['diagnostics_export', automaticHash], ['manual_developer', manualHash],
+    ['restored_panel', currentHash ?? manualHash],
+  ].filter(([, hash]) => typeof hash === 'string');
+  const hashes = [...new Set(comparable.map(([, hash]) => hash))];
+  const equal = hashes.length <= 1;
+  return {
+    semantic_projection_version: DURABLE_SEMANTIC_PROJECTION_VERSION,
+    catch_up: { hash: automaticHash, projection: 'durable_semantic_state_v1' },
+    post_stabilization: { hash: automaticHash, projection: 'durable_semantic_state_v1' },
+    manual_developer: { available: Boolean(manual), current: Boolean(manual && (!currentHash || manualHash === currentHash)), hash: manualHash, projection: 'durable_semantic_state_v1' },
+    restored_panel: { available: Boolean(currentHash), hash: currentHash ?? manualHash, projection: 'durable_semantic_state_v1' },
+    diagnostics_export: { hash: automaticHash, projection: 'durable_semantic_state_v1' },
+    all_comparable_hashes_equal: equal,
+    comparison_groups: [{ projection: 'durable_semantic_state_v1', members: comparable.map(([name]) => name) }],
+    interpretation_consistent: equal,
+    mismatch_fields: equal ? [] : comparable.filter(([, hash]) => hash !== hashes[0]).map(([name]) => `${name}_semantic_hash`),
   };
 }
 
@@ -429,6 +455,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     }, {})).sort((left, right) => right.count - left.count || left.store.localeCompare(right.store));
     const durableChangeSummary = summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const sessionMemoryChangeSummary = summarizeSessionMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
+    const storyArcChangeSummary = summarizeStoryArcChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const accountedMutations = (repairs.actual_logical_mutations_this_run ?? 0) + (repairs.actual_physical_store_mutations_this_run ?? 0);
     durableChangeSummary.accounted_mutation_count = accountedMutations;
     durableChangeSummary.unaccounted_mutation_count = durableChangeSummary.changed ? Math.max(0, durableChangeSummary.changed_path_count - accountedMutations) : 0;
@@ -453,6 +480,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       stale_reference_summary: staleReferenceSummary,
       durable_state_change_summary: durableChangeSummary,
       session_memory_change_summary: sessionMemoryChangeSummary,
+      story_arc_change_summary: storyArcChangeSummary,
       idempotence_hash_timeline: {
         pre_preparation_hash: durableStateHashBefore,
         post_preparation_hash: durableStateHash(durableStateAfterPreparation),
@@ -565,6 +593,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       interpretation_consistent: true,
       mismatch_fields: [],
     };
+    Object.assign(result.final_state_consistency, buildFinalStateConsistency({
+      automatic: forceIdempotenceCheck ? null : result.idempotence,
+      manual: forceIdempotenceCheck ? result.idempotence : null,
+      currentHash: forceIdempotenceCheck ? result.idempotence.durable_state_hash_after_second_pass : null,
+    }));
   }
   if (extension_settings[MODULE_NAME]?.verbose_logging) {
     console.debug('[Smart Memory Enhanced] Final reconciliation timing:', {
@@ -4832,12 +4865,23 @@ export function bindSettingsUI(ctrl) {
         error_details: runResult.errors,
         warnings: runResult.warnings,
         warnings_suppressed: runResult.warningsSuppressed,
+        pre_run_state_audit: preRunFreshStartAudit ? {
+          ...preRunFreshStartAudit,
+          available: true,
+          pre_run_reset_audit_id: preRunFreshStartAudit.audit_id ?? null,
+          observed_by_run_id: catchUpRunId,
+        } : { available: false, clean: null, failure_reasons: ['no_fresh_start_audit_available'] },
         fresh_start_postcondition_audit: preRunFreshStartAudit ? {
           ...preRunFreshStartAudit,
           available: true,
           pre_run_reset_audit_id: preRunFreshStartAudit.audit_id ?? null,
           observed_by_run_id: catchUpRunId,
         } : { available: false, clean: null, failure_reasons: ['no_fresh_start_audit_available'] },
+        run_origin: {
+          began_after_fresh_start: Boolean(preRunFreshStartAudit),
+          pre_run_state_audit_available: Boolean(preRunFreshStartAudit),
+          pre_run_state_clean: preRunFreshStartAudit?.clean ?? null,
+        },
         parser_debris_cleanup: catchUpContext.chatMetadata?.[META_KEY]?.parser_debris_cleanup ?? null,
         arc_summary_verification: summarizeArcSummaryVerification(loadArcSummaries(), loadArcs()),
         arcResolution: summarizeArcStatusResolution(loadArcs(), runResult.arcResolution),
@@ -5723,6 +5767,11 @@ export function bindSettingsUI(ctrl) {
             interpretation_consistent: finalResult.idempotence_result_lifecycle_mismatch !== true,
             mismatch_fields: finalResult.idempotence_result_lifecycle_mismatch ? ['idempotence_result_lifecycle'] : [],
           });
+          Object.assign(exportReport.finalReconciliation.final_state_consistency, buildFinalStateConsistency({
+            automatic: exportReport.automatic_stabilization,
+            manual: finalResult,
+            currentHash: durableStateHash(idempotenceDurableState(context.chatMetadata[META_KEY])),
+          }));
           latestExportDiagnostics = exportReport;
           context.chatMetadata[META_KEY].catch_up_diagnostics = exportReport;
         }

@@ -6,6 +6,7 @@ import {
   durableStateHash,
   summarizeDurableStateChanges,
   summarizeSessionMemoryChanges,
+  summarizeStoryArcChanges,
   normalizeIdempotenceResult,
 } from '../idempotence-utils.js';
 
@@ -154,6 +155,48 @@ test('session link-provenance legacy backfill does not change durable state', ()
     },
   }] };
   assert.equal(durableStateHash(base), durableStateHash(backfilled));
+});
+
+test('story-arc canonicalization is stable across empty legacy bookkeeping backfill', () => {
+  const legacy = { storyArcs: [{ id: 'arc-1', content: 'A decision remains unresolved.', ts: 4 }] };
+  const normalized = { storyArcs: [{
+    id: 'arc-1', content: 'A decision remains unresolved.', ts: 4,
+    character_participants: [], synthetic_identity_labels_removed: [], identity_rejections: [],
+  }] };
+  assert.equal(durableStateHash(legacy), durableStateHash(normalized));
+});
+
+test('story-arc reconciliation annotations do not alter durable state', () => {
+  const base = { storyArcs: [{
+    id: 'arc-1', content: 'A decision remains unresolved.', ts: 4,
+    status: 'open', character_participants: ['Taylor Covington'],
+    verification: { outcome: 'supported', reason_code: 'provenance_and_participants_attached', verified_at: 1 },
+  }] };
+  const annotated = { storyArcs: [{
+    ...base.storyArcs[0],
+    participant_additions: [{ name: 'Taylor Covington', reason: 'Named directly in arc content.' }],
+    identity_replacements: [{ from: 'Taylor', to: 'Taylor Covington', reason: 'Approved alias.' }],
+    arc_status_trace: { continuation_evidence_count: 7, final_status: 'open' },
+    verification: { outcome: 'supported', reason_code: 'provenance_and_participants_attached', verified_at: 999 },
+  }] };
+  assert.equal(durableStateHash(base), durableStateHash(annotated));
+});
+
+test('story-arc semantic status and content changes alter durable state', () => {
+  const base = { storyArcs: [{ id: 'arc-1', content: 'A decision remains unresolved.', status: 'open' }] };
+  assert.notEqual(durableStateHash(base), durableStateHash({ storyArcs: [{ ...base.storyArcs[0], status: 'resolved', resolved: true }] }));
+  assert.notEqual(durableStateHash(base), durableStateHash({ storyArcs: [{ ...base.storyArcs[0], content: 'A different unresolved decision remains.' }] }));
+});
+
+test('story-arc diff identifies field paths without exposing arc content', () => {
+  const summary = summarizeStoryArcChanges(
+    { storyArcs: [{ id: 'arc-1', content: 'private before', ts: 4 }] },
+    { storyArcs: [{ id: 'arc-1', content: 'private after', ts: 4 }] },
+  );
+  assert.equal(summary.changed, true);
+  assert.deepEqual(summary.changed_record_ids, ['arc-1']);
+  assert.equal(JSON.stringify(summary).includes('private before'), false);
+  assert.equal(JSON.stringify(summary).includes('private after'), false);
 });
 
 test('session-memory diff is privacy-safe and identifies changed record fields', () => {
