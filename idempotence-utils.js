@@ -248,6 +248,91 @@ function canonicalValueDiff(before, after, limit = 24) {
   return paths;
 }
 
+// Card-local stores are maps of independent character scopes whose values are
+// memory collections.  A collection-level hash is useful for detecting a
+// problem, but it is not enough to identify the responsible durable field.
+// This bounded, text-free diff deliberately descends through normalized arrays
+// and reports only stable record fingerprints, paths, and value hashes.
+function cardLocalRecordFingerprint(record, index) {
+  const value = record && typeof record === 'object' ? record : {};
+  if (value.id) return `memory:${value.id}`;
+  return `memory:${fingerprint(JSON.stringify({
+    type: value.type ?? null,
+    ts: value.ts ?? value.created_at ?? null,
+    source_message_indices: value.source_message_indices ?? [],
+    source_messages: value.source_messages ?? [],
+    index,
+  }))}`;
+}
+
+function recursiveFingerprintDiff(before, after, path = '', limit = 32, output = []) {
+  if (output.length >= limit || JSON.stringify(before) === JSON.stringify(after)) return output;
+  const beforeArray = Array.isArray(before);
+  const afterArray = Array.isArray(after);
+  const beforeObject = before && typeof before === 'object';
+  const afterObject = after && typeof after === 'object';
+  if ((!beforeObject && !afterObject) || beforeArray !== afterArray) {
+    output.push({
+      canonical_field_path: path || 'record',
+      before_hash: fingerprint(JSON.stringify(before ?? null)),
+      after_hash: fingerprint(JSON.stringify(after ?? null)),
+      semantic_classification: 'durable_semantic',
+      mutation_counted: false,
+    });
+    return output;
+  }
+  if (beforeArray && afterArray) {
+    const max = Math.max(before.length, after.length);
+    for (let index = 0; index < max && output.length < limit; index++) {
+      recursiveFingerprintDiff(before[index], after[index], `${path}[${index}]`, limit, output);
+    }
+    return output;
+  }
+  for (const key of [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])].sort()) {
+    recursiveFingerprintDiff(before?.[key], after?.[key], path ? `${path}.${key}` : key, limit, output);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+/**
+ * Privacy-safe, leaf-level card-local-memory comparison for automatic
+ * stabilization.  It never exports memory prose, only a record fingerprint
+ * and canonical field paths/value hashes.
+ */
+export function summarizeCardLocalMemoryChanges(before = {}, after = {}, limit = 32) {
+  const beforeStores = before?.card_local_memories ?? {};
+  const afterStores = after?.card_local_memories ?? {};
+  const records = [];
+  for (const cardName of [...new Set([...Object.keys(beforeStores), ...Object.keys(afterStores)])].sort()) {
+    const beforeRecords = new Map((beforeStores[cardName] ?? []).map((record, index) => [cardLocalRecordFingerprint(record, index), canonicalize(record)]));
+    const afterRecords = new Map((afterStores[cardName] ?? []).map((record, index) => [cardLocalRecordFingerprint(record, index), canonicalize(record)]));
+    for (const fingerprintValue of [...new Set([...beforeRecords.keys(), ...afterRecords.keys()])].sort()) {
+      const left = beforeRecords.get(fingerprintValue);
+      const right = afterRecords.get(fingerprintValue);
+      if (JSON.stringify(left) === JSON.stringify(right)) continue;
+      const changedFields = recursiveFingerprintDiff(left, right, '', Math.max(1, limit - records.length));
+      records.push({
+        store: 'card_local_memories',
+        card_scope_fingerprint: fingerprint(cardName),
+        logical_record_fingerprint: fingerprintValue,
+        changed_field_count: changedFields.length,
+        changed_fields: changedFields,
+        reordered_only: false,
+      });
+      if (records.length >= limit) break;
+    }
+    if (records.length >= limit) break;
+  }
+  return {
+    changed: records.length > 0,
+    total: records.length,
+    records,
+    accounting_reconciled: false,
+    truncated: records.length >= limit,
+  };
+}
+
 /**
  * Compare the exact canonical projection used for durable-state hashing.
  * This makes a hash difference without a canonical diff impossible to export.

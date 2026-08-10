@@ -102,6 +102,7 @@ import {
 } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { loadCanon } from './canon.js';
+import { summarizeCardLocalMemoryChanges } from './idempotence-utils.js';
 import { loadProfiles, reconcileProfileCanonicalNames, remapProfileEntity } from './profiles.js';
 import {
   loadCharacterEntityRegistry,
@@ -1552,7 +1553,7 @@ export function updateProfilesUI(profiles) {
  * @param {string|null} characterName - Current character name for long-term registry lookup.
  */
 /** Safely reconciles unambiguous canonical entity aliases without opening UI. */
-export async function reconcileCanonicalEntities(characterName) {
+export async function reconcileCanonicalEntities(characterName, { reconciliationStage = 'reconciliation' } = {}) {
   let reconciliationWorkIndex = 0;
   let reconciliationYieldCount = 0;
   const yieldEvery = async (batch = 75) => {
@@ -1605,15 +1606,40 @@ export async function reconcileCanonicalEntities(characterName) {
   // of them so a unique active persona alias such as Kyle -> Kyle Holland does
   // not survive in an off-screen group member's local registry.
   const meta = context.chatMetadata?.[META_KEY] ?? {};
+  const cardLocalWriteRecords = [];
+  const cloneCardLocalRecords = (records) => {
+    try { return structuredClone(records ?? []); }
+    catch { return JSON.parse(JSON.stringify(records ?? [])); }
+  };
+  const observeCardLocalWrites = (beforeStores, operation, sourceOperation, mutationCounted = false) => {
+    const comparison = summarizeCardLocalMemoryChanges(
+      { card_local_memories: beforeStores },
+      { card_local_memories: meta.card_local_memories ?? {} },
+    );
+    for (const record of comparison.records) {
+      cardLocalWriteRecords.push({
+        ...record,
+        operation,
+        source_stage: reconciliationStage,
+        source_operation: sourceOperation,
+        semantic: true,
+        mutation_counted: mutationCounted,
+      });
+    }
+  };
+  const snapshotCardLocalStores = () => Object.fromEntries(Object.entries(meta.card_local_memories ?? {})
+    .map(([name, records]) => [name, cloneCardLocalRecords(records)]));
   const localReports = [];
   let localRewrites = 0;
   let localRelationshipPairsMerged = 0;
+  const beforeNarrativeNormalization = snapshotCardLocalStores();
   for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
     await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
     localRewrites += await rewriteStoredNarratives(localMemories);
     localReports.push({ ...reconcileCanonicalEntityRegistry(localRegistry, context, localMemories), source_store: `card-local:${localName}` });
   }
+  observeCardLocalWrites(beforeNarrativeNormalization, 'canonicalize_narrative_names', 'rewriteStoredNarratives');
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
     await yieldEvery();
     const relationshipResult = reconcileRelationshipHistoryMap(history, roster);
@@ -1662,6 +1688,7 @@ export async function reconcileCanonicalEntities(characterName) {
       if (entity.canonical_identity_type === 'grounded_npc') delete entity.canonical_identity_type;
     }
   }
+  const beforeReferenceAudit = snapshotCardLocalStores();
   for (const [store, entries] of registrySources) for (const entity of entries ?? []) {
     await yieldEvery();
     const key = entity?.canonical_persona_id
@@ -2044,6 +2071,21 @@ export async function reconcileCanonicalEntities(characterName) {
     origin_unknown_invalid_links_repaired: 0,
     origin_unknown_links_repaired: 0,
   };
+  // Narrative alias normalization changes durable card-local memory content.
+  // It used to be invisible to the same mutation accounting used by automatic
+  // stabilization.  Record it once per logical memory so a second-pass write
+  // is either correctly counted or eliminated by the normalizer itself.
+  const cardLocalSemanticMutationKeys = new Set();
+  for (const write of cardLocalWriteRecords) {
+    const key = `${write.card_scope_fingerprint}::${write.logical_record_fingerprint}::${write.operation}`;
+    if (cardLocalSemanticMutationKeys.has(key)) continue;
+    cardLocalSemanticMutationKeys.add(key);
+    write.mutation_counted = true;
+    for (const field of write.changed_fields ?? []) field.mutation_counted = true;
+    entityLinkRepairs.actual_logical_mutations_this_run++;
+    entityLinkRepairs.physical_store_mutations_this_run++;
+    entityLinkRepairs.actual_physical_store_mutations_this_run++;
+  }
   const logicalRepairKeys = new Set();
   const repairedRecordIds = new Set();
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
@@ -2095,6 +2137,17 @@ export async function reconcileCanonicalEntities(characterName) {
             record[field][entryIndex] = typeof id === 'string' ? target.id : { ...id, entity_id: target.id };
             repairedStaleEntityReferences.push(stale);
             referenceRewriteRevision++;
+            // A redirect rewrite changes a durable record just as surely as a
+            // rejected link removal does. Count it here so automatic
+            // stabilization cannot label this local repair as unaccounted.
+            const directRewriteKey = `${record?.id ?? 'unknown'}::${field}[${entryIndex}]::${entityId}=>${target.id}`;
+            entityLinkRepairs.physical_store_mutations_this_run++;
+            entityLinkRepairs.actual_physical_store_mutations_this_run++;
+            if (!logicalRepairKeys.has(directRewriteKey)) {
+              logicalRepairKeys.add(directRewriteKey);
+              entityLinkRepairs.actual_logical_mutations_this_run++;
+              entityLinkRepairs.invalid_links_repaired_final_stage++;
+            }
           } else {
             staleEntityReferences.push(stale);
           }
@@ -2204,6 +2257,7 @@ export async function reconcileCanonicalEntities(characterName) {
   for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`, 'entities', true);
   await auditReferences(scenes, 'scenes', 'participant_references');
   await auditReferences(arcs, 'arcs', 'participant_references');
+  observeCardLocalWrites(beforeReferenceAudit, 'repair_entity_references', 'auditReferences', true);
   // The audit mutates the same durable arrays used by long-term, session, and
   // card-local storage. Persist after the final mutation pass, not only before
   // it, so subsequent injection and diagnostics observe the repaired state.
@@ -2397,6 +2451,12 @@ export async function reconcileCanonicalEntities(characterName) {
     text_identity_mismatches: textIdentityMismatches,
     text_link_repair_counters: textLinkRepairCounters,
     entity_link_repairs: entityLinkRepairs,
+    automatic_stabilization_second_pass_writes: {
+      total: cardLocalWriteRecords.length,
+      records: cardLocalWriteRecords,
+      semantic_uncounted_writes: cardLocalWriteRecords.filter((record) => !record.mutation_counted).length,
+      accounting_reconciled: cardLocalWriteRecords.every((record) => record.mutation_counted),
+    },
     repair_origin_summary: repairOriginSummary,
     repair_recurrence_groups: repairRecurrenceGroups,
     card_identity_mismatches: cardIdentityMismatches,

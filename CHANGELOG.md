@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.92] - 2026-08-10
+
+### Fixed
+
+- Fixed automatic stabilization accounting for durable card-local narrative
+  normalization and direct canonical-reference redirects. These writes now
+  contribute to the same logical/physical mutation totals used by the
+  second-pass convergence check.
+- Tightened scene-boundary validation so a provider or heuristic proposal is
+  not accepted solely on model judgment. A final boundary now needs credible,
+  independently grounded transition support and is vetoed by dominant direct
+  conversational continuity.
+- Preserved valid non-literal transitions by recognizing a bounded, strongly
+  implied new-context narrative opening as grounded support; ordinary topic,
+  activity, or emotional changes remain insufficient.
+
+### Added
+
+- Automatic-stabilization diagnostics now provide privacy-safe, leaf-level
+  card-local memory diffs and a second-pass write trace with source operation,
+  stage, record fingerprint, and changed field hashes.
+- Scene diagnostics now export structured transition-evidence groups,
+  per-boundary `final_break_support`, and a `provider_decisions` stability
+  layer alongside the compatibility field.
+
+### Tests
+
+- Added card-local nested-diff coverage and scene-gate regression coverage for
+  provider-only proposals, direct continuity, and strongly implied context
+  resets. Full automated verification passed with 344 tests plus the replay
+  regression harness.
+
 ## [0.8.91] - 2026-08-09
 
 ### Fixed

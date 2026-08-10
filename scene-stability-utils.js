@@ -156,6 +156,9 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
     post_coalescing_boundaries: compareLayer((candidate) => candidate.terminal_break_disposition === 'accepted_final_break'),
     final_boundaries: compareLayer((candidate) => candidate.terminal_break_disposition === 'accepted_final_break'),
   };
+  // Keep the original field for compatibility while exposing the user-facing
+  // term used by the diagnostics contract.
+  sceneStabilityLayers.provider_decisions = sceneStabilityLayers.raw_ai_decisions;
   const previousContextHashes = new Map((previous.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const currentContextHashes = new Map((currentAudit.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const marginalRecord = (previousIndex, currentIndex, classification) => {

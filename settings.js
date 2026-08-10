@@ -153,6 +153,7 @@ import {
   summarizeDurableStateChanges,
   summarizeSessionMemoryChanges,
   summarizeStoryArcChanges,
+  summarizeCardLocalMemoryChanges,
   diagnosticMetadataHash,
   revisionMetadataHash,
   normalizeIdempotenceResult,
@@ -382,7 +383,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   const durableStateAfterPreparation = snapshotIdempotenceDurableState(metadataAfterPreparation);
   const diagnosticMetadataHashBefore = diagnosticMetadataHash(metadataBefore);
   const revisionMetadataHashBefore = revisionMetadataHash(metadataBefore);
-  const reconciliation = await reconcileCanonicalEntities(characterName);
+  const reconciliation = await reconcileCanonicalEntities(characterName, { reconciliationStage: 'first_pass' });
   const summaries = loadArcSummaries();
   let quarantinedSummaries = 0;
   for (const summary of summaries) {
@@ -446,7 +447,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const durableStateBeforeSecondPass = snapshotIdempotenceDurableState(metadataBeforeSecondPass);
     const interpassComparison = compareDurableSemanticStates(durableStateAfterFirstPass, durableStateBeforeSecondPass);
-    const secondPass = await reconcileCanonicalEntities(characterName);
+    const secondPass = await reconcileCanonicalEntities(characterName, { reconciliationStage: 'second_pass' });
     const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
     const durableStateAfterSecondPass = snapshotIdempotenceDurableState(metadataAfterSecondPass);
     const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
@@ -469,12 +470,16 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const durableChangeSummary = summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const sessionMemoryChangeSummary = summarizeSessionMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const storyArcChangeSummary = summarizeStoryArcChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
+    const cardLocalMemoryChangeSummary = summarizeCardLocalMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const accountedMutations = (repairs.actual_logical_mutations_this_run ?? 0) + (repairs.actual_physical_store_mutations_this_run ?? 0);
     durableChangeSummary.accounted_mutation_count = accountedMutations;
     durableChangeSummary.unaccounted_mutation_count = durableChangeSummary.changed ? Math.max(0, durableChangeSummary.changed_path_count - accountedMutations) : 0;
     sessionMemoryChangeSummary.accounted_mutation_count = accountedMutations;
     sessionMemoryChangeSummary.unaccounted_mutation_count = sessionMemoryChangeSummary.changed
       ? Math.max(0, sessionMemoryChangeSummary.changed_path_count - accountedMutations) : 0;
+    cardLocalMemoryChangeSummary.accounted_mutation_count = accountedMutations;
+    cardLocalMemoryChangeSummary.unaccounted_mutation_count = cardLocalMemoryChangeSummary.changed
+      ? Math.max(0, cardLocalMemoryChangeSummary.records.reduce((count, record) => count + (record.changed_field_count ?? 0), 0) - accountedMutations) : 0;
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: 2,
@@ -494,6 +499,10 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       durable_state_change_summary: durableChangeSummary,
       session_memory_change_summary: sessionMemoryChangeSummary,
       story_arc_change_summary: storyArcChangeSummary,
+      card_local_memory_change_summary: cardLocalMemoryChangeSummary,
+      automatic_stabilization_second_pass_writes: secondPass.integrity_audit?.automatic_stabilization_second_pass_writes ?? {
+        total: 0, records: [], semantic_uncounted_writes: 0, accounting_reconciled: true,
+      },
       automatic_stabilization_component_hash_diff: {
         projection_version: durableComparison.projection_version,
         first_final_hash: durableComparison.first_hash,
@@ -4373,6 +4382,11 @@ export function bindSettingsUI(ctrl) {
             const transitionEvidenceCodes = Object.entries(evidence)
               .filter(([key, value]) => value === true && /(?:change_detected|transition_detected)$/.test(key))
               .map(([key]) => key);
+            const transitionEvidenceGroups = (evidence.transition_evidence_groups ?? []).map((group) => typeof group === 'string'
+              ? { evidence_group_id: group, source_fingerprint: group, detector_codes: [group], strength: group === 'explicit_transition' ? 'strong' : 'weak', independent: group === 'explicit_transition' }
+              : group);
+            const independentStrongTransitionCount = transitionEvidenceGroups
+              .filter((group) => group?.independent === true && group?.strength === 'strong').length;
             const continuityEvidenceCodes = Object.entries(evidence)
               .filter(([key, value]) => value === true && /(?:continuous|emotional_shift)/.test(key))
               .map(([key]) => key);
@@ -4381,12 +4395,27 @@ export function bindSettingsUI(ctrl) {
               retained: true,
               transition_evidence_codes: transitionEvidenceCodes,
               continuity_evidence_codes: continuityEvidenceCodes,
-              independent_reset_supported: candidate.coalescing?.outcome !== 'direct_continuation' && transitionEvidenceCodes.length > 0,
+              transition_evidence_groups: transitionEvidenceGroups,
+              independent_strong_transition_count: independentStrongTransitionCount,
+              independent_reset_supported: candidate.coalescing?.outcome !== 'direct_continuation' && independentStrongTransitionCount > 0,
               gate_result: candidate.gate_result ?? null,
               coalescing_result: candidate.coalescing?.outcome ?? null,
               final_reason_code: candidate.gate_reason_code ?? 'accepted_final_break',
             };
           });
+          sceneAudit.final_break_support = sceneAudit.final_scene_boundary_evidence.map((boundary) => ({
+            message_index: boundary.message_index,
+            ai_break: Boolean(sceneAudit.candidate_dispositions?.find((item) => (item.message_index ?? item.candidate_id) === boundary.message_index)?.decision),
+            strong_transition_evidence: boundary.transition_evidence_groups
+              .filter((group) => group?.strength === 'strong').map((group) => group.evidence_group_id),
+            weak_transition_evidence: boundary.transition_evidence_groups
+              .filter((group) => group?.strength !== 'strong').map((group) => group.evidence_group_id),
+            continuity_evidence: boundary.continuity_evidence_codes,
+            independent_reset_supported: boundary.independent_reset_supported,
+            exception_used: null,
+            accepted: true,
+            terminal_reason: boundary.final_reason_code,
+          }));
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections

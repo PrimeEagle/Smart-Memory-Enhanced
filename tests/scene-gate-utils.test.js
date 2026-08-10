@@ -10,6 +10,7 @@ test('deterministic scene gate is invariant to request lineage and repeated eval
     minimumSceneLength: 3,
     messageIndex: 148,
     previousBoundaryIndex: 72,
+    continuity: deriveSceneContinuitySignals('They were still together.', 'The next morning, they resumed their conversation.'),
   };
   const direct = evaluateDeterministicSceneGate(stableInput);
   const fromPartialRetry = evaluateDeterministicSceneGate({ ...stableInput, request_lineage: 'partial_retry', confidence: null });
@@ -29,7 +30,7 @@ test('deterministic scene gate emits stable evidence for each rejection class', 
   assert.equal(insufficient.gate_evidence.same_continuous_interaction, true);
   assert.equal(tooShort.gate_reason_code, 'minimum_scene_length');
   assert.equal(tooShort.gate_evidence.time_change_detected, false);
-  assert.deepEqual(tooShort.gate_evidence.transition_evidence_groups, ['heuristic_transition']);
+  assert.deepEqual(tooShort.gate_evidence.transition_evidence_groups.map((group) => group.evidence_group_id), ['heuristic_transition']);
   assert.equal(tooShort.gate_evidence.minimum_scene_length_satisfied, false);
 });
 
@@ -50,9 +51,30 @@ test('an explicit time transition overrides conversational continuity', () => {
 
 test('one heuristic observation is exported as one evidence group, not four correlated signals', () => {
   const gate = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 6, minimumSceneLength: 3, messageIndex: 9, previousBoundaryIndex: 1, continuity: { explicit_transition: false, strong_continuity: false, transition_evidence_groups: [] } });
-  assert.deepEqual(gate.gate_evidence.transition_evidence_groups, ['heuristic_transition']);
+  assert.deepEqual(gate.gate_evidence.transition_evidence_groups.map((group) => group.evidence_group_id), ['heuristic_transition']);
   assert.equal(gate.gate_evidence.activity_change_detected, false);
   assert.equal(gate.gate_evidence.narrative_phase_change_detected, false);
+});
+
+test('a provider break without credible transition support is rejected', () => {
+  const continuity = deriveSceneContinuitySignals('They were discussing dinner.', 'She changed the subject and smiled.');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40, continuity });
+  assert.equal(result.accepted, false);
+  assert.equal(result.gate_reason_code, 'strong_continuity_veto');
+});
+
+test('a strongly implied narrative context reset is eligible without a literal time marker', () => {
+  const continuity = deriveSceneContinuitySignals('They said goodbye and drove away.', 'Inside the restaurant, the room was quiet and nearly empty.');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40, continuity });
+  assert.equal(continuity.strongly_implied_transition, true);
+  assert.equal(result.accepted, true);
+});
+
+test('an ambiguous implied change with direct continuity remains rejected', () => {
+  const continuity = deriveSceneContinuitySignals('Do you agree?', 'Avery replied, "I do."');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40, continuity });
+  assert.equal(result.accepted, false);
+  assert.equal(result.gate_reason_code, 'strong_continuity_veto');
 });
 
 test('text and markup-wrapped replies remain continuous while sleep is a transition', () => {
@@ -61,6 +83,11 @@ test('text and markup-wrapped replies remain continuous while sleep is a transit
   const sleep = deriveSceneContinuitySignals('The conversation continued late into the night.', '*I go to sleep*');
   assert.equal(sleep.explicit_transition, true);
   assert.equal(sleep.strong_continuity, false);
+});
+
+test('an attributed direct reply remains continuous unless the text declares a reset', () => {
+  assert.equal(deriveSceneContinuitySignals('He asked whether she agreed.', 'Avery replied, "I do."').strong_continuity, true);
+  assert.equal(deriveSceneContinuitySignals('He asked whether she agreed.', 'The next morning, Avery replied, "I do."').strong_continuity, false);
 });
 
 test('same-run coalescing suppresses only a nearby direct continuation', () => {

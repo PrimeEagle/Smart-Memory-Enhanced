@@ -719,6 +719,10 @@ test('entity repair status counts current durable mutations separately from repe
   assert.match(settings, /repair_volume_changed/);
   assert.match(settings, /repair_volume_delta/);
   assert.match(ui, /physical_store_mutations_this_run/);
+  assert.match(ui, /const directRewriteKey/);
+  assert.match(ui, /entityLinkRepairs\.actual_logical_mutations_this_run\+\+/);
+  assert.match(ui, /automatic_stabilization_second_pass_writes/);
+  assert.match(ui, /summarizeCardLocalMemoryChanges/);
   assert.match(ui, /reobserved_already_repaired/);
   assert.match(ui, /reobserved_previously_quarantined/);
   assert.match(ui, /link_created_run_id/);
@@ -1065,7 +1069,7 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /source_start_index/);
   assert.match(settings, /parser_debris_cleanup/);
   assert.match(settings, /raw provider output/);
-  assert.match(settings, /reconcileCanonicalEntities\(characterName\)/);
+  assert.match(settings, /reconcileCanonicalEntities\(characterName(?:, \{ reconciliationStage: '(?:first|second)_pass' \})?\)/);
   assert.match(settings, /identityResolution/);
   assert.match(settings, /Estimated total time remaining/);
   assert.match(settings, /catch_up_timing_history/);
