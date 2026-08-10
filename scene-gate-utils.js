@@ -17,7 +17,14 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   const markupWrappedReply = /^\s*\*\s*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b/i.test(current);
   const emotionalOrReactive = /\b(?:smiled|laughed|cried|sighed|nodded|shook|hugged|kissed|flinched|stared|whispered|replied|answered)\b/i.test(current);
   const strongContinuity = !explicitTransition && (sameChannel || directResponse || directTextReply || markupWrappedReply || emotionalOrReactive);
-  return { explicit_transition: explicitTransition, same_channel: sameChannel, direct_response: directResponse, emotional_or_reactive: emotionalOrReactive, strong_continuity: strongContinuity };
+  return {
+    explicit_transition: explicitTransition,
+    same_channel: sameChannel,
+    direct_response: directResponse,
+    emotional_or_reactive: emotionalOrReactive,
+    strong_continuity: strongContinuity,
+    transition_evidence_groups: explicitTransition ? ['explicit_transition'] : [],
+  };
 }
 
 /**
@@ -54,14 +61,22 @@ export function evaluateDeterministicSceneGate({ aiRequestedBreak, heuristicBrea
     return `scene-gate-${(hash >>> 0).toString(16)}`;
   };
   const distance = Number.isInteger(previousBoundaryIndex) ? messageIndex - previousBoundaryIndex : null;
+  // A heuristic candidate is one observation, not four independent proofs.
+  // Keep detector labels honest so diagnostics cannot inflate one phrase into
+  // time, activity, narrative, and explicit-transition evidence at once.
+  const evidenceGroups = [...new Set([
+    ...(continuity?.transition_evidence_groups ?? []),
+    ...(heuristicBreak && !continuity?.explicit_transition ? ['heuristic_transition'] : []),
+  ])];
   const signals = {
-    time_change_detected: Boolean(heuristicBreak),
+    time_change_detected: Boolean(continuity?.explicit_transition),
     location_change_detected: false,
     participant_change_detected: false,
-    activity_change_detected: Boolean(heuristicBreak),
+    activity_change_detected: false,
     channel_change_detected: false,
-    narrative_phase_change_detected: Boolean(heuristicBreak),
-    explicit_scene_transition_detected: Boolean(heuristicBreak),
+    narrative_phase_change_detected: false,
+    explicit_scene_transition_detected: Boolean(continuity?.explicit_transition),
+    transition_evidence_groups: evidenceGroups,
     same_continuous_interaction: continuity?.strong_continuity ?? !heuristicBreak,
     emotional_shift_only: Boolean(continuity?.emotional_or_reactive && !continuity?.explicit_transition),
     continuity_overlap_score: continuity?.strong_continuity ? 1 : heuristicBreak ? 0 : 1,
@@ -75,5 +90,5 @@ export function evaluateDeterministicSceneGate({ aiRequestedBreak, heuristicBrea
   if (!heuristicBreak) return finish({ accepted: false, terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'same_continuous_interaction', detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
   if (continuity?.strong_continuity && !continuity?.explicit_transition) return finish({ accepted: false, terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'strong_continuity_veto', detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
   if (sceneLength < minimumSceneLength) return finish({ accepted: false, terminal_break_disposition: 'rejected_minimum_scene_length', gate_result: 'rejected', gate_reason_code: 'minimum_scene_length', detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
-  return finish({ accepted: true, terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', detected_change_types: ['time_change', 'activity_change', 'narrative_phase_change'], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
+  return finish({ accepted: true, terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', detected_change_types: evidenceGroups, distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
 }

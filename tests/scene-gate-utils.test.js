@@ -28,7 +28,8 @@ test('deterministic scene gate emits stable evidence for each rejection class', 
   assert.equal(insufficient.gate_evidence.continuity_overlap_score, 1);
   assert.equal(insufficient.gate_evidence.same_continuous_interaction, true);
   assert.equal(tooShort.gate_reason_code, 'minimum_scene_length');
-  assert.equal(tooShort.gate_evidence.time_change_detected, true);
+  assert.equal(tooShort.gate_evidence.time_change_detected, false);
+  assert.deepEqual(tooShort.gate_evidence.transition_evidence_groups, ['heuristic_transition']);
   assert.equal(tooShort.gate_evidence.minimum_scene_length_satisfied, false);
 });
 
@@ -45,6 +46,13 @@ test('an explicit time transition overrides conversational continuity', () => {
   const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40, continuity });
   assert.equal(continuity.explicit_transition, true);
   assert.equal(result.accepted, true);
+});
+
+test('one heuristic observation is exported as one evidence group, not four correlated signals', () => {
+  const gate = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 6, minimumSceneLength: 3, messageIndex: 9, previousBoundaryIndex: 1, continuity: { explicit_transition: false, strong_continuity: false, transition_evidence_groups: [] } });
+  assert.deepEqual(gate.gate_evidence.transition_evidence_groups, ['heuristic_transition']);
+  assert.equal(gate.gate_evidence.activity_change_detected, false);
+  assert.equal(gate.gate_evidence.narrative_phase_change_detected, false);
 });
 
 test('text and markup-wrapped replies remain continuous while sleep is a transition', () => {

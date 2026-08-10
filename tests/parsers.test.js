@@ -688,6 +688,11 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
   assert.equal(result.world_state, 'Location: council chamber');
 });
 
+test('detectSceneBreakHeuristic: does not treat a dialogue reference to the morning after as a transition', () => {
+  assert.equal(detectSceneBreakHeuristic('*I have thought about what happens the morning after.*'), false);
+  assert.equal(detectSceneBreakHeuristic('The morning after, they met at the station.'), true);
+});
+
 test('parseSessionOutput preserves a bounded citation-repair candidate ID', () => {
   const [record] = parseSessionOutput('[detail:2:session:candidate_id=session-4:claim_hash=claim-fnv1a-1234:sources=1] A supported detail.');
   assert.equal(record._citation_candidate_id, 'session-4');

@@ -804,8 +804,11 @@ const SCENE_BREAK_PATTERNS = [
   /\b(returned (to|back to) (the|a|an|\w+'s)\s+\w+(\s+\w+)?|made (his|her|their|my|your) way back (to|into) (the|a|an|\w+'s)\s+\w+(\s+\w+)?)\b/i,
   // Location transitions - formal arrival phrasing.
   /\b(upon (arriving|reaching|entering) (at )?(the|a|an|\w+'s)\s+\w+(\s+\w+)?)\b/i,
-  // Time skips - "the morning after", "by morning/nightfall/dawn/dusk".
-  /\b(the morning after|by (morning|nightfall|dawn|dusk|daybreak|sundown|nighttime))\b/i,
+  // Time skips - an opening "the morning after" is scene framing. The same
+  // phrase inside dialogue (for example, discussing what might happen then)
+  // is not a transition and must not create a false scene boundary.
+  /^\s*(?:\*\s*)?the morning after\b/im,
+  /\bby (morning|nightfall|dawn|dusk|daybreak|sundown|nighttime)\b/i,
   // Time skips - "in the days/weeks/months that followed".
   /\b(in the (days?|weeks?|months?|years?) (that|which) followed)\b/i,
   // Explicit separator markers (---, ***, * * *)

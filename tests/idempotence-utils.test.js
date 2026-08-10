@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   canonicalizeDurableIdempotenceState,
+  compareDurableSemanticStates,
   deriveIdempotenceResult,
   durableStateHash,
   summarizeDurableStateChanges,
@@ -97,6 +98,27 @@ test('durable canonicalizer ignores diagnostics and canonicalizes collection ord
   };
   assert.deepEqual(canonicalizeDurableIdempotenceState(first), canonicalizeDurableIdempotenceState(second));
   assert.equal(durableStateHash(first), durableStateHash(second));
+});
+
+test('durable hash and structural diff share exactly one canonical projection', () => {
+  const first = { sessionMemories: [{ id: 'one', content: 'A', source_message_indices: [3, 1] }] };
+  const same = { sessionMemories: [{ content: 'A', id: 'one', source_message_indices: [1, 3] }] };
+  const changed = { sessionMemories: [{ content: 'B', id: 'one', source_message_indices: [1, 3] }] };
+  const equal = compareDurableSemanticStates(first, same);
+  assert.equal(equal.changed, false);
+  assert.equal(equal.first_hash, equal.second_hash);
+  assert.equal(equal.hash_diff_without_canonical_diff, false);
+  const different = compareDurableSemanticStates(first, changed);
+  assert.equal(different.changed, true);
+  assert.notEqual(different.first_hash, different.second_hash);
+  assert.ok(different.changed_components.some((entry) => entry.component === 'sessionMemories'));
+});
+
+test('durable canonical projection is pure and does not sort or backfill live state', () => {
+  const state = { sessionMemories: [{ id: 'b', content: 'B' }, { id: 'a', content: 'A' }], storyArcs: [{ id: 'arc', content: 'Open thread' }] };
+  const before = structuredClone(state);
+  canonicalizeDurableIdempotenceState(state);
+  assert.deepEqual(state, before);
 });
 
 test('durable canonicalizer includes per-character durable stores', () => {

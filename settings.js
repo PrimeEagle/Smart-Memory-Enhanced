@@ -147,6 +147,7 @@ import {
 import {
   deriveIdempotenceResult,
   DURABLE_SEMANTIC_PROJECTION_VERSION,
+  compareDurableSemanticStates,
   durableStateHash,
   sceneHistoryHashComponents,
   summarizeDurableStateChanges,
@@ -183,6 +184,15 @@ function idempotenceDurableState(metadata = {}) {
     characters: settings.characters ?? {},
     entityRegistry: metadata?.entityRegistry ?? settings.entityRegistry ?? settings.entity_registry ?? [],
   };
+}
+
+// Reconciliation mutates nested metadata in place. Idempotence comparisons
+// must retain immutable point-in-time snapshots; a shallow wrapper would let
+// the second pass overwrite the first pass's structural baseline.
+function snapshotIdempotenceDurableState(metadata = {}) {
+  const state = idempotenceDurableState(metadata);
+  if (typeof structuredClone === 'function') return structuredClone(state);
+  return JSON.parse(JSON.stringify(state));
 }
 
 function buildFinalStateConsistency({ automatic = null, manual = null, currentHash = null } = {}) {
@@ -360,7 +370,7 @@ async function runStagedChatCleanup(context, mutate) {
 async function runFinalIntegrityReconciliation(characterName, { forceIdempotenceCheck = false } = {}) {
   const startedAt = performance.now();
   const metadataBefore = getContext().chatMetadata?.[META_KEY] ?? {};
-  const durableStateBefore = idempotenceDurableState(metadataBefore);
+  const durableStateBefore = snapshotIdempotenceDurableState(metadataBefore);
   const durableStateHashBefore = durableStateHash(durableStateBefore);
   const sceneHistoryHashesBefore = sceneHistoryHashComponents(durableStateBefore);
   // Verbose logging increases local diagnostics only. It must never make an
@@ -369,7 +379,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   // There is currently no mutating preparation step. Keep this explicit
   // snapshot before pass one so future preparation cannot hide a mutation.
   const metadataAfterPreparation = getContext().chatMetadata?.[META_KEY] ?? {};
-  const durableStateAfterPreparation = idempotenceDurableState(metadataAfterPreparation);
+  const durableStateAfterPreparation = snapshotIdempotenceDurableState(metadataAfterPreparation);
   const diagnosticMetadataHashBefore = diagnosticMetadataHash(metadataBefore);
   const revisionMetadataHashBefore = revisionMetadataHash(metadataBefore);
   const reconciliation = await reconcileCanonicalEntities(characterName);
@@ -393,7 +403,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   };
   const firstPassRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
   const metadataAfterFirstPass = getContext().chatMetadata?.[META_KEY] ?? {};
-  const durableStateAfterFirstPass = idempotenceDurableState(metadataAfterFirstPass);
+  const durableStateAfterFirstPass = snapshotIdempotenceDurableState(metadataAfterFirstPass);
   const durableStateHashAfterFirstPass = durableStateHash(durableStateAfterFirstPass);
   result.idempotence = {
     available: true,
@@ -434,9 +444,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   // panel, but cannot change the audit semantics.
   {
     const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
+    const durableStateBeforeSecondPass = snapshotIdempotenceDurableState(metadataBeforeSecondPass);
+    const interpassComparison = compareDurableSemanticStates(durableStateAfterFirstPass, durableStateBeforeSecondPass);
     const secondPass = await reconcileCanonicalEntities(characterName);
     const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
-    const durableStateAfterSecondPass = idempotenceDurableState(metadataAfterSecondPass);
+    const durableStateAfterSecondPass = snapshotIdempotenceDurableState(metadataAfterSecondPass);
     const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
     result.final_state_audit = secondPass.integrity_audit ?? null;
     // The first pass is retained in idempotence/maintenance diagnostics, but
@@ -453,6 +465,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       groups[key] = group;
       return groups;
     }, {})).sort((left, right) => right.count - left.count || left.store.localeCompare(right.store));
+    const durableComparison = compareDurableSemanticStates(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const durableChangeSummary = summarizeDurableStateChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const sessionMemoryChangeSummary = summarizeSessionMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const storyArcChangeSummary = summarizeStoryArcChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
@@ -465,10 +478,10 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: 2,
-      durable_state_hash_after_second_pass: durableStateHash(durableStateAfterSecondPass),
+      durable_state_hash_after_second_pass: durableComparison.second_hash,
       diagnostic_metadata_hash_after: diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_hash_after: revisionMetadataHash(metadataAfterSecondPass),
-      durable_state_changed: durableStateHashAfterFirstPass !== durableStateHash(metadataAfterSecondPass),
+      durable_state_changed: durableComparison.changed,
       diagnostic_metadata_changed: diagnosticMetadataHash(metadataBeforeSecondPass) !== diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_changed: revisionMetadataHash(metadataBeforeSecondPass) !== revisionMetadataHash(metadataAfterSecondPass),
       second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
@@ -481,6 +494,24 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       durable_state_change_summary: durableChangeSummary,
       session_memory_change_summary: sessionMemoryChangeSummary,
       story_arc_change_summary: storyArcChangeSummary,
+      automatic_stabilization_component_hash_diff: {
+        projection_version: durableComparison.projection_version,
+        first_final_hash: durableComparison.first_hash,
+        second_final_hash: durableComparison.second_hash,
+        changed_components: durableComparison.changed_components,
+        unchanged_components: durableComparison.unchanged_components,
+        accounting_reconciled: durableComparison.changed === (durableChangeSummary.changed === true),
+      },
+      automatic_stabilization_interpass_diff: {
+        first_pass_output_hash: interpassComparison.first_hash,
+        second_pass_input_hash: interpassComparison.second_hash,
+        equal: !interpassComparison.changed,
+        changed_components: interpassComparison.changed_components,
+        changed_paths: interpassComparison.paths,
+        transition_operations: [],
+        mutations_counted: 0,
+        unexpected_change: interpassComparison.changed,
+      },
       idempotence_hash_timeline: {
         pre_preparation_hash: durableStateHashBefore,
         post_preparation_hash: durableStateHash(durableStateAfterPreparation),
@@ -515,6 +546,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     result.idempotence.audit_type = forceIdempotenceCheck ? 'manual_developer_idempotence_check' : 'automatic_post_catchup_stabilization';
     result.idempotence.is_manual_developer_check = forceIdempotenceCheck;
     result.idempotence.automatic_stabilization = !forceIdempotenceCheck;
+    if (!forceIdempotenceCheck) {
+      result.idempotence.summary = result.idempotence.idempotent
+        ? `Automatic stabilization converged: ${result.idempotence.second_pass_logical_mutations} second-pass mutations, ${result.idempotence.stale_references_after_second_pass} stale references, ${result.idempotence.recreated_after_prior_repair} recreated links.`
+        : `Automatic stabilization needs attention: ${result.idempotence.attention_reasons.join(', ')}.`;
+    }
     result.idempotence.hash_comparison = {
       durable_before: result.idempotence.durable_state_hash_before,
       durable_after_first_pass: result.idempotence.durable_state_hash_after_first_pass,
@@ -3745,6 +3781,38 @@ export function bindSettingsUI(ctrl) {
         })
         .filter((m) => m.mes && !m.is_system);
       const total = allMessages.length;
+      const timingSignature = diagnosticFingerprint(JSON.stringify({
+        source: settings.source ?? 'main',
+        model: settings.connection_profile_id ?? settings.openai_compat_model ?? settings.ollama_model ?? null,
+        characters: catchUpCharacterNames.length,
+        profiles: catchUpProfileCharacterNames.length,
+        longterm: Boolean(settings.longterm_enabled && settings.consolidation_enabled),
+        session: Boolean(settings.session_enabled),
+        scenes: Boolean(settings.scene_enabled),
+        scene_ai: Boolean(settings.scene_ai_detect),
+        arcs: Boolean(settings.arcs_enabled && !isFreshStart()),
+        compaction: Boolean(settings.compaction_enabled),
+      }));
+      const estimatedFinalizationUnits = Math.max(1,
+        (settings.longterm_enabled && settings.consolidation_enabled ? catchUpCharacterNames.length : 0)
+        + (settings.session_enabled ? 1 : 0)
+        + (settings.scene_enabled ? 1 : 0)
+        + (settings.arcs_enabled && !isFreshStart() ? 1 : 0)
+        + (settings.compaction_enabled ? 1 : 0)
+        + (settings.profiles_enabled ? catchUpProfileCharacterNames.length : 0)
+        + 1,
+      );
+      const median = (values) => {
+        const sorted = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+        if (!sorted.length) return null;
+        const middle = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+      };
+      const comparableTimingHistory = (settings.catch_up_timing_history ?? [])
+        .filter((entry) => entry?.signature === timingSignature && entry?.completed === true)
+        .slice(-8);
+      const historicalChunkMsPerMessage = median(comparableTimingHistory.map((entry) => Number(entry.chunk_ms_per_message)));
+      const historicalFinalizationMsPerUnit = median(comparableTimingHistory.map((entry) => Number(entry.finalization_ms_per_unit)));
       // Provider speed, output length, and enabled tiers vary by chat, so an
       // ETA can only be an observed-rate estimate. Keep it explicitly scoped
       // to the token-limited chunk phase; late finalization tasks have no
@@ -3775,16 +3843,65 @@ export function bindSettingsUI(ctrl) {
           eta.text('Finalizing remaining memory tiers…').show();
           return;
         }
-        if (!total || catchUpTiming.completed_messages <= 0 || catchUpTiming.elapsed_ms < 1000) {
+        const observedChunkRate = catchUpTiming.completed_messages > 0 && catchUpTiming.elapsed_ms >= 1000
+          ? catchUpTiming.elapsed_ms / catchUpTiming.completed_messages
+          : null;
+        const chunkRate = observedChunkRate ?? historicalChunkMsPerMessage;
+        if (!total || !chunkRate) {
           catchUpTiming.estimated_remaining_ms = null;
           catchUpTiming.estimate_available = false;
           eta.text('Estimating chunk-processing time…').show();
           return;
         }
-        const millisecondsPerMessage = catchUpTiming.elapsed_ms / catchUpTiming.completed_messages;
-        catchUpTiming.estimated_remaining_ms = Math.round(millisecondsPerMessage * (total - catchUpTiming.completed_messages));
+        const chunkRemaining = Math.round(chunkRate * (total - catchUpTiming.completed_messages));
+        const finalizationRemaining = historicalFinalizationMsPerUnit
+          ? Math.round(historicalFinalizationMsPerUnit * estimatedFinalizationUnits)
+          : Math.max(60_000, Math.round((chunkRemaining + catchUpTiming.elapsed_ms) * 0.25));
+        catchUpTiming.estimated_remaining_ms = chunkRemaining + finalizationRemaining;
         catchUpTiming.estimate_available = true;
-        eta.text(`Estimated chunk-processing time remaining: ${formatCatchUpDuration(catchUpTiming.estimated_remaining_ms)}`).show();
+        const rangeLow = Math.round(catchUpTiming.estimated_remaining_ms * (historicalFinalizationMsPerUnit ? 0.8 : 0.6));
+        const rangeHigh = Math.round(catchUpTiming.estimated_remaining_ms * (historicalFinalizationMsPerUnit ? 1.2 : 1.6));
+        eta.text(`Estimated total time remaining: ${formatCatchUpDuration(rangeLow)}–${formatCatchUpDuration(rangeHigh)}${historicalFinalizationMsPerUnit ? ` (based on ${comparableTimingHistory.length} comparable run${comparableTimingHistory.length === 1 ? '' : 's'})` : ' (provisional until a comparable run completes)'}.`).show();
+        return;
+      };
+      // The final pass has a different workload shape from the chunk loop:
+      // it can include scene summaries, compaction, profiles, and local graph
+      // reconciliation.  It still has bounded, known phases, so retain a
+      // deliberately rough ETA instead of dropping the estimate entirely.
+      // The estimate learns from completed final-phase units in this run; it
+      // never pretends that the earlier per-message rate is a provider-speed
+      // prediction for a different kind of request.
+      const finalizationTiming = {
+        started_at: null,
+        completed_units: 0,
+        planned_units: 0,
+      };
+      const updateFinalizationEta = (label, { completed = false } = {}) => {
+        const eta = $('#sme_catch_up_eta');
+        if (!finalizationTiming.started_at) {
+          finalizationTiming.started_at = Date.now();
+          finalizationTiming.planned_units = estimatedFinalizationUnits;
+        }
+        if (completed) finalizationTiming.completed_units = Math.min(
+          finalizationTiming.planned_units,
+          finalizationTiming.completed_units + 1,
+        );
+        const elapsed = Date.now() - finalizationTiming.started_at;
+        const completedUnits = finalizationTiming.completed_units;
+        const remainingUnits = Math.max(0, finalizationTiming.planned_units - completedUnits);
+        if (!completedUnits || elapsed < 1000) {
+          const historicalRemaining = historicalFinalizationMsPerUnit
+            ? Math.round(historicalFinalizationMsPerUnit * remainingUnits)
+            : null;
+          catchUpTiming.estimated_remaining_ms = historicalRemaining;
+          catchUpTiming.estimate_available = historicalRemaining !== null;
+          eta.text(`Finalizing: ${label} (${completedUnits + 1}/${finalizationTiming.planned_units} phases)${historicalRemaining ? ` - rough remaining estimate: ${formatCatchUpDuration(historicalRemaining)}.` : ' - estimating remaining time.'}`).show();
+          return;
+        }
+        const estimatedRemaining = Math.round((elapsed / completedUnits) * remainingUnits);
+        catchUpTiming.estimated_remaining_ms = estimatedRemaining;
+        catchUpTiming.estimate_available = true;
+        eta.text(`Finalizing: ${label} (${Math.min(completedUnits + 1, finalizationTiming.planned_units)}/${finalizationTiming.planned_units} phases) — rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`).show();
       };
       updateCatchUpEta(0);
 
@@ -3938,24 +4055,28 @@ export function bindSettingsUI(ctrl) {
       finalTransaction = beginCatchUpTransaction(catchUpContext);
 
       if (!ctrl.catchUpCancelled) {
-        updateCatchUpEta(total, { finalizing: true });
+        updateFinalizationEta('remaining memory tiers');
         // Complete the evidence tiers before scenes and arcs. This gives later
         // stages a stable, consolidated store and avoids creating a new arc
         // after the final identity-reconciliation phase has already begun.
         if (settings.longterm_enabled && settings.consolidation_enabled) {
           for (const name of catchUpCharacterNames) {
+            updateFinalizationEta(`long-term consolidation for ${name}`);
             setStatusMessage(`Consolidating long-term memories for ${name}...`);
             await consolidateMemories(name, true).catch((err) => {
               recordCatchUpError('final long-term consolidation error', err);
             });
+            updateFinalizationEta(`long-term consolidation for ${name}`, { completed: true });
           }
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
         if (settings.session_enabled) {
+          updateFinalizationEta('session-memory consolidation');
           setStatusMessage('Consolidating session memories...');
           await consolidateSessionMemories(true).catch((err) => {
             recordCatchUpError('final session consolidation error', err);
           });
+          updateFinalizationEta('session-memory consolidation', { completed: true });
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
 
@@ -3963,6 +4084,7 @@ export function bindSettingsUI(ctrl) {
         // When scene_ai_detect is enabled, AI detection runs on each AI message
         // (matching normal flow). When disabled, the heuristic is used instead.
         if (settings.scene_enabled) {
+          updateFinalizationEta('scene detection and summaries');
           setStatusMessage('Detecting scene breaks...');
           const sceneHistory = loadSceneHistory();
           const minMessages = settings.scene_min_messages ?? 3;
@@ -4305,6 +4427,7 @@ export function bindSettingsUI(ctrl) {
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
+          updateFinalizationEta('scene detection and summaries', { completed: true });
         }
 
         // Extract arcs once against the complete, consolidated chat after the
@@ -4312,6 +4435,7 @@ export function bindSettingsUI(ctrl) {
         // otherwise a later chunk can create or resolve identities after the
         // staged final reconciliation has consumed an earlier partial graph.
         if (settings.arcs_enabled && !isFreshStart()) {
+          updateFinalizationEta('story-arc extraction');
           setStatusMessage('Extracting and resolving story arcs...');
           await extractArcs(allMessages, characterName, null, {
             arcResolutionStats: runResult.arcResolution,
@@ -4321,11 +4445,13 @@ export function bindSettingsUI(ctrl) {
           }).catch((err) => {
             recordCatchUpError('arc extraction error (final)', err, 'arcs');
           });
+          updateFinalizationEta('story-arc extraction', { completed: true });
         }
 
         // Short-term compaction runs once at the end - it uses the real token
         // count to decide what to include, so chunking doesn't apply.
         if (settings.compaction_enabled) {
+          updateFinalizationEta('short-term memory extraction');
           setStatusMessage('Extracting short-term memories...');
           await runCompaction({ includeLastMessage: true })
             .then((summary) => {
@@ -4336,8 +4462,9 @@ export function bindSettingsUI(ctrl) {
             })
             .catch((err) => {
               recordCatchUpError('compaction error', err);
-            });
+          });
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
+          updateFinalizationEta('short-term memory extraction', { completed: true });
         }
       }
 
@@ -4345,6 +4472,7 @@ export function bindSettingsUI(ctrl) {
       // Skipped on cancel - partial data may produce low-quality profiles.
       if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
         for (const name of catchUpProfileCharacterNames) {
+          updateFinalizationEta(`profile generation for ${name}`);
           setStatusMessage(`Generating character & world profiles for ${name}...`);
           runResult.profiles.profiles_attempted++;
           let profileTerminal = null;
@@ -4361,6 +4489,7 @@ export function bindSettingsUI(ctrl) {
           if (profileTerminal?.terminal_outcome === 'preserved_prior' || profileTerminal?.terminal_outcome === 'rejected_unparseable') {
             runResult.profiles.malformed_output++;
             runResult.profiles.malformed_output_details.push(profileTerminal);
+            updateFinalizationEta(`profile generation for ${name}`, { completed: true });
             continue;
           }
           // Update UI with the selected character's profiles - other characters'
@@ -4451,6 +4580,7 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
             runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
           }
+          updateFinalizationEta(`profile generation for ${name}`, { completed: true });
         }
         // If the selected character wasn't in the group (edge case), inject
         // whatever profiles exist for them anyway.
@@ -4498,6 +4628,8 @@ export function bindSettingsUI(ctrl) {
       let reconciliation;
       runResult.finalReconciliation.attempted = 1;
       try {
+        updateFinalizationEta('final identity reconciliation and save');
+        setStatusMessage('Finalizing identity reconciliation and saving memory tiers...');
         reconciliation = await runFinalIntegrityReconciliation(characterName);
         if (reconciliation.integrity_audit?.status === 'unsafe') {
           const error = new Error('Unsafe canonical identity merge was rejected during final reconciliation.');
@@ -4514,6 +4646,7 @@ export function bindSettingsUI(ctrl) {
           throw error;
         }
         runResult.finalReconciliation.completed = 1;
+        updateFinalizationEta('final identity reconciliation and save', { completed: true });
       } catch (err) {
         // Roll back only the partially-applied reconciliation edits while
         // preserving scenes, profiles, and every earlier validated tier.
@@ -4536,6 +4669,7 @@ export function bindSettingsUI(ctrl) {
           participant_lists_rewritten: 0, resolved_review_items_removed: 0,
           integrity_audit: retained?.integrity_audit ?? { stale_entity_references: [], status: 'degraded' }, quarantined_arc_summaries: 0,
         };
+        updateFinalizationEta('final identity reconciliation and save', { completed: true });
       }
       runResult.identityResolution = {
         matched: reconciliation.matched.length,
@@ -4842,6 +4976,29 @@ export function bindSettingsUI(ctrl) {
       };
       await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
       await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
+      const completedTimingSample = !ctrl.catchUpCancelled
+        && finalizationTiming.started_at
+        && finalizationTiming.completed_units >= finalizationTiming.planned_units
+        ? {
+          schema_version: 1,
+          signature: timingSignature,
+          completed: true,
+          recorded_at: Date.now(),
+          message_count: total,
+          chunk_ms_per_message: total > 0
+            ? Math.round((finalizationTiming.started_at - catchUpTiming.started_at) / total)
+            : null,
+          finalization_ms: Date.now() - finalizationTiming.started_at,
+          finalization_units: finalizationTiming.planned_units,
+          finalization_ms_per_unit: Math.round((Date.now() - finalizationTiming.started_at) / finalizationTiming.planned_units),
+        }
+        : null;
+      if (completedTimingSample) {
+        settings.catch_up_timing_history = [
+          ...(settings.catch_up_timing_history ?? []),
+          completedTimingSample,
+        ].slice(-12);
+      }
       saveSettingsDebounced();
 
       // Persist the final diagnostics with the same staged commit. The status
@@ -4937,6 +5094,13 @@ export function bindSettingsUI(ctrl) {
           };
         })(),
         quality: runResult.quality,
+        timing_estimate: {
+          signature: timingSignature,
+          comparable_completed_runs: comparableTimingHistory.length,
+          historical_chunk_ms_per_message: historicalChunkMsPerMessage,
+          historical_finalization_ms_per_unit: historicalFinalizationMsPerUnit,
+          recorded_completed_run: completedTimingSample,
+        },
       };
       if (!catchUpContext.chatMetadata) catchUpContext.chatMetadata = {};
       if (!catchUpContext.chatMetadata[META_KEY]) catchUpContext.chatMetadata[META_KEY] = {};

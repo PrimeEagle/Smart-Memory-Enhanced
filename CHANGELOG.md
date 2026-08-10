@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.91] - 2026-08-09
+
+### Fixed
+
+- Fixed automatic stabilization comparing mutable metadata references between
+  reconciliation passes. Each checkpoint is now an immutable durable-state
+  snapshot, so later in-place graph normalization cannot make the first-pass
+  hash disagree with an apparently unchanged structural diff.
+- Unified automatic-stabilization hashing and structural diffs around the same
+  canonical durable-state projection. Any future changed hash now carries a
+  privacy-safe component and field-path explanation instead of an unexplained
+  mismatch.
+- Corrected scene detection so an in-dialogue reference to "the morning after"
+  is not treated as a scene transition; opening scene framing remains valid.
+- Prevented a single heuristic transition signal from being reported as four
+  independent time, activity, narrative, and explicit-transition signals.
+
+### Added
+
+- Automatic stabilization diagnostics now include component hashes, changed
+  component paths, and an inter-pass comparison from first-pass output to
+  second-pass input. Automatic results use their own convergence wording,
+  distinct from the manual Developer Idempotence Check.
+- Catch-up timing learns from completed comparable runs and estimates both the
+  chunk phase and final memory-tier work, retaining a rough ETA during
+  finalization.
+
+### Tests
+
+- Added coverage for immutable idempotence checkpoints, canonical
+  hash/diff consistency, projection purity, scene evidence grouping, and
+  in-dialogue temporal wording. Full automated verification passed with
+  338 tests plus the replay regression harness.
+
 ## [0.8.90] - 2026-08-08
 
 ### Fixed

@@ -224,28 +224,80 @@ export function durableStateHash(metadata = {}) {
   return fingerprint(JSON.stringify(buildCanonicalDurableSemanticState(metadata)));
 }
 
+function canonicalValueDiff(before, after, limit = 24) {
+  const paths = [];
+  const visit = (left, right, path = '') => {
+    if (paths.length >= limit || JSON.stringify(left) === JSON.stringify(right)) return;
+    const leftObject = left && typeof left === 'object' && !Array.isArray(left);
+    const rightObject = right && typeof right === 'object' && !Array.isArray(right);
+    if (!leftObject || !rightObject) {
+      paths.push({
+        path: path || 'root',
+        change: left === undefined ? 'added' : right === undefined ? 'removed' : 'changed',
+        before_value_hash: fingerprint(JSON.stringify(left ?? null)),
+        after_value_hash: fingerprint(JSON.stringify(right ?? null)),
+      });
+      return;
+    }
+    for (const key of [...new Set([...Object.keys(left), ...Object.keys(right)])].sort()) {
+      visit(left[key], right[key], path ? `${path}.${key}` : key);
+      if (paths.length >= limit) break;
+    }
+  };
+  visit(before, after);
+  return paths;
+}
+
+/**
+ * Compare the exact canonical projection used for durable-state hashing.
+ * This makes a hash difference without a canonical diff impossible to export.
+ */
+export function compareDurableSemanticStates(before = {}, after = {}, limit = 24) {
+  const first = buildCanonicalDurableSemanticState(before);
+  const second = buildCanonicalDurableSemanticState(after);
+  const firstHash = fingerprint(JSON.stringify(first));
+  const secondHash = fingerprint(JSON.stringify(second));
+  const paths = canonicalValueDiff(first, second, limit);
+  const components = [...new Set([...Object.keys(first), ...Object.keys(second)])].sort();
+  const changedComponents = components.flatMap((component) => {
+    const firstComponent = first[component];
+    const secondComponent = second[component];
+    if (JSON.stringify(firstComponent) === JSON.stringify(secondComponent)) return [];
+    const componentPaths = canonicalValueDiff(firstComponent, secondComponent, limit);
+    const recordCount = (value) => Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value).length : value == null ? 0 : 1;
+    return [{
+      component,
+      first_hash: fingerprint(JSON.stringify(firstComponent ?? null)),
+      second_hash: fingerprint(JSON.stringify(secondComponent ?? null)),
+      record_count_first: recordCount(firstComponent),
+      record_count_second: recordCount(secondComponent),
+      order_only_difference: false,
+      field_diff_available: componentPaths.length > 0,
+      changed_paths: componentPaths,
+    }];
+  });
+  const unchangedComponents = components.filter((component) => !changedComponents.some((entry) => entry.component === component));
+  return {
+    projection_version: DURABLE_SEMANTIC_PROJECTION_VERSION,
+    first_hash: firstHash,
+    second_hash: secondHash,
+    changed: paths.length > 0,
+    changed_top_level_stores: [...new Set(paths.map((entry) => entry.path.split('.')[0]))],
+    path_count: paths.length,
+    paths,
+    changed_components: changedComponents,
+    unchanged_components: unchangedComponents,
+    hash_diff_without_canonical_diff: firstHash !== secondHash && paths.length === 0,
+  };
+}
+
 /**
  * Privacy-safe structural diff for an idempotence run. It reports only
  * durable store/path names and change kinds—never stored memory or model text.
  */
 export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24) {
-  const left = canonicalizeDurableIdempotenceState(before);
-  const right = canonicalizeDurableIdempotenceState(after);
-  const paths = [];
-  const visit = (a, b, path = '') => {
-    if (paths.length >= limit || JSON.stringify(a) === JSON.stringify(b)) return;
-    const aObject = a && typeof a === 'object';
-    const bObject = b && typeof b === 'object';
-    if (!aObject || !bObject || Array.isArray(a) || Array.isArray(b)) {
-      paths.push({ path: path || 'root', change: a === undefined ? 'added' : b === undefined ? 'removed' : 'changed' });
-      return;
-    }
-    for (const key of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
-      visit(a[key], b[key], path ? `${path}.${key}` : key);
-      if (paths.length >= limit) break;
-    }
-  };
-  visit(left, right);
+  const comparison = compareDurableSemanticStates(before, after, limit);
+  const paths = comparison.paths;
   const changesByCategory = paths.reduce((summary, entry) => {
     const category = entry.path.startsWith('sceneHistory') ? 'scene_history_semantic'
       : entry.path.startsWith('characters') ? 'character_store'
@@ -254,9 +306,9 @@ export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24
     return summary;
   }, {});
   return {
-    changed: paths.length > 0,
-    changed_top_level_stores: [...new Set(paths.map((entry) => entry.path.split('.')[0]))],
-    path_count: paths.length,
+    changed: comparison.changed,
+    changed_top_level_stores: comparison.changed_top_level_stores,
+    path_count: comparison.path_count,
     paths,
     changed_path_count: paths.length,
     changed_paths: paths,
@@ -264,6 +316,12 @@ export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24
     accounted_mutation_count: 0,
     unaccounted_mutation_count: paths.length,
     truncated: paths.length >= limit,
+    projection_version: comparison.projection_version,
+    first_hash: comparison.first_hash,
+    second_hash: comparison.second_hash,
+    changed_components: comparison.changed_components,
+    unchanged_components: comparison.unchanged_components,
+    hash_diff_without_canonical_diff: comparison.hash_diff_without_canonical_diff,
   };
 }
 

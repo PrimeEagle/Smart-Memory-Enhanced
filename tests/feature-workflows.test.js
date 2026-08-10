@@ -734,6 +734,9 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);
+  assert.match(settings, /automatic_stabilization_component_hash_diff/);
+  assert.match(settings, /automatic_stabilization_interpass_diff/);
+  assert.match(settings, /Automatic stabilization converged/);
   assert.match(settings, /single_staged_precommit_comparison/);
   assert.match(settings, /automatic_stabilization: runResult\.finalReconciliation/);
   assert.match(settings, /manual_idempotence: catchUpContext\.chatMetadata/);
@@ -754,6 +757,10 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /idempotence_result_lifecycle/);
   assert.match(settings, /developer_idempotence_check = finalResult/);
   assert.match(settings, /durable_state_hash_before/);
+  assert.match(settings, /function snapshotIdempotenceDurableState/);
+  assert.match(settings, /structuredClone\(state\)/);
+  assert.match(settings, /durableStateAfterFirstPass = snapshotIdempotenceDurableState\(metadataAfterFirstPass\)/);
+  assert.match(settings, /durableStateAfterSecondPass = snapshotIdempotenceDurableState\(metadataAfterSecondPass\)/);
   assert.match(read('idempotence-utils.js'), /metadata_only_changes/);
   assert.match(read('profiles.js'), /profile_relationship_self_targets_rejected/);
   assert.match(read('profiles.js'), /rejected_self_relationship_target/);
@@ -1060,8 +1067,9 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /raw provider output/);
   assert.match(settings, /reconcileCanonicalEntities\(characterName\)/);
   assert.match(settings, /identityResolution/);
-  assert.match(settings, /Estimated chunk-processing time remaining/);
-  assert.match(settings, /Finalizing remaining memory tiers/);
+  assert.match(settings, /Estimated total time remaining/);
+  assert.match(settings, /catch_up_timing_history/);
+  assert.match(settings, /Finalizing: /);
 });
 
 test('dry run: primary extraction returns grounded candidates before persistence', () => {
@@ -1322,4 +1330,13 @@ test('pre-run diagnostics and automatic stabilization share the durable semantic
   assert.match(idempotence, /buildCanonicalDurableSemanticState/);
   assert.match(idempotence, /canonicalizeStoryArc/);
   assert.match(idempotence, /summarizeStoryArcChanges/);
+});
+
+test('catch-up keeps a rough finalization ETA after the chunk phase completes', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /const finalizationTiming =/);
+  assert.match(settings, /const updateFinalizationEta =/);
+  assert.match(settings, /rough remaining estimate/);
+  assert.match(settings, /updateFinalizationEta\('short-term memory extraction'\)/);
+  assert.match(settings, /updateFinalizationEta\('final identity reconciliation and save'\)/);
 });
