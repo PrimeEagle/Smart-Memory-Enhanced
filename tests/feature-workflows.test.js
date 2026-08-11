@@ -758,11 +758,16 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /#sme_run_idempotence_check/);
   assert.match(settings, /developer_idempotence_check/);
   assert.match(settings, /deriveIdempotenceResult/);
+  assert.match(settings, /deriveAutomaticStabilizationResult/);
+  assert.match(settings, /unsafe_merge_candidates_after_second_pass === 0/);
+  assert.match(settings, /unresolved_integrity_failures_after_second_pass === 0/);
   assert.match(settings, /maximumStabilizationPasses/);
   assert.match(settings, /automatic_stabilization_passes/);
   assert.match(settings, /stabilization_dependency_trace/);
   assert.match(settings, /post_automatic_manual_maintenance_diff/);
   assert.match(settings, /scene_rejected_break_audit/);
+  assert.match(settings, /grounded_explicit_transition_support/);
+  assert.match(settings, /grounded_implied_transition_support/);
   assert.match(settings, /idempotence_result_lifecycle/);
   assert.match(settings, /developer_idempotence_check = finalResult/);
   assert.match(settings, /durable_state_hash_before/);
@@ -770,6 +775,9 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /structuredClone\(state\)/);
   assert.match(settings, /durableStateAfterFirstPass = snapshotIdempotenceDurableState\(metadataAfterFirstPass\)/);
   assert.match(settings, /durableStateAfterSecondPass = snapshotIdempotenceDurableState\(metadataAfterSecondPass\)/);
+  assert.match(read('ui.js'), /for \(const \[localName, records\] of Object\.entries\(meta\.card_local_memories \?\? \{\}\)\)/);
+  assert.match(read('ui.js'), /applyGraphDefaults\(record\)/);
+  assert.match(read('ui.js'), /'normalize_graph_defaults', 'applyGraphDefaults', true/);
   assert.match(read('idempotence-utils.js'), /metadata_only_changes/);
   assert.match(read('profiles.js'), /profile_relationship_self_targets_rejected/);
   assert.match(read('profiles.js'), /rejected_self_relationship_target/);

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected automatic stabilization's parent result so its convergence,
+  idempotence, and attention status are derived from the final bounded
+  verification pass instead of being overwritten by an older compatibility
+  calculation.
+- Normalized every card-local memory scope through the same deterministic
+  graph-default migration before automatic reconciliation. This prevents a
+  later manual Developer check from performing avoidable provenance-only
+  maintenance that automatic stabilization should already have completed; the
+  migration is now reported as an accounted `applyGraphDefaults` write rather
+  than being folded ambiguously into narrative normalization.
+- Made rejected scene-break diagnostics accurately distinguish grounded
+  explicit or strongly implied transition support from weak signals, and
+  report the actual continuity evidence that caused a proposal to be vetoed.
+
+### Added
+
+- Added a pure automatic-stabilization verdict helper, shared with the final
+  reconciliation path, that treats a stable final verification pass as a pass
+  even when earlier bounded passes performed maintenance, while still requiring
+  the final pass to be free of unresolved integrity failures and unsafe merge
+  candidates.
+
+### Tests
+
+- Added regression coverage for a maintenance-bearing first automatic pass
+  followed by a stable second verification pass.
+
 ## [0.8.93] - 2026-08-10
 
 ### Fixed

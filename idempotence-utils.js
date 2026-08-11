@@ -526,6 +526,33 @@ export function revisionMetadataHash(metadata = {}) {
 
 const numeric = (value) => Math.max(0, Number(value ?? 0) || 0);
 
+/** Derive the bounded automatic-stabilization verdict from its final pass. */
+export function deriveAutomaticStabilizationResult(passes = [], maxPasses = 0) {
+  const history = Array.isArray(passes) ? passes : [];
+  const finalPass = history.at(-1) ?? null;
+  const stable = Boolean(finalPass)
+    && finalPass.input_semantic_hash === finalPass.output_semantic_hash
+    && numeric(finalPass.logical_mutations) === 0
+    && numeric(finalPass.physical_mutations) === 0
+    && numeric(finalPass.stale_references) === 0
+    && numeric(finalPass.recreated_links) === 0
+    && numeric(finalPass.unsafe_merge_candidates) === 0
+    && numeric(finalPass.unresolved_integrity_failures) === 0;
+  const maxPassesReached = Boolean(maxPasses && history.length >= maxPasses && !stable);
+  const attentionReasons = maxPassesReached ? ['max_passes_reached'] : stable ? [] : ['final_verification_not_stable'];
+  return {
+    converged: stable,
+    idempotent: stable,
+    attention_required: !stable,
+    attention_reasons: attentionReasons,
+    converged_on_pass: stable ? finalPass.pass_number : null,
+    max_passes_reached: maxPassesReached,
+    final_input_semantic_hash: finalPass?.input_semantic_hash ?? null,
+    final_output_semantic_hash: finalPass?.output_semantic_hash ?? null,
+    final_verification_pass: finalPass?.pass_number ?? null,
+  };
+}
+
 /** The one authoritative pass/fail derivation for runner, persistence, UI, and export. */
 export function deriveIdempotenceResult(data = {}) {
   const secondLogical = numeric(data.second_pass_logical_mutations);

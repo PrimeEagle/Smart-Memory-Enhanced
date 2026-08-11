@@ -105,6 +105,7 @@ import { loadCanon } from './canon.js';
 import { summarizeCardLocalMemoryChanges } from './idempotence-utils.js';
 import { loadProfiles, reconcileProfileCanonicalNames, remapProfileEntity } from './profiles.js';
 import {
+  applyGraphDefaults,
   loadCharacterEntityRegistry,
   loadSessionEntityRegistry,
   saveCharacterEntityRegistry,
@@ -1640,6 +1641,16 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   const localReports = [];
   let localRewrites = 0;
   let localRelationshipPairsMerged = 0;
+  const beforeGraphDefaultNormalization = snapshotCardLocalStores();
+  // Manual checks normalize the selected card through `applyGraphDefaults`.
+  // Do the equivalent for every chat-local scope before automatic reference
+  // repair so a save/reload cannot expose a deferred legacy-provenance change.
+  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) {
+    await yieldEvery();
+    const normalized = (records ?? []).map((record) => applyGraphDefaults(record));
+    if (JSON.stringify(records) !== JSON.stringify(normalized)) meta.card_local_memories[localName] = normalized;
+  }
+  observeCardLocalWrites(beforeGraphDefaultNormalization, 'normalize_graph_defaults', 'applyGraphDefaults', true);
   const beforeNarrativeNormalization = snapshotCardLocalStores();
   for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
     await yieldEvery();

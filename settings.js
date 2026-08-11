@@ -145,6 +145,7 @@ import {
   importPromptOverrides,
 } from './prompt-config.js';
 import {
+  deriveAutomaticStabilizationResult,
   deriveIdempotenceResult,
   DURABLE_SEMANTIC_PROJECTION_VERSION,
   compareDurableSemanticStates,
@@ -505,6 +506,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         physical_mutations: passRepairs.actual_physical_store_mutations_this_run ?? 0,
         stale_references: passResult.integrity_audit?.stale_entity_references?.length ?? 0,
         recreated_links: passRepairs.recreated_after_prior_repair ?? 0,
+        unsafe_merge_candidates: passResult.integrity_audit?.unsafe_merge_candidates ?? 0,
+        unresolved_integrity_failures: passResult.integrity_audit?.relationship_integrity_errors?.length ?? 0,
         changed_components: comparison.changed_components,
         changed_paths: comparison.paths,
         source_operations: [...new Set(writes.map((write) => write.source_operation).filter(Boolean))],
@@ -514,7 +517,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     stabilizationPasses.push(summarizeStabilizationPass(2, durableStateBeforeSecondPass, durableStateAfterSecondPass, secondPass));
     const isStablePass = (pass) => pass.input_semantic_hash === pass.output_semantic_hash
       && pass.logical_mutations === 0 && pass.physical_mutations === 0
-      && pass.stale_references === 0 && pass.recreated_links === 0;
+      && pass.stale_references === 0 && pass.recreated_links === 0
+      && pass.unsafe_merge_candidates === 0 && pass.unresolved_integrity_failures === 0;
     while (!forceIdempotenceCheck && !isStablePass(stabilizationPasses.at(-1)) && stabilizationPasses.length < maximumStabilizationPasses) {
       const passNumber = stabilizationPasses.length + 1;
       metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
@@ -525,6 +529,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
       stabilizationPasses.push(summarizeStabilizationPass(passNumber, durableStateBeforeSecondPass, durableStateAfterSecondPass, secondPass));
     }
+    // The canonical idempotence verdict is about the final verification pass,
+    // not whether earlier maintenance changed the graph. Preserve the complete
+    // history above, but feed the authoritative derivation the final pass's
+    // exact input/output pair.
+    const finalVerificationComparison = compareDurableSemanticStates(durableStateBeforeSecondPass, durableStateAfterSecondPass);
     result.final_state_audit = secondPass.integrity_audit ?? null;
     // The first pass is retained in idempotence/maintenance diagnostics, but
     // every final consumer must see the stabilized second-pass graph.
@@ -557,10 +566,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: stabilizationPasses.length,
-      durable_state_hash_after_second_pass: durableComparison.second_hash,
+      durable_state_hash_after_first_pass: finalVerificationComparison.first_hash,
+      durable_state_hash_after_second_pass: finalVerificationComparison.second_hash,
       diagnostic_metadata_hash_after: diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_hash_after: revisionMetadataHash(metadataAfterSecondPass),
-      durable_state_changed: durableComparison.changed,
+      durable_state_changed: finalVerificationComparison.changed,
       diagnostic_metadata_changed: diagnosticMetadataHash(metadataBeforeSecondPass) !== diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_changed: revisionMetadataHash(metadataBeforeSecondPass) !== revisionMetadataHash(metadataAfterSecondPass),
       second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
@@ -650,6 +660,10 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       max_passes_reached: !convergedOnPass && stabilizationPasses.length >= maximumStabilizationPasses,
       passes: stabilizationPasses,
     };
+    if (!forceIdempotenceCheck) {
+      const boundedVerdict = deriveAutomaticStabilizationResult(stabilizationPasses, maximumStabilizationPasses);
+      Object.assign(result.idempotence, boundedVerdict);
+    }
     result.idempotence.stabilization_dependency_trace = {
       nodes: dependencyNodes,
       edges: dependencyEdges,
@@ -703,15 +717,22 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       final_export_state: durableStateHash(durableStateAfterSecondPass),
       transaction_mode: 'single_staged_precommit_comparison',
     };
-    result.idempotence.first_final_semantic_hash = durableStateHashAfterFirstPass;
-    result.idempotence.second_final_semantic_hash = durableStateHash(durableStateAfterSecondPass);
+    // The bounded stabilization history is authoritative. These compatibility
+    // fields therefore describe the final verification pass, not pass one of
+    // an earlier two-pass implementation.
+    result.idempotence.first_final_semantic_hash = finalVerificationComparison.first_hash;
+    result.idempotence.second_final_semantic_hash = finalVerificationComparison.second_hash;
     result.idempotence.semantic_hash_equal = result.idempotence.first_final_semantic_hash === result.idempotence.second_final_semantic_hash;
     result.idempotence.unaccounted_mutations = result.idempotence.durable_state_change_summary?.unaccounted_mutation_count ?? 0;
-    result.idempotence.converged = result.idempotence.semantic_hash_equal
+    result.idempotence.converged = Boolean(convergedOnPass)
+      && !result.idempotence.automatic_stabilization_passes.max_passes_reached
+      && result.idempotence.semantic_hash_equal
       && result.idempotence.second_pass_logical_mutations === 0
       && result.idempotence.second_pass_physical_mutations === 0
       && result.idempotence.stale_references_after_second_pass === 0
-      && result.idempotence.recreated_after_prior_repair === 0;
+      && result.idempotence.recreated_after_prior_repair === 0
+      && result.idempotence.unsafe_merge_candidates_after_second_pass === 0
+      && result.idempotence.unresolved_integrity_failures_after_second_pass === 0;
     result.idempotence_check = {
       idempotence_pass_number: 2,
       input_metadata_hash: result.idempotence.diagnostic_metadata_hash_before,
@@ -4537,18 +4558,24 @@ export function bindSettingsUI(ctrl) {
             }).length,
             records: rejectedProviderBreaks.slice(0, 96).map((candidate) => {
               const evidence = candidate.gate_evidence ?? {};
-              const groups = (evidence.transition_evidence_groups ?? []).map((group) => typeof group === 'string' ? group : group.evidence_group_id).filter(Boolean);
-              const implied = groups.filter((group) => group === 'narrative_context_reset');
-              const strong = groups.filter((group) => group !== 'narrative_context_reset');
-              const continuity = candidate.gate_reason_code === 'strong_continuity_veto' ? 'strong' : evidence.continuity_detected ? 'weak' : 'none';
-              const risk = Number(candidate.ai_confidence ?? 0) >= 0.8 && implied.length && continuity !== 'strong' ? 'review' : 'low';
+              const groups = (evidence.transition_evidence_groups ?? []).map((group) => typeof group === 'string'
+                ? { evidence_group_id: group, strength: 'weak', independent: false }
+                : group).filter((group) => group?.evidence_group_id);
+              const groundedExplicit = groups.filter((group) => group.independent === true && group.strength === 'strong' && group.evidence_group_id !== 'narrative_context_reset').map((group) => group.evidence_group_id);
+              const implied = groups.filter((group) => group.independent === true && group.strength === 'strong' && group.evidence_group_id === 'narrative_context_reset').map((group) => group.evidence_group_id);
+              const weak = groups.filter((group) => !(group.independent === true && group.strength === 'strong')).map((group) => group.evidence_group_id);
+              const continuityReason = ['strong_continuity_veto', 'same_continuous_interaction'].includes(candidate.gate_reason_code);
+              const continuity = continuityReason ? 'strong' : evidence.continuity_detected ? 'weak' : 'none';
+              const risk = Number(candidate.ai_confidence ?? 0) >= 0.8 && (groundedExplicit.length || implied.length) && !continuityReason ? 'review' : 'low';
               return {
                 message_index: candidate.message_index ?? candidate.candidate_id ?? null,
                 provider_confidence: candidate.ai_confidence ?? null,
                 gate_reason: candidate.gate_reason_code ?? null,
-                strong_transition_support: strong,
-                implied_transition_support: implied,
-                continuity_strength: continuity,
+                raw_transition_signals: groups.map((group) => group.evidence_group_id),
+                grounded_explicit_transition_support: groundedExplicit,
+                grounded_implied_transition_support: implied,
+                weak_transition_signals: weak,
+                continuity: { strength: continuity, evidence_groups: continuityReason ? ['terminal_gate_continuity'] : [], direct_reply: continuityReason || null, same_channel: null, same_location: null, same_participants: null, immediate_reaction: continuityReason || null, same_interaction_state: continuityReason || null },
                 final_false_negative_risk: risk,
                 review_reason: risk === 'review' ? 'high_confidence_implied_transition_rejected' : 'gate_rejection_supported',
               };
