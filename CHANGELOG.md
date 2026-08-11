@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.93] - 2026-08-10
+
+### Fixed
+
+- Automatic post-catch-up stabilization no longer assumes that two passes are
+  always sufficient. It now performs a bounded, local fixed-point closure and
+  commits only after a zero-mutation verification pass, or reports that its
+  hard cap was reached.
+- Corrected card-local diagnostic accounting so an unchanged comparison is
+  reconciled and child field records explicitly inherit counted parent writes.
+
+### Added
+
+- Automatic stabilization exports per-pass semantic hashes, mutation counts,
+  changed components, changed paths, source operations, and a compact
+  dependency trace.
+- Manual Developer checks now include a privacy-safe diff of any maintenance
+  that remained after automatic stabilization.
+- Scene diagnostics include a bounded, text-free audit of rejected provider
+  break proposals to identify high-risk false negatives without changing the
+  nuanced scene gate or provider request volume.
+
+### Tests
+
+- Added coverage for clean card-local accounting and the new convergence,
+  maintenance-diff, dependency-trace, and rejected-scene-audit contracts.
+
 ## [0.8.92] - 2026-08-10
 
 ### Fixed

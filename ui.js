@@ -1617,8 +1617,16 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       { card_local_memories: meta.card_local_memories ?? {} },
     );
     for (const record of comparison.records) {
+      const changedFields = (record.changed_fields ?? []).map((field) => ({
+        ...field,
+        // The mutation is accounted at record level. Make that parent coverage
+        // explicit instead of emitting a misleading child-level false value.
+        covered_by_parent_mutation: mutationCounted,
+        mutation_counted: mutationCounted ? true : field.mutation_counted,
+      }));
       cardLocalWriteRecords.push({
         ...record,
+        changed_fields: changedFields,
         operation,
         source_stage: reconciliationStage,
         source_operation: sourceOperation,

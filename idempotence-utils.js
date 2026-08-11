@@ -328,7 +328,9 @@ export function summarizeCardLocalMemoryChanges(before = {}, after = {}, limit =
     changed: records.length > 0,
     total: records.length,
     records,
-    accounting_reconciled: false,
+    // An empty comparison has no uncovered write.  Reporting it as
+    // unreconciled made clean manual idempotence cards contradict themselves.
+    accounting_reconciled: records.length === 0,
     truncated: records.length >= limit,
   };
 }

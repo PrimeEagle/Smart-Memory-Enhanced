@@ -20,3 +20,11 @@ test('card-local diff distinguishes one changed scope from an unchanged scope', 
   assert.equal(result.records.length, 1);
   assert.equal(result.records[0].logical_record_fingerprint, 'memory:m-1');
 });
+
+test('an empty card-local comparison is already accounting-reconciled', () => {
+  const state = { card_local_memories: { Alpha: [{ id: 'm-1', entities: ['one'] }] } };
+  const result = summarizeCardLocalMemoryChanges(state, structuredClone(state));
+  assert.equal(result.changed, false);
+  assert.equal(result.total, 0);
+  assert.equal(result.accounting_reconciled, true);
+});

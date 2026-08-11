@@ -406,6 +406,40 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   const metadataAfterFirstPass = getContext().chatMetadata?.[META_KEY] ?? {};
   const durableStateAfterFirstPass = snapshotIdempotenceDurableState(metadataAfterFirstPass);
   const durableStateHashAfterFirstPass = durableStateHash(durableStateAfterFirstPass);
+  // A manual check is often invoked immediately after automatic stabilization.
+  // Keep a privacy-safe leaf diff of its first pass so any missed automatic
+  // dependency is diagnosable by store/record path rather than only by hash.
+  const postAutomaticManualMaintenanceDiff = forceIdempotenceCheck
+    ? (() => {
+      const comparison = summarizeDurableStateChanges(durableStateBefore, durableStateAfterFirstPass);
+      const cardLocal = summarizeCardLocalMemoryChanges(durableStateBefore, durableStateAfterFirstPass);
+      const writes = reconciliation.integrity_audit?.automatic_stabilization_second_pass_writes?.records ?? [];
+      return {
+        changed: comparison.changed,
+        total_mutations: firstPassRepairs?.actual_logical_mutations_this_run ?? 0,
+        changed_components: comparison.changed_components,
+        records: [
+          ...cardLocal.records.map((record) => ({
+            store: record.store,
+            logical_record_fingerprint: record.logical_record_fingerprint,
+            changed_field_paths: record.changed_fields.map((field) => field.canonical_field_path),
+            before_hash: record.changed_fields[0]?.before_hash ?? null,
+            after_hash: record.changed_fields[0]?.after_hash ?? null,
+            source_operation: writes.find((write) => write.logical_record_fingerprint === record.logical_record_fingerprint)?.source_operation ?? 'reconcileCanonicalEntities',
+            depends_on_prior_stage: true,
+            dependency_sources: ['automatic_stabilization_final_state'],
+          })),
+          ...comparison.paths.filter((path) => !path.path.startsWith('card_local_memories')).map((path) => ({
+            store: String(path.path).split('.')[0], logical_record_fingerprint: null,
+            changed_field_paths: [path.path], before_hash: path.before_value_hash, after_hash: path.after_value_hash,
+            source_operation: 'reconcileCanonicalEntities', depends_on_prior_stage: true,
+            dependency_sources: ['automatic_stabilization_final_state'],
+          })),
+        ],
+        accounting_reconciled: comparison.changed === ((firstPassRepairs?.actual_logical_mutations_this_run ?? 0) > 0),
+      };
+    })()
+    : null;
   result.idempotence = {
     available: true,
     audit_type: forceIdempotenceCheck ? 'manual_developer_idempotence_check' : 'automatic_post_catchup_stabilization',
@@ -431,6 +465,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     recreated_after_prior_repair: firstPassRepairs.recreated_after_prior_repair ?? 0,
     stale_references_after_second_pass: null,
     idempotent: null,
+    post_automatic_manual_maintenance_diff: postAutomaticManualMaintenanceDiff,
   };
   // Developer-only semantic idempotence check. It intentionally runs on the
   // already-finalized serialized metadata; it does not regenerate records or
@@ -444,13 +479,52 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   // Developer mode additionally exposes the full idempotence detail in the
   // panel, but cannot change the audit semantics.
   {
-    const metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
-    const durableStateBeforeSecondPass = snapshotIdempotenceDurableState(metadataBeforeSecondPass);
+    let metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
+    let durableStateBeforeSecondPass = snapshotIdempotenceDurableState(metadataBeforeSecondPass);
     const interpassComparison = compareDurableSemanticStates(durableStateAfterFirstPass, durableStateBeforeSecondPass);
-    const secondPass = await reconcileCanonicalEntities(characterName, { reconciliationStage: 'second_pass' });
-    const metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
-    const durableStateAfterSecondPass = snapshotIdempotenceDurableState(metadataAfterSecondPass);
-    const repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
+    let secondPass = await reconcileCanonicalEntities(characterName, { reconciliationStage: 'second_pass' });
+    let metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
+    let durableStateAfterSecondPass = snapshotIdempotenceDurableState(metadataAfterSecondPass);
+    let repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
+    // Automatic reconciliation used to stop after an assumed verification
+    // pass. That is not sufficient when a safe redirect repair in one pass
+    // makes a card-local or arc reference resolvable only in the next pass.
+    // Keep the manual command deliberately two-pass; only the automatic path
+    // performs a bounded local fixed-point closure before committing catch-up.
+    const maximumStabilizationPasses = forceIdempotenceCheck ? 2 : 4;
+    const stabilizationPasses = [];
+    const summarizeStabilizationPass = (passNumber, input, output, passResult) => {
+      const comparison = compareDurableSemanticStates(input, output);
+      const passRepairs = passResult.integrity_audit?.entity_link_repairs ?? {};
+      const writes = passResult.integrity_audit?.automatic_stabilization_second_pass_writes?.records ?? [];
+      return {
+        pass_number: passNumber,
+        input_semantic_hash: comparison.first_hash,
+        output_semantic_hash: comparison.second_hash,
+        logical_mutations: passRepairs.actual_logical_mutations_this_run ?? 0,
+        physical_mutations: passRepairs.actual_physical_store_mutations_this_run ?? 0,
+        stale_references: passResult.integrity_audit?.stale_entity_references?.length ?? 0,
+        recreated_links: passRepairs.recreated_after_prior_repair ?? 0,
+        changed_components: comparison.changed_components,
+        changed_paths: comparison.paths,
+        source_operations: [...new Set(writes.map((write) => write.source_operation).filter(Boolean))],
+      };
+    };
+    stabilizationPasses.push(summarizeStabilizationPass(1, durableStateAfterPreparation, durableStateAfterFirstPass, reconciliation));
+    stabilizationPasses.push(summarizeStabilizationPass(2, durableStateBeforeSecondPass, durableStateAfterSecondPass, secondPass));
+    const isStablePass = (pass) => pass.input_semantic_hash === pass.output_semantic_hash
+      && pass.logical_mutations === 0 && pass.physical_mutations === 0
+      && pass.stale_references === 0 && pass.recreated_links === 0;
+    while (!forceIdempotenceCheck && !isStablePass(stabilizationPasses.at(-1)) && stabilizationPasses.length < maximumStabilizationPasses) {
+      const passNumber = stabilizationPasses.length + 1;
+      metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
+      durableStateBeforeSecondPass = snapshotIdempotenceDurableState(metadataBeforeSecondPass);
+      secondPass = await reconcileCanonicalEntities(characterName, { reconciliationStage: `stabilization_pass_${passNumber}` });
+      metadataAfterSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
+      durableStateAfterSecondPass = snapshotIdempotenceDurableState(metadataAfterSecondPass);
+      repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
+      stabilizationPasses.push(summarizeStabilizationPass(passNumber, durableStateBeforeSecondPass, durableStateAfterSecondPass, secondPass));
+    }
     result.final_state_audit = secondPass.integrity_audit ?? null;
     // The first pass is retained in idempotence/maintenance diagnostics, but
     // every final consumer must see the stabilized second-pass graph.
@@ -482,7 +556,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       ? Math.max(0, cardLocalMemoryChangeSummary.records.reduce((count, record) => count + (record.changed_field_count ?? 0), 0) - accountedMutations) : 0;
     const baseIdempotence = {
       ...result.idempotence,
-      pass_count: 2,
+      pass_count: stabilizationPasses.length,
       durable_state_hash_after_second_pass: durableComparison.second_hash,
       diagnostic_metadata_hash_after: diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_hash_after: revisionMetadataHash(metadataAfterSecondPass),
@@ -549,6 +623,37 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       },
     };
     result.idempotence = deriveIdempotenceResult(baseIdempotence);
+    const finalStabilizationPass = stabilizationPasses.at(-1);
+    const convergedOnPass = isStablePass(finalStabilizationPass) ? finalStabilizationPass.pass_number : null;
+    const dependencyNodes = stabilizationPasses.flatMap((pass) => (pass.changed_paths ?? []).map((path, index) => ({
+      mutation_id: `pass-${pass.pass_number}-${index + 1}`,
+      pass_number: pass.pass_number,
+      store: String(path.path ?? 'unknown').split('.')[0],
+      logical_record_fingerprint: null,
+      field_paths: [path.path ?? 'root'],
+      operation: pass.source_operations?.join(',') || 'reconcileCanonicalEntities',
+    })));
+    const dependencyEdges = stabilizationPasses.slice(1).flatMap((pass) => {
+      const prior = stabilizationPasses.find((candidate) => candidate.pass_number === pass.pass_number - 1);
+      if (!prior) return [];
+      const priorStores = new Set((prior.changed_components ?? []).map((entry) => entry.component));
+      return (pass.changed_components ?? []).filter((entry) => priorStores.has(entry.component)).map((entry) => ({
+        from_mutation_id: `pass-${prior.pass_number}-${entry.component}`,
+        to_mutation_id: `pass-${pass.pass_number}-${entry.component}`,
+        dependency_reason: 'prior_pass_canonical_component_changed',
+      }));
+    });
+    result.idempotence.automatic_stabilization_passes = {
+      max_passes: maximumStabilizationPasses,
+      executed_passes: stabilizationPasses.length,
+      converged_on_pass: convergedOnPass,
+      max_passes_reached: !convergedOnPass && stabilizationPasses.length >= maximumStabilizationPasses,
+      passes: stabilizationPasses,
+    };
+    result.idempotence.stabilization_dependency_trace = {
+      nodes: dependencyNodes,
+      edges: dependencyEdges,
+    };
     // This local second-pass audit protects the completed catch-up state, but
     // it is deliberately not presented as a user-invoked Developer result.
     // The manual path below persists its own lifecycle-verified record.
@@ -4416,6 +4521,39 @@ export function bindSettingsUI(ctrl) {
             accepted: true,
             terminal_reason: boundary.final_reason_code,
           }));
+          // Keep rejected provider proposals reviewable without exporting their
+          // transcript text. This audits potential false negatives separately
+          // from accepted-boundary evidence and never changes gate behavior.
+          const rejectedProviderBreaks = (sceneAudit.candidate_dispositions ?? []).filter((candidate) => candidate?.decision === true
+            && candidate?.terminal_break_disposition !== 'accepted_final_break');
+          sceneAudit.scene_rejected_break_audit = {
+            rejected_break_count: rejectedProviderBreaks.length,
+            high_risk_false_negative_count: rejectedProviderBreaks.filter((candidate) => {
+              const evidence = candidate.gate_evidence ?? {};
+              const groups = evidence.transition_evidence_groups ?? [];
+              const implied = groups.some((group) => (group?.evidence_group_id ?? group) === 'narrative_context_reset');
+              const continuity = candidate.gate_reason_code === 'strong_continuity_veto';
+              return Number(candidate.ai_confidence ?? 0) >= 0.8 && implied && !continuity;
+            }).length,
+            records: rejectedProviderBreaks.slice(0, 96).map((candidate) => {
+              const evidence = candidate.gate_evidence ?? {};
+              const groups = (evidence.transition_evidence_groups ?? []).map((group) => typeof group === 'string' ? group : group.evidence_group_id).filter(Boolean);
+              const implied = groups.filter((group) => group === 'narrative_context_reset');
+              const strong = groups.filter((group) => group !== 'narrative_context_reset');
+              const continuity = candidate.gate_reason_code === 'strong_continuity_veto' ? 'strong' : evidence.continuity_detected ? 'weak' : 'none';
+              const risk = Number(candidate.ai_confidence ?? 0) >= 0.8 && implied.length && continuity !== 'strong' ? 'review' : 'low';
+              return {
+                message_index: candidate.message_index ?? candidate.candidate_id ?? null,
+                provider_confidence: candidate.ai_confidence ?? null,
+                gate_reason: candidate.gate_reason_code ?? null,
+                strong_transition_support: strong,
+                implied_transition_support: implied,
+                continuity_strength: continuity,
+                final_false_negative_risk: risk,
+                review_reason: risk === 'review' ? 'high_confidence_implied_transition_rejected' : 'gate_rejection_supported',
+              };
+            }),
+          };
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections

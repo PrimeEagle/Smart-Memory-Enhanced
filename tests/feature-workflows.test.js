@@ -758,6 +758,11 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /#sme_run_idempotence_check/);
   assert.match(settings, /developer_idempotence_check/);
   assert.match(settings, /deriveIdempotenceResult/);
+  assert.match(settings, /maximumStabilizationPasses/);
+  assert.match(settings, /automatic_stabilization_passes/);
+  assert.match(settings, /stabilization_dependency_trace/);
+  assert.match(settings, /post_automatic_manual_maintenance_diff/);
+  assert.match(settings, /scene_rejected_break_audit/);
   assert.match(settings, /idempotence_result_lifecycle/);
   assert.match(settings, /developer_idempotence_check = finalResult/);
   assert.match(settings, /durable_state_hash_before/);
