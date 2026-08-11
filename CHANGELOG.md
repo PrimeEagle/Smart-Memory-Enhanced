@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.94] - 2026-08-11
+
 ### Fixed
 
 - Corrected automatic stabilization's parent result so its convergence,
