@@ -121,7 +121,7 @@ import {
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcs, loadArcSummaries, saveArcSummaries } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
-import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from './scene-gate-utils.js';
+import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneCandidateStateDelta, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from './scene-gate-utils.js';
 import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
@@ -4623,6 +4623,7 @@ export function bindSettingsUI(ctrl) {
           // transcript text or treating proximity as a transition by itself.
           sceneAudit.final_scene_boundary_evidence = sceneAudit.final_break_indices.map((messageIndex) => {
             const candidate = sceneAudit.candidate_dispositions?.find((item) => (item.message_index ?? item.candidate_id) === messageIndex) ?? {};
+            const stateDelta = deriveSceneCandidateStateDelta(allMessages[messageIndex - 1]?.mes, allMessages[messageIndex]?.mes);
             const evidence = candidate.gate_evidence ?? {};
             const transitionEvidenceCodes = Object.entries(evidence)
               .filter(([key, value]) => value === true && /(?:change_detected|transition_detected)$/.test(key))
@@ -4646,6 +4647,11 @@ export function bindSettingsUI(ctrl) {
               gate_result: candidate.gate_result ?? null,
               coalescing_result: candidate.coalescing?.outcome ?? null,
               final_reason_code: candidate.gate_reason_code ?? 'accepted_final_break',
+              scene_candidate_state_delta: {
+                message_index: messageIndex,
+                ...stateDelta,
+                terminal_disposition: candidate.terminal_break_disposition ?? 'accepted_final_break',
+              },
             };
           });
           sceneAudit.final_break_support = sceneAudit.final_scene_boundary_evidence.map((boundary) => ({
@@ -4666,15 +4672,14 @@ export function bindSettingsUI(ctrl) {
           // from accepted-boundary evidence and never changes gate behavior.
           const rejectedProviderBreaks = (sceneAudit.candidate_dispositions ?? []).filter((candidate) => candidate?.decision === true
             && candidate?.terminal_break_disposition !== 'accepted_final_break');
+          const candidateStateDelta = (candidate) => {
+            const index = candidate.message_index ?? candidate.candidate_id;
+            const delta = deriveSceneCandidateStateDelta(allMessages[index - 1]?.mes, allMessages[index]?.mes);
+            return { message_index: index, ...delta, terminal_disposition: candidate.terminal_break_disposition ?? null };
+          };
           sceneAudit.scene_rejected_break_audit = {
             rejected_break_count: rejectedProviderBreaks.length,
-            high_risk_false_negative_count: rejectedProviderBreaks.filter((candidate) => {
-              const evidence = candidate.gate_evidence ?? {};
-              const groups = evidence.transition_evidence_groups ?? [];
-              const implied = groups.some((group) => (group?.evidence_group_id ?? group) === 'narrative_context_reset');
-              const continuity = candidate.gate_reason_code === 'strong_continuity_veto';
-              return Number(candidate.ai_confidence ?? 0) >= 0.8 && implied && !continuity;
-            }).length,
+            high_risk_false_negative_count: 0,
             records: rejectedProviderBreaks.slice(0, 96).map((candidate) => {
               const evidence = candidate.gate_evidence ?? {};
               const groups = (evidence.transition_evidence_groups ?? []).map((group) => typeof group === 'string'
@@ -4685,7 +4690,14 @@ export function bindSettingsUI(ctrl) {
               const weak = groups.filter((group) => !(group.independent === true && group.strength === 'strong')).map((group) => group.evidence_group_id);
               const continuityReason = ['strong_continuity_veto', 'same_continuous_interaction'].includes(candidate.gate_reason_code);
               const continuity = continuityReason ? 'strong' : evidence.continuity_detected ? 'weak' : 'none';
-              const risk = Number(candidate.ai_confidence ?? 0) >= 0.8 && (groundedExplicit.length || implied.length) && !continuityReason ? 'review' : 'low';
+              const stateDelta = candidateStateDelta(candidate);
+              const independentDelta = stateDelta.meaningful_time_changed || stateDelta.new_setting_opening || stateDelta.location_changed || stateDelta.channel_changed || stateDelta.participant_set_changed || stateDelta.interaction_reset;
+              const providerConfident = Number(candidate.ai_confidence ?? 0) >= 0.8;
+              const risk = independentDelta && !continuityReason ? 'high'
+                : continuityReason ? 'low'
+                  : providerConfident && (groundedExplicit.length || implied.length) ? 'medium'
+                    : candidate.ai_confidence == null && !groups.length ? 'unknown'
+                      : 'low';
               return {
                 message_index: candidate.message_index ?? candidate.candidate_id ?? null,
                 provider_confidence: candidate.ai_confidence ?? null,
@@ -4695,11 +4707,17 @@ export function bindSettingsUI(ctrl) {
                 grounded_implied_transition_support: implied,
                 weak_transition_signals: weak,
                 continuity: { strength: continuity, evidence_groups: continuityReason ? ['terminal_gate_continuity'] : [], direct_reply: continuityReason || null, same_channel: null, same_location: null, same_participants: null, immediate_reaction: continuityReason || null, same_interaction_state: continuityReason || null },
+                scene_candidate_state_delta: stateDelta,
                 final_false_negative_risk: risk,
-                review_reason: risk === 'review' ? 'high_confidence_implied_transition_rejected' : 'gate_rejection_supported',
+                review_reason: risk === 'high' ? 'independent_state_reset_rejected'
+                  : risk === 'medium' ? 'high_confidence_transition_support_rejected'
+                    : risk === 'unknown' ? 'insufficient_independent_evidence'
+                      : 'gate_rejection_supported',
               };
             }),
           };
+          sceneAudit.scene_rejected_break_audit.high_risk_false_negative_count = sceneAudit.scene_rejected_break_audit.records
+            .filter((record) => record.final_false_negative_risk === 'high').length;
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from '../scene-gate-utils.js';
+import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneCandidateStateDelta, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from '../scene-gate-utils.js';
 
 test('a farewell proposal aligns to the following explicit scene opening', () => {
   assert.equal(
@@ -20,6 +20,14 @@ test('a before-message boundary does not summarize the opening of the next scene
   assert.deepEqual(partition.completed_messages, closingScene);
   assert.deepEqual(partition.next_buffer, [opening]);
   assert.notEqual(partition.completed_messages, closingScene);
+});
+
+test('before-message partitioning preserves source ranges for both resulting scenes', () => {
+  const messages = [{ __sme_original_index: 10 }, { __sme_original_index: 11 }, { __sme_original_index: 12 }, { __sme_original_index: 13 }];
+  const first = advanceSceneBufferAtBoundary(messages.slice(0, 2), messages[2], true);
+  const second = advanceSceneBufferAtBoundary(first.next_buffer, messages[3], false);
+  assert.deepEqual(first.completed_messages.map((message) => message.__sme_original_index), [10, 11]);
+  assert.deepEqual(second.next_buffer.map((message) => message.__sme_original_index), [12, 13]);
 });
 
 test('deterministic scene gate is invariant to request lineage and repeated evaluation', () => {
@@ -117,6 +125,21 @@ test('a quoted discussion of a future day is not an explicit scene transition', 
   assert.equal(result.gate_reason_code, 'strong_continuity_veto');
 });
 
+test('quoted wake and next-day language inside an immediate reply is not scene narration', () => {
+  const reply = deriveSceneContinuitySignals('"I checked on you."', 'Avery smiled. "You woke up to check on me? What about the next day?"');
+  const textReply = deriveSceneContinuitySignals('Focus on him today.', '*You\'re right. I\'ll text you tonight after he goes to sleep.*');
+  assert.equal(reply.explicit_transition, false);
+  assert.equal(reply.strong_continuity, true);
+  assert.equal(textReply.explicit_transition, false);
+  assert.equal(textReply.strong_continuity, true);
+});
+
+test('a post-sleep narrative handoff remains explicit even when the opening has no time keyword', () => {
+  const continuity = deriveSceneContinuitySignals('*I go to sleep.*', 'There were two messages waiting when the day began.');
+  assert.equal(continuity.explicit_transition, true);
+  assert.equal(continuity.strong_continuity, false);
+});
+
 test('an ambiguous implied change with direct continuity remains rejected', () => {
   const continuity = deriveSceneContinuitySignals('Do you agree?', 'Avery replied, "I do."');
   const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40, continuity });
@@ -143,4 +166,15 @@ test('same-run coalescing suppresses only a nearby direct continuation', () => {
   const explicitTransition = coalesceSceneBoundary({ previousBoundaryIndex: 100, messageIndex: 104, minimumSceneLength: 3, continuity: { ...continuity, explicit_transition: true } });
   assert.deepEqual({ suppress: directContinuation.suppress, outcome: directContinuation.outcome }, { suppress: true, outcome: 'direct_continuation' });
   assert.equal(explicitTransition.suppress, false);
+});
+
+test('candidate state deltas remain privacy-safe while distinguishing reset from direct continuity', () => {
+  const reset = deriveSceneCandidateStateDelta('The call ended. They went home.', 'The next morning, Avery arrived at the garden.');
+  const reply = deriveSceneCandidateStateDelta('Do you agree?', 'Avery replied, "I do."');
+  assert.equal(reset.meaningful_time_changed, true);
+  assert.equal(reset.interaction_reset, true);
+  assert.equal(reset.continuity_strength, 'none');
+  assert.equal(reply.continuity_strength, 'strong');
+  assert.match(reset.prior_state_fingerprint, /^scene-state-/);
+  assert.equal(JSON.stringify(reset).includes('Avery'), false);
 });

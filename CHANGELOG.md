@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.96] - 2026-08-13
+
+### Fixed
+
+- Tightened scene-transition parsing so time-related words inside quoted or
+  immediate text-message dialogue cannot be mistaken for narrator-level scene
+  openings. Genuine narrative action, sleep/wake handoffs, time jumps, and
+  independently established new settings remain valid transition support.
+- Added privacy-safe candidate state-delta diagnostics and evidence-based
+  false-negative risk scoring for rejected provider scene proposals. The audit
+  now distinguishes strong continuity, independent reset evidence, and
+  insufficient evidence instead of treating every gate rejection as low risk;
+  retained boundaries export the same compact state-delta evidence.
+
 ## [0.8.95] - 2026-08-12
 
 ### Fixed

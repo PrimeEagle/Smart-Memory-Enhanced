@@ -11,8 +11,16 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // A timing phrase in dialogue ("what happens the next day?") is not a
   // scene reset. Evaluate the candidate message itself and ignore quoted
   // dialogue, while retaining ordinary narrative/action openings.
-  const dialogueLikeCurrent = /^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current);
-  const explicitTransition = !dialogueLikeCurrent && /\b(?:the next (?:morning|day|evening|few days)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day|arrived at|returned to|left for|woke up|fell asleep|go(?:es|ing)? to sleep|went to sleep)\b/i.test(current);
+  const narrativeActionOpening = /^\s*\*\s*(?:(?:i\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fell|drift|doz)|i\s+(?:make|schedule|spend|stay|work|start))/i.test(current);
+  const markedDialogue = /^\s*\*\s*(?:[\u201c\u201d\u2018\u2019"']\s*)?(?:you(?:'re| are|\b)|i(?:'m| am|\b)|we(?:'re| are|\b)|he(?:'s| is|\b)|she(?:'s| is|\b)|they(?:'re| are|\b)|yes\b|no\b|okay\b|ok\b|but\b|and\b|because\b)/i.test(current);
+  const dialogueLikeCurrent = (/^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current)) || (markedDialogue && !narrativeActionOpening);
+  const narrativeTimeOpening = /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|few days)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(current);
+  const narrativeTravelOrWakeOpening = /^\s*(?:\*\s*)?(?:(?:[A-Z][a-z]+\s+)?(?:arrived at|returned to|left for|woke up)|(?:[A-Z][a-z]+\s+)?woke\b)/.test(current);
+  const priorSleepClosure = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i.test(previous);
+  const currentSleepClosure = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i.test(current);
+  const narrativeEmbeddedTime = !dialogueLikeCurrent && (narrativeActionOpening || (!/^\s*\*/.test(current) && !/[\u201c\u201d\u2018\u2019"']/.test(current)))
+    && /\b(?:the next (?:morning|day|evening|few days)|hours? later|days? later|some time later|that night|the following day)\b/i.test(current);
+  const explicitTransition = !dialogueLikeCurrent && (narrativeTimeOpening || narrativeEmbeddedTime || narrativeTravelOrWakeOpening || priorSleepClosure || currentSleepClosure);
   // A bounded narrative opening can establish a fresh setting without a
   // literal "later" marker. It must be anchored at the current message and
   // name a concrete environment, so ordinary topic/action changes never
@@ -86,6 +94,59 @@ export function advanceSceneBufferAtBoundary(sceneBuffer = [], currentMessage, i
   const accumulated = Array.isArray(sceneBuffer) ? sceneBuffer : [];
   if (!isBoundary) return { completed_messages: null, next_buffer: [...accumulated, currentMessage] };
   return { completed_messages: [...accumulated], next_buffer: [currentMessage] };
+}
+
+/**
+ * Create a privacy-safe, deterministic state delta for a candidate boundary.
+ * It is diagnostic evidence only: the gate remains the sole decision-maker.
+ * Raw prose, names, and locations are deliberately not retained.
+ */
+export function deriveSceneCandidateStateDelta(previousMessage = '', currentMessage = '') {
+  const previous = String(previousMessage ?? '').trim();
+  const current = String(currentMessage ?? '').trim();
+  const signals = deriveSceneContinuitySignals(previous, current);
+  const hash = (value) => {
+    let valueHash = 2166136261;
+    for (const character of String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim()) valueHash = Math.imul(valueHash ^ character.charCodeAt(0), 16777619);
+    return `scene-state-${(valueHash >>> 0).toString(16)}`;
+  };
+  const locationCategory = (text) => {
+    const match = String(text ?? '').match(/\b(?:at|in|inside|outside|back at|across town|to)\s+(?:the|a|an|my|his|her|their)?\s*([a-z]+(?:\s+[a-z]+)?)/i);
+    return match ? hash(match[1]) : null;
+  };
+  const channelCategory = (text) => /\b(?:text(?:ing|ed)?|message(?:d)?|phone|call|on the line)\b/i.test(text)
+    ? (/\b(?:phone|call|on the line)\b/i.test(text) ? 'call' : 'text')
+    : 'in_person_or_narration';
+  const participantFingerprint = (text) => {
+    const names = [...new Set((String(text ?? '').match(/\b[A-Z][a-z]{2,}\b/g) ?? [])
+      .filter((word) => !['The', 'Then', 'That', 'This', 'When', 'But', 'And'].includes(word))
+      .map((word) => word.toLowerCase()))].sort();
+    return names.length ? hash(names.join('|')) : null;
+  };
+  const previousLocation = locationCategory(previous);
+  const currentLocation = locationCategory(current);
+  const previousParticipants = participantFingerprint(previous);
+  const currentParticipants = participantFingerprint(current);
+  const locationChanged = Boolean(previousLocation && currentLocation && previousLocation !== currentLocation)
+    || Boolean(signals.strongly_implied_transition && currentLocation);
+  const channelChanged = channelCategory(previous) !== channelCategory(current);
+  const participantSetChanged = Boolean(previousParticipants && currentParticipants && previousParticipants !== currentParticipants);
+  const interactionReset = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways|went home|go(?:es|ing)? home)\b/i.test(previous);
+  const transitionSupportType = signals.explicit_transition ? 'explicit'
+    : signals.strongly_implied_transition ? 'strongly_implied'
+      : 'none';
+  return {
+    prior_state_fingerprint: hash(previous),
+    next_state_fingerprint: hash(current),
+    location_changed: locationChanged,
+    channel_changed: channelChanged,
+    participant_set_changed: participantSetChanged,
+    meaningful_time_changed: signals.explicit_transition,
+    interaction_reset: interactionReset,
+    new_setting_opening: signals.strongly_implied_transition,
+    continuity_strength: signals.strong_continuity ? 'strong' : 'none',
+    transition_support_type: transitionSupportType,
+  };
 }
 
 export function coalesceSceneBoundary({ previousBoundaryIndex, messageIndex, minimumSceneLength, continuity = null }) {
