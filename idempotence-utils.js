@@ -413,6 +413,41 @@ export function summarizeDurableStateChanges(before = {}, after = {}, limit = 24
 }
 
 /**
+ * Reconcile mutation counters with the exact durable semantic projection.
+ * Writers may mutate nested records in place, so this is the last accounting
+ * boundary before a reconciliation pass is allowed to report itself stable.
+ */
+export function deriveDurableWriteAccounting(before = {}, after = {}, counts = {}, limit = 24) {
+  const comparison = compareDurableSemanticStates(before, after, limit);
+  const logical = numeric(counts.logical_mutations);
+  const physical = numeric(counts.physical_mutations);
+  const semanticUnits = comparison.changed ? Math.max(1, comparison.path_count) : 0;
+  const countedUnits = Math.max(logical, physical);
+  const accountingBackfill = Math.max(0, semanticUnits - countedUnits);
+  const traces = comparison.paths.map((path) => ({
+    store: String(path.path ?? 'root').split('.')[0] || 'root',
+    changed_field_paths: [path.path ?? 'root'],
+    canonical_before_hash: path.before_value_hash ?? null,
+    canonical_after_hash: path.after_value_hash ?? null,
+    source_operation: accountingBackfill ? 'reconciliation_semantic_diff_backstop' : 'writer_accounted',
+    logical_mutation_counted: !accountingBackfill,
+    physical_mutation_counted: !accountingBackfill,
+    covered_by_parent_mutation: !accountingBackfill,
+    semantic_classification: 'durable_semantic_write',
+  }));
+  return {
+    comparison,
+    semantic_mutation_units: semanticUnits,
+    counted_mutation_units: countedUnits,
+    accounting_backfill_count: accountingBackfill,
+    unaccounted_semantic_changes: accountingBackfill,
+    accounting_reconciled: !comparison.changed || accountingBackfill === 0,
+    invariant_failure: !comparison.changed ? countedUnits > 0 : false,
+    traces,
+  };
+}
+
+/**
  * Privacy-safe session-memory diff.  It exposes IDs, paths, categories, and
  * value fingerprints only; claim text is never included in diagnostics.
  */
@@ -537,7 +572,8 @@ export function deriveAutomaticStabilizationResult(passes = [], maxPasses = 0) {
     && numeric(finalPass.stale_references) === 0
     && numeric(finalPass.recreated_links) === 0
     && numeric(finalPass.unsafe_merge_candidates) === 0
-    && numeric(finalPass.unresolved_integrity_failures) === 0;
+    && numeric(finalPass.unresolved_integrity_failures) === 0
+    && numeric(finalPass.unaccounted_mutations) === 0;
   const maxPassesReached = Boolean(maxPasses && history.length >= maxPasses && !stable);
   const attentionReasons = maxPassesReached ? ['max_passes_reached'] : stable ? [] : ['final_verification_not_stable'];
   return {
@@ -561,6 +597,7 @@ export function deriveIdempotenceResult(data = {}) {
   const recreated = numeric(data.recreated_after_prior_repair);
   const unsafe = numeric(data.unsafe_merge_candidates_after_second_pass);
   const unresolved = numeric(data.unresolved_integrity_failures_after_second_pass);
+  const unaccounted = numeric(data.unaccounted_mutations_after_second_pass);
   // Persisted legacy/compatibility fields have previously disagreed with the
   // actual durable hashes.  Whenever both hashes are present, the hashes are
   // authoritative; only fall back to the older boolean for incomplete data.
@@ -577,6 +614,7 @@ export function deriveIdempotenceResult(data = {}) {
   if (recreated) attentionReasons.push('recreated_links_detected');
   if (unsafe) attentionReasons.push('unsafe_merge_candidate_remaining');
   if (unresolved) attentionReasons.push('unresolved_integrity_failure');
+  if (unaccounted) attentionReasons.push('unaccounted_durable_mutation');
   if (durableChanged && !secondLogical && !secondPhysical) attentionReasons.push('durable_state_hash_changed_without_accounted_mutation');
   if (data.result_internally_inconsistent) attentionReasons.push('result_internally_inconsistent');
   const idempotent = attentionReasons.length === 0;
@@ -591,6 +629,7 @@ export function deriveIdempotenceResult(data = {}) {
     recreated_after_prior_repair: recreated,
     unsafe_merge_candidates_after_second_pass: unsafe,
     unresolved_integrity_failures_after_second_pass: unresolved,
+    unaccounted_mutations_after_second_pass: unaccounted,
     durable_state_changed: durableChanged,
     maintenance_needed_on_first_pass: firstPassMaintenance,
     stable_on_second_pass: idempotent,

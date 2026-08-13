@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.95] - 2026-08-12
+
+### Fixed
+
+- Aligned legacy card-local leaf diagnostics with the authoritative durable
+  write accounting result, so a multi-field parent mutation is reported once
+  and its child observations are explicitly marked as covered rather than
+  falsely unaccounted.
+- Corrected catch-up scene partitioning for the `before_message` contract: a
+  detected transition now closes the accumulated scene before the current
+  opening message begins the next one.
+- Provider-backed scene proposals with independently grounded explicit or
+  strongly implied transition evidence no longer require the regex heuristic
+  to agree. Time-jump wording inside quoted dialogue is excluded from explicit
+  transition support, preventing false scene breaks from speculative speech;
+  grounded new-setting openings and narrative "next few days" jumps remain
+  eligible scene evidence.
 
 ## [0.8.94] - 2026-08-11
 
@@ -24,6 +40,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made rejected scene-break diagnostics accurately distinguish grounded
   explicit or strongly implied transition support from weak signals, and
   report the actual continuity evidence that caused a proposal to be vetoed.
+- Reconciliation now performs an immutable, canonical durable-state comparison
+  at its write boundary. In-place structured-store changes that bypassed
+  individual helper counters are recorded exactly once with privacy-safe store
+  and field-path traces, preventing a `0/0` pass from also changing its
+  durable semantic hash.
+- Refined the post-automatic manual-maintenance diagnostic with explicit
+  canonical-state, changed-component/field, counted-mutation, and accounting
+  reconciliation fields.
+- Scene boundaries proposed on a farewell now align to the following message
+  when it is the first grounded explicit transition opening, preserving the
+  existing gate while honoring `before_message` semantics.
+- Heuristic-only scene detection now passes through the same deterministic
+  continuity and grounded-transition gate as provider-backed detection.
 
 ### Added
 
@@ -37,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added regression coverage for a maintenance-bearing first automatic pass
   followed by a stable second verification pass.
+
+### Improved
+
+- Finalization ETA now learns separate timing estimates for consolidation,
+  scenes, arcs, short-term extraction, profiles, and final reconciliation
+  instead of treating every phase as equal. The active finalization estimate
+  refreshes every 15 seconds while a long provider-backed stage is running.
 
 ## [0.8.93] - 2026-08-10
 

@@ -102,7 +102,7 @@ import {
 } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { loadCanon } from './canon.js';
-import { summarizeCardLocalMemoryChanges } from './idempotence-utils.js';
+import { deriveDurableWriteAccounting, summarizeCardLocalMemoryChanges } from './idempotence-utils.js';
 import { loadProfiles, reconcileProfileCanonicalNames, remapProfileEntity } from './profiles.js';
 import {
   applyGraphDefaults,
@@ -1564,6 +1564,22 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     }
   };
   const context = getContext();
+  // This immutable projection is the accounting authority for the whole
+  // reconciliation call. Individual helpers can safely mutate nested records
+  // in place, but no semantic write may escape this final comparison.
+  const snapshotDurableReconciliationState = () => {
+    const state = {
+      ...(context.chatMetadata?.[META_KEY] ?? {}),
+      characters: extension_settings[MODULE_NAME]?.characters ?? {},
+      entityRegistry: context.chatMetadata?.[META_KEY]?.entityRegistry
+        ?? extension_settings[MODULE_NAME]?.entityRegistry
+        ?? extension_settings[MODULE_NAME]?.entity_registry
+        ?? [],
+    };
+    try { return structuredClone(state); }
+    catch { return JSON.parse(JSON.stringify(state)); }
+  };
+  const durableStateBeforeReconciliation = snapshotDurableReconciliationState();
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
   const sessionEntities = loadSessionEntityRegistry();
   const longtermMemories = characterName ? loadCharacterMemories(characterName) : [];
@@ -2464,17 +2480,76 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     groups[key] = group;
     return groups;
   }, {}));
+  const initialDurableWriteAccounting = deriveDurableWriteAccounting(
+    durableStateBeforeReconciliation,
+    snapshotDurableReconciliationState(),
+    {
+      logical_mutations: entityLinkRepairs.actual_logical_mutations_this_run,
+      physical_mutations: entityLinkRepairs.actual_physical_store_mutations_this_run,
+    },
+  );
+  // Legacy helpers do not all receive an accounting callback.  Backfill only
+  // the semantic units the canonical projection proves changed, once, at the
+  // reconciliation boundary. This makes a zero/zero pass with a changed hash
+  // structurally impossible without concealing which store/path changed.
+  if (initialDurableWriteAccounting.accounting_backfill_count) {
+    entityLinkRepairs.actual_logical_mutations_this_run += initialDurableWriteAccounting.accounting_backfill_count;
+    entityLinkRepairs.physical_store_mutations_this_run += initialDurableWriteAccounting.accounting_backfill_count;
+    entityLinkRepairs.actual_physical_store_mutations_this_run += initialDurableWriteAccounting.accounting_backfill_count;
+  }
+  const durableWriteAccounting = deriveDurableWriteAccounting(
+    durableStateBeforeReconciliation,
+    snapshotDurableReconciliationState(),
+    {
+      logical_mutations: entityLinkRepairs.actual_logical_mutations_this_run,
+      physical_mutations: entityLinkRepairs.actual_physical_store_mutations_this_run,
+    },
+  );
+  const durableWriteTrace = initialDurableWriteAccounting.accounting_backfill_count
+    ? initialDurableWriteAccounting.traces.map((trace) => ({
+      ...trace,
+      logical_mutation_counted: true,
+      physical_mutation_counted: true,
+      covered_by_parent_mutation: true,
+      accounting_method: 'reconciliation_semantic_diff_backstop',
+    }))
+    : durableWriteAccounting.traces;
+  // `cardLocalWriteRecords` predates the unified boundary accounting and
+  // describes leaf observations. Once the canonical reconciliation mutation
+  // is counted, retain those leaves as useful diagnostics but mark their
+  // relationship to the counted parent explicitly. They must never look like
+  // a second, unaccounted durable write.
+  const accountedCardLocalWriteRecords = durableWriteAccounting.accounting_reconciled
+    ? cardLocalWriteRecords.map((record) => ({
+      ...record,
+      mutation_counted: true,
+      covered_by_parent_mutation: true,
+      accounting_method: record.mutation_counted ? 'direct_writer' : 'reconciliation_semantic_diff_backstop',
+      changed_fields: (record.changed_fields ?? []).map((field) => ({
+        ...field,
+        mutation_counted: true,
+        covered_by_parent_mutation: true,
+      })),
+    }))
+    : cardLocalWriteRecords;
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
     repaired_stale_entity_references: repairedStaleEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
     text_link_repair_counters: textLinkRepairCounters,
     entity_link_repairs: entityLinkRepairs,
+    durable_write_accounting: {
+      ...durableWriteAccounting,
+      accounting_backfilled_at_reconciliation_boundary: initialDurableWriteAccounting.accounting_backfill_count,
+      accounted_logical_mutations: entityLinkRepairs.actual_logical_mutations_this_run,
+      accounted_physical_mutations: entityLinkRepairs.actual_physical_store_mutations_this_run,
+    },
+    durable_write_trace: durableWriteTrace,
     automatic_stabilization_second_pass_writes: {
-      total: cardLocalWriteRecords.length,
-      records: cardLocalWriteRecords,
-      semantic_uncounted_writes: cardLocalWriteRecords.filter((record) => !record.mutation_counted).length,
-      accounting_reconciled: cardLocalWriteRecords.every((record) => record.mutation_counted),
+      total: accountedCardLocalWriteRecords.length,
+      records: accountedCardLocalWriteRecords,
+      semantic_uncounted_writes: accountedCardLocalWriteRecords.filter((record) => !record.mutation_counted).length,
+      accounting_reconciled: durableWriteAccounting.accounting_reconciled,
     },
     repair_origin_summary: repairOriginSummary,
     repair_recurrence_groups: repairRecurrenceGroups,

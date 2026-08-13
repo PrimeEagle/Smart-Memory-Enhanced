@@ -759,6 +759,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /developer_idempotence_check/);
   assert.match(settings, /deriveIdempotenceResult/);
   assert.match(settings, /deriveAutomaticStabilizationResult/);
+  assert.match(settings, /unaccounted_mutations_after_second_pass/);
   assert.match(settings, /unsafe_merge_candidates_after_second_pass === 0/);
   assert.match(settings, /unresolved_integrity_failures_after_second_pass === 0/);
   assert.match(settings, /maximumStabilizationPasses/);
@@ -777,6 +778,8 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /durableStateAfterSecondPass = snapshotIdempotenceDurableState\(metadataAfterSecondPass\)/);
   assert.match(read('ui.js'), /for \(const \[localName, records\] of Object\.entries\(meta\.card_local_memories \?\? \{\}\)\)/);
   assert.match(read('ui.js'), /applyGraphDefaults\(record\)/);
+  assert.match(read('ui.js'), /deriveDurableWriteAccounting/);
+  assert.match(read('ui.js'), /durable_write_trace/);
   assert.match(read('ui.js'), /'normalize_graph_defaults', 'applyGraphDefaults', true/);
   assert.match(read('idempotence-utils.js'), /metadata_only_changes/);
   assert.match(read('profiles.js'), /profile_relationship_self_targets_rejected/);
@@ -1087,6 +1090,12 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /Estimated total time remaining/);
   assert.match(settings, /catch_up_timing_history/);
   assert.match(settings, /Finalizing: /);
+  assert.match(settings, /finalization_phase_durations/);
+  assert.match(settings, /finalizationEtaRefreshTimer/);
+  assert.match(settings, /15_000/);
+  assert.match(settings, /deferred-transition-alignment/);
+  assert.match(read('scene-gate-utils.js'), /shouldDeferSceneBoundaryToNextMessage/);
+  assert.match(settings, /aiRequestedBreak: settings\.scene_ai_detect \? aiRequestedBreak : heuristicBreak/);
 });
 
 test('dry run: primary extraction returns grounded candidates before persistence', () => {

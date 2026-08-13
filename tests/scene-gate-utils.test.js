@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate } from '../scene-gate-utils.js';
+import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from '../scene-gate-utils.js';
+
+test('a farewell proposal aligns to the following explicit scene opening', () => {
+  assert.equal(
+    shouldDeferSceneBoundaryToNextMessage('Good night. The call ended.', 'The next morning, she arrived at the garden.'),
+    true,
+  );
+  assert.equal(
+    shouldDeferSceneBoundaryToNextMessage('Good night. The call ended.', '"I love you," she whispered.'),
+    false,
+  );
+});
+
+test('a before-message boundary does not summarize the opening of the next scene', () => {
+  const closingScene = [{ mes: 'First scene.' }, { mes: 'The call ends.' }];
+  const opening = { mes: 'The next morning, a new scene begins.' };
+  const partition = advanceSceneBufferAtBoundary(closingScene, opening, true);
+  assert.deepEqual(partition.completed_messages, closingScene);
+  assert.deepEqual(partition.next_buffer, [opening]);
+  assert.notEqual(partition.completed_messages, closingScene);
+});
 
 test('deterministic scene gate is invariant to request lineage and repeated evaluation', () => {
   const stableInput = {
@@ -25,7 +45,7 @@ test('deterministic scene gate is invariant to request lineage and repeated eval
 test('deterministic scene gate emits stable evidence for each rejection class', () => {
   const insufficient = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40 });
   const tooShort = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 2, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40 });
-  assert.equal(insufficient.gate_reason_code, 'same_continuous_interaction');
+  assert.equal(insufficient.gate_reason_code, 'missing_independent_transition_evidence');
   assert.equal(insufficient.gate_evidence.continuity_overlap_score, 1);
   assert.equal(insufficient.gate_evidence.same_continuous_interaction, true);
   assert.equal(tooShort.gate_reason_code, 'minimum_scene_length');
@@ -68,6 +88,33 @@ test('a strongly implied narrative context reset is eligible without a literal t
   const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 50, previousBoundaryIndex: 40, continuity });
   assert.equal(continuity.strongly_implied_transition, true);
   assert.equal(result.accepted, true);
+});
+
+test('a new-setting narrative opening remains eligible after a completed interaction', () => {
+  const continuity = deriveSceneContinuitySignals('They went home and did not speak for a week.', 'The porch light was on as he pulled into the driveway for dinner.');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 22, previousBoundaryIndex: 4, continuity });
+  assert.equal(continuity.strongly_implied_transition, true);
+  assert.equal(result.accepted, true);
+});
+
+test('a narrative next-few-days jump is explicit support but quoted speculation is not', () => {
+  assert.equal(deriveSceneContinuitySignals('He said thanks.', 'The next few days passed quietly.').explicit_transition, true);
+  assert.equal(deriveSceneContinuitySignals('"What will happen?"', '"Maybe the next few days will help."').explicit_transition, false);
+});
+
+test('an explicit provider-supported transition does not require a matching heuristic', () => {
+  const continuity = deriveSceneContinuitySignals('The call ended.', '*The next morning, she arrived at the garden.*');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 20, previousBoundaryIndex: 4, continuity });
+  assert.equal(result.accepted, true);
+  assert.equal(result.gate_reason_code, 'accepted_combined_change');
+});
+
+test('a quoted discussion of a future day is not an explicit scene transition', () => {
+  const continuity = deriveSceneContinuitySignals('"Would you do it?"', '"But what happens the next day?"');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: true, sceneLength: 8, minimumSceneLength: 3, messageIndex: 21, previousBoundaryIndex: 4, continuity });
+  assert.equal(continuity.explicit_transition, false);
+  assert.equal(result.accepted, false);
+  assert.equal(result.gate_reason_code, 'strong_continuity_veto');
 });
 
 test('an ambiguous implied change with direct continuity remains rejected', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   canonicalizeDurableIdempotenceState,
   compareDurableSemanticStates,
+  deriveDurableWriteAccounting,
   deriveIdempotenceResult,
   deriveAutomaticStabilizationResult,
   durableStateHash,
@@ -28,6 +29,39 @@ test('metadata-only hash differences remain idempotent', () => {
   assert.equal(result.metadata_only_changes, true);
 });
 
+test('durable-write accounting backfills an in-place semantic mutation once', () => {
+  const before = { sceneHistory: [{ id: 'scene-1', character_participants: ['A'] }] };
+  const after = structuredClone(before);
+  after.sceneHistory[0].character_participants[0] = 'B';
+  const accounting = deriveDurableWriteAccounting(before, after, { logical_mutations: 0, physical_mutations: 0 });
+  assert.equal(accounting.comparison.changed, true);
+  assert.equal(accounting.accounting_backfill_count, 1);
+  assert.equal(accounting.accounting_reconciled, false);
+  assert.equal(accounting.unaccounted_semantic_changes, 1);
+  assert.equal(accounting.traces[0].source_operation, 'reconciliation_semantic_diff_backstop');
+});
+
+test('durable-write accounting leaves a stable zero-mutation pass untouched', () => {
+  const state = { storyArcs: [{ id: 'arc-1', content: 'Open thread' }] };
+  const accounting = deriveDurableWriteAccounting(state, structuredClone(state), { logical_mutations: 0, physical_mutations: 0 });
+  assert.equal(accounting.comparison.changed, false);
+  assert.equal(accounting.accounting_backfill_count, 0);
+  assert.equal(accounting.accounting_reconciled, true);
+});
+
+test('one parent mutation covers multiple changed durable leaf fields', () => {
+  const before = { sceneHistory: [{ id: 'scene-1', summary: 'Before', character_participants: ['A'] }] };
+  const after = structuredClone(before);
+  after.sceneHistory[0].summary = 'After';
+  after.sceneHistory[0].character_participants = ['B'];
+  const accounting = deriveDurableWriteAccounting(before, after, { logical_mutations: 1, physical_mutations: 1 });
+  assert.equal(accounting.comparison.changed, true);
+  assert.equal(accounting.accounting_backfill_count, 0);
+  assert.equal(accounting.accounting_reconciled, true);
+  assert.equal(accounting.traces[0].covered_by_parent_mutation, true);
+  assert.equal(accounting.traces[0].source_operation, 'writer_accounted');
+});
+
 test('bounded stabilization parent verdict follows the final verification pass', () => {
   const result = deriveAutomaticStabilizationResult([
     { pass_number: 1, input_semantic_hash: 'a', output_semantic_hash: 'b', logical_mutations: 2, physical_mutations: 2, stale_references: 0, recreated_links: 0 },
@@ -45,6 +79,14 @@ test('bounded stabilization requires a clean final integrity audit', () => {
   assert.equal(result.converged, false);
   assert.equal(result.attention_required, true);
   assert.deepEqual(result.attention_reasons, ['final_verification_not_stable']);
+});
+
+test('unaccounted durable writes prevent automatic stabilization convergence', () => {
+  const result = deriveAutomaticStabilizationResult([
+    { pass_number: 1, input_semantic_hash: 'a', output_semantic_hash: 'a', logical_mutations: 0, physical_mutations: 0, stale_references: 0, recreated_links: 0, unsafe_merge_candidates: 0, unresolved_integrity_failures: 0, unaccounted_mutations: 1 },
+  ], 4);
+  assert.equal(result.converged, false);
+  assert.equal(result.attention_required, true);
 });
 
 test('second-pass durable changes require attention', () => {

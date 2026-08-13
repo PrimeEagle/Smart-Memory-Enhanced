@@ -121,7 +121,7 @@ import {
 import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcs, loadArcSummaries, saveArcSummaries } from './arcs.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
-import { coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate } from './scene-gate-utils.js';
+import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from './scene-gate-utils.js';
 import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
@@ -415,8 +415,19 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       const comparison = summarizeDurableStateChanges(durableStateBefore, durableStateAfterFirstPass);
       const cardLocal = summarizeCardLocalMemoryChanges(durableStateBefore, durableStateAfterFirstPass);
       const writes = reconciliation.integrity_audit?.automatic_stabilization_second_pass_writes?.records ?? [];
+      const accounting = reconciliation.integrity_audit?.durable_write_accounting ?? {};
       return {
+        // Keep `changed` for older exports, but name the canonical-state fact
+        // explicitly so a structural change can never masquerade as a zero
+        // maintenance result.
         changed: comparison.changed,
+        canonical_state_changed: comparison.changed,
+        changed_component_count: comparison.changed_components.length,
+        changed_record_count: comparison.changed_path_count,
+        changed_field_count: comparison.changed_path_count,
+        counted_logical_mutations: firstPassRepairs?.actual_logical_mutations_this_run ?? 0,
+        counted_physical_mutations: firstPassRepairs?.actual_physical_store_mutations_this_run ?? 0,
+        unaccounted_semantic_changes: accounting.unaccounted_semantic_changes ?? comparison.changed_path_count,
         total_mutations: firstPassRepairs?.actual_logical_mutations_this_run ?? 0,
         changed_components: comparison.changed_components,
         records: [
@@ -437,7 +448,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
             dependency_sources: ['automatic_stabilization_final_state'],
           })),
         ],
-        accounting_reconciled: comparison.changed === ((firstPassRepairs?.actual_logical_mutations_this_run ?? 0) > 0),
+        accounting_reconciled: accounting.accounting_reconciled ?? !comparison.changed,
       };
     })()
     : null;
@@ -508,6 +519,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         recreated_links: passRepairs.recreated_after_prior_repair ?? 0,
         unsafe_merge_candidates: passResult.integrity_audit?.unsafe_merge_candidates ?? 0,
         unresolved_integrity_failures: passResult.integrity_audit?.relationship_integrity_errors?.length ?? 0,
+        unaccounted_mutations: passResult.integrity_audit?.durable_write_accounting?.unaccounted_semantic_changes ?? 0,
         changed_components: comparison.changed_components,
         changed_paths: comparison.paths,
         source_operations: [...new Set(writes.map((write) => write.source_operation).filter(Boolean))],
@@ -518,7 +530,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const isStablePass = (pass) => pass.input_semantic_hash === pass.output_semantic_hash
       && pass.logical_mutations === 0 && pass.physical_mutations === 0
       && pass.stale_references === 0 && pass.recreated_links === 0
-      && pass.unsafe_merge_candidates === 0 && pass.unresolved_integrity_failures === 0;
+      && pass.unsafe_merge_candidates === 0 && pass.unresolved_integrity_failures === 0
+      && pass.unaccounted_mutations === 0;
     while (!forceIdempotenceCheck && !isStablePass(stabilizationPasses.at(-1)) && stabilizationPasses.length < maximumStabilizationPasses) {
       const passNumber = stabilizationPasses.length + 1;
       metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
@@ -554,15 +567,21 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const sessionMemoryChangeSummary = summarizeSessionMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const storyArcChangeSummary = summarizeStoryArcChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
     const cardLocalMemoryChangeSummary = summarizeCardLocalMemoryChanges(durableStateAfterFirstPass, durableStateAfterSecondPass);
+    const secondPassWriteAccounting = secondPass.integrity_audit?.durable_write_accounting ?? {};
     const accountedMutations = (repairs.actual_logical_mutations_this_run ?? 0) + (repairs.actual_physical_store_mutations_this_run ?? 0);
+    const semanticMutationUnits = secondPassWriteAccounting.semantic_mutation_units
+      ?? (durableChangeSummary.changed ? Math.max(1, durableChangeSummary.changed_path_count) : 0);
+    const unaccountedSemanticChanges = secondPassWriteAccounting.unaccounted_semantic_changes
+      ?? Math.max(0, semanticMutationUnits - accountedMutations);
     durableChangeSummary.accounted_mutation_count = accountedMutations;
-    durableChangeSummary.unaccounted_mutation_count = durableChangeSummary.changed ? Math.max(0, durableChangeSummary.changed_path_count - accountedMutations) : 0;
+    durableChangeSummary.semantic_mutation_units = semanticMutationUnits;
+    durableChangeSummary.unaccounted_mutation_count = unaccountedSemanticChanges;
     sessionMemoryChangeSummary.accounted_mutation_count = accountedMutations;
-    sessionMemoryChangeSummary.unaccounted_mutation_count = sessionMemoryChangeSummary.changed
-      ? Math.max(0, sessionMemoryChangeSummary.changed_path_count - accountedMutations) : 0;
+    sessionMemoryChangeSummary.semantic_mutation_units = semanticMutationUnits;
+    sessionMemoryChangeSummary.unaccounted_mutation_count = unaccountedSemanticChanges;
     cardLocalMemoryChangeSummary.accounted_mutation_count = accountedMutations;
-    cardLocalMemoryChangeSummary.unaccounted_mutation_count = cardLocalMemoryChangeSummary.changed
-      ? Math.max(0, cardLocalMemoryChangeSummary.records.reduce((count, record) => count + (record.changed_field_count ?? 0), 0) - accountedMutations) : 0;
+    cardLocalMemoryChangeSummary.semantic_mutation_units = semanticMutationUnits;
+    cardLocalMemoryChangeSummary.unaccounted_mutation_count = unaccountedSemanticChanges;
     const baseIdempotence = {
       ...result.idempotence,
       pass_count: stabilizationPasses.length,
@@ -579,6 +598,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       stale_references_after_second_pass: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
       unsafe_merge_candidates_after_second_pass: secondPass.integrity_audit?.unsafe_merge_candidates ?? 0,
       unresolved_integrity_failures_after_second_pass: secondPass.integrity_audit?.relationship_integrity_errors?.length ?? 0,
+      unaccounted_mutations_after_second_pass: secondPass.integrity_audit?.durable_write_accounting?.unaccounted_semantic_changes ?? 0,
       stale_reference_summary: staleReferenceSummary,
       durable_state_change_summary: durableChangeSummary,
       session_memory_change_summary: sessionMemoryChangeSummary,
@@ -3948,6 +3968,44 @@ export function bindSettingsUI(ctrl) {
         .slice(-8);
       const historicalChunkMsPerMessage = median(comparableTimingHistory.map((entry) => Number(entry.chunk_ms_per_message)));
       const historicalFinalizationMsPerUnit = median(comparableTimingHistory.map((entry) => Number(entry.finalization_ms_per_unit)));
+      const finalizationPhaseKind = (label) => {
+        const text = String(label ?? '').toLowerCase();
+        if (text.startsWith('long-term consolidation')) return 'longterm_consolidation';
+        if (text.startsWith('session-memory consolidation')) return 'session_consolidation';
+        if (text.startsWith('scene detection')) return 'scene_detection';
+        if (text.startsWith('story-arc extraction')) return 'arc_extraction';
+        if (text.startsWith('short-term memory extraction')) return 'shortterm_extraction';
+        if (text.startsWith('profile generation')) return 'profile_generation';
+        if (text.startsWith('final identity reconciliation')) return 'final_reconciliation';
+        return 'other_finalization';
+      };
+      const finalizationPlan = [
+        ...(settings.longterm_enabled && settings.consolidation_enabled ? Array(catchUpCharacterNames.length).fill('longterm_consolidation') : []),
+        ...(settings.session_enabled ? ['session_consolidation'] : []),
+        ...(settings.scene_enabled ? ['scene_detection'] : []),
+        ...(settings.arcs_enabled && !isFreshStart() ? ['arc_extraction'] : []),
+        ...(settings.compaction_enabled ? ['shortterm_extraction'] : []),
+        ...(settings.profiles_enabled ? Array(catchUpProfileCharacterNames.length).fill('profile_generation') : []),
+        'final_reconciliation',
+      ];
+      const historicalPhaseMs = Object.fromEntries([...new Set(finalizationPlan)].map((kind) => [kind, median(comparableTimingHistory.flatMap((entry) => {
+        const samples = entry?.finalization_phase_durations?.[kind];
+        return Array.isArray(samples) ? samples : [];
+      }).map(Number))]));
+      // Older timing samples only contain a whole-finalization average.  Use
+      // it as a total budget, then distribute it conservatively by workload
+      // shape rather than pretending a short-term provider request costs the
+      // same as a bookkeeping-only consolidation phase.
+      const finalizationPhaseWeights = {
+        longterm_consolidation: 1,
+        session_consolidation: 1,
+        scene_detection: 2,
+        arc_extraction: 2,
+        shortterm_extraction: 4,
+        profile_generation: 3,
+        final_reconciliation: 2,
+      };
+      const totalFinalizationWeight = finalizationPlan.reduce((sum, kind) => sum + (finalizationPhaseWeights[kind] ?? 1), 0);
       // Provider speed, output length, and enabled tiers vary by chat, so an
       // ETA can only be an observed-rate estimate. Keep it explicitly scoped
       // to the token-limited chunk phase; late finalization tasks have no
@@ -4010,33 +4068,56 @@ export function bindSettingsUI(ctrl) {
         started_at: null,
         completed_units: 0,
         planned_units: 0,
+        active_phase: null,
+        active_label: null,
+        active_phase_started_at: null,
+        phase_durations: {},
       };
-      const updateFinalizationEta = (label, { completed = false } = {}) => {
+      let finalizationEtaRefreshTimer = null;
+      const updateFinalizationEta = (label, { completed = false, refreshOnly = false } = {}) => {
         const eta = $('#sme_catch_up_eta');
         if (!finalizationTiming.started_at) {
           finalizationTiming.started_at = Date.now();
           finalizationTiming.planned_units = estimatedFinalizationUnits;
         }
-        if (completed) finalizationTiming.completed_units = Math.min(
-          finalizationTiming.planned_units,
-          finalizationTiming.completed_units + 1,
-        );
-        const elapsed = Date.now() - finalizationTiming.started_at;
+        const phaseKind = finalizationPhaseKind(label);
+        const now = Date.now();
+        if (completed && finalizationTiming.active_phase) {
+          const duration = Math.max(0, now - finalizationTiming.active_phase_started_at);
+          (finalizationTiming.phase_durations[finalizationTiming.active_phase] ??= []).push(duration);
+          finalizationTiming.completed_units = Math.min(finalizationTiming.planned_units, finalizationTiming.completed_units + 1);
+          finalizationTiming.active_phase = null;
+          finalizationTiming.active_label = null;
+          finalizationTiming.active_phase_started_at = null;
+        } else if (!refreshOnly && !finalizationTiming.active_phase) {
+          finalizationTiming.active_phase = phaseKind;
+          finalizationTiming.active_label = label;
+          finalizationTiming.active_phase_started_at = now;
+          finalizationEtaRefreshTimer ??= window.setInterval(() => {
+            if (finalizationTiming.active_phase) updateFinalizationEta(finalizationTiming.active_label, { refreshOnly: true });
+          }, 15_000);
+        }
+        const activeElapsed = finalizationTiming.active_phase_started_at ? Math.max(0, now - finalizationTiming.active_phase_started_at) : 0;
         const completedUnits = finalizationTiming.completed_units;
         const remainingUnits = Math.max(0, finalizationTiming.planned_units - completedUnits);
-        if (!completedUnits || elapsed < 1000) {
-          const historicalRemaining = historicalFinalizationMsPerUnit
-            ? Math.round(historicalFinalizationMsPerUnit * remainingUnits)
-            : null;
-          catchUpTiming.estimated_remaining_ms = historicalRemaining;
-          catchUpTiming.estimate_available = historicalRemaining !== null;
-          eta.text(`Finalizing: ${label} (${completedUnits + 1}/${finalizationTiming.planned_units} phases)${historicalRemaining ? ` - rough remaining estimate: ${formatCatchUpDuration(historicalRemaining)}.` : ' - estimating remaining time.'}`).show();
-          return;
-        }
-        const estimatedRemaining = Math.round((elapsed / completedUnits) * remainingUnits);
+        const observedPhaseAverage = median(Object.values(finalizationTiming.phase_durations).flat());
+        const weightedHistoricalEstimate = (kind) => historicalFinalizationMsPerUnit
+          ? Math.round(historicalFinalizationMsPerUnit * finalizationTiming.planned_units * ((finalizationPhaseWeights[kind] ?? 1) / totalFinalizationWeight))
+          : null;
+        const phaseEstimate = (kind) => historicalPhaseMs[kind] ?? weightedHistoricalEstimate(kind) ?? observedPhaseAverage ?? null;
+        const activeEstimate = finalizationTiming.active_phase ? phaseEstimate(finalizationTiming.active_phase) : 0;
+        const futureKinds = finalizationPlan.slice(completedUnits + (finalizationTiming.active_phase ? 1 : 0));
+        const futureEstimate = futureKinds.reduce((totalMs, kind) => {
+          const estimate = phaseEstimate(kind);
+          return estimate ? totalMs + estimate : totalMs;
+        }, 0);
+        const estimatedRemaining = !Number.isFinite(activeEstimate) || futureKinds.some((kind) => !Number.isFinite(phaseEstimate(kind)))
+          ? null
+          : Math.max(0, Math.round(Math.max(0, activeEstimate - activeElapsed) + futureEstimate));
         catchUpTiming.estimated_remaining_ms = estimatedRemaining;
-        catchUpTiming.estimate_available = true;
-        eta.text(`Finalizing: ${label} (${Math.min(completedUnits + 1, finalizationTiming.planned_units)}/${finalizationTiming.planned_units} phases) — rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`).show();
+        catchUpTiming.estimate_available = estimatedRemaining !== null;
+        const displayPhase = Math.min(completedUnits + (finalizationTiming.active_phase ? 1 : 0), finalizationTiming.planned_units);
+        eta.text(`Finalizing: ${finalizationTiming.active_label ?? label} (${displayPhase}/${finalizationTiming.planned_units} phases)${estimatedRemaining !== null ? ` - rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.` : ' - estimating remaining time from completed phases.'}`).show();
       };
       updateCatchUpEta(0);
 
@@ -4190,7 +4271,8 @@ export function bindSettingsUI(ctrl) {
       finalTransaction = beginCatchUpTransaction(catchUpContext);
 
       if (!ctrl.catchUpCancelled) {
-        updateFinalizationEta('remaining memory tiers');
+        // The first actual finalization task starts the ETA clock. Do not make
+        // this transition label a fake phase, or every later phase is shifted.
         // Complete the evidence tiers before scenes and arcs. This gives later
         // stages a stable, consolidated store and avoids creating a new arc
         // after the final identity-reconciliation phase has already begun.
@@ -4225,6 +4307,7 @@ export function bindSettingsUI(ctrl) {
           const minMessages = settings.scene_min_messages ?? 3;
           let sceneBuffer = [];
           let sceneCount = 0;
+          let deferredSceneBoundary = null;
           const sceneAudit = { run_id: catchUpRunId, created_at: Date.now(), record_source: 'runtime', history_schema_version: 2, candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, total_message_boundaries: 0, candidates_after_prefilter: 0, candidates_skipped_by_prefilter: 0, selection_signal_counts: {}, boundary_semantics: 'before_message', requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], candidate_context_hash_summary: null, prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v5|prefiltered-boundary-before-message|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
@@ -4268,7 +4351,6 @@ export function bindSettingsUI(ctrl) {
           for (let msgIdx = 0; msgIdx < allMessages.length; msgIdx++) {
             if (ctrl.catchUpCancelled) break;
             const msg = allMessages[msgIdx];
-            sceneBuffer.push(msg);
 
             const msgText = msg.mes ?? '';
             const isAiMsg = !msg.is_user;
@@ -4284,8 +4366,15 @@ export function bindSettingsUI(ctrl) {
             const aiRequestedBreak = settings.scene_ai_detect && Boolean(sceneAudit.ai_decisions?.get(msgIdx));
             const continuity = deriveSceneContinuitySignals(allMessages[msgIdx - 1]?.mes, msgText);
             const gate = evaluateDeterministicSceneGate({
-              aiRequestedBreak,
+              // Heuristic-only operation still uses the exact same grounded
+              // deterministic gate. Otherwise a bare heuristic proposal can
+              // bypass direct-continuation protection simply because no
+              // provider decision was requested.
+              aiRequestedBreak: settings.scene_ai_detect ? aiRequestedBreak : heuristicBreak,
               heuristicBreak,
+              // A `before_message` boundary belongs before `msg`, so the
+              // minimum applies to the scene already accumulated rather than
+              // counting the first message of the next scene in the old one.
               sceneLength: sceneBuffer.length,
               minimumSceneLength: minMessages,
               messageIndex: msg.__sme_original_index ?? msgIdx,
@@ -4298,8 +4387,26 @@ export function bindSettingsUI(ctrl) {
               minimumSceneLength: minMessages,
               continuity,
             });
-            const isBreak = (settings.scene_ai_detect ? gate.accepted : heuristicBreak && sceneBuffer.length >= minMessages)
-              && !coalescing.suppress;
+            const requestedBreak = gate.accepted && !coalescing.suppress;
+            // Keep a valid proposal at a closing interaction, but defer the
+            // actual boundary until the next message if that is where a
+            // grounded time/context reset begins. `before_message` then names
+            // the first message of the new scene rather than its farewell.
+            if (requestedBreak && shouldDeferSceneBoundaryToNextMessage(msgText, allMessages[msgIdx + 1]?.mes)) {
+              const deferredDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
+              if (aiRequestedBreak) Object.assign(deferredDisposition ?? {}, gate, {
+                gate_executed: true,
+                gate_output_schema_version: 1,
+                terminal_break_disposition: 'deferred_to_transition_opening',
+                aligned_to_next_message_index: allMessages[msgIdx + 1]?.__sme_original_index ?? msgIdx + 1,
+              });
+              // This closing message still belongs to the ending scene.
+              sceneBuffer.push(msg);
+              deferredSceneBoundary = { source_index: msg.__sme_original_index ?? msgIdx, disposition: deferredDisposition ?? null };
+              continue;
+            }
+            const isDeferredBoundary = Boolean(deferredSceneBoundary && continuity.explicit_transition && !continuity.strong_continuity);
+            const isBreak = requestedBreak || isDeferredBoundary;
             const aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
             if (aiRequestedBreak) {
               if (gate.terminal_break_disposition === 'rejected_deterministic_gate') sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
@@ -4315,8 +4422,14 @@ export function bindSettingsUI(ctrl) {
             }
 
             if (isBreak) {
-              const disposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
-              const boundarySource = settings.scene_ai_detect ? (disposition?.source ?? 'heuristic-fallback') : 'deterministic-heuristic';
+              const disposition = isDeferredBoundary ? deferredSceneBoundary.disposition : sceneAudit.ai_disposition_by_id?.get(msgIdx);
+              const boundarySource = isDeferredBoundary ? 'deferred-transition-alignment' : settings.scene_ai_detect ? (disposition?.source ?? 'heuristic-fallback') : 'deterministic-heuristic';
+              if (isDeferredBoundary) sceneAudit.candidate_dispositions.push({
+                ...(disposition ?? {}), candidate_id: msgIdx, message_index: msg.__sme_original_index ?? msgIdx,
+                decision: true, source: boundarySource, terminal_break_disposition: 'accepted_aligned_to_transition_opening',
+                aligned_from_message_index: deferredSceneBoundary.source_index,
+              });
+              deferredSceneBoundary = null;
               if (['ai-batch', 'ai-batch-recovered', 'ai-repair'].includes(boundarySource)) sceneAudit.ai_breaks_added++;
               else if (settings.scene_ai_detect) sceneAudit.fallback_breaks_added++;
               else sceneAudit.heuristic_break_candidates++;
@@ -4334,13 +4447,15 @@ export function bindSettingsUI(ctrl) {
               sceneCount++;
               sceneAudit.candidates++;
               setStatusMessage(`Summarizing scene ${sceneCount}...`);
-              const sceneResult = await summarizeScene(sceneBuffer).catch((err) => {
+              const scenePartition = advanceSceneBufferAtBoundary(sceneBuffer, msg, true);
+              const completedSceneMessages = scenePartition.completed_messages;
+              const sceneResult = await summarizeScene(completedSceneMessages).catch((err) => {
                 recordCatchUpError('scene summary error', err);
                 sceneAudit.failed++;
                 return null;
               });
               if (sceneResult?.summary && !(await isDuplicateScene(sceneResult.summary))) {
-                sceneHistory.push(createSceneRecord(sceneResult.summary, sceneBuffer, {
+                sceneHistory.push(createSceneRecord(sceneResult.summary, completedSceneMessages, {
                   detected_by: boundarySource,
                   boundary_source: boundarySource,
                   detection_message_index: msg.__sme_original_index ?? null,
@@ -4354,11 +4469,15 @@ export function bindSettingsUI(ctrl) {
                 setStatusMessage(
                   `Summarizing scene ${sceneCount}... (extracting epistemic knowledge)`,
                 );
-                await extractEpistemicKnowledge(sceneBuffer, characterName).catch((err) => {
+                await extractEpistemicKnowledge(completedSceneMessages, characterName).catch((err) => {
                   recordCatchUpError('epistemic extraction error', err);
                 });
               }
-              sceneBuffer = [];
+              // `before_message` means the current message begins the next
+              // scene. Never summarize it as part of the one just closed.
+              sceneBuffer = scenePartition.next_buffer;
+            } else {
+              sceneBuffer = advanceSceneBufferAtBoundary(sceneBuffer, msg, false).next_buffer;
             }
           }
 
@@ -5185,6 +5304,7 @@ export function bindSettingsUI(ctrl) {
           finalization_ms: Date.now() - finalizationTiming.started_at,
           finalization_units: finalizationTiming.planned_units,
           finalization_ms_per_unit: Math.round((Date.now() - finalizationTiming.started_at) / finalizationTiming.planned_units),
+          finalization_phase_durations: finalizationTiming.phase_durations,
         }
         : null;
       if (completedTimingSample) {
@@ -5454,6 +5574,7 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
+      if (finalizationEtaRefreshTimer) window.clearInterval(finalizationEtaRefreshTimer);
       $('#sme_catch_up_eta').hide().empty();
       clearCanonicalRuntimeContextSnapshot();
       unsubscribeRetry();
