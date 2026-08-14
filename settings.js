@@ -4381,6 +4381,29 @@ export function bindSettingsUI(ctrl) {
               previousBoundaryIndex: sceneAudit.final_break_indices.at(-1),
               continuity,
             });
+            // Provider-negative candidates can now be rescued only by the
+            // same grounded deterministic gate used for provider positives.
+            // Persist its compact result on every selected candidate so later
+            // A/B analysis can distinguish provider variance from gate work.
+            let aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
+            const deterministicRescue = !aiRequestedBreak && gate.deterministic_positive_rescue_used;
+            if (aiDisposition) Object.assign(aiDisposition, gate, {
+              gate_executed: gate.gate_result !== 'not_requested' || deterministicRescue,
+              gate_output_schema_version: 1,
+            });
+            if (deterministicRescue && !aiDisposition) {
+              aiDisposition = {
+                candidate_id: msgIdx,
+                message_index: msg.__sme_original_index ?? msgIdx,
+                decision: false,
+                source: 'deterministic-positive-rescue',
+                terminal_disposition: 'deterministic_positive_rescue',
+                ...gate,
+                gate_executed: true,
+                gate_output_schema_version: 1,
+              };
+              sceneAudit.candidate_dispositions.push(aiDisposition);
+            }
             const coalescing = coalesceSceneBoundary({
               previousBoundaryIndex: sceneAudit.final_break_indices.at(-1),
               messageIndex: msg.__sme_original_index ?? msgIdx,
@@ -4407,8 +4430,7 @@ export function bindSettingsUI(ctrl) {
             }
             const isDeferredBoundary = Boolean(deferredSceneBoundary && continuity.explicit_transition && !continuity.strong_continuity);
             const isBreak = requestedBreak || isDeferredBoundary;
-            const aiDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
-            if (aiRequestedBreak) {
+            if (aiRequestedBreak || deterministicRescue) {
               if (gate.terminal_break_disposition === 'rejected_deterministic_gate') sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
               Object.assign(aiDisposition ?? {}, gate, coalescing.suppress ? {
                 terminal_break_disposition: 'coalesced_with_nearby_boundary',
@@ -4422,8 +4444,8 @@ export function bindSettingsUI(ctrl) {
             }
 
             if (isBreak) {
-              const disposition = isDeferredBoundary ? deferredSceneBoundary.disposition : sceneAudit.ai_disposition_by_id?.get(msgIdx);
-              const boundarySource = isDeferredBoundary ? 'deferred-transition-alignment' : settings.scene_ai_detect ? (disposition?.source ?? 'heuristic-fallback') : 'deterministic-heuristic';
+              const disposition = isDeferredBoundary ? deferredSceneBoundary.disposition : aiDisposition;
+              const boundarySource = isDeferredBoundary ? 'deferred-transition-alignment' : deterministicRescue ? 'deterministic-positive-rescue' : settings.scene_ai_detect ? (disposition?.source ?? 'heuristic-fallback') : 'deterministic-heuristic';
               if (isDeferredBoundary) sceneAudit.candidate_dispositions.push({
                 ...(disposition ?? {}), candidate_id: msgIdx, message_index: msg.__sme_original_index ?? msgIdx,
                 decision: true, source: boundarySource, terminal_break_disposition: 'accepted_aligned_to_transition_opening',
@@ -4691,11 +4713,22 @@ export function bindSettingsUI(ctrl) {
               const continuityReason = ['strong_continuity_veto', 'same_continuous_interaction'].includes(candidate.gate_reason_code);
               const continuity = continuityReason ? 'strong' : evidence.continuity_detected ? 'weak' : 'none';
               const stateDelta = candidateStateDelta(candidate);
-              const independentDelta = stateDelta.meaningful_time_changed || stateDelta.new_setting_opening || stateDelta.location_changed || stateDelta.channel_changed || stateDelta.participant_set_changed || stateDelta.interaction_reset;
+              const groundedReset = stateDelta.grounded?.time_jump_evidence
+                || stateDelta.grounded?.location_reset_evidence
+                || stateDelta.grounded?.channel_reset_evidence
+                || stateDelta.grounded?.participant_context_reset_evidence
+                || stateDelta.grounded?.interaction_reset
+                || stateDelta.grounded?.new_setting_opening;
+              const observedDelta = stateDelta.observed?.location_changed
+                || stateDelta.observed?.channel_changed
+                || stateDelta.observed?.participant_set_changed
+                || stateDelta.observed?.time_changed;
+              const onlyObservedDelta = observedDelta && !groundedReset;
               const providerConfident = Number(candidate.ai_confidence ?? 0) >= 0.8;
-              const risk = independentDelta && !continuityReason ? 'high'
+              const risk = groundedReset && !continuityReason ? 'high'
                 : continuityReason ? 'low'
                   : providerConfident && (groundedExplicit.length || implied.length) ? 'medium'
+                    : observedDelta ? 'medium'
                     : candidate.ai_confidence == null && !groups.length ? 'unknown'
                       : 'low';
               return {
@@ -4709,8 +4742,9 @@ export function bindSettingsUI(ctrl) {
                 continuity: { strength: continuity, evidence_groups: continuityReason ? ['terminal_gate_continuity'] : [], direct_reply: continuityReason || null, same_channel: null, same_location: null, same_participants: null, immediate_reaction: continuityReason || null, same_interaction_state: continuityReason || null },
                 scene_candidate_state_delta: stateDelta,
                 final_false_negative_risk: risk,
-                review_reason: risk === 'high' ? 'independent_state_reset_rejected'
-                  : risk === 'medium' ? 'high_confidence_transition_support_rejected'
+                review_reason: risk === 'high' ? 'grounded_reset_rejected'
+                  : onlyObservedDelta ? 'observed_state_delta_without_grounded_reset'
+                    : risk === 'medium' ? 'high_confidence_transition_support_rejected'
                     : risk === 'unknown' ? 'insufficient_independent_evidence'
                       : 'gate_rejection_supported',
               };
@@ -4718,6 +4752,40 @@ export function bindSettingsUI(ctrl) {
           };
           sceneAudit.scene_rejected_break_audit.high_risk_false_negative_count = sceneAudit.scene_rejected_break_audit.records
             .filter((record) => record.final_false_negative_risk === 'high').length;
+          // A bounded, text-free candidate ledger makes the two positive
+          // sources (provider and deterministic rescue) auditable without
+          // exposing replay content in diagnostics exports.
+          sceneAudit.scene_transition_evaluation = (sceneAudit.candidate_dispositions ?? []).slice(0, 192).map((candidate) => {
+            const messageIndex = candidate.message_index ?? candidate.candidate_id;
+            const stateDelta = deriveSceneCandidateStateDelta(allMessages[messageIndex - 1]?.mes, allMessages[messageIndex]?.mes);
+            const groups = candidate.gate_evidence?.transition_evidence_groups ?? [];
+            const strongGroups = groups.filter((group) => group?.independent === true && group?.strength === 'strong');
+            const continuity = candidate.gate_evidence?.same_continuous_interaction ? 'strong' : stateDelta.continuity_strength;
+            const groundedReset = stateDelta.grounded?.time_jump_evidence || stateDelta.grounded?.location_reset_evidence
+              || stateDelta.grounded?.channel_reset_evidence || stateDelta.grounded?.participant_context_reset_evidence
+              || stateDelta.grounded?.interaction_reset || stateDelta.grounded?.new_setting_opening;
+            return {
+              message_index: messageIndex,
+              provider_decision: Boolean(candidate.decision),
+              provider_confidence: candidate.ai_confidence ?? null,
+              proposal_sources: candidate.proposal_sources ?? (candidate.decision ? ['provider'] : []),
+              raw_signals: groups.map((group) => group?.evidence_group_id).filter(Boolean),
+              grounded_explicit_support: strongGroups.filter((group) => group.evidence_group_id !== 'narrative_context_reset').map((group) => group.evidence_group_id),
+              grounded_implied_support: strongGroups.filter((group) => group.evidence_group_id === 'narrative_context_reset').map((group) => group.evidence_group_id),
+              weak_signals: groups.filter((group) => !(group?.independent === true && group?.strength === 'strong')).map((group) => group?.evidence_group_id).filter(Boolean),
+              observed_state_delta: stateDelta.observed,
+              grounded_state_reset: Boolean(groundedReset),
+              continuity_strength: continuity,
+              continuity_evidence: continuity === 'strong' ? ['same_continuous_interaction'] : [],
+              deterministic_positive_rescue_eligible: Boolean(candidate.deterministic_positive_rescue_eligible),
+              deterministic_positive_rescue_used: Boolean(candidate.deterministic_positive_rescue_used),
+              pre_alignment_boundary: messageIndex,
+              final_boundary_index: sceneAudit.final_break_indices.includes(messageIndex) ? messageIndex : null,
+              final_disposition: candidate.terminal_break_disposition ?? candidate.terminal_disposition ?? null,
+              final_reason: candidate.gate_reason_code ?? null,
+              false_negative_risk: continuity === 'strong' ? 'low' : groundedReset && candidate.decision && candidate.terminal_break_disposition !== 'accepted_final_break' ? 'high' : 'unknown',
+            };
+          });
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections
@@ -6200,6 +6268,9 @@ export function bindSettingsUI(ctrl) {
   } else renderIdempotenceResult(null);
   $('#sme_run_idempotence_check').on('click', async function () {
     const button = $(this);
+    // This local developer operation touches the same durable stores as
+    // catch-up, so it must not overlap an active Memorize Chat run.
+    if (isCatchUpRunning()) return;
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
       setStatusMessage('Select a character before running the integrity check.');
@@ -6284,6 +6355,13 @@ export function bindSettingsUI(ctrl) {
       setStatusMessage('Developer idempotence check failed. See the browser console.');
     } finally {
       button.prop('disabled', false);
+      // A developer check never owns catch-up controls. Repair a stale
+      // Cancel presentation only when there is no actual background run.
+      if (!ctrl.extractionRunning && !ctrl.compactionRunning) {
+        $('#sme_cancel_catch_up').hide().prop('disabled', false);
+        $('#sme_catch_up').show();
+        ctrl.catchUpCancelled = false;
+      }
     }
   });
   $('#sme_scene_comparison_tolerance')

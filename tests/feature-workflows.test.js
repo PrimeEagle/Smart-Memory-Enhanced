@@ -503,6 +503,11 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /ai-batch-recovered/);
   assert.match(settings, /ai_breaks_rejected_by_deterministic_gate/);
   assert.match(settings, /evaluateDeterministicSceneGate/);
+  assert.match(settings, /deterministic-positive-rescue/);
+  assert.match(settings, /scene_transition_evaluation/);
+  assert.match(settings, /observed_state_delta/);
+  assert.match(read('scene-gate-utils.js'), /deterministic_positive_rescue_eligible/);
+  assert.match(read('scene-gate-utils.js'), /accepted_deterministic_positive_rescue/);
   assert.match(read('scene-gate-utils.js'), /gate_evidence/);
   assert.match(read('scene-gate-utils.js'), /gate_input_hash/);
   assert.match(settings, /minimum_length_rejections/);
@@ -735,6 +740,8 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   const settings = read('settings.js');
   const html = read('settings.html');
   assert.match(settings, /forceIdempotenceCheck/);
+  assert.match(settings, /if \(isCatchUpRunning\(\)\) return;/);
+  assert.match(settings, /#sme_cancel_catch_up'\)\.hide\(\)\.prop\('disabled', false\)/);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);

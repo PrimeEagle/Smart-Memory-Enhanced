@@ -8,25 +8,39 @@
 export function deriveSceneContinuitySignals(previousMessage = '', currentMessage = '') {
   const previous = String(previousMessage ?? '').trim();
   const current = String(currentMessage ?? '').trim();
+  // Temporal language quoted by a character is dialogue content, not a
+  // narrator-level transition. Keep the surrounding narration available for
+  // classification, but never let quoted/recalled timing words establish a
+  // scene reset on their own.
+  const withoutQuotedDialogue = (text) => String(text ?? '')
+    .replace(/[\u201c\u201d"'](?:[^\u201c\u201d"']|\\.)*[\u201c\u201d"']/g, ' ')
+    .replace(/(?:^|\n)\s*>.*$/gm, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const narrativeCurrent = withoutQuotedDialogue(current);
+  const narrativePrevious = withoutQuotedDialogue(previous);
   // A timing phrase in dialogue ("what happens the next day?") is not a
   // scene reset. Evaluate the candidate message itself and ignore quoted
   // dialogue, while retaining ordinary narrative/action openings.
   const narrativeActionOpening = /^\s*\*\s*(?:(?:i\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fell|drift|doz)|i\s+(?:make|schedule|spend|stay|work|start))/i.test(current);
   const markedDialogue = /^\s*\*\s*(?:[\u201c\u201d\u2018\u2019"']\s*)?(?:you(?:'re| are|\b)|i(?:'m| am|\b)|we(?:'re| are|\b)|he(?:'s| is|\b)|she(?:'s| is|\b)|they(?:'re| are|\b)|yes\b|no\b|okay\b|ok\b|but\b|and\b|because\b)/i.test(current);
   const dialogueLikeCurrent = (/^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current)) || (markedDialogue && !narrativeActionOpening);
-  const narrativeTimeOpening = /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|few days)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(current);
-  const narrativeTravelOrWakeOpening = /^\s*(?:\*\s*)?(?:(?:[A-Z][a-z]+\s+)?(?:arrived at|returned to|left for|woke up)|(?:[A-Z][a-z]+\s+)?woke\b)/.test(current);
-  const priorSleepClosure = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i.test(previous);
-  const currentSleepClosure = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i.test(current);
+  const narrativeTimeOpening = /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|few days)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(narrativeCurrent);
+  const narrativeWakeOpening = /^\s*(?:\*\s*)?(?:(?:[A-Z][a-z]+\s+)?woke up|(?:[A-Z][a-z]+\s+)?woke\b)/.test(narrativeCurrent);
+  const sleepPattern = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i;
+  const priorSleepClosure = !/[\u201c\u201d"']/.test(previous) && sleepPattern.test(narrativePrevious);
+  const currentSleepClosure = !dialogueLikeCurrent && sleepPattern.test(narrativeCurrent);
   const narrativeEmbeddedTime = !dialogueLikeCurrent && (narrativeActionOpening || (!/^\s*\*/.test(current) && !/[\u201c\u201d\u2018\u2019"']/.test(current)))
-    && /\b(?:the next (?:morning|day|evening|few days)|hours? later|days? later|some time later|that night|the following day)\b/i.test(current);
-  const explicitTransition = !dialogueLikeCurrent && (narrativeTimeOpening || narrativeEmbeddedTime || narrativeTravelOrWakeOpening || priorSleepClosure || currentSleepClosure);
+    && /\b(?:the next (?:morning|day|evening|few days)|hours? later|days? later|some time later|that night|the following day)\b/i.test(narrativeCurrent);
+  const explicitTransition = !dialogueLikeCurrent && (narrativeTimeOpening || narrativeEmbeddedTime || narrativeWakeOpening || priorSleepClosure || currentSleepClosure);
   // A bounded narrative opening can establish a fresh setting without a
   // literal "later" marker. It must be anchored at the current message and
   // name a concrete environment, so ordinary topic/action changes never
   // become transition support by themselves.
-  const narrativeContextOpening = /^\s*(?:\*\s*)?(?:(?:inside|outside|back at|across town|at|in)\s+(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)\b|(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)(?:\s+\w+){0,2}\s+(?:was|is|felt|looked|lay|stood)\b)/i.test(current);
-  const completedPriorInteraction = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways)\b/i.test(previous);
+  const narrativeContextOpening = /^\s*(?:\*\s*)?(?:(?:inside|outside|back at|across town|at|in)\s+(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)\b|(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)(?:\s+\w+){0,2}\s+(?:was|is|felt|looked|lay|stood)\b)/i.test(narrativeCurrent);
+  const completedPriorInteraction = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways)\b/i.test(narrativePrevious);
+  const completedRelocation = /\b(?:arrived at|walked up to|pulled up to|entered|came into)\b/i.test(narrativeCurrent)
+    && (completedPriorInteraction || /\b(?:show(?:ed|ing)? up|head(?:ed|ing)? (?:over|to)|went (?:over|home)|drove|walked|travel(?:ed|ing)?)\b/i.test(narrativePrevious));
   const sameChannel = /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line)\b/.test(previous)
     && /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line|he said|she said|they said)\b/.test(current);
   const directResponse = /^(?:["'“”‘’\-–—\s]*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b)/i.test(current);
@@ -38,7 +52,7 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   const attributedReply = /^\s*(?:\*\s*)?(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+)?(?:said|replied|answered|texted|messaged|whispered)\b/i.test(current);
   const emotionalOrReactive = /\b(?:smiled|laughed|cried|sighed|nodded|shook|hugged|kissed|flinched|stared|whispered|replied|answered)\b/i.test(current);
   const strongContinuity = !explicitTransition && !narrativeContextOpening && (sameChannel || directResponse || directTextReply || markupWrappedReply || attributedReply || emotionalOrReactive);
-  const stronglyImpliedTransition = !strongContinuity && narrativeContextOpening;
+  const stronglyImpliedTransition = !strongContinuity && (narrativeContextOpening || completedRelocation);
   return {
     explicit_transition: explicitTransition,
     same_channel: sameChannel,
@@ -57,7 +71,7 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
       }] : []),
       ...(stronglyImpliedTransition ? [{
         evidence_group_id: 'narrative_context_reset',
-        source_fingerprint: completedPriorInteraction ? 'completed_interaction_then_new_context' : 'anchored_new_context_opening',
+        source_fingerprint: completedRelocation ? 'completed_relocation_then_new_context' : completedPriorInteraction ? 'completed_interaction_then_new_context' : 'anchored_new_context_opening',
         detector_codes: ['narrative_context_reset'],
         strength: 'strong',
         independent: true,
@@ -138,6 +152,22 @@ export function deriveSceneCandidateStateDelta(previousMessage = '', currentMess
   return {
     prior_state_fingerprint: hash(previous),
     next_state_fingerprint: hash(current),
+    observed: {
+      location_changed: locationChanged,
+      channel_changed: channelChanged,
+      participant_set_changed: participantSetChanged,
+      time_changed: signals.explicit_transition,
+    },
+    grounded: {
+      location_reset_evidence: Boolean(signals.strongly_implied_transition),
+      channel_reset_evidence: false,
+      participant_context_reset_evidence: false,
+      time_jump_evidence: Boolean(signals.explicit_transition),
+      interaction_reset: interactionReset,
+      new_setting_opening: signals.strongly_implied_transition,
+    },
+    // Legacy flat fields are retained for one schema generation, but all new
+    // risk and promotion decisions use the observed/grounded distinction.
     location_changed: locationChanged,
     channel_changed: channelChanged,
     participant_set_changed: participantSetChanged,
@@ -194,6 +224,13 @@ export function evaluateDeterministicSceneGate({ aiRequestedBreak, heuristicBrea
     all.findIndex((candidate) => candidate.evidence_group_id === group.evidence_group_id && candidate.source_fingerprint === group.source_fingerprint) === index);
   const credibleIndependentTransitionSupport = uniqueEvidenceGroups
     .some((group) => group?.independent === true && group?.strength === 'strong');
+  const deterministicPositiveRescueEligible = credibleIndependentTransitionSupport
+    && continuity?.strong_continuity !== true;
+  const proposalSources = [
+    ...(aiRequestedBreak ? ['provider'] : []),
+    ...(heuristicBreak ? ['heuristic'] : []),
+    ...(!aiRequestedBreak && deterministicPositiveRescueEligible ? ['deterministic_strong_evidence'] : []),
+  ];
   const signals = {
     time_change_detected: Boolean(continuity?.explicit_transition),
     location_change_detected: false,
@@ -211,10 +248,10 @@ export function evaluateDeterministicSceneGate({ aiRequestedBreak, heuristicBrea
     minimum_scene_length_satisfied: sceneLength >= minimumSceneLength,
   };
   const gateInputHash = fingerprint({ aiRequestedBreak: Boolean(aiRequestedBreak), heuristicBreak: Boolean(heuristicBreak), sceneLength, minimumSceneLength, messageIndex, previousBoundaryIndex: previousBoundaryIndex ?? null, continuity });
-  const finish = (result) => ({ ...result, gate_input_hash: gateInputHash, gate_output_hash: fingerprint({ accepted: result.accepted, terminal_break_disposition: result.terminal_break_disposition, gate_result: result.gate_result, gate_reason_code: result.gate_reason_code, detected_change_types: result.detected_change_types, distance_from_previous_accepted_boundary: result.distance_from_previous_accepted_boundary, gate_evidence: result.gate_evidence }) });
-  if (!aiRequestedBreak) return finish({ accepted: false, terminal_break_disposition: null, gate_result: 'not_requested', gate_reason_code: null, detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
+  const finish = (result) => ({ ...result, proposal_sources: proposalSources, deterministic_positive_rescue_eligible: deterministicPositiveRescueEligible, deterministic_positive_rescue_used: Boolean(!aiRequestedBreak && result.accepted && deterministicPositiveRescueEligible), gate_input_hash: gateInputHash, gate_output_hash: fingerprint({ accepted: result.accepted, terminal_break_disposition: result.terminal_break_disposition, gate_result: result.gate_result, gate_reason_code: result.gate_reason_code, detected_change_types: result.detected_change_types, distance_from_previous_accepted_boundary: result.distance_from_previous_accepted_boundary, gate_evidence: result.gate_evidence, proposalSources }) });
+  if (!aiRequestedBreak && !deterministicPositiveRescueEligible) return finish({ accepted: false, terminal_break_disposition: null, gate_result: 'not_requested', gate_reason_code: null, detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
   if (continuity?.strong_continuity && !continuity?.explicit_transition) return finish({ accepted: false, terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'strong_continuity_veto', detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
   if (sceneLength < minimumSceneLength) return finish({ accepted: false, terminal_break_disposition: 'rejected_minimum_scene_length', gate_result: 'rejected', gate_reason_code: 'minimum_scene_length', detected_change_types: ['heuristic_transition'], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
   if (!credibleIndependentTransitionSupport) return finish({ accepted: false, terminal_break_disposition: 'rejected_deterministic_gate', gate_result: 'rejected', gate_reason_code: 'missing_independent_transition_evidence', detected_change_types: [], distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
-  return finish({ accepted: true, terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', detected_change_types: uniqueEvidenceGroups.map((group) => group.evidence_group_id), distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
+  return finish({ accepted: true, terminal_break_disposition: 'accepted_final_break', gate_result: 'accepted', gate_reason_code: aiRequestedBreak ? 'accepted_combined_change' : 'accepted_deterministic_positive_rescue', detected_change_types: uniqueEvidenceGroups.map((group) => group.evidence_group_id), distance_from_previous_accepted_boundary: distance, gate_evidence: signals });
 }

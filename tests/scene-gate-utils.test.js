@@ -178,3 +178,72 @@ test('candidate state deltas remain privacy-safe while distinguishing reset from
   assert.match(reset.prior_state_fingerprint, /^scene-state-/);
   assert.equal(JSON.stringify(reset).includes('Avery'), false);
 });
+
+test('strong narrator transitions are rescued when the provider returns no-break', () => {
+  const cases = [
+    ['They finished the call.', 'The next morning, Avery arrived at the garden.'],
+    ['He said thanks.', 'The next few days passed quietly.'],
+    ['*I go to sleep.*', 'There were two messages waiting when the day began.'],
+    ['They said goodbye and drove away.', 'Inside the restaurant, the room was quiet and nearly empty.'],
+  ];
+  for (const [previous, current] of cases) {
+    const result = evaluateDeterministicSceneGate({
+      aiRequestedBreak: false,
+      heuristicBreak: false,
+      sceneLength: 8,
+      minimumSceneLength: 3,
+      messageIndex: 80,
+      previousBoundaryIndex: 10,
+      continuity: deriveSceneContinuitySignals(previous, current),
+    });
+    assert.equal(result.accepted, true);
+    assert.equal(result.deterministic_positive_rescue_used, true);
+    assert.deepEqual(result.proposal_sources, ['deterministic_strong_evidence']);
+  }
+});
+
+test('state differences and weak conversational shifts cannot trigger deterministic rescue', () => {
+  const cases = [
+    ['They discussed dinner.', 'She changed the subject and smiled.'],
+    ['Avery was in the room.', 'Blake entered and answered the question.'],
+    ['They were texting.', 'She mentioned the phone while replying.'],
+  ];
+  for (const [previous, current] of cases) {
+    const result = evaluateDeterministicSceneGate({ aiRequestedBreak: false, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity: deriveSceneContinuitySignals(previous, current) });
+    assert.equal(result.accepted, false);
+    assert.equal(result.deterministic_positive_rescue_eligible, false);
+  }
+});
+
+test('dialogue and recalled temporal wording cannot become narrator transition support', () => {
+  const cases = [
+    ['They were speaking by phone.', 'Sophie was quiet. "Six years. You were depressed for six years because of me."'],
+    ['They were speaking by phone.', '"Tomorrow I will call you."'],
+    ['They were speaking by phone.', '"The next morning would be worse."'],
+    ['They were speaking by phone.', '"Years ago, I made a mistake."'],
+  ];
+  for (const [previous, current] of cases) {
+    const continuity = deriveSceneContinuitySignals(previous, current);
+    assert.equal(continuity.explicit_transition, false);
+    const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity });
+    assert.equal(result.accepted, false);
+  }
+});
+
+test('returning from a continuous activity is not a grounded new-scene opening', () => {
+  const continuity = deriveSceneContinuitySignals('"You look beautiful. Come on." They go for a run and return together.', 'They returned to the house breathless and laughing.');
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity });
+  assert.equal(continuity.explicit_transition, false);
+  assert.equal(continuity.strongly_implied_transition, false);
+  assert.equal(result.accepted, false);
+});
+
+test('state-delta diagnostics distinguish observed change from grounded reset', () => {
+  const continuous = deriveSceneCandidateStateDelta('Avery is in the office and asks a question.', 'Blake enters the office and answers immediately.');
+  assert.equal(continuous.observed.participant_set_changed, true);
+  assert.equal(continuous.grounded.participant_context_reset_evidence, false);
+  assert.equal(continuous.grounded.time_jump_evidence, false);
+  const reset = deriveSceneCandidateStateDelta('They said goodbye and drove away.', 'Inside the restaurant, the room was quiet and nearly empty.');
+  assert.equal(reset.grounded.location_reset_evidence, true);
+  assert.equal(reset.grounded.new_setting_opening, true);
+});

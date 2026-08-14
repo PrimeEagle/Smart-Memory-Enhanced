@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.97] - 2026-08-14
+
+### Fixed
+
+- Added a narrow deterministic positive-rescue path for scene breaks. A
+  provider `no-break` can no longer suppress a clearly grounded narrator time
+  jump, sleep/wake handoff, or independently established new-setting reset.
+  Rescued candidates still pass through the existing continuity veto,
+  minimum-length, coalescing, and `before_message` checks.
+- Prevented quoted or recalled temporal language from being treated as a
+  narrative sleep/time transition. This fixes continuous dialogue being split
+  merely because a character discusses a prior duration or sleep event.
+- Refined relocation handling so a return within one continuous activity does
+  not become a new scene solely because the location changes.
+- Split candidate state-delta diagnostics into observed differences and
+  source-grounded reset evidence. Inferred location, channel, or participant
+  changes alone no longer receive a high false-negative risk classification.
+
+### Added
+
+- Added privacy-safe scene-transition evaluation diagnostics, including
+  provider decision, proposal sources, grounded support, continuity, rescue
+  status, final disposition, and reason.
+
+### Tests
+
+- Added deterministic regression coverage for provider-negative time jumps,
+  sleep/wake handoffs, completed relocations, dialogue temporal references,
+  continuous returns from activity, and observed-versus-grounded state deltas.
+- Automated verification passed: 366 unit/integration tests and the 48-case
+  replay regression harness. A fresh live A/B replay remains the release
+  validation follow-up for measured boundary stability.
+
 ## [0.8.96] - 2026-08-13
 
 ### Fixed
