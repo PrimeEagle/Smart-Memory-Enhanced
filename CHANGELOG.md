@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.98] - 2026-08-15
+
+### Fixed
+
+- Made the Memorize Chat completion finalizer fail-safe. Completion state and
+  controls now reset before optional cleanup, so a late cleanup exception
+  cannot leave Cancel visible or incorrectly block the Developer Idempotence
+  Check after an otherwise completed run.
+- Disable Run Idempotence Check while Memorize Chat is active and restore it
+  reliably when the run completes, fails, or is cancelled.
+- Restore Export Diagnostics availability after a page reload once chat
+  metadata is loaded. A completed developer check now refreshes the export
+  control as well.
+
+### Tests
+
+- Added workflow coverage for catch-up completion cleanup ordering,
+  idempotence-control availability, and persisted diagnostics export restore.
+
 ## [0.8.97] - 2026-08-14
 
 ### Fixed

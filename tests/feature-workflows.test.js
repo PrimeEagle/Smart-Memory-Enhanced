@@ -742,6 +742,12 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /forceIdempotenceCheck/);
   assert.match(settings, /if \(isCatchUpRunning\(\)\) return;/);
   assert.match(settings, /#sme_cancel_catch_up'\)\.hide\(\)\.prop\('disabled', false\)/);
+  assert.match(settings, /Completion must become observable before optional runtime cleanup/);
+  assert.match(settings, /Catch-up control cleanup warning/);
+  assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', true\)/);
+  assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', false\)/);
+  assert.match(settings, /renderIdempotenceResult\(savedResult\);\s*\$\('#sme_export_diagnostics'\)\.prop\('disabled', !getExportableDiagnostics\(\)\);/s);
+  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*ctrl\.catchUpCancelled = false;\s*try \{\s*\$\('#sme_cancel_catch_up'\)\.hide\(\)/s);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);
@@ -801,6 +807,14 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   const idempotenceStart = settings.indexOf('async function runFinalIntegrityReconciliation');
   const idempotenceRunner = settings.slice(idempotenceStart, settings.indexOf('return result;', idempotenceStart) + 'return result;'.length);
   assert.doesNotMatch(idempotenceRunner, /generateMemoryExtract|detectSceneBreak|generateProfiles|extractAndStoreMemories/);
+});
+
+test('chat load restores diagnostics export availability from persisted metadata', () => {
+  const index = read('index.js');
+  assert.match(index, /restoredDiagnostics/);
+  assert.match(index, /restoredFreshStartAudit/);
+  assert.match(index, /restoredDeveloperCheck/);
+  assert.match(index, /#sme_export_diagnostics'\)\.prop\('disabled', !\(restoredDiagnostics \|\| restoredFreshStartAudit \|\| restoredDeveloperCheck\)\)/);
 });
 
 test('scene provider attempts use globally unique parented request lineage and reconciled counters', () => {

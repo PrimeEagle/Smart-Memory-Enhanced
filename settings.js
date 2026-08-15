@@ -3777,6 +3777,10 @@ export function bindSettingsUI(ctrl) {
     ctrl.extractionRunning = true;
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
+    // The developer check touches the same durable stores as catch-up. Make
+    // its unavailable state visible instead of relying only on a click-time
+    // warning.
+    $('#sme_run_idempotence_check').prop('disabled', true);
     setCanonicalRuntimeContextSnapshot(canonicalRuntimeContext);
     // A run ID is written before extraction so every entity link resolved by
     // a tier can distinguish this run from legacy/mirrored data at final
@@ -5660,15 +5664,35 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
-      if (finalizationEtaRefreshTimer) window.clearInterval(finalizationEtaRefreshTimer);
-      $('#sme_catch_up_eta').hide().empty();
-      clearCanonicalRuntimeContextSnapshot();
-      unsubscribeRetry();
-      $('#sme_cancel_catch_up').hide();
-      $('#sme_catch_up').show();
+      // Completion must become observable before optional runtime cleanup.
+      // A cleanup helper can fail after a long successful run; it must never
+      // strand the UI on Cancel or leave the local idempotence guard locked.
       ctrl.extractionRunning = false;
       ctrl.compactionRunning = false;
       ctrl.catchUpCancelled = false;
+      try {
+        $('#sme_cancel_catch_up').hide().prop('disabled', false);
+        $('#sme_catch_up').show().prop('disabled', false);
+        $('#sme_run_idempotence_check').prop('disabled', false);
+        $('#sme_catch_up_eta').hide().empty();
+      } catch (cleanupErr) {
+        console.warn('[Smart Memory Enhanced] Catch-up control cleanup warning:', cleanupErr);
+      }
+      try {
+        if (finalizationEtaRefreshTimer) window.clearInterval(finalizationEtaRefreshTimer);
+      } catch (cleanupErr) {
+        console.warn('[Smart Memory Enhanced] Catch-up ETA cleanup warning:', cleanupErr);
+      }
+      try {
+        clearCanonicalRuntimeContextSnapshot();
+      } catch (cleanupErr) {
+        console.warn('[Smart Memory Enhanced] Canonical runtime cleanup warning:', cleanupErr);
+      }
+      try {
+        unsubscribeRetry();
+      } catch (cleanupErr) {
+        console.warn('[Smart Memory Enhanced] Retry listener cleanup warning:', cleanupErr);
+      }
     }
   });
 
@@ -6347,6 +6371,7 @@ export function bindSettingsUI(ctrl) {
       }
       const savedResult = context.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? reconciliation.idempotence;
       renderIdempotenceResult(savedResult);
+      $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics());
       const result = normalizeIdempotenceResult(savedResult).idempotent === true ? 'passed' : 'found remaining changes';
       setStatusMessage(`Developer idempotence check ${result}.`);
     } catch (error) {

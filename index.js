@@ -1096,6 +1096,13 @@ async function onChatChangedImpl() {
   // Migrate chat data first - no character name needed, operates on chatMetadata.
   // Fast no-op when the container is already at the current schema version.
   await ensureChatMigrated();
+  // The settings panel is bound before SillyTavern finishes restoring a chat.
+  // Refresh this control after the current chat metadata is available so a
+  // completed run remains exportable across a page reload.
+  const restoredDiagnostics = getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
+  const restoredFreshStartAudit = getContext().chatMetadata?.[META_KEY]?.fresh_start_postcondition_audit;
+  const restoredDeveloperCheck = getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check;
+  $('#sme_export_diagnostics').prop('disabled', !(restoredDiagnostics || restoredFreshStartAudit || restoredDeveloperCheck));
   // Legacy resolved summaries predate semantic verification. Persist their
   // quarantine fields on first load so every later reader sees the same state.
   await migrateLegacyArcSummaries().catch((error) => {
