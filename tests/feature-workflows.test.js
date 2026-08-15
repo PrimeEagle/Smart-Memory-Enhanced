@@ -779,6 +779,13 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /automatic_stabilization_passes/);
   assert.match(settings, /stabilization_dependency_trace/);
   assert.match(settings, /post_automatic_manual_maintenance_diff/);
+  assert.match(settings, /post_automatic_manual_dependency_trace/);
+  assert.match(settings, /post_finalization_precommit/);
+  assert.match(settings, /post_automatic_finalization_dependency_trace/);
+  assert.match(settings, /preCommitAutomaticReconciliation = await runFinalIntegrityReconciliation/);
+  assert.match(settings, /scene_boundary_source_audit/);
+  assert.match(settings, /provider_proposal: candidate\.decision === true \? 'break' : 'no_break'/);
+  assert.match(settings, /final_source: candidate\.deterministic_positive_rescue_used/);
   assert.match(settings, /scene_rejected_break_audit/);
   assert.match(settings, /grounded_explicit_transition_support/);
   assert.match(settings, /grounded_implied_transition_support/);

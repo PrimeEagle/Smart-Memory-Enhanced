@@ -226,10 +226,27 @@ export function durableStateHash(metadata = {}) {
 
 function canonicalValueDiff(before, after, limit = 24) {
   const paths = [];
+  const arrayRecordKey = (value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return `index:${index}`;
+    // Keep leaf traces actionable without leaking labels or memory content.
+    // The durable projection has already normalized ordering, so this only
+    // replaces an opaque collection-level diff with a stable record handle.
+    const identity = value.id ?? value.key ?? value.canonical_card_id ?? value.canonical_persona_id ?? null;
+    return identity == null ? `index:${index}` : `record:${fingerprint(String(identity))}`;
+  };
   const visit = (left, right, path = '') => {
     if (paths.length >= limit || JSON.stringify(left) === JSON.stringify(right)) return;
     const leftObject = left && typeof left === 'object' && !Array.isArray(left);
     const rightObject = right && typeof right === 'object' && !Array.isArray(right);
+    if (Array.isArray(left) && Array.isArray(right)) {
+      const leftRecords = new Map(left.map((value, index) => [arrayRecordKey(value, index), value]));
+      const rightRecords = new Map(right.map((value, index) => [arrayRecordKey(value, index), value]));
+      for (const key of [...new Set([...leftRecords.keys(), ...rightRecords.keys()])].sort()) {
+        visit(leftRecords.get(key), rightRecords.get(key), `${path}[${key}]`);
+        if (paths.length >= limit) break;
+      }
+      return;
+    }
     if (!leftObject || !rightObject) {
       paths.push({
         path: path || 'root',
@@ -369,7 +386,7 @@ export function compareDurableSemanticStates(before = {}, after = {}, limit = 24
     first_hash: firstHash,
     second_hash: secondHash,
     changed: paths.length > 0,
-    changed_top_level_stores: [...new Set(paths.map((entry) => entry.path.split('.')[0]))],
+    changed_top_level_stores: [...new Set(paths.map((entry) => entry.path.split(/[.[]/, 1)[0]))],
     path_count: paths.length,
     paths,
     changed_components: changedComponents,
@@ -421,7 +438,13 @@ export function deriveDurableWriteAccounting(before = {}, after = {}, counts = {
   const comparison = compareDurableSemanticStates(before, after, limit);
   const logical = numeric(counts.logical_mutations);
   const physical = numeric(counts.physical_mutations);
-  const semanticUnits = comparison.changed ? Math.max(1, comparison.path_count) : 0;
+  // A writer counts one durable-record mutation even when it updates several
+  // leaf fields.  Group leaves by the record handle emitted by the canonical
+  // diff so accounting remains consistent with those parent mutations.
+  const semanticUnits = comparison.changed ? Math.max(1, new Set(comparison.paths.map((entry) => {
+    const match = String(entry.path ?? 'root').match(/^[^.]+(?:\[record:[^\]]+\])?/);
+    return match?.[0] ?? String(entry.path ?? 'root').split('.')[0];
+  })).size) : 0;
   const countedUnits = Math.max(logical, physical);
   const accountingBackfill = Math.max(0, semanticUnits - countedUnits);
   const traces = comparison.paths.map((path) => ({

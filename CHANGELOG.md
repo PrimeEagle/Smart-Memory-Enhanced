@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.99] - 2026-08-15
+
+### Fixed
+
+- Moved automatic canonical stabilization to the true final pre-save boundary.
+  The final graph is now reconciled after finalization has materialized its
+  durable references, preventing a later manual Developer Idempotence Check
+  from finding maintenance that the completed run had already reported as
+  stable.
+- Made any remaining post-automatic manual maintenance traceable through
+  privacy-safe store, record-fingerprint, field-path, and before/after hash
+  diagnostics.
+- Distinguished provider `no-break` observations from final scene-boundary
+  decisions. Deterministic positive rescues are now explicitly identified in
+  diagnostics rather than appearing as ambiguous model decisions.
+
+### Tests
+
+- Added coverage for privacy-safe durable record fingerprints and the final
+  pre-save automatic-stabilization/source-audit contracts.
+- Automated verification passed: 368 unit/integration tests and the 48-case
+  replay regression harness. Live SillyTavern validation remains required to
+  confirm the automatic and manual idempotence hashes match after a full run.
+
 ## [0.8.98] - 2026-08-15
 
 ### Fixed

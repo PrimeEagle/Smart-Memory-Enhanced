@@ -208,6 +208,18 @@ test('durable-state diagnostics expose changed store paths without content', () 
   assert.equal(JSON.stringify(summary).includes('private after'), false);
 });
 
+test('durable-state diagnostics identify changed scene records by a privacy-safe fingerprint', () => {
+  const summary = summarizeDurableStateChanges(
+    { sceneHistory: [{ id: 'scene-private-id', summary: 'private before' }] },
+    { sceneHistory: [{ id: 'scene-private-id', summary: 'private after' }] },
+  );
+  assert.equal(summary.changed, true);
+  assert.match(summary.paths[0].path, /^sceneHistory\[record:fnv1a-/);
+  assert.equal(JSON.stringify(summary).includes('scene-private-id'), false);
+  assert.equal(JSON.stringify(summary).includes('private before'), false);
+  assert.equal(JSON.stringify(summary).includes('private after'), false);
+});
+
 test('session-memory canonicalization is stable across legacy default backfill', () => {
   const legacy = { sessionMemories: [{ type: 'fact', content: 'Private claim', ts: 4, source_message_indices: [2, 1] }] };
   const normalized = { sessionMemories: [{

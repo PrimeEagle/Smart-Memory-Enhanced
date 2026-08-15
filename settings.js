@@ -478,6 +478,19 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     stale_references_after_second_pass: null,
     idempotent: null,
     post_automatic_manual_maintenance_diff: postAutomaticManualMaintenanceDiff,
+    // A manual check must be able to explain any mutation that the completed
+    // automatic path missed without exposing record content.  This is filled
+    // from the reconciliation boundary's canonical semantic diff below.
+    post_automatic_manual_dependency_trace: forceIdempotenceCheck ? {
+      stage: 'manual_first_pass_after_automatic_stabilization',
+      automatic_state_hash: durableStateHashBefore,
+      manual_first_pass_hash: durableStateHashAfterFirstPass,
+      automatic_missed_mutation: Boolean(postAutomaticManualMaintenanceDiff?.canonical_state_changed),
+      records: postAutomaticManualMaintenanceDiff?.records ?? [],
+      dependency_hypothesis: postAutomaticManualMaintenanceDiff?.canonical_state_changed
+        ? 'durable_reference_materialized_after_prior_automatic_boundary'
+        : 'none',
+    } : null,
   };
   // Developer-only semantic idempotence check. It intentionally runs on the
   // already-finalized serialized metadata; it does not regenerate records or
@@ -4790,6 +4803,38 @@ export function bindSettingsUI(ctrl) {
               false_negative_risk: continuity === 'strong' ? 'low' : groundedReset && candidate.decision && candidate.terminal_break_disposition !== 'accepted_final_break' ? 'high' : 'unknown',
             };
           });
+          // Keep source provenance and terminal disposition separate.  In
+          // particular, a provider's `break=false` is an input observation,
+          // never a final-scene explanation once deterministic strong evidence
+          // has accepted a boundary.  This compact audit is intentionally
+          // text-free so long-chat replays can be reviewed safely.
+          const finalBoundarySet = new Set(sceneAudit.final_break_indices);
+          sceneAudit.scene_boundary_source_audit = {
+            accepted_boundaries: (sceneAudit.candidate_dispositions ?? [])
+              .filter((candidate) => finalBoundarySet.has(candidate.message_index ?? candidate.candidate_id))
+              .map((candidate) => ({
+                message_index: candidate.message_index ?? candidate.candidate_id ?? null,
+                provider_proposal: candidate.decision === true ? 'break' : 'no_break',
+                proposal_sources: candidate.proposal_sources ?? (candidate.decision ? ['provider'] : []),
+                terminal_disposition: candidate.terminal_break_disposition ?? 'accepted_final_break',
+                final_source: candidate.deterministic_positive_rescue_used
+                  ? 'deterministic_positive_rescue'
+                  : candidate.decision === true ? 'provider_grounded_gate'
+                    : 'deterministic_grounded_gate',
+                final_reason: candidate.gate_reason_code ?? 'accepted_final_break',
+              })),
+            rejected_provider_breaks: sceneAudit.scene_rejected_break_audit.records
+              .filter((record) => record.final_false_negative_risk === 'high')
+              .slice(0, 12)
+              .map((record) => ({
+                message_index: record.message_index,
+                terminal_disposition: 'rejected_deterministic_gate',
+                final_reason: record.review_reason,
+                final_false_negative_risk: record.final_false_negative_risk,
+              })),
+            accepted_boundary_count: sceneAudit.final_break_indices.length,
+            high_risk_rejection_count: sceneAudit.scene_rejected_break_audit.high_risk_false_negative_count,
+          };
           sceneAudit.total_nonfinal_ai_breaks = sceneAudit.deterministic_gate_rejections
             + sceneAudit.post_gate_minimum_length_rejections
             + sceneAudit.post_gate_coalescing_rejections
@@ -5590,6 +5635,55 @@ export function bindSettingsUI(ctrl) {
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
       catchUpContext.chatMetadata[META_KEY].request_efficiency_history = diagnostics.request_efficiency_history;
       catchUpContext.chatMetadata[META_KEY].repair_history = diagnostics.repair_history;
+
+      // This is deliberately the last local reconciliation boundary before
+      // the staged transaction is committed.  Earlier finalization builds
+      // bounded history and diagnostic records and may cause a persistence
+      // helper to materialize a legacy durable default.  Running only the
+      // earlier reconciliation made the automatic result look stable even
+      // though a subsequently-invoked Developer check could still repair
+      // card-local, scene, session, or arc records.  The same reconciler is
+      // therefore run against the actual pre-commit durable graph, after all
+      // durable-reference-producing finalization work has completed.
+      const preCommitAutomaticHash = durableStateHash(snapshotIdempotenceDurableState(catchUpContext.chatMetadata[META_KEY]));
+      try {
+        const preCommitAutomaticReconciliation = await runFinalIntegrityReconciliation(characterName);
+        const postCommitAutomaticHash = preCommitAutomaticReconciliation.idempotence?.durable_state_hash_after_second_pass ?? null;
+        const preCommitDependencyTrace = {
+          stage: 'post_finalization_precommit',
+          pipeline: 'automatic_post_catchup_stabilization',
+          input_durable_hash: preCommitAutomaticHash,
+          output_durable_hash: postCommitAutomaticHash,
+          stable: preCommitAutomaticReconciliation.idempotence?.idempotent === true,
+          passes: preCommitAutomaticReconciliation.idempotence?.automatic_stabilization_passes?.executed_passes ?? 0,
+          changed_components: preCommitAutomaticReconciliation.idempotence?.automatic_stabilization_passes?.passes
+            ?.flatMap((pass) => pass.changed_components ?? [])
+            .map((entry) => entry.component) ?? [],
+        };
+        // Replace the provisional earlier audit with the one produced from
+        // the true finalized state. Consumers consequently compare the manual
+        // Developer command with the exact durable graph it will receive.
+        runResult.finalReconciliation.integrity_audit = preCommitAutomaticReconciliation.integrity_audit ?? runResult.finalReconciliation.integrity_audit;
+        runResult.finalReconciliation.final_state_audit = preCommitAutomaticReconciliation.final_state_audit ?? runResult.finalReconciliation.final_state_audit;
+        runResult.finalReconciliation.stabilization = preCommitAutomaticReconciliation.idempotence ?? runResult.finalReconciliation.stabilization;
+        runResult.finalReconciliation.idempotence = preCommitAutomaticReconciliation.idempotence ?? runResult.finalReconciliation.idempotence;
+        runResult.finalReconciliation.final_state_consistency = preCommitAutomaticReconciliation.final_state_consistency ?? runResult.finalReconciliation.final_state_consistency;
+        runResult.finalReconciliation.precommit_automatic_dependency_trace = preCommitDependencyTrace;
+        diagnostics.finalReconciliation = runResult.finalReconciliation;
+        diagnostics.automatic_stabilization = runResult.finalReconciliation.stabilization;
+        diagnostics.post_automatic_finalization_dependency_trace = preCommitDependencyTrace;
+      } catch (error) {
+        // Do not let a local observability pass discard validated memories at
+        // the end of a long run. Record the bounded failure, retain the
+        // earlier reconciliation result, and let normal quality reporting
+        // surface the problem.
+        recordCatchUpError('post-finalization automatic reconciliation error', error, 'identity');
+        diagnostics.post_automatic_finalization_dependency_trace = {
+          stage: 'post_finalization_precommit', pipeline: 'automatic_post_catchup_stabilization',
+          input_durable_hash: preCommitAutomaticHash, output_durable_hash: null,
+          stable: false, passes: 0, changed_components: [], check_failed: true,
+        };
+      }
       latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
