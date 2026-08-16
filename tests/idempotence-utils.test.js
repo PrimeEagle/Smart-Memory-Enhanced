@@ -29,6 +29,17 @@ test('metadata-only hash differences remain idempotent', () => {
   assert.equal(result.metadata_only_changes, true);
 });
 
+test('persisted persona reconciliation context is excluded from durable state hashing', () => {
+  const before = {
+    sessionMemories: [{ id: 'memory-1', content: 'Durable memory.' }],
+    canonical_persona_context: { active_persona: { canonical_name: 'First Persona', stable_persona_id: 'one' } },
+  };
+  const after = structuredClone(before);
+  after.canonical_persona_context.active_persona = { canonical_name: 'Second Persona', stable_persona_id: 'two' };
+  assert.equal(durableStateHash(before), durableStateHash(after));
+  assert.equal(compareDurableSemanticStates(before, after).changed, false);
+});
+
 test('durable-write accounting backfills an in-place semantic mutation once', () => {
   const before = { sceneHistory: [{ id: 'scene-1', character_participants: ['A'] }] };
   const after = structuredClone(before);

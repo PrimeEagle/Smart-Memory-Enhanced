@@ -403,6 +403,20 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     quarantined_arc_summaries: quarantinedSummaries,
     duration_ms: Math.round(performance.now() - startedAt),
   };
+  const priorAutomaticPersonaInput = forceIdempotenceCheck
+    ? metadataBefore?.catch_up_diagnostics?.automatic_stabilization?.persona_reconciliation_input
+      ?? metadataBefore?.catch_up_diagnostics?.finalReconciliation?.stabilization?.persona_reconciliation_input
+      ?? null
+    : null;
+  const personaInputComparison = forceIdempotenceCheck ? {
+    automatic_input_available: Boolean(priorAutomaticPersonaInput),
+    automatic_context_fingerprint: priorAutomaticPersonaInput?.context_fingerprint ?? null,
+    manual_context_fingerprint: reconciliation.persona_reconciliation_input?.context_fingerprint ?? null,
+    equivalent: priorAutomaticPersonaInput
+      ? priorAutomaticPersonaInput.context_fingerprint === reconciliation.persona_reconciliation_input?.context_fingerprint
+      : null,
+    active_and_historical_remain_distinct: reconciliation.persona_reconciliation_input?.active_and_historical_are_distinct ?? false,
+  } : null;
   const firstPassRepairs = reconciliation.integrity_audit?.entity_link_repairs ?? {};
   const metadataAfterFirstPass = getContext().chatMetadata?.[META_KEY] ?? {};
   const durableStateAfterFirstPass = snapshotIdempotenceDurableState(metadataAfterFirstPass);
@@ -478,6 +492,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     stale_references_after_second_pass: null,
     idempotent: null,
     post_automatic_manual_maintenance_diff: postAutomaticManualMaintenanceDiff,
+    persona_reconciliation_input: reconciliation.persona_reconciliation_input ?? null,
+    persona_reconciliation_input_comparison: personaInputComparison,
     // A manual check must be able to explain any mutation that the completed
     // automatic path missed without exposing record content.  This is filled
     // from the reconciliation boundary's canonical semantic diff below.
@@ -607,6 +623,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       revision_metadata_changed: revisionMetadataHash(metadataBeforeSecondPass) !== revisionMetadataHash(metadataAfterSecondPass),
       second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
       second_pass_physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
+      second_pass_input_hash: finalVerificationComparison.first_hash,
+      second_pass_output_hash: finalVerificationComparison.second_hash,
       recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
       stale_references_after_second_pass: secondPass.integrity_audit?.stale_entity_references?.length ?? 0,
       unsafe_merge_candidates_after_second_pass: secondPass.integrity_audit?.unsafe_merge_candidates ?? 0,
@@ -1635,7 +1653,7 @@ export function bindSettingsUI(ctrl) {
       'entity_redirects', 'catch_up_diagnostics', 'last_catchup_run_id',
       'scene_stability_history', 'request_efficiency_history', 'repair_history',
       'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
-      'developer_idempotence_check', 'historical_persona_snapshot',
+      'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
       'active_catchup_run_id', 'parser_debris_cleanup',
       'fresh_start_postcondition_audit',
     ]) delete metadata[key];
@@ -3817,6 +3835,10 @@ export function bindSettingsUI(ctrl) {
     } else {
       delete catchUpContext.chatMetadata[META_KEY].historical_persona_snapshot;
     }
+    // Retain the finalized identity context with this chat's durable graph.
+    // Once runtime cleanup occurs, the optional Developer check must not
+    // rebuild a different current persona from imported header fields.
+    catchUpContext.chatMetadata[META_KEY].canonical_persona_context = structuredClone(canonicalRuntimeContext);
     let catchUpErrorCount = 0;
     const runResult = {
       run_id: catchUpRunId,

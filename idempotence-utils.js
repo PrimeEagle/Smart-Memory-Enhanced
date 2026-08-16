@@ -26,6 +26,9 @@ const VOLATILE_KEYS = new Set([
   'lastActive', 'catch_up_diagnostics', 'developer_idempotence_check',
   'repair_history', 'request_efficiency_history', 'last_catchup_run_id',
   'scene_stability_history', 'scene_stability_analysis', 'run_id',
+  // Captured identity context is an input contract for later local checks,
+  // not generated memory/graph state. It must never affect a durable hash.
+  'canonical_persona_context',
   'created_at', 'completed_at', 'written_at', 'repaired_at', 'last_checked_at',
   'revision', 'reference_rewrite_revision', 'index_rebuild_revision',
   'final_audit_revision', 'developer_summary', 'status_card',

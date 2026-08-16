@@ -117,7 +117,7 @@ import {
   mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, snapshotCanonicalRuntimeContext } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, getFinalizedCanonicalPersonaContext, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, summarizeCanonicalPersonaContext } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -1593,7 +1593,15 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   // stable transcript author at its start. Reuse that authoritative snapshot
   // during final reconciliation instead of rebuilding from placeholder chat
   // headers (for example `user-default.png`).
-  const runtimeSnapshot = getCanonicalRuntimeContextSnapshot() ?? snapshotCanonicalRuntimeContext(context);
+  const runtimeSnapshot = getFinalizedCanonicalPersonaContext(context);
+  const personaReconciliationInput = {
+    ...summarizeCanonicalPersonaContext(runtimeSnapshot),
+    context_source: getCanonicalRuntimeContextSnapshot()
+      ? 'live_runtime_snapshot'
+      : context?.chatMetadata?.[META_KEY]?.canonical_persona_context
+      ? 'persisted_finalized_chat_context'
+      : 'live_runtime_context',
+  };
   // Final reconciliation needs the active persona plus approved chat-local
   // characters in the same authoritative roster used for every store.
   const roster = buildCanonicalCharacterRoster(context, {
@@ -2635,6 +2643,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       reconciliation_yields: reconciliationYieldCount,
       registry_observations: observations.length,
     },
+    persona_reconciliation_input: personaReconciliationInput,
     integrity_audit: integrityAudit,
   };
 }

@@ -24,11 +24,37 @@ import {
   resolveEntityCandidate,
   recoverImportedPersonaFromAuthorship,
   snapshotCanonicalRuntimeContext,
+  getFinalizedCanonicalPersonaContext,
+  summarizeCanonicalPersonaContext,
   setCanonicalRuntimeContextSnapshot,
   clearCanonicalRuntimeContextSnapshot,
   isGenericCharacterContainerName,
   validateExactCanonicalProposal,
 } from '../canonical-entities.js';
+
+test('finalized chat persona context survives runtime cleanup without merging historical identity', () => {
+  const finalized = snapshotCanonicalRuntimeContext({
+    activePersona: { name: 'Live Persona', id: 'live-persona-id', aliases: ['Live'] },
+    chat: [
+      { is_user: true, name: 'Historical Author', mes: 'Archived message one.' },
+      { is_user: true, name: 'Historical Author', mes: 'Archived message two.' },
+    ],
+  });
+  clearCanonicalRuntimeContextSnapshot();
+  const restored = getFinalizedCanonicalPersonaContext({
+    chatMetadata: { smartMemoryEnhanced: { canonical_persona_context: structuredClone(finalized) } },
+    chat: [
+      { is_user: true, name: 'Historical Author', mes: 'Archived message one.' },
+      { is_user: true, name: 'Historical Author', mes: 'Archived message two.' },
+    ],
+  });
+  assert.equal(restored.active_persona.stable_persona_id, 'live-persona-id');
+  assert.equal(restored.historical_persona.canonical_name, 'Historical Author');
+  assert.notEqual(restored.active_persona.stable_persona_id, restored.historical_persona.stable_persona_id);
+  const diagnostic = summarizeCanonicalPersonaContext(restored);
+  assert.equal(diagnostic.active_and_historical_are_distinct, true);
+  assert.notEqual(diagnostic.active_persona.canonical_name_hash, diagnostic.historical_persona.canonical_name_hash);
+});
 import { isEntityRolePlaceholder, isPlausibleEntityName } from '../parsers.js';
 
 const roster = buildCanonicalCharacterRoster({

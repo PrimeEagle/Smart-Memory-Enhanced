@@ -780,6 +780,10 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /stabilization_dependency_trace/);
   assert.match(settings, /post_automatic_manual_maintenance_diff/);
   assert.match(settings, /post_automatic_manual_dependency_trace/);
+  assert.match(settings, /canonical_persona_context = structuredClone\(canonicalRuntimeContext\)/);
+  assert.match(settings, /second_pass_input_hash: finalVerificationComparison\.first_hash/);
+  assert.match(settings, /second_pass_output_hash: finalVerificationComparison\.second_hash/);
+  assert.match(read('ui.js'), /getFinalizedCanonicalPersonaContext\(context\)/);
   assert.match(settings, /post_finalization_precommit/);
   assert.match(settings, /post_automatic_finalization_dependency_trace/);
   assert.match(settings, /preCommitAutomaticReconciliation = await runFinalIntegrityReconciliation/);
@@ -858,7 +862,11 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /liveRegistryIds/);
   assert.match(ui, /normalizePersonaReference/);
   assert.match(ui, /\^\(\?:persona:\)\+\/i/);
-  assert.match(ui, /snapshotCanonicalRuntimeContext\(context\)/);
+  assert.match(ui, /getFinalizedCanonicalPersonaContext\(context\)/);
+  assert.match(ui, /summarizeCanonicalPersonaContext\(runtimeSnapshot\)/);
+  assert.match(settings, /persona_reconciliation_input_comparison/);
+  assert.match(settings, /automatic_context_fingerprint/);
+  assert.match(settings, /manual_context_fingerprint/);
   assert.match(ui, /runtimeSnapshot,/);
   assert.match(ui, /registryGroups\.flat\(\)\.flatMap/);
   assert.match(ui, /integrity_audit/);

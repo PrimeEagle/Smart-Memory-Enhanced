@@ -191,6 +191,54 @@ export function getCanonicalRuntimeContextSnapshot() {
   return activeRuntimePersonaSnapshot;
 }
 
+/**
+ * Return the one finalized persona context for a chat. Catch-up captures the
+ * live runtime persona once and persists this compact identity-only snapshot
+ * with the resulting graph. Later local reconciliation (including a Developer
+ * check after runtime cleanup or reload) must use that same context rather
+ * than reinterpreting an imported chat header as the current persona. Active
+ * and historical personas deliberately remain separate fields.
+ */
+export function getFinalizedCanonicalPersonaContext(context = {}) {
+  const runtime = getCanonicalRuntimeContextSnapshot();
+  if (runtime?.active_persona?.canonical_name || runtime?.historical_persona?.canonical_name) return runtime;
+  const persisted = context?.chatMetadata?.smartMemoryEnhanced?.canonical_persona_context;
+  if (persisted?.active_persona?.canonical_name || persisted?.historical_persona?.canonical_name) return persisted;
+  return snapshotCanonicalRuntimeContext(context);
+}
+
+/** Privacy-safe, bounded identity context for reconciliation diagnostics. */
+export function summarizeCanonicalPersonaContext(snapshot = null) {
+  const fingerprint = (value) => {
+    const text = String(value ?? '');
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  };
+  const summarizePersona = (persona) => persona?.canonical_name ? {
+    canonical_name_hash: fingerprint(normalize(persona.canonical_name)),
+    stable_persona_id_hash: fingerprint(persona.stable_persona_id),
+    alias_hashes: [...new Set([...(persona.approved_aliases ?? []), ...(persona.historical_aliases ?? [])]
+      .map((alias) => fingerprint(normalize(alias))))].sort(),
+    source: persona.source ?? null,
+    runtime_source: persona.runtime_source ?? null,
+    scope: persona.scope ?? null,
+  } : null;
+  const active = summarizePersona(snapshot?.active_persona);
+  const historical = summarizePersona(snapshot?.historical_persona);
+  return {
+    active_persona: active,
+    historical_persona: historical,
+    active_and_historical_are_distinct: Boolean(active?.stable_persona_id_hash
+      && historical?.stable_persona_id_hash
+      && active.stable_persona_id_hash !== historical.stable_persona_id_hash),
+    context_fingerprint: fingerprint(JSON.stringify({ active, historical })),
+  };
+}
+
 /** Normalizes supported roster shapes before identity helpers inspect them. */
 export function getCanonicalRosterPeople(roster) {
   if (Array.isArray(roster)) return roster;

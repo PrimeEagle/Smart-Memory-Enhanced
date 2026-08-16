@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-16
+
+### Fixed
+
+- Corrected the automatic/manual canonical-reconciliation identity mismatch.
+  Catch-up now persists the finalized live persona context with the chat, and
+  a later Developer Idempotence Check reuses that exact context instead of
+  reinterpreting an imported transcript author as the active persona.
+- Kept the selected live persona and a distinct imported historical author as
+  separate scoped identities throughout reconciliation; neither identity is
+  merged into or rewritten as the other.
+- Cleared the finalized persona context during Fresh Start so a new run begins
+  from the newly selected live persona rather than stale run metadata.
+- Explicitly excluded the captured persona context from the durable-state hash.
+  It is reconciliation input metadata, not generated memory or graph state.
+
+### Added
+
+- Added privacy-safe persona-context fingerprints to automatic and manual
+  reconciliation diagnostics, including a direct equivalence comparison for
+  post-catch-up Developer checks.
+- Added explicit final second-pass input/output hashes to every reconciliation
+  result, including automatic stabilization.
+
+### Tests
+
+- Added regression coverage for runtime cleanup followed by persisted persona
+  restoration, active-versus-historical persona separation, automatic/manual
+  context comparison, and durable-hash exclusion of persona-context metadata.
+- Automated verification passed: 370 unit/integration tests and the 48-case
+  replay regression harness. A live SillyTavern replay remains the follow-up
+  validation for automatic/manual zero-mutation equivalence.
+
 ## [0.8.99] - 2026-08-15
 
 ### Fixed
