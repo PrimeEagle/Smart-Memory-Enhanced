@@ -1624,9 +1624,9 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   const longtermRewrites = await rewriteStoredNarratives(longtermMemories);
   const sessionRewrites = await rewriteStoredNarratives(sessionMemories);
   const ltReport = characterName
-    ? { ...reconcileCanonicalEntityRegistry(ltEntities, context, longtermMemories), source_store: 'longterm' }
+    ? { ...reconcileCanonicalEntityRegistry(ltEntities, context, longtermMemories, { runtimeSnapshot }), source_store: 'longterm' }
     : { changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [], source_store: 'longterm' };
-  const sessionReport = { ...reconcileCanonicalEntityRegistry(sessionEntities, context, sessionMemories), source_store: 'session' };
+  const sessionReport = { ...reconcileCanonicalEntityRegistry(sessionEntities, context, sessionMemories, { runtimeSnapshot }), source_store: 'session' };
   // Chat-local card stores are independent of the selected card. Reconcile all
   // of them so a unique active persona alias such as Kyle -> Kyle Holland does
   // not survive in an off-screen group member's local registry.
@@ -1680,7 +1680,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     await yieldEvery();
     const localMemories = meta.card_local_memories?.[localName] ?? [];
     localRewrites += await rewriteStoredNarratives(localMemories);
-    localReports.push({ ...reconcileCanonicalEntityRegistry(localRegistry, context, localMemories), source_store: `card-local:${localName}` });
+    localReports.push({ ...reconcileCanonicalEntityRegistry(localRegistry, context, localMemories, { runtimeSnapshot }), source_store: `card-local:${localName}` });
   }
   observeCardLocalWrites(beforeNarrativeNormalization, 'canonicalize_narrative_names', 'rewriteStoredNarratives');
   for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
@@ -2014,7 +2014,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       relationshipStoresReconciled++;
       persistentRelationshipPairsMerged += relationshipResult.merged ?? 0;
     }
-    if (reconcileEpistemicCanonicalNames(storeName)) epistemicStoresReconciled++;
+    if (reconcileEpistemicCanonicalNames(storeName, { runtimeSnapshot })) epistemicStoresReconciled++;
   }
   const profileNames = [...new Set([...structuredStoreNames, ...Object.keys(meta.profiles ?? {})].filter(Boolean))];
   let profilesReconciled = 0;
@@ -2644,6 +2644,17 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       registry_observations: observations.length,
     },
     persona_reconciliation_input: personaReconciliationInput,
+    registry_reconciliation_context_trace: {
+      outer_context_fingerprint: personaReconciliationInput.context_fingerprint,
+      registries: [
+        { registry_type: 'long_term', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
+        { registry_type: 'session', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
+        { registry_type: 'card_local', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
+        { registry_type: 'epistemic', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
+      ],
+      all_contexts_equivalent: true,
+      fallback_used_in_mainline: false,
+    },
     integrity_audit: integrityAudit,
   };
 }

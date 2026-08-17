@@ -864,7 +864,15 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /\^\(\?:persona:\)\+\/i/);
   assert.match(ui, /getFinalizedCanonicalPersonaContext\(context\)/);
   assert.match(ui, /summarizeCanonicalPersonaContext\(runtimeSnapshot\)/);
+  assert.match(ui, /reconcileCanonicalEntityRegistry\(sessionEntities, context, sessionMemories, \{ runtimeSnapshot \}\)/);
+  assert.match(ui, /reconcileEpistemicCanonicalNames\(storeName, \{ runtimeSnapshot \}\)/);
+  assert.match(ui, /registry_reconciliation_context_trace/);
+  assert.match(ui, /fallback_used_in_mainline: false/);
+  assert.match(graph, /memories = \[\], \{ runtimeSnapshot = null \} = \{\}/);
+  assert.match(graph, /buildCanonicalCharacterRoster\(context, \{ runtimeSnapshot \}\)/);
+  assert.match(read('epistemic.js'), /reconcileEpistemicCanonicalNames\(characterName, \{ runtimeSnapshot = null \} = \{\}\)/);
   assert.match(settings, /persona_reconciliation_input_comparison/);
+  assert.match(settings, /registry_reconciliation_context_trace/);
   assert.match(settings, /automatic_context_fingerprint/);
   assert.match(settings, /manual_context_fingerprint/);
   assert.match(ui, /runtimeSnapshot,/);

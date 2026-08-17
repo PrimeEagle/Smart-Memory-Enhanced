@@ -575,8 +575,12 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
 }
 
 /** Safely merges existing registry variants that unambiguously map to a card character. */
-export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = []) {
-  const roster = buildCanonicalCharacterRoster(context);
+export function reconcileCanonicalEntityRegistry(registry, context = getContext(), memories = [], { runtimeSnapshot = null } = {}) {
+  // Reconciliation can execute inside a long catch-up transaction. Use the
+  // caller's finalized persona snapshot rather than rebuilding a roster from
+  // transient/imported context fields, which could otherwise defer persona
+  // links until a later manual Developer check.
+  const roster = buildCanonicalCharacterRoster(context, { runtimeSnapshot });
   const report = {
     changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [],
     rejected_unsafe_merges: [], unsafe_merge_candidates: 0,

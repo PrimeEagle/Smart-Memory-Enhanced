@@ -201,9 +201,11 @@ export function saveEpistemicKnowledge(characterName, entries) {
   saveSettingsDebounced();
 }
 
-export function reconcileEpistemicCanonicalNames(characterName) {
+export function reconcileEpistemicCanonicalNames(characterName, { runtimeSnapshot = null } = {}) {
   const entries = loadEpistemicKnowledge(characterName);
-  const roster = buildCanonicalCharacterRoster(getContext());
+  // Mainline canonical reconciliation supplies its finalized persona context.
+  // Keep the direct-runtime roster only for standalone compatibility calls.
+  const roster = buildCanonicalCharacterRoster(getContext(), { runtimeSnapshot });
   let changed = false;
   const applyIdentityLink = (entry, prefix, resolution) => {
     const next = {

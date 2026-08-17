@@ -494,6 +494,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     post_automatic_manual_maintenance_diff: postAutomaticManualMaintenanceDiff,
     persona_reconciliation_input: reconciliation.persona_reconciliation_input ?? null,
     persona_reconciliation_input_comparison: personaInputComparison,
+    registry_reconciliation_context_trace: reconciliation.registry_reconciliation_context_trace ?? null,
     // A manual check must be able to explain any mutation that the completed
     // automatic path missed without exposing record content.  This is filled
     // from the reconciliation boundary's canonical semantic diff below.

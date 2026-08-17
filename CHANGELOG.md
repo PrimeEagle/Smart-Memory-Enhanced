@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-08-16
+
+### Fixed
+
+- Propagated the finalized canonical persona snapshot into every nested
+  registry reconciler: long-term, session, card-local, and Perspectives &
+  Secrets. These helpers no longer silently rebuild a transient roster during
+  the main automatic or Developer reconciliation paths.
+- This addresses the remaining post-automatic maintenance class in which
+  session entity aliases/identity links and card-local epistemic
+  subject/target links could be materialized only by the first manual check.
+
+### Added
+
+- Added a bounded, privacy-safe registry reconciliation context trace to
+  automatic and manual diagnostics. It reports the outer and nested context
+  fingerprints, active/historical persona presence, and whether a mainline
+  fallback roster rebuild was used.
+
+### Tests
+
+- Automated verification passed: 370 unit/integration tests and the 48-case
+  replay regression harness. A fresh live replay remains required to verify
+  that the immediate manual check performs zero first-pass mutations.
+
 ## [0.9.0] - 2026-08-16
 
 ### Fixed
