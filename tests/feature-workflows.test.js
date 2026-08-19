@@ -915,9 +915,12 @@ test('automatic reconciliation rebuilds the finalized roster before durable narr
   assert.match(ui, /const finalizedSessionRewrites = await rewriteFinalizedStoredNarratives/);
   assert.match(ui, /canonicalizeStructuredParticipants\(original, finalizedRoster\)/);
   assert.match(ui, /reconcileProfileCanonicalNames\(profileName, \{ roster: finalizedRoster, runtimeSnapshot \}\)/);
+  assert.match(ui, /loadArcs\(\{ roster: finalizedRoster \}\)/);
+  assert.match(ui, /saveArcs\(arcs, \{ roster: finalizedRoster \}\)/);
   assert.match(ui, /passed_from_outer_finalized_roster/);
   assert.match(profiles, /reconcileProfileCanonicalNames\(characterName, \{ roster = null, runtimeSnapshot = null \} = \{\}\)/);
   assert.match(profiles, /const canonicalRoster = roster \?\? buildCanonicalCharacterRoster/);
+  assert.match(read('arcs.js'), /export function loadArcs\(\{ roster = null \} = \{\}\)/);
 });
 
 test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {

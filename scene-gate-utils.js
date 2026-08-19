@@ -22,7 +22,12 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // A timing phrase in dialogue ("what happens the next day?") is not a
   // scene reset. Evaluate the candidate message itself and ignore quoted
   // dialogue, while retaining ordinary narrative/action openings.
-  const futureContinuation = /\b(?:the\s+)?rest\s+of\s+(?:this|the)\s+(?:party|event|evening|night|date|conversation|call)\b/i.test(narrativeCurrent);
+  // A boundary candidate is evaluated between previous and current. Future
+  // continuation wording can be on either side of that seam (for example an
+  // action line followed by the other person's immediate reply), so neither
+  // side may supply a time-jump rescue for the same ongoing event.
+  const futureContinuationPattern = /\b(?:(?:the|our)\s+)?(?:rest|remainder)\s+of\s+(?:this|the|our)\s+(?:party|event|evening|night|date|conversation|call|interaction)\b/i;
+  const futureContinuation = futureContinuationPattern.test(narrativeCurrent) || futureContinuationPattern.test(narrativePrevious);
   const narrativeActionOpening = !futureContinuation && /^\s*\*\s*(?:(?:i\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fell|drift|doz|show(?:\s+up)?)|i\s+(?:make|schedule|spend|stay|work|start))/i.test(current);
   const markedDialogue = /^\s*\*\s*(?:[\u201c\u201d\u2018\u2019"']\s*)?(?:you(?:'re| are|\b)|i(?:'m| am|\b)|we(?:'re| are|\b)|he(?:'s| is|\b)|she(?:'s| is|\b)|they(?:'re| are|\b)|yes\b|no\b|okay\b|ok\b|but\b|and\b|because\b)/i.test(current);
   const dialogueLikeCurrent = (/^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current)) || (markedDialogue && !narrativeActionOpening);
@@ -93,7 +98,7 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
  * `before_message` to the first grounded transition-opening message.
  */
 export function shouldDeferSceneBoundaryToNextMessage(currentMessage = '', nextMessage = '') {
-  const closingInteraction = /\b(?:good ?night|goodbye|call ended|hung up|ended (?:the )?(?:call|conversation|text exchange)|parted ways)\b/i.test(String(currentMessage ?? ''));
+  const closingInteraction = /\b(?:good ?night|goodbye|call ended|hung up|ended (?:the )?(?:call|conversation|text exchange)|parted ways|(?:conversation|call|text exchange) (?:was |is )?(?:paused|on hold)(?: until (?:morning|tomorrow))?)\b/i.test(String(currentMessage ?? ''));
   const nextSignals = deriveSceneContinuitySignals(currentMessage, nextMessage);
   return closingInteraction && nextSignals.explicit_transition === true && nextSignals.strong_continuity !== true;
 }

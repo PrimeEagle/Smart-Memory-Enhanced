@@ -237,12 +237,37 @@ test('future continuation inside the current event is not a scene transition', (
   assert.equal(result.accepted, false);
 });
 
+test('a reply after future continuation wording cannot inherit a time-jump rescue', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'I would rather spend the rest of this party with you.',
+    'She smiles and replies immediately.',
+  );
+  assert.equal(continuity.explicit_transition, false);
+});
+
 test('next-night arrival after a closed exchange is eligible for deterministic rescue', () => {
   const continuity = deriveSceneContinuitySignals('Their late-night text exchange ended until morning.', '*I show up the next night, five minutes early, with flowers, and knock.*');
   assert.equal(continuity.explicit_transition, true);
   const result = evaluateDeterministicSceneGate({ aiRequestedBreak: false, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity });
   assert.equal(result.accepted, true);
   assert.equal(result.deterministic_positive_rescue_used, true);
+});
+
+test('a paused-until-morning closure defers before_message to the next grounded arrival', () => {
+  assert.equal(
+    shouldDeferSceneBoundaryToNextMessage(
+      'Their late-night text exchange was paused until morning.',
+      'I show up the next night, five minutes early, with flowers, and knock.',
+    ),
+    true,
+  );
+  assert.equal(
+    shouldDeferSceneBoundaryToNextMessage(
+      'The conversation was paused until morning.',
+      '"I miss you," she texted immediately.',
+    ),
+    false,
+  );
 });
 
 test('returning from a continuous activity is not a grounded new-scene opening', () => {

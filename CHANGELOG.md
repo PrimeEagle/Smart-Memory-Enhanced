@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-08-19
+
+### Fixed
+
+- Completed finalized-roster propagation for Story Arc normalization. Arc
+  loading and saving now use the exact roster finalized by automatic
+  reconciliation, preventing a later Developer Idempotence Check from
+  rewriting arc participants and references that automatic stabilization did
+  not see.
+- Hardened deterministic scene-transition rescue against future-continuation
+  language on either side of a candidate boundary, including statements about
+  spending the rest of the current party or event.
+- Extended `before_message` alignment for a closing text, call, or
+  conversation described as paused until morning. A boundary is deferred only
+  when the next message independently establishes the new interaction.
+
+### Tests
+
+- Added regression coverage for cross-seam future-continuation wording,
+  paused-until-morning boundary alignment, and finalized-roster Story Arc
+  load/save behavior.
+- Focused workflow and scene suites passed: 117 tests. A live replay remains
+  required to verify automatic and immediate manual reconciliation both make
+  zero mutations on the affected chat.
+
 ## [0.9.2] - 2026-08-19
 
 ### Fixed

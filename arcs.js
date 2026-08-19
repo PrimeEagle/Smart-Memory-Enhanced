@@ -326,12 +326,12 @@ async function deduplicateArcs(arcs) {
 
 // ---- Storage ------------------------------------------------------------
 
-function normalizeArcRecord(arc, context = getContext()) {
-  const roster = buildCanonicalCharacterRoster(context);
-  const sanitized = sanitizeSyntheticIdentityLabels(arc?.content, roster);
+function normalizeArcRecord(arc, context = getContext(), roster = null) {
+  const canonicalRoster = roster ?? buildCanonicalCharacterRoster(context);
+  const sanitized = sanitizeSyntheticIdentityLabels(arc?.content, canonicalRoster);
   const participantResolution = canonicalizeStructuredParticipants(
     arc?.character_participants,
-    roster,
+    canonicalRoster,
   );
   return {
     ...arc,
@@ -346,20 +346,20 @@ function normalizeArcRecord(arc, context = getContext()) {
  * Returns the story arc array for the current chat.
  * @returns {Array<{content: string, ts: number}>}
  */
-export function loadArcs() {
+export function loadArcs({ roster = null } = {}) {
   const context = getContext();
-  return (context.chatMetadata?.[META_KEY]?.storyArcs ?? []).map((arc) => normalizeArcRecord(arc, context));
+  return (context.chatMetadata?.[META_KEY]?.storyArcs ?? []).map((arc) => normalizeArcRecord(arc, context, roster));
 }
 
 /**
  * Persists the story arc array to chatMetadata.
  * @param {Array<{content: string, ts: number}>} arcs
  */
-export async function saveArcs(arcs) {
+export async function saveArcs(arcs, { roster = null } = {}) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].storyArcs = arcs.map((arc) => normalizeArcRecord(arc, context));
+  context.chatMetadata[META_KEY].storyArcs = arcs.map((arc) => normalizeArcRecord(arc, context, roster));
   await saveChatMetadata(context);
 }
 
