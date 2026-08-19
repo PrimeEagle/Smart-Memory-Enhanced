@@ -1289,17 +1289,22 @@ export function updateScenesUI() {
 
 /** Re-renders the story arcs list with per-arc edit, resolve, and add buttons. */
 export function updateArcsUI() {
-  // Arc normalization must use this finalized roster too. Otherwise a later
-  // manual check reloads the same arcs with a newer live roster and performs
-  // participant/reference repairs that automatic stabilization did not see.
-  const arcs = loadArcs({ roster: finalizedRoster });
+  // This renderer also normalizes display names, but it runs independently of
+  // the reconciliation workflow. Build a local roster here instead of using
+  // that workflow's run-scoped roster (which is not in scope when
+  // Fresh Start or a chat load refreshes the Arc panel).
+  const ctx = getContext();
+  const roster = buildCanonicalCharacterRoster(ctx, {
+    includeChatLocalApproved: true,
+    runtimeSnapshot: getFinalizedCanonicalPersonaContext(ctx),
+  });
+  const arcs = loadArcs({ roster });
   const $list = $('#sme_arcs_list');
   const $resolvedList = $('#sme_resolved_arcs_list');
   const $resolvedSection = $('#sme_resolved_arcs_section');
   $list.empty();
   $resolvedList.empty();
 
-  const ctx = getContext();
   const groupId = ctx.groupId ?? null;
   const charName = groupId ? null : getCurrentCharacterName();
   const canPin = !!(charName || groupId);
@@ -1871,7 +1876,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     return count;
   };
   const scenes = loadSceneHistory();
-  const arcs = loadArcs();
+  const arcs = loadArcs({ roster: finalizedRoster });
   const summaries = loadArcSummaries();
   const ledger = loadStateLedger();
   const reconciledLedger = reconcileCanonicalLedger(ledger, finalizedRoster);

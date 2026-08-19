@@ -384,6 +384,14 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(ui, /relationshipIntegrityErrors/);
 });
 
+test('arc panel refresh has its own canonical roster outside final reconciliation', () => {
+  const ui = read('ui.js');
+  const renderer = ui.slice(ui.indexOf('export function updateArcsUI()'), ui.indexOf('export function updateProfilesUI'));
+  assert.match(renderer, /const roster = buildCanonicalCharacterRoster\(ctx/);
+  assert.match(renderer, /const arcs = loadArcs\(\{ roster \}\)/);
+  assert.doesNotMatch(renderer, /finalizedRoster/);
+});
+
 test('known structural relationship roles survive a profile-model omission without fabricated descriptors', () => {
   const profiles = read('profiles.js');
   assert.match(profiles, /not_generated_role_structurally_present/);

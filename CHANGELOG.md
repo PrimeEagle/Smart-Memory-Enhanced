@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-08-19
+
+### Fixed
+
+- Fixed a Fresh Start and chat-load regression in the Story Arc panel. The
+  renderer no longer references the reconciliation-only finalized roster outside
+  its scope; it now builds a current local canonical roster before normalizing
+  the displayed arcs.
+- Restored finalized-roster use to the actual final-reconciliation path, so
+  durable Story Arc normalization remains consistent with automatic
+  stabilization while ordinary panel refreshes remain safe.
+
+### Tests
+
+- Added a regression check that the Story Arc panel owns its roster and cannot
+  access reconciliation-local state. Full automated verification passed: 376
+  tests and the 48-check replay regression harness.
+
 ## [0.9.3] - 2026-08-19
 
 ### Fixed
