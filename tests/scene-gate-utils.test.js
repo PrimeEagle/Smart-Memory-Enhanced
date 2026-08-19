@@ -230,6 +230,21 @@ test('dialogue and recalled temporal wording cannot become narrator transition s
   }
 });
 
+test('future continuation inside the current event is not a scene transition', () => {
+  const continuity = deriveSceneContinuitySignals('They continue talking at the party.', '*I would rather spend the rest of this party with you.*');
+  assert.equal(continuity.explicit_transition, false);
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity });
+  assert.equal(result.accepted, false);
+});
+
+test('next-night arrival after a closed exchange is eligible for deterministic rescue', () => {
+  const continuity = deriveSceneContinuitySignals('Their late-night text exchange ended until morning.', '*I show up the next night, five minutes early, with flowers, and knock.*');
+  assert.equal(continuity.explicit_transition, true);
+  const result = evaluateDeterministicSceneGate({ aiRequestedBreak: false, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity });
+  assert.equal(result.accepted, true);
+  assert.equal(result.deterministic_positive_rescue_used, true);
+});
+
 test('returning from a continuous activity is not a grounded new-scene opening', () => {
   const continuity = deriveSceneContinuitySignals('"You look beautiful. Come on." They go for a run and return together.', 'They returned to the house breathless and laughing.');
   const result = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false, sceneLength: 8, minimumSceneLength: 3, messageIndex: 80, previousBoundaryIndex: 10, continuity });

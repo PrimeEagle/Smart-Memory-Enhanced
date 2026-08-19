@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-08-19
+
+### Fixed
+
+- Corrected a remaining automatic/manual canonical-reconciliation gap. After
+  registry and redirect work, final reconciliation now rebuilds one finalized
+  roster and uses it consistently for stored narratives, structured scene and
+  Story Arc participants, profile text, State Ledger entries, and review
+  decisions. This prevents a manual Developer Idempotence Check from finding
+  canonical profile or Story Arc rewrites that automatic stabilization missed.
+- Profile canonicalization now receives the finalized roster directly instead
+  of independently rebuilding a potentially stale roster.
+- Prevented future-continuation language such as “the rest of this party”
+  from being interpreted as an explicit scene transition.
+- Recognized grounded next-night narrative arrivals as valid transition
+  evidence, allowing deterministic rescue when a new interaction clearly
+  begins after a completed prior exchange.
+- Reclassified Relationship History keys with unresolved legacy participants
+  as safe informational maintenance rather than falsely treating them as
+  actionable canonical-key integrity failures.
+- Kept imported historical-persona aliases distinct from the currently active
+  persona in integrity diagnostics, avoiding a false unresolved-alias report.
+
+### Added
+
+- Added reconciliation-context trace coverage for the finalized narrative and
+  profile phase, alongside the existing registry trace.
+
+### Tests
+
+- Added regressions for party-continuation false positives, next-night arrival
+  rescues, finalized-roster propagation, unresolved pair-key classification,
+  and preserved historical-persona aliases.
+- Automated verification passed: 373 unit/integration tests and the 48-check
+  replay regression harness. A live replay remains necessary to confirm this
+  chat's automatic and immediate manual checks both make zero mutations.
+
 ## [0.9.1] - 2026-08-16
 
 ### Fixed

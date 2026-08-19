@@ -117,7 +117,7 @@ import {
   mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, getFinalizedCanonicalPersonaContext, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, summarizeCanonicalPersonaContext } from './canonical-entities.js';
+import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeRelationshipPair, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, getFinalizedCanonicalPersonaContext, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, summarizeCanonicalPersonaContext } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -1824,13 +1824,41 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     }
   }
 
+  // Registry and redirect work above can make an alias resolvable only after
+  // the initial roster was captured.  Build one last immutable roster before
+  // rewriting durable narratives, participant lists, profiles, and review
+  // decisions.  This keeps automatic catch-up and a following manual check
+  // on the exact same canonical inputs.
+  const finalizedRoster = buildCanonicalCharacterRoster(context, {
+    includeChatLocalApproved: true,
+    runtimeSnapshot,
+  });
+  const rewriteFinalizedStoredNarratives = async (memories) => {
+    let count = 0;
+    for (const memory of memories) {
+      await yieldEvery();
+      if (typeof memory?.content !== 'string') continue;
+      const narrative = canonicalizeNarrativeNames(memory.content, finalizedRoster);
+      if (!narrative.replacements.length) continue;
+      memory.content = narrative.text;
+      memory.identity_replacements = narrative.replacements;
+      count += narrative.replacements.length;
+    }
+    return count;
+  };
+  const finalizedLongtermRewrites = await rewriteFinalizedStoredNarratives(longtermMemories);
+  const finalizedSessionRewrites = await rewriteFinalizedStoredNarratives(sessionMemories);
+  let finalizedLocalRewrites = 0;
+  for (const localMemories of Object.values(meta.card_local_memories ?? {})) {
+    finalizedLocalRewrites += await rewriteFinalizedStoredNarratives(localMemories);
+  }
   const rewriteNarrativeRecords = async (records, keys) => {
     let count = 0;
     for (const record of records) {
       await yieldEvery();
       for (const key of keys) {
         if (typeof record?.[key] !== 'string') continue;
-        const narrative = canonicalizeNarrativeNames(record[key], roster);
+        const narrative = canonicalizeNarrativeNames(record[key], finalizedRoster);
         if (!narrative.replacements.length) continue;
         record[key] = narrative.text;
         record.identity_replacements = narrative.replacements;
@@ -1843,12 +1871,12 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   const arcs = loadArcs();
   const summaries = loadArcSummaries();
   const ledger = loadStateLedger();
-  const reconciledLedger = reconcileCanonicalLedger(ledger, roster);
+  const reconciledLedger = reconcileCanonicalLedger(ledger, finalizedRoster);
   const ledgerRewrites = JSON.stringify(ledger) === JSON.stringify(reconciledLedger) ? 0 : 1;
   const reviewQueue = getSettings().identity_review_queue ?? [];
   let syntheticReviewNamesRemoved = 0;
   const normalizedReviewQueue = reviewQueue.map((item) => {
-    const normalized = normalizeSyntheticIdentityQualifier(item?.candidateName, roster.characters ?? []);
+    const normalized = normalizeSyntheticIdentityQualifier(item?.candidateName, finalizedRoster.characters ?? []);
     if (!normalized.qualifier_removed) return item;
     syntheticReviewNamesRemoved++;
     return { ...item, candidateName: normalized.normalized_name, candidateKey: normalized.normalized_name.toLowerCase(), qualifier_type: normalized.qualifier_type };
@@ -1862,7 +1890,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   let resolvedReviewItemsRemoved = 0;
   const activeReviewQueue = dedupedReviewQueue.filter((item) => {
     const candidate = item?.candidateName ?? item?.candidateKey;
-    const resolution = resolveCanonicalCharacterName(candidate, roster);
+    const resolution = resolveCanonicalCharacterName(candidate, finalizedRoster);
     if (resolution.status !== 'resolved' || !resolution.canonicalId) return true;
     const targetExists = registryGroups.flat().some((entity) => entity?.canonical_card_id === resolution.canonicalId);
     if (!targetExists) return true;
@@ -1949,9 +1977,9 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       await yieldEvery();
       const original = Array.isArray(record?.character_participants) ? record.character_participants : [];
       if (!original.length) continue;
-      const canonical = canonicalizeStructuredParticipants(original, roster);
+      const canonical = canonicalizeStructuredParticipants(original, finalizedRoster);
       const references = original.flatMap((displayName) => {
-        const resolution = resolveCanonicalCharacterName(displayName, roster);
+        const resolution = resolveCanonicalCharacterName(displayName, finalizedRoster);
         return resolution.status === 'resolved' && resolution.canonicalId
           ? [{ entity_id: resolution.canonicalId, canonical_name: resolution.canonicalName, display_name_at_time: String(displayName).trim(), alias_type: resolution.reason ?? 'canonical-name' }]
           : [];
@@ -1967,12 +1995,12 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   };
   const sceneParticipantRewrites = await rewriteParticipantLists(scenes);
   const arcParticipantRewrites = await rewriteParticipantLists(arcs);
-  if (ltReport.changed || longtermRewrites > 0) {
+  if (ltReport.changed || longtermRewrites + finalizedLongtermRewrites > 0) {
     saveCharacterEntityRegistry(characterName, ltEntities);
     saveCharacterMemories(characterName, longtermMemories);
     saveSettingsDebounced();
   }
-  if (sessionReport.changed || sessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites > 0 || crossStoreEntityMerges > 0) {
+  if (sessionReport.changed || sessionRewrites + finalizedSessionRewrites > 0 || localReports.some((report) => report.changed) || localRewrites + finalizedLocalRewrites > 0 || crossStoreEntityMerges > 0) {
     await saveSessionEntityRegistry(sessionEntities);
     await saveSessionMemories(sessionMemories);
   }
@@ -1980,7 +2008,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   if (arcRewrites || arcParticipantRewrites) await saveArcs(arcs);
   if (summaryRewrites) await saveArcSummaries(summaries);
   if (ledgerRewrites) await saveStateLedger(reconciledLedger);
-  const rosterCharacterNames = (roster.characters ?? [])
+  const rosterCharacterNames = (finalizedRoster.characters ?? [])
     .filter((entry) => entry.source === 'character-card')
     .map((entry) => entry.canonicalName);
   // Final catch-up integrity is scoped to the selected card and active group
@@ -2020,7 +2048,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   let profilesReconciled = 0;
   for (const profileName of profileNames) {
     await yieldEvery();
-    if (await reconcileProfileCanonicalNames(profileName)) profilesReconciled++;
+    if (await reconcileProfileCanonicalNames(profileName, { roster: finalizedRoster, runtimeSnapshot })) profilesReconciled++;
   }
   // Final read-only integrity audit. Reconciliation has already applied every
   // safe redirect above; this catches a dangling reference before the staged
@@ -2401,13 +2429,29 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     })
     .map(({ store, record_id, entity }) => ({ store, record_id, name: entity.name }));
   const relationshipPairKeyIssues = [];
+  const unresolvedRelationshipPairKeyRecords = [];
   const relationshipIntegrityErrors = [];
   for (const storeName of structuredStoreNames) {
     await yieldEvery();
     for (const [key, state] of Object.entries(loadRelationshipHistory(storeName))) {
       try {
         const labels = getRelationshipHistoryPairDisplay(key, state);
-        const expected = getRelationshipHistoryPair(labels.subject, labels.target, roster).key;
+        // The storage reconciler intentionally preserves an unresolved legacy
+        // pair rather than assigning an invented name-based identity.  Audit
+        // only pairs whose two participants are both safe stable identities;
+        // report the remainder as informational maintenance, not a degraded
+        // current-chat integrity failure.
+        const participants = canonicalizeRelationshipPair(labels.subject, labels.target, finalizedRoster);
+        if (!participants) {
+          unresolvedRelationshipPairKeyRecords.push({
+            store: storeName,
+            key,
+            reason: 'participant_not_safely_resolved',
+            persisted_unchanged: true,
+          });
+          continue;
+        }
+        const expected = getRelationshipHistoryPair(participants[0], participants[1], finalizedRoster).key;
         if (key !== expected) relationshipPairKeyIssues.push({ store: storeName, key, expected });
       } catch (error) {
         relationshipIntegrityErrors.push({
@@ -2438,18 +2482,27 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   // diagnostic context for a proposal the safety boundary refused.
   const rejected_unsafe_merges = allReports.flatMap((report) => (report.rejected_unsafe_merges ?? [])
     .map((entry) => ({ ...entry, source_store: report.source_store, proposed_target_store: report.source_store })));
-  const activePersona = (roster.characters ?? []).find((entry) => entry.source === 'user-persona');
+  const activePersona = (finalizedRoster.characters ?? []).find((entry) => entry.source === 'user-persona');
+  const historicalPersona = (finalizedRoster.characters ?? []).find((entry) => entry.source === 'historical-persona');
   const personaAliasNames = new Set((activePersona?.aliases ?? []).map((alias) => normalizeIdentityName(alias)).filter(Boolean));
   const personaRecords = registryGroups.flat().filter((entity) => entity?.canonical_persona_id &&
     String(entity.canonical_persona_id) === String(activePersona?.canonical_persona_id ?? activePersona?.id ?? '').replace(/^persona:/, ''));
+  const historicalPersonaRecords = registryGroups.flat().filter((entity) => entity?.canonical_persona_id &&
+    String(entity.canonical_persona_id) === String(historicalPersona?.canonical_persona_id ?? historicalPersona?.id ?? '').replace(/^persona:/, ''));
   const separatePersonaAliases = registryGroups.flat().filter((entity) =>
-    personaAliasNames.has(normalizeIdentityName(entity?.name)) && !personaRecords.includes(entity));
+    personaAliasNames.has(normalizeIdentityName(entity?.name))
+      && !personaRecords.includes(entity)
+      // Imported-chat author recovery deliberately retains its stable
+      // historical persona instead of merging it into the current live
+      // persona.  A shared short alias (Adam / Adam Lawson) is expected here.
+      && !historicalPersonaRecords.includes(entity));
   const persona_aliases = {
     persona_aliases_already_resolved: Boolean(activePersona && personaAliasNames.size && personaRecords.length && !separatePersonaAliases.length),
     persona_aliases_merged: allReports.reduce((count, report) => count + (report.merged ?? []).filter((entry) => entry.reason_code === 'unique_active_persona_first_name').length, 0),
     persona_aliases_ambiguous: false,
     persona_aliases_unresolved: separatePersonaAliases.length > 0,
     separate_alias_records: separatePersonaAliases.map((entity) => ({ id: entity.id ?? null, name: entity.name ?? null })),
+    historical_persona_alias_records_retained: historicalPersonaRecords.map((entity) => ({ id: entity.id ?? null, name: entity.name ?? null })),
   };
   const integrityStatus = cardIdentityMismatches.length
     ? 'unsafe'
@@ -2574,6 +2627,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     true_same_scope_duplicates: duplicateCanonicalEntities.filter((item) => item.classification === 'duplicate_within_same_logical_store').length,
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
+    unresolved_relationship_pair_key_records: unresolvedRelationshipPairKeyRecords,
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
     blocked_unsafe_identity_merges,
@@ -2619,7 +2673,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     ],
     target_selection_traces: allReports.flatMap((report) => (report.target_selection_traces ?? [])
       .map((trace) => ({ ...trace, source_store: report.source_store }))),
-    narrative_rewrites: longtermRewrites + sessionRewrites + localRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
+    narrative_rewrites: longtermRewrites + finalizedLongtermRewrites + sessionRewrites + finalizedSessionRewrites + localRewrites + finalizedLocalRewrites + sceneRewrites + arcRewrites + summaryRewrites + ledgerRewrites,
     participant_lists_rewritten: sceneParticipantRewrites + arcParticipantRewrites,
     persona_roster_size: (roster.characters ?? []).filter((entry) => entry.source === 'user-persona').length,
     card_local_reports: localReports,
@@ -2651,6 +2705,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
         { registry_type: 'session', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
         { registry_type: 'card_local', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
         { registry_type: 'epistemic', context_source: 'passed_from_outer', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
+        { registry_type: 'finalized_narrative_and_profiles', context_source: 'passed_from_outer_finalized_roster', context_fingerprint: personaReconciliationInput.context_fingerprint, fallback_roster_build_used: false, active_persona_present: Boolean(runtimeSnapshot.active_persona?.canonical_name), historical_persona_present: Boolean(runtimeSnapshot.historical_persona?.canonical_name) },
       ],
       all_contexts_equivalent: true,
       fallback_used_in_mainline: false,

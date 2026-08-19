@@ -114,21 +114,24 @@ async function saveProfiles(profiles, characterName) {
   await saveChatMetadata(context);
 }
 
-export async function reconcileProfileCanonicalNames(characterName) {
+export async function reconcileProfileCanonicalNames(characterName, { roster = null, runtimeSnapshot = null } = {}) {
   const profiles = loadProfiles(characterName);
   if (!profiles) return false;
-  const roster = buildCanonicalCharacterRoster(getContext());
+  // Final reconciliation owns the roster lifecycle.  Reusing its finalized
+  // roster prevents profile text from lagging one pass behind registry and
+  // redirect repairs that became available earlier in the same transaction.
+  const canonicalRoster = roster ?? buildCanonicalCharacterRoster(getContext(), { runtimeSnapshot });
   const next = { ...profiles };
   const replacements = [];
   for (const field of ['character_state', 'world_state', 'relationship_matrix']) {
-    const narrative = canonicalizeNarrativeNames(next[field], roster);
+    const narrative = canonicalizeNarrativeNames(next[field], canonicalRoster);
     next[field] = narrative.text;
     replacements.push(...narrative.replacements);
   }
   const matrix = String(next.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)(?:\s*\(([^)]+)\))?\s*:\s*(.+)$/);
     if (!match) return line;
-    const result = resolveCanonicalCharacterName(match[1].trim(), roster);
+    const result = resolveCanonicalCharacterName(match[1].trim(), canonicalRoster);
     return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
   }).join('\n');
   next.relationship_matrix = matrix;

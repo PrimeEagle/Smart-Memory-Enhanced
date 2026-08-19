@@ -22,17 +22,18 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // A timing phrase in dialogue ("what happens the next day?") is not a
   // scene reset. Evaluate the candidate message itself and ignore quoted
   // dialogue, while retaining ordinary narrative/action openings.
-  const narrativeActionOpening = /^\s*\*\s*(?:(?:i\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fell|drift|doz)|i\s+(?:make|schedule|spend|stay|work|start))/i.test(current);
+  const futureContinuation = /\b(?:the\s+)?rest\s+of\s+(?:this|the)\s+(?:party|event|evening|night|date|conversation|call)\b/i.test(narrativeCurrent);
+  const narrativeActionOpening = !futureContinuation && /^\s*\*\s*(?:(?:i\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fell|drift|doz|show(?:\s+up)?)|i\s+(?:make|schedule|spend|stay|work|start))/i.test(current);
   const markedDialogue = /^\s*\*\s*(?:[\u201c\u201d\u2018\u2019"']\s*)?(?:you(?:'re| are|\b)|i(?:'m| am|\b)|we(?:'re| are|\b)|he(?:'s| is|\b)|she(?:'s| is|\b)|they(?:'re| are|\b)|yes\b|no\b|okay\b|ok\b|but\b|and\b|because\b)/i.test(current);
   const dialogueLikeCurrent = (/^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current)) || (markedDialogue && !narrativeActionOpening);
-  const narrativeTimeOpening = /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|few days)|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(narrativeCurrent);
+  const narrativeTimeOpening = /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|night|few days)|next night|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(narrativeCurrent);
   const narrativeWakeOpening = /^\s*(?:\*\s*)?(?:(?:[A-Z][a-z]+\s+)?woke up|(?:[A-Z][a-z]+\s+)?woke\b)/.test(narrativeCurrent);
   const sleepPattern = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i;
   const priorSleepClosure = !/[\u201c\u201d"']/.test(previous) && sleepPattern.test(narrativePrevious);
   const currentSleepClosure = !dialogueLikeCurrent && sleepPattern.test(narrativeCurrent);
   const narrativeEmbeddedTime = !dialogueLikeCurrent && (narrativeActionOpening || (!/^\s*\*/.test(current) && !/[\u201c\u201d\u2018\u2019"']/.test(current)))
-    && /\b(?:the next (?:morning|day|evening|few days)|hours? later|days? later|some time later|that night|the following day)\b/i.test(narrativeCurrent);
-  const explicitTransition = !dialogueLikeCurrent && (narrativeTimeOpening || narrativeEmbeddedTime || narrativeWakeOpening || priorSleepClosure || currentSleepClosure);
+    && /\b(?:the next (?:morning|day|evening|night|few days)|next night|hours? later|days? later|some time later|that night|the following day)\b/i.test(narrativeCurrent);
+  const explicitTransition = !futureContinuation && !dialogueLikeCurrent && (narrativeTimeOpening || narrativeEmbeddedTime || narrativeWakeOpening || priorSleepClosure || currentSleepClosure);
   // A bounded narrative opening can establish a fresh setting without a
   // literal "later" marker. It must be anchored at the current message and
   // name a concrete environment, so ordinary topic/action changes never

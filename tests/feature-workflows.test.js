@@ -245,7 +245,7 @@ test('editing a derived arc summary re-verifies it against saved evidence', () =
 test('canonical reconciliation safely rewrites deterministic aliases in existing stored prose', () => {
   const ui = read('ui.js');
   assert.match(ui, /const rewriteStoredNarratives/);
-  assert.match(ui, /narrative_rewrites: longtermRewrites \+ sessionRewrites/);
+  assert.match(ui, /narrative_rewrites: longtermRewrites \+ finalizedLongtermRewrites \+ sessionRewrites/);
   assert.match(read('profiles.js'), /for \(const field of \['character_state', 'world_state', 'relationship_matrix'\]\)/);
   assert.match(ui, /for \(const \[localName, localRegistry\] of Object\.entries\(meta\.card_local_entities/);
   assert.match(ui, /card_local_reports: localReports/);
@@ -882,7 +882,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /blocked_unsafe_identity_merges/);
   assert.match(ui, /reserve an unsafe rollback for a corrupted card-backed record/);
   assert.match(ui, /getRelationshipHistoryPair,/);
-  assert.match(ui, /getRelationshipHistoryPair\(labels\.subject, labels\.target, roster\)/);
+  assert.match(ui, /canonicalizeRelationshipPair\(labels\.subject, labels\.target, finalizedRoster\)/);
   assert.match(ui, /state-ledger/);
   assert.match(ui, /_canonical_card_id/);
   assert.match(ui, /resolvedReviewItemsRemoved/);
@@ -899,8 +899,25 @@ test('final reconciliation canonicalizes scene and arc participant lists while r
   assert.match(ui, /const rewriteParticipantLists/);
   assert.match(ui, /display_name_at_time/);
   assert.match(ui, /participant_lists_rewritten/);
+  assert.match(ui, /unresolvedRelationshipPairKeyRecords/);
+  assert.match(ui, /participant_not_safely_resolved/);
+  assert.match(ui, /historical_persona_alias_records_retained/);
+  assert.match(ui, /Imported-chat author recovery deliberately retains its stable/);
   assert.match(settings, /participantListsRewritten/);
   assert.match(settings, /personaRosterSize/);
+});
+
+test('automatic reconciliation rebuilds the finalized roster before durable narrative, participant, and profile rewrites', () => {
+  const ui = read('ui.js');
+  const profiles = read('profiles.js');
+  assert.match(ui, /const finalizedRoster = buildCanonicalCharacterRoster\(context, \{/);
+  assert.match(ui, /const finalizedLongtermRewrites = await rewriteFinalizedStoredNarratives/);
+  assert.match(ui, /const finalizedSessionRewrites = await rewriteFinalizedStoredNarratives/);
+  assert.match(ui, /canonicalizeStructuredParticipants\(original, finalizedRoster\)/);
+  assert.match(ui, /reconcileProfileCanonicalNames\(profileName, \{ roster: finalizedRoster, runtimeSnapshot \}\)/);
+  assert.match(ui, /passed_from_outer_finalized_roster/);
+  assert.match(profiles, /reconcileProfileCanonicalNames\(characterName, \{ roster = null, runtimeSnapshot = null \} = \{\}\)/);
+  assert.match(profiles, /const canonicalRoster = roster \?\? buildCanonicalCharacterRoster/);
 });
 
 test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {
