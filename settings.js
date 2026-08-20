@@ -4354,6 +4354,7 @@ export function bindSettingsUI(ctrl) {
             const selection = selectSceneBoundaryCandidates(allMessages, { cadence: 12 });
             aiCandidates.push(...selection.candidates);
             Object.assign(sceneAudit, selection.diagnostics);
+            const selectionByCandidateId = new Map(selection.candidates.map((candidate) => [candidate.candidate_index, candidate]));
             const batchResult = await detectSceneBreakAIBatch(aiCandidates, { batchSize: sceneAudit.batch_size_target, onError: (err) => { sceneAudit.detection_failed++; recordCatchUpWarning('AI scene-break batch warning', err, 'scenes'); } });
             sceneAudit.boundary_candidates_evaluated = aiCandidates.length;
             sceneAudit.candidate_context_hashes = aiCandidates.map((candidate) => ({ candidate_id: candidate.candidate_index, context_hash: diagnosticFingerprint(`${candidate.previous_message}\n${candidate.message}`) }));
@@ -4363,7 +4364,11 @@ export function bindSettingsUI(ctrl) {
             Object.assign(sceneAudit, batchResult.diagnostics);
             sceneAudit.request_counters_reconciled = sceneAudit.total_provider_requests === (sceneAudit.initial_batch_requests + sceneAudit.partial_retry_requests + sceneAudit.single_candidate_retry_requests + sceneAudit.format_repair_requests);
             sceneAudit.ai_decisions = batchResult.decisions;
-            sceneAudit.candidate_dispositions = batchResult.diagnostics.candidate_dispositions.map((item) => ({ ...item, message_index: item.candidate_id }));
+            sceneAudit.candidate_dispositions = batchResult.diagnostics.candidate_dispositions.map((item) => ({
+              ...item,
+              message_index: item.candidate_id,
+              strong_candidate_admission: selectionByCandidateId.get(item.candidate_id)?.strong_candidate_admission ?? null,
+            }));
             sceneAudit.ai_disposition_by_id = new Map(sceneAudit.candidate_dispositions.map((item) => [item.candidate_id, item]));
             sceneAudit.ai_decisions_valid = batchResult.diagnostics.candidate_dispositions.filter((item) => /^ai_/.test(item.terminal_disposition)).length;
             // Attempt-level parse misses remain available below for diagnosis,

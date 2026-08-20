@@ -55,6 +55,7 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
+import { deriveSceneContinuitySignals } from './scene-gate-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, findCanonicalParticipantsInText, formatCanonicalRosterForPrompt } from './canonical-entities.js';
@@ -75,6 +76,14 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
   const candidates = [];
   const signalCounts = { heuristic: 0, strong_transition: 0, moderate_transition: 0, weak_transition: 0, continuity_only: 0, cadence_only: 0 };
   const cadenceAudit = { cadence_checkpoints_considered: 0, cadence_checkpoints_promoted: 0, cadence_checkpoints_rejected_locally: 0 };
+  const strongTransitionAudit = {
+    total_message_seams: Math.max(0, messages.length - 1),
+    strong_transition_seams_detected: 0,
+    strong_transition_candidates_admitted: 0,
+    strong_transition_candidates_skipped: 0,
+    candidate_records: [],
+    skipped_records: [],
+  };
   let sinceCandidate = cadence;
   const signalFor = (text) => {
     const value = String(text ?? '');
@@ -105,6 +114,12 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     const current = String(messages[index]?.mes ?? '');
     const previous = String(messages[index - 1]?.mes ?? '');
     const heuristic = detectSceneBreakHeuristic(current) || detectSceneBreakHeuristic(previous);
+    // Tier-A evidence is evaluated locally for every seam. It is still sent
+    // through the existing provider batch and final deterministic gate, but
+    // cannot disappear merely because the weaker regex prefilter missed it.
+    const deterministicSignals = deriveSceneContinuitySignals(previous, current);
+    const deterministicStrongAdmission = !deterministicSignals.strong_continuity
+      && (deterministicSignals.explicit_transition || deterministicSignals.strongly_implied_transition);
     const currentSignals = signalFor(current);
     const previousSignals = signalFor(previous);
     const strong = currentSignals.strong || previousSignals.strong;
@@ -114,8 +129,9 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     if (checkpoint) cadenceAudit.cadence_checkpoints_considered++;
     // Cadence is observability only. It cannot turn ordinary conversation into
     // a provider candidate without independently supported transition evidence.
-    if (checkpoint && !heuristic && !strong && !moderate) cadenceAudit.cadence_checkpoints_rejected_locally++;
-    if ((!heuristic && !strong && !moderate) || (continuation && !strong)) {
+    if (deterministicStrongAdmission) strongTransitionAudit.strong_transition_seams_detected++;
+    if (checkpoint && !heuristic && !strong && !moderate && !deterministicStrongAdmission) cadenceAudit.cadence_checkpoints_rejected_locally++;
+    if ((!heuristic && !strong && !moderate && !deterministicStrongAdmission) || (continuation && !strong && !deterministicStrongAdmission)) {
       if (continuation) signalCounts.continuity_only++;
       sinceCandidate += 1;
       continue;
@@ -123,6 +139,19 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     const reasons = [];
     if (heuristic) { reasons.push('heuristic'); signalCounts.heuristic += 1; }
     if (strong) { reasons.push('strong_transition'); signalCounts.strong_transition += 1; }
+    const normalPrefilterSelected = Boolean(heuristic || strong || moderate);
+    if (deterministicStrongAdmission) {
+      reasons.push('deterministic_strong_admission');
+      strongTransitionAudit.strong_transition_candidates_admitted++;
+      strongTransitionAudit.candidate_records.push({
+        candidate_index: index,
+        was_selected_by_normal_prefilter: normalPrefilterSelected,
+        was_admitted_by_deterministic_strong_evidence: !normalPrefilterSelected,
+        evidence_type: deterministicSignals.explicit_transition ? 'explicit_transition' : 'strongly_implied_transition',
+        evidence_strength: 'strong',
+        source_fingerprint: deterministicSignals.transition_evidence_groups?.[0]?.source_fingerprint ?? 'deterministic_transition',
+      });
+    }
     if (moderate) { reasons.push('moderate_transition'); signalCounts.moderate_transition += 1; }
     if (currentSignals.weak || previousSignals.weak) signalCounts.weak_transition += 1;
     if (checkpoint) cadenceAudit.cadence_checkpoints_promoted++;
@@ -132,6 +161,14 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
       previous_message: previous,
       boundary_semantics: 'before_message',
       selection_reasons: reasons,
+      strong_candidate_admission: deterministicStrongAdmission ? {
+        message_index: index,
+        evidence_type: deterministicSignals.explicit_transition ? 'explicit_transition' : 'strongly_implied_transition',
+        evidence_strength: 'strong',
+        source_fingerprint: deterministicSignals.transition_evidence_groups?.[0]?.source_fingerprint ?? 'deterministic_transition',
+        normal_prefilter_selected: normalPrefilterSelected,
+        deterministic_admission_used: !normalPrefilterSelected,
+      } : null,
     });
     sinceCandidate = 0;
   }
@@ -142,6 +179,11 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
       candidates_after_prefilter: candidates.length,
       candidates_skipped_by_prefilter: Math.max(0, messages.length - 1 - candidates.length),
       selection_signal_counts: signalCounts,
+      scene_prefilter_strong_transition_audit: {
+        ...strongTransitionAudit,
+        all_strong_candidates_admitted: strongTransitionAudit.strong_transition_candidates_skipped === 0,
+        prefilter_false_negative_risk: strongTransitionAudit.strong_transition_candidates_skipped ? 'high' : 'low',
+      },
       ...cadenceAudit,
       cadence,
       boundary_semantics: 'before_message',

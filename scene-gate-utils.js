@@ -5,6 +5,31 @@
  * request lineage, and mutable extension state are deliberately excluded so
  * identical terminal decisions always receive identical gate outcomes.
  */
+/** Classifies temporal references without retaining source prose in diagnostics. */
+export function classifyTemporalReference(message = '') {
+  const raw = String(message ?? '').trim();
+  const temporalTerms = /\b(?:bed(?:time)?|sleep(?:s|ing)?|wake(?:s|d|ing)?|awake|mornings?|nights?|early|late|hours? later|days? later|next (?:day|morning|night|evening|few days)|following (?:day|morning|night)|week passed)\b/i;
+  if (!temporalTerms.test(raw)) return { type: 'unknown', narrative_event: false, final_transition_eligible: false };
+  // Apostrophes are contractions, not dialogue delimiters. Treating them as
+  // quote marks left habitual fragments in apparent narration.
+  const narrative = raw
+    .replace(/[\u201c\u201d"](?:[^\u201c\u201d"]|\\.)*[\u201c\u201d"]/g, ' ')
+    .replace(/(?:^|\n)\s*>.*$/gm, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!temporalTerms.test(narrative)) return { type: 'quoted_dialogue', narrative_event: false, final_transition_eligible: false };
+  if (/\b(?:usually|normally|always|tend(?:s)? to|prefer(?:s)?|like(?:s)?|hate(?:s)?|don't like|doesn't like|bedtime|on weekends?|every morning|before (?:\d|eleven|midnight)|at (?:\d|six|ten|midnight))\b/i.test(narrative)) {
+    const type = /\b(?:prefer(?:s)?|like(?:s)?|hate(?:s)?|don't like|doesn't like)\b/i.test(narrative) ? 'preference'
+      : /\b(?:bedtime|before (?:\d|eleven|midnight)|at (?:\d|six|ten|midnight))\b/i.test(narrative) ? 'schedule'
+        : 'habitual';
+    return { type, narrative_event: false, final_transition_eligible: false };
+  }
+  if (/\b(?:i(?:'ll| will)|we(?:'ll| will)|plan(?:s)? to|going to|tomorrow(?:\b| night))\b/i.test(narrative)) return { type: 'future_plan', narrative_event: false, final_transition_eligible: false };
+  if (/\b(?:would|could|might|if)\b/i.test(narrative)) return { type: 'hypothetical', narrative_event: false, final_transition_eligible: false };
+  if (/\b(?:used to|years? ago|remember when|back then)\b/i.test(narrative)) return { type: 'recalled_event', narrative_event: false, final_transition_eligible: false };
+  return { type: 'narrative_event', narrative_event: true, final_transition_eligible: true };
+}
+
 export function deriveSceneContinuitySignals(previousMessage = '', currentMessage = '') {
   const previous = String(previousMessage ?? '').trim();
   const current = String(currentMessage ?? '').trim();
@@ -13,12 +38,14 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // classification, but never let quoted/recalled timing words establish a
   // scene reset on their own.
   const withoutQuotedDialogue = (text) => String(text ?? '')
-    .replace(/[\u201c\u201d"'](?:[^\u201c\u201d"']|\\.)*[\u201c\u201d"']/g, ' ')
+    .replace(/[\u201c\u201d"](?:[^\u201c\u201d"]|\\.)*[\u201c\u201d"]/g, ' ')
     .replace(/(?:^|\n)\s*>.*$/gm, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   const narrativeCurrent = withoutQuotedDialogue(current);
   const narrativePrevious = withoutQuotedDialogue(previous);
+  const currentTemporalReference = classifyTemporalReference(current);
+  const previousTemporalReference = classifyTemporalReference(previous);
   // A timing phrase in dialogue ("what happens the next day?") is not a
   // scene reset. Evaluate the candidate message itself and ignore quoted
   // dialogue, while retaining ordinary narrative/action openings.
@@ -33,15 +60,22 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // narrative-only view has already stripped that dialogue and must not turn
   // its absence into a synthetic time jump.
   const futureContinuation = futureContinuationPattern.test(current) || futureContinuationPattern.test(previous);
-  const narrativeActionOpening = !futureContinuation && /^\s*\*\s*(?:(?:i\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fell|drift|doz|show(?:\s+up)?)|i\s+(?:make|schedule|spend|stay|work|start))/i.test(current);
+  const narrativeActionOpening = !futureContinuation && /^\s*\*\s*(?:(?:i|we)\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fall|fell|drift|doz|show(?:\s+up)?|make|schedule|spend|stay|work|start|finish)/i.test(current);
   const markedDialogue = /^\s*\*\s*(?:[\u201c\u201d\u2018\u2019"']\s*)?(?:you(?:'re| are|\b)|i(?:'m| am|\b)|we(?:'re| are|\b)|he(?:'s| is|\b)|she(?:'s| is|\b)|they(?:'re| are|\b)|yes\b|no\b|okay\b|ok\b|but\b|and\b|because\b)/i.test(current);
   const dialogueLikeCurrent = (/^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current)) || (markedDialogue && !narrativeActionOpening);
-  const narrativeTimeOpening = /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|night|few days)|next night|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(narrativeCurrent);
-  const narrativeWakeOpening = /^\s*(?:\*\s*)?(?:(?:[A-Z][a-z]+\s+)?woke up|(?:[A-Z][a-z]+\s+)?woke\b)/.test(narrativeCurrent);
-  const sleepPattern = /\b(?:go(?:es|ing)? to sleep|went to sleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i;
-  const priorSleepClosure = !/[\u201c\u201d"']/.test(previous) && sleepPattern.test(narrativePrevious);
-  const currentSleepClosure = !dialogueLikeCurrent && sleepPattern.test(narrativeCurrent);
+  const narrativeTimeOpening = currentTemporalReference.final_transition_eligible
+    && /^\s*(?:\*\s*)?(?:the next (?:morning|day|evening|night|few days)|next night|hours? later|days? later|meanwhile|elsewhere|after (?:a|several) hours?|the following day)\b/i.test(narrativeCurrent);
+  const narrativeWakeOpening = currentTemporalReference.final_transition_eligible
+    && /^\s*(?:\*\s*)?(?:(?:[A-Z][a-z]+\s+)?woke up|(?:[A-Z][a-z]+\s+)?woke\b)/.test(narrativeCurrent);
+  const sleepPattern = /\b(?:go(?:es|ing)? to sleep|went to sleep|fall(?:s|ing)? asleep|fell asleep|drifted off|dozed off|go(?:es|ing)? to bed|went to bed)\b/i;
+  const priorSleepClosure = previousTemporalReference.final_transition_eligible
+    && !/[\u201c\u201d"]/.test(previous)
+    && sleepPattern.test(narrativePrevious);
+  const currentSleepClosure = !dialogueLikeCurrent
+    && currentTemporalReference.final_transition_eligible
+    && sleepPattern.test(narrativeCurrent);
   const narrativeEmbeddedTime = !dialogueLikeCurrent && (narrativeActionOpening || (!/^\s*\*/.test(current) && !/[\u201c\u201d\u2018\u2019"']/.test(current)))
+    && currentTemporalReference.final_transition_eligible
     && /\b(?:the next (?:morning|day|evening|night|few days)|next night|hours? later|days? later|some time later|that night|the following day)\b/i.test(narrativeCurrent);
   const pausedInteractionClosure = !dialogueLikeCurrent
     && /\b(?:conversation|call|text exchange)\s+(?:was |is )?(?:paused|on hold)\s+until\s+(?:morning|tomorrow)\b/i.test(narrativeCurrent);
@@ -54,18 +88,22 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   const completedPriorInteraction = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways)\b/i.test(narrativePrevious);
   const completedRelocation = /\b(?:arrived at|walked up to|pulled up to|entered|came into)\b/i.test(narrativeCurrent)
     && (completedPriorInteraction || /\b(?:show(?:ed|ing)? up|head(?:ed|ing)? (?:over|to)|went (?:over|home)|drove|walked|travel(?:ed|ing)?)\b/i.test(narrativePrevious));
+  const sameMessageRelocationAndSetting = !dialogueLikeCurrent
+    && /\b(?:go|went|return(?:ed)?|head(?:ed)?)\s+(?:back\s+)?to\s+(?:my|his|her|their|the|a|an)\s+[a-z]+/i.test(narrativeCurrent)
+    && /\b(?:on|in|at)\s+(?:the|my|his|her|their|a|an)\s+(?:couch|sofa|table|bed|kitchen|living room|apartment|house|room|restaurant|cafe|bar)\b/i.test(narrativeCurrent)
+    && /\b(?:sit|settle|eat|talk|speak|wait|open|begin|start|share)\w*\b/i.test(narrativeCurrent);
   const sameChannel = /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line)\b/.test(previous)
     && /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line|he said|she said|they said)\b/.test(current);
   const directResponse = /^(?:["'“”‘’\-–—\s]*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b)/i.test(current);
   const directTextReply = /^\s*(?:text|message)(?:\s+(?:him|her|them|back))?\s*:/i.test(current);
-  const markupWrappedReply = /^\s*\*\s*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b/i.test(current);
+  const markupWrappedReply = !narrativeActionOpening && /^\s*\*\s*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b/i.test(current);
   // Dialogue often starts with a speaker attribution rather than the reply
   // itself (for example, "Ava replied, \"No.\"").  Treat that immediate
   // form as continuity too, while an explicit reset still wins below.
   const attributedReply = /^\s*(?:\*\s*)?(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+)?(?:said|replied|answered|texted|messaged|whispered)\b/i.test(current);
   const emotionalOrReactive = /\b(?:smiled|laughed|cried|sighed|nodded|shook|hugged|kissed|flinched|stared|whispered|replied|answered)\b/i.test(current);
   const strongContinuity = !explicitTransition && !narrativeContextOpening && (sameChannel || directResponse || directTextReply || markupWrappedReply || attributedReply || emotionalOrReactive);
-  const stronglyImpliedTransition = !strongContinuity && (narrativeContextOpening || completedRelocation);
+  const stronglyImpliedTransition = !strongContinuity && (narrativeContextOpening || completedRelocation || sameMessageRelocationAndSetting);
   return {
     explicit_transition: explicitTransition,
     same_channel: sameChannel,
@@ -74,6 +112,11 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
     emotional_or_reactive: emotionalOrReactive,
     strong_continuity: strongContinuity,
     strongly_implied_transition: stronglyImpliedTransition,
+    temporal_reference_classification: {
+      type: currentTemporalReference.type,
+      narrative_event: currentTemporalReference.narrative_event,
+      final_transition_eligible: currentTemporalReference.final_transition_eligible,
+    },
     transition_evidence_groups: [
       ...(explicitTransition ? [{
       evidence_group_id: 'explicit_transition',
@@ -84,7 +127,7 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
       }] : []),
       ...(stronglyImpliedTransition ? [{
         evidence_group_id: 'narrative_context_reset',
-        source_fingerprint: completedRelocation ? 'completed_relocation_then_new_context' : completedPriorInteraction ? 'completed_interaction_then_new_context' : 'anchored_new_context_opening',
+        source_fingerprint: sameMessageRelocationAndSetting ? 'same_message_completed_relocation_and_new_setting' : completedRelocation ? 'completed_relocation_then_new_context' : completedPriorInteraction ? 'completed_interaction_then_new_context' : 'anchored_new_context_opening',
         detector_codes: ['narrative_context_reset'],
         strength: 'strong',
         independent: true,
@@ -181,6 +224,7 @@ export function deriveSceneCandidateStateDelta(previousMessage = '', currentMess
       time_jump_evidence: Boolean(signals.explicit_transition),
       interaction_reset: interactionReset,
       new_setting_opening: signals.strongly_implied_transition,
+      temporal_reference_classification: signals.temporal_reference_classification,
     },
     // Legacy flat fields are retained for one schema generation, but all new
     // risk and promotion decisions use the observed/grounded distinction.
@@ -192,6 +236,7 @@ export function deriveSceneCandidateStateDelta(previousMessage = '', currentMess
     new_setting_opening: signals.strongly_implied_transition,
     continuity_strength: signals.strong_continuity ? 'strong' : 'none',
     transition_support_type: transitionSupportType,
+    temporal_reference_classification: signals.temporal_reference_classification,
   };
 }
 

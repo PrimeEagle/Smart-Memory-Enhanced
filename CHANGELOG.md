@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6] - 2026-08-20
+
+### Fixed
+
+- Corrected scene-time analysis so apostrophes in contractions are not treated
+  as dialogue delimiters. Habitual, preference, schedule, quoted, recalled,
+  hypothetical, and future-plan sleep/time language can no longer create a
+  deterministic scene-boundary rescue.
+- Added grounded narrated sleep/wake handling, including "fall asleep" and
+  waking/awake openings, and admitted every strong deterministic seam to the
+  existing bounded provider-candidate flow even when the weaker prefilter
+  misses it.
+- Corrected same-message `before_message` alignment for a completed return to
+  a new setting followed by a newly established activity, such as returning
+  home and beginning a couch conversation. Action-form narration beginning
+  with "we" is no longer mistaken for a conversational reply.
+
+### Diagnostics
+
+- Added privacy-safe temporal-reference classification and a strong-transition
+  prefilter audit. Candidate records identify whether normal prefiltering or
+  deterministic strong evidence selected the seam, its evidence type and
+  strength, and a bounded source fingerprint—without retaining chat prose.
+
+### Tests
+
+- Added regressions for habitual/preference/schedule/future temporal wording,
+  real sleep/wake handoffs, same-message relocation, travel without an
+  established setting, and strong deterministic candidate admission.
+- Automated verification passed: 385 tests and the 48-check replay regression
+  harness. A new live replay is still required to confirm the affected chat's
+  final boundary list in SillyTavern.
+
 ## [0.9.5] - 2026-08-20
 
 ### Fixed

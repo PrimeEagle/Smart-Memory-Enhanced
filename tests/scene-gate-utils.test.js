@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneCandidateStateDelta, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from '../scene-gate-utils.js';
+import { advanceSceneBufferAtBoundary, classifyTemporalReference, coalesceSceneBoundary, deriveSceneCandidateStateDelta, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from '../scene-gate-utils.js';
 
 test('a farewell proposal aligns to the following explicit scene opening', () => {
   assert.equal(
@@ -256,6 +256,35 @@ test('quoted future-continuation dialogue cannot be stripped into a time-jump re
   assert.equal(result.deterministic_positive_rescue_used, false);
 });
 
+test('habitual, preference, schedule, and future sleep wording is not a narrative transition', () => {
+  const cases = [
+    ['I like going to bed early.', 'preference'],
+    ['I usually wake up at six.', 'schedule'],
+    ['I tend to sleep late on weekends.', 'habitual'],
+    ['She prefers mornings.', 'preference'],
+    ['My bedtime is midnight.', 'schedule'],
+    ["He says, 'I always go to bed early.'", 'habitual'],
+    ["I'll go to bed early tonight.", 'future_plan'],
+  ];
+  for (const [message, type] of cases) {
+    const classification = classifyTemporalReference(message);
+    assert.equal(classification.type, type);
+    assert.equal(classification.final_transition_eligible, false);
+    assert.equal(deriveSceneContinuitySignals('They continue talking at the party.', message).explicit_transition, false);
+  }
+});
+
+test('actual sleep and wake events retain narrative temporal support', () => {
+  assert.equal(classifyTemporalReference('She goes to bed.').final_transition_eligible, true);
+  assert.equal(classifyTemporalReference('The next morning she wakes.').final_transition_eligible, true);
+  const handoff = deriveSceneContinuitySignals(
+    '*They fall asleep together and sleep late into the morning.*',
+    'Sunlight filters through the curtains as she stirs awake.',
+  );
+  assert.equal(handoff.explicit_transition, true);
+  assert.equal(handoff.temporal_reference_classification.type, 'narrative_event');
+});
+
 test('a reply after future continuation wording cannot inherit a time-jump rescue', () => {
   const continuity = deriveSceneContinuitySignals(
     'I would rather spend the rest of this party with you.',
@@ -314,6 +343,29 @@ test('overnight alignment keeps the closing text in the old scene and gates the 
     continuity: deriveSceneContinuitySignals(closing, arrival),
   });
   assert.equal(stalePreAlignment.gate_reason_code, 'minimum_scene_length');
+});
+
+test('same-message completed relocation and established setting begins the new scene', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'They finish their walk through town.',
+    '*We finish walking and go back to her place. On the couch, eating scones and talking.*',
+  );
+  assert.equal(continuity.strongly_implied_transition, true);
+  const accepted = evaluateDeterministicSceneGate({
+    aiRequestedBreak: false,
+    heuristicBreak: false,
+    sceneLength: 20,
+    minimumSceneLength: 3,
+    messageIndex: 287,
+    previousBoundaryIndex: 172,
+    continuity,
+  });
+  assert.equal(accepted.accepted, true);
+});
+
+test('travel that has not established the destination remains in the current scene', () => {
+  const continuity = deriveSceneContinuitySignals('They finish dinner.', '*We head toward her apartment, still walking and talking.*');
+  assert.equal(continuity.strongly_implied_transition, false);
 });
 
 test('a temporal mention followed by a direct reply cannot be aligned into a new scene', () => {
