@@ -4405,6 +4405,39 @@ export function bindSettingsUI(ctrl) {
             const heuristicBreak = detectSceneBreakHeuristic(msgText);
             const aiRequestedBreak = settings.scene_ai_detect && Boolean(sceneAudit.ai_decisions?.get(msgIdx));
             const continuity = deriveSceneContinuitySignals(allMessages[msgIdx - 1]?.mes, msgText);
+            // A closing message can contain the evidence that an interaction
+            // ends (for example, a text exchange paused until morning), while
+            // the following message is the actual next-scene opening. Align
+            // before gate acceptance so the opening receives the complete
+            // preceding scene length and still goes through the ordinary
+            // gate, minimum-length, and coalescing checks.
+            const hasTransitionProposal = aiRequestedBreak
+              || heuristicBreak
+              || continuity.explicit_transition
+              || continuity.strongly_implied_transition;
+            if (hasTransitionProposal && shouldDeferSceneBoundaryToNextMessage(msgText, allMessages[msgIdx + 1]?.mes)) {
+              const deferredDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
+              const alignment = {
+                terminal_break_disposition: 'deferred_to_transition_opening',
+                aligned_to_next_message_index: allMessages[msgIdx + 1]?.__sme_original_index ?? msgIdx + 1,
+                gate_executed: false,
+                gate_output_schema_version: 1,
+              };
+              if (deferredDisposition) Object.assign(deferredDisposition, alignment);
+              else sceneAudit.candidate_dispositions.push({
+                candidate_id: msgIdx,
+                message_index: msg.__sme_original_index ?? msgIdx,
+                decision: false,
+                source: 'deferred-transition-alignment',
+                ...alignment,
+              });
+              sceneBuffer = advanceSceneBufferAtBoundary(sceneBuffer, msg, false).next_buffer;
+              deferredSceneBoundary = {
+                source_index: msg.__sme_original_index ?? msgIdx,
+                disposition: deferredDisposition ?? null,
+              };
+              continue;
+            }
             const gate = evaluateDeterministicSceneGate({
               // Heuristic-only operation still uses the exact same grounded
               // deterministic gate. Otherwise a bare heuristic proposal can
@@ -4451,25 +4484,11 @@ export function bindSettingsUI(ctrl) {
               continuity,
             });
             const requestedBreak = gate.accepted && !coalescing.suppress;
-            // Keep a valid proposal at a closing interaction, but defer the
-            // actual boundary until the next message if that is where a
-            // grounded time/context reset begins. `before_message` then names
-            // the first message of the new scene rather than its farewell.
-            if (requestedBreak && shouldDeferSceneBoundaryToNextMessage(msgText, allMessages[msgIdx + 1]?.mes)) {
-              const deferredDisposition = sceneAudit.ai_disposition_by_id?.get(msgIdx);
-              if (aiRequestedBreak) Object.assign(deferredDisposition ?? {}, gate, {
-                gate_executed: true,
-                gate_output_schema_version: 1,
-                terminal_break_disposition: 'deferred_to_transition_opening',
-                aligned_to_next_message_index: allMessages[msgIdx + 1]?.__sme_original_index ?? msgIdx + 1,
-              });
-              // This closing message still belongs to the ending scene.
-              sceneBuffer.push(msg);
-              deferredSceneBoundary = { source_index: msg.__sme_original_index ?? msgIdx, disposition: deferredDisposition ?? null };
-              continue;
-            }
-            const isDeferredBoundary = Boolean(deferredSceneBoundary && continuity.explicit_transition && !continuity.strong_continuity);
-            const isBreak = requestedBreak || isDeferredBoundary;
+            // A deferred opening is only accepted when this message passes
+            // the same gate as every other candidate. In particular, do not
+            // bypass minimum-scene-length or coalescing with an alignment.
+            const isDeferredBoundary = Boolean(deferredSceneBoundary && requestedBreak);
+            const isBreak = requestedBreak;
             if (aiRequestedBreak || deterministicRescue) {
               if (gate.terminal_break_disposition === 'rejected_deterministic_gate') sceneAudit.ai_breaks_rejected_by_deterministic_gate++;
               Object.assign(aiDisposition ?? {}, gate, coalescing.suppress ? {

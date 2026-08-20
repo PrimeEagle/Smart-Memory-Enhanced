@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2026-08-20
+
+### Fixed
+
+- Corrected a false-positive deterministic scene rescue for future-continuation
+  language inside the current event, including quoted statements about spending
+  the rest of a party, evening, conversation, or other ongoing interaction.
+- Corrected overnight `before_message` alignment. A closing text/call
+  interaction now remains in the old scene when the next message independently
+  opens the new scene. The aligned opening is evaluated by the standard
+  deterministic gate, minimum-length check, and coalescing logic rather than
+  bypassing them with a deferred-boundary shortcut.
+
+### Tests
+
+- Added regressions for quoted future-continuation language, overnight
+  close-and-arrival alignment, direct-reply non-alignment, and minimum-length
+  evaluation using the correctly aligned candidate.
+- Full automated verification passed: 380 tests and the 48-check replay
+  regression harness. A live replay remains required to validate the corrected
+  boundaries against the affected chat.
+
 ## [0.9.4] - 2026-08-19
 
 ### Fixed

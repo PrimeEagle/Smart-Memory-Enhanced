@@ -237,6 +237,25 @@ test('future continuation inside the current event is not a scene transition', (
   assert.equal(result.accepted, false);
 });
 
+test('quoted future-continuation dialogue cannot be stripped into a time-jump rescue', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'Nancy offers Adam another drink at the party.',
+    '"Actually, I would rather spend the rest of this party with you."',
+  );
+  const result = evaluateDeterministicSceneGate({
+    aiRequestedBreak: false,
+    heuristicBreak: true,
+    sceneLength: 20,
+    minimumSceneLength: 3,
+    messageIndex: 32,
+    previousBoundaryIndex: 1,
+    continuity,
+  });
+  assert.equal(continuity.explicit_transition, false);
+  assert.equal(result.accepted, false);
+  assert.equal(result.deterministic_positive_rescue_used, false);
+});
+
 test('a reply after future continuation wording cannot inherit a time-jump rescue', () => {
   const continuity = deriveSceneContinuitySignals(
     'I would rather spend the rest of this party with you.',
@@ -261,6 +280,43 @@ test('a paused-until-morning closure defers before_message to the next grounded 
     ),
     true,
   );
+  assert.equal(
+    shouldDeferSceneBoundaryToNextMessage(
+      'The conversation was paused until morning.',
+      '"I miss you," she texted immediately.',
+    ),
+    false,
+  );
+});
+
+test('overnight alignment keeps the closing text in the old scene and gates the arrival with its full length', () => {
+  const closing = 'The late-night text conversation was paused until morning.';
+  const arrival = '*I show up the next night. Five minutes early. With flowers. I knock.*';
+  assert.equal(deriveSceneContinuitySignals('', closing).explicit_transition, true);
+  assert.equal(shouldDeferSceneBoundaryToNextMessage(closing, arrival), true);
+  const correctlyAligned = evaluateDeterministicSceneGate({
+    aiRequestedBreak: true,
+    heuristicBreak: false,
+    sceneLength: 24,
+    minimumSceneLength: 3,
+    messageIndex: 166,
+    previousBoundaryIndex: 100,
+    continuity: deriveSceneContinuitySignals(closing, arrival),
+  });
+  assert.equal(correctlyAligned.accepted, true);
+  const stalePreAlignment = evaluateDeterministicSceneGate({
+    aiRequestedBreak: true,
+    heuristicBreak: false,
+    sceneLength: 1,
+    minimumSceneLength: 3,
+    messageIndex: 166,
+    previousBoundaryIndex: 165,
+    continuity: deriveSceneContinuitySignals(closing, arrival),
+  });
+  assert.equal(stalePreAlignment.gate_reason_code, 'minimum_scene_length');
+});
+
+test('a temporal mention followed by a direct reply cannot be aligned into a new scene', () => {
   assert.equal(
     shouldDeferSceneBoundaryToNextMessage(
       'The conversation was paused until morning.',

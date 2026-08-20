@@ -1438,3 +1438,11 @@ test('catch-up keeps a rough finalization ETA after the chunk phase completes', 
   assert.match(settings, /updateFinalizationEta\('short-term memory extraction'\)/);
   assert.match(settings, /updateFinalizationEta\('final identity reconciliation and save'\)/);
 });
+
+test('scene transition alignment runs before gate acceptance and never bypasses the aligned opening gate', () => {
+  const settings = read('settings.js');
+  const loop = settings.slice(settings.indexOf('for (let msgIdx = 0; msgIdx < allMessages.length; msgIdx++)'), settings.indexOf('// Summarize any remaining messages after the last break'));
+  assert.ok(loop.indexOf('shouldDeferSceneBoundaryToNextMessage') < loop.indexOf('const gate = evaluateDeterministicSceneGate'));
+  assert.match(loop, /const isDeferredBoundary = Boolean\(deferredSceneBoundary && requestedBreak\)/);
+  assert.match(loop, /const isBreak = requestedBreak/);
+});
