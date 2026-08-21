@@ -363,8 +363,57 @@ test('same-message completed relocation and established setting begins the new s
   assert.equal(accepted.accepted, true);
 });
 
+test('completed travel to a coffee shop plus a new activity is grounded at the same message', () => {
+  const current = 'After dinner, Kyler and I walk down to the coffee shop in the hospital lobby. I buy her coffee, then we sit at a table.';
+  const continuity = deriveSceneContinuitySignals('They finish eating in the hospital room.', current);
+  const delta = deriveSceneCandidateStateDelta('They finish eating in the hospital room.', current);
+  assert.equal(continuity.grounded_relocation_detected, true);
+  assert.equal(continuity.new_setting_activity_detected, true);
+  assert.equal(continuity.strongly_implied_transition, true);
+  assert.equal(delta.grounded.location_reset_evidence, true);
+  assert.equal(delta.grounded.new_setting_activity_evidence, true);
+  const accepted = evaluateDeterministicSceneGate({
+    aiRequestedBreak: true,
+    heuristicBreak: false,
+    sceneLength: 12,
+    minimumSceneLength: 3,
+    messageIndex: 243,
+    previousBoundaryIndex: 203,
+    continuity,
+  });
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.gate_evidence.location_change_detected, true);
+  assert.equal(accepted.gate_evidence.activity_change_detected, true);
+});
+
+test('a named person possessive room plus a new discussion is a same-message boundary', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'They finish their conversation in the coffee shop.',
+    'We go back to Taylor\'s room, where we begin discussing the decision.',
+  );
+  assert.equal(continuity.grounded_relocation_detected, true);
+  assert.equal(continuity.new_setting_activity_detected, true);
+  assert.equal(continuity.strongly_implied_transition, true);
+});
+
+test('a completed return without a new activity aligns only when the following message opens the setting', () => {
+  const returnOnly = '*We go back to Taylor\'s room.*';
+  const roomOpening = '*Taylor was sitting up in bed when we walked through the door. We begin talking.*';
+  assert.equal(deriveSceneContinuitySignals('', returnOnly).pending_relocation_opening, true);
+  assert.equal(shouldDeferSceneBoundaryToNextMessage(returnOnly, roomOpening), true);
+});
+
 test('travel that has not established the destination remains in the current scene', () => {
   const continuity = deriveSceneContinuitySignals('They finish dinner.', '*We head toward her apartment, still walking and talking.*');
+  assert.equal(continuity.strongly_implied_transition, false);
+});
+
+test('future travel discussion is not a grounded relocation', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'They continue their conversation.',
+    'Kyler and I discuss going to the coffee shop tomorrow.',
+  );
+  assert.equal(continuity.grounded_relocation_detected, false);
   assert.equal(continuity.strongly_implied_transition, false);
 });
 

@@ -86,12 +86,20 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // become transition support by themselves.
   const narrativeContextOpening = /^\s*(?:\*\s*)?(?:(?:inside|outside|back at|across town|at|in)\s+(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)\b|(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)(?:\s+\w+){0,2}\s+(?:was|is|felt|looked|lay|stood)\b)/i.test(narrativeCurrent);
   const completedPriorInteraction = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways)\b/i.test(narrativePrevious);
-  const completedRelocation = /\b(?:arrived at|walked up to|pulled up to|entered|came into)\b/i.test(narrativeCurrent)
-    && (completedPriorInteraction || /\b(?:show(?:ed|ing)? up|head(?:ed|ing)? (?:over|to)|went (?:over|home)|drove|walked|travel(?:ed|ing)?)\b/i.test(narrativePrevious));
-  const sameMessageRelocationAndSetting = !dialogueLikeCurrent
-    && /\b(?:go|went|return(?:ed)?|head(?:ed)?)\s+(?:back\s+)?to\s+(?:my|his|her|their|the|a|an)\s+[a-z]+/i.test(narrativeCurrent)
-    && /\b(?:on|in|at)\s+(?:the|my|his|her|their|a|an)\s+(?:couch|sofa|table|bed|kitchen|living room|apartment|house|room|restaurant|cafe|bar)\b/i.test(narrativeCurrent)
-    && /\b(?:sit|settle|eat|talk|speak|wait|open|begin|start|share)\w*\b/i.test(narrativeCurrent);
+  const settingNoun = '(?:coffee\\s+shop|cafe|restaurant|bar|lobby|room|bedroom|office|apartment|house|home|place|kitchen|living\\s+room|hospital|table|couch|sofa|bed|park|store|library|school|gym|hotel|car)';
+  const concreteDestination = `(?:(?:the|a|an|my|his|her|their|our)\\s+${settingNoun}|(?:[A-Z][a-z]+(?:[\\u2019\']s)?\\s+)+${settingNoun})`;
+  const completedTravelToDestination = new RegExp(`\\b(?:go|went|walk(?:ed)?|return(?:ed)?|head(?:ed)?|arriv(?:ed|e)?|enter(?:ed)?|came)\\s+(?:(?:down|up|over|back)\\s+)?(?:back\\s+)?(?:to|into)\\s+${concreteDestination}\\b`, 'i').test(narrativeCurrent);
+  const futureOrHypotheticalTravel = /\b(?:will|would|could|might|should|plan(?:s)? to|intend(?:s)? to|hope(?:s)? to|going to)\s+(?:go|walk|return|head|arrive|enter)\b/i.test(narrativeCurrent);
+  const temporalReferenceBlocksRelocation = ['quoted_dialogue', 'preference', 'schedule', 'habitual', 'future_plan', 'hypothetical', 'recalled_event'].includes(currentTemporalReference.type);
+  const establishedDestinationActivity = /\b(?:buy|bought|order|ordered|sit|sat|settle|settled|begin|began|start|started|talk|talking|speak|speaking|discuss(?:ed|ing)?|open|opened|share|eat|ate|drink|drank|meet|met)\b/i.test(narrativeCurrent);
+  const groundedRelocation = !dialogueLikeCurrent
+    && !futureOrHypotheticalTravel
+    && !temporalReferenceBlocksRelocation
+    && completedTravelToDestination;
+  const sameMessageRelocationAndSetting = groundedRelocation && establishedDestinationActivity;
+  const pendingRelocationOpening = groundedRelocation && !establishedDestinationActivity;
+  const completedRelocation = /\b(?:arrived at|walked up to|walked through (?:the )?(?:door|doors)|pulled up to|entered|came into)\b/i.test(narrativeCurrent)
+    && (completedPriorInteraction || /\b(?:show(?:ed|ing)? up|head(?:ed|ing)? (?:over|to)|go(?:es|ing)? back|went (?:over|home)|drove|walked|travel(?:ed|ing)?)\b/i.test(narrativePrevious));
   const sameChannel = /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line)\b/.test(previous)
     && /\b(?:phone|call|text(?:ing|ed)?|message(?:d)?|chat(?:ting)?|on the line|he said|she said|they said)\b/.test(current);
   const directResponse = /^(?:["'“”‘’\-–—\s]*(?:yes|no|okay|ok|but|and|because|i|you|we|he|she|they|that|this|then)\b)/i.test(current);
@@ -102,7 +110,7 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // form as continuity too, while an explicit reset still wins below.
   const attributedReply = /^\s*(?:\*\s*)?(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+)?(?:said|replied|answered|texted|messaged|whispered)\b/i.test(current);
   const emotionalOrReactive = /\b(?:smiled|laughed|cried|sighed|nodded|shook|hugged|kissed|flinched|stared|whispered|replied|answered)\b/i.test(current);
-  const strongContinuity = !explicitTransition && !narrativeContextOpening && (sameChannel || directResponse || directTextReply || markupWrappedReply || attributedReply || emotionalOrReactive);
+  const strongContinuity = !explicitTransition && !narrativeContextOpening && (sameChannel || (!groundedRelocation && directResponse) || directTextReply || markupWrappedReply || attributedReply || emotionalOrReactive);
   const stronglyImpliedTransition = !strongContinuity && (narrativeContextOpening || completedRelocation || sameMessageRelocationAndSetting);
   return {
     explicit_transition: explicitTransition,
@@ -112,6 +120,9 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
     emotional_or_reactive: emotionalOrReactive,
     strong_continuity: strongContinuity,
     strongly_implied_transition: stronglyImpliedTransition,
+    grounded_relocation_detected: groundedRelocation,
+    new_setting_activity_detected: sameMessageRelocationAndSetting,
+    pending_relocation_opening: pendingRelocationOpening,
     temporal_reference_classification: {
       type: currentTemporalReference.type,
       narrative_event: currentTemporalReference.narrative_event,
@@ -148,11 +159,12 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
  * `before_message` to the first grounded transition-opening message.
  */
 export function shouldDeferSceneBoundaryToNextMessage(currentMessage = '', nextMessage = '') {
+  const currentSignals = deriveSceneContinuitySignals('', currentMessage);
   const nextSignals = deriveSceneContinuitySignals(currentMessage, nextMessage);
   const closingInteraction = /\b(?:good ?night|goodbye|call ended|hung up|ended (?:the )?(?:call|conversation|text exchange)|parted ways|(?:conversation|call|text exchange) (?:was |is )?(?:paused|on hold)(?: until (?:morning|tomorrow))?)\b/i.test(String(currentMessage ?? ''));
   const independentlyOpenedNextScene = (nextSignals.explicit_transition || nextSignals.strongly_implied_transition)
     && nextSignals.strong_continuity !== true;
-  return closingInteraction
+  return (closingInteraction || currentSignals.pending_relocation_opening)
     && independentlyOpenedNextScene;
 }
 
@@ -201,6 +213,7 @@ export function deriveSceneCandidateStateDelta(previousMessage = '', currentMess
   const previousParticipants = participantFingerprint(previous);
   const currentParticipants = participantFingerprint(current);
   const locationChanged = Boolean(previousLocation && currentLocation && previousLocation !== currentLocation)
+    || Boolean(signals.grounded_relocation_detected)
     || Boolean(signals.strongly_implied_transition && currentLocation);
   const channelChanged = channelCategory(previous) !== channelCategory(current);
   const participantSetChanged = Boolean(previousParticipants && currentParticipants && previousParticipants !== currentParticipants);
@@ -216,6 +229,7 @@ export function deriveSceneCandidateStateDelta(previousMessage = '', currentMess
       channel_changed: channelChanged,
       participant_set_changed: participantSetChanged,
       time_changed: signals.explicit_transition,
+      relocation_detected: signals.grounded_relocation_detected,
     },
     grounded: {
       location_reset_evidence: Boolean(signals.strongly_implied_transition),
@@ -224,6 +238,9 @@ export function deriveSceneCandidateStateDelta(previousMessage = '', currentMess
       time_jump_evidence: Boolean(signals.explicit_transition),
       interaction_reset: interactionReset,
       new_setting_opening: signals.strongly_implied_transition,
+      completed_relocation_evidence: signals.grounded_relocation_detected,
+      new_setting_activity_evidence: signals.new_setting_activity_detected,
+      pending_relocation_opening: signals.pending_relocation_opening,
       temporal_reference_classification: signals.temporal_reference_classification,
     },
     // Legacy flat fields are retained for one schema generation, but all new
@@ -294,9 +311,9 @@ export function evaluateDeterministicSceneGate({ aiRequestedBreak, heuristicBrea
   ];
   const signals = {
     time_change_detected: Boolean(continuity?.explicit_transition),
-    location_change_detected: false,
+    location_change_detected: Boolean(continuity?.grounded_relocation_detected || continuity?.strongly_implied_transition),
     participant_change_detected: false,
-    activity_change_detected: false,
+    activity_change_detected: Boolean(continuity?.new_setting_activity_detected),
     channel_change_detected: false,
     narrative_phase_change_detected: false,
     explicit_scene_transition_detected: Boolean(continuity?.explicit_transition),

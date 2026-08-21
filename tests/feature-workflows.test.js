@@ -1459,3 +1459,14 @@ test('scene prefilter admits strong deterministic seams locally while keeping pr
   assert.match(settings, /strong_candidate_admission: selectionByCandidateId/);
   assert.match(scenes, /detectSceneBreakAIBatch/);
 });
+
+test('scene diagnostics distinguish grounded relocation coverage gaps from generic observed deltas', () => {
+  const settings = read('settings.js');
+  const gate = read('scene-gate-utils.js');
+  assert.match(gate, /grounded_relocation_detected/);
+  assert.match(gate, /new_setting_activity_detected/);
+  assert.match(gate, /pending_relocation_opening/);
+  assert.match(settings, /pending_grounded_relocation_opening/);
+  assert.match(settings, /completed_relocation_evidence/);
+  assert.match(settings, /transition_evidence_coverage_risk/);
+});

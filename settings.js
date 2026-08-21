@@ -4425,6 +4425,8 @@ export function bindSettingsUI(ctrl) {
               const alignment = {
                 terminal_break_disposition: 'deferred_to_transition_opening',
                 aligned_to_next_message_index: allMessages[msgIdx + 1]?.__sme_original_index ?? msgIdx + 1,
+                same_message_alignment_applied: Boolean(continuity.pending_relocation_opening),
+                alignment_reason: continuity.pending_relocation_opening ? 'pending_grounded_relocation_opening' : 'closing_interaction_next_opening',
                 gate_executed: false,
                 gate_output_schema_version: 1,
               };
@@ -4789,7 +4791,11 @@ export function bindSettingsUI(ctrl) {
                 || stateDelta.observed?.time_changed;
               const onlyObservedDelta = observedDelta && !groundedReset;
               const providerConfident = Number(candidate.ai_confidence ?? 0) >= 0.8;
-              const risk = groundedReset && !continuityReason ? 'high'
+              const groundedRelocationCoverageGap = providerConfident
+                && !continuityReason
+                && candidate.gate_reason_code === 'missing_independent_transition_evidence'
+                && Boolean(stateDelta.grounded?.completed_relocation_evidence || stateDelta.grounded?.pending_relocation_opening);
+              const risk = groundedRelocationCoverageGap || (groundedReset && !continuityReason) ? 'high'
                 : continuityReason ? 'low'
                   : providerConfident && (groundedExplicit.length || implied.length) ? 'medium'
                     : observedDelta ? 'medium'
@@ -4806,7 +4812,8 @@ export function bindSettingsUI(ctrl) {
                 continuity: { strength: continuity, evidence_groups: continuityReason ? ['terminal_gate_continuity'] : [], direct_reply: continuityReason || null, same_channel: null, same_location: null, same_participants: null, immediate_reaction: continuityReason || null, same_interaction_state: continuityReason || null },
                 scene_candidate_state_delta: stateDelta,
                 final_false_negative_risk: risk,
-                review_reason: risk === 'high' ? 'grounded_reset_rejected'
+                review_reason: groundedRelocationCoverageGap ? 'transition_evidence_coverage_risk'
+                  : risk === 'high' ? 'grounded_reset_rejected'
                   : onlyObservedDelta ? 'observed_state_delta_without_grounded_reset'
                     : risk === 'medium' ? 'high_confidence_transition_support_rejected'
                     : risk === 'unknown' ? 'insufficient_independent_evidence'

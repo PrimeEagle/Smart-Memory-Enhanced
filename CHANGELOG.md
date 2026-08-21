@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7] - 2026-08-20
+
+### Fixed
+
+- Expanded grounded same-message relocation recognition to cover completed
+  travel such as walking to a coffee shop and returning to a named person's
+  room. A provider-proposed boundary is still accepted only when the message
+  also establishes a concrete setting activity or interaction.
+- Added pending-relocation alignment. When a message completes travel but the
+  following message first establishes the setting and interaction, the
+  `before_message` boundary is deferred to that opening and evaluated through
+  the normal gate, minimum-length, and coalescing path.
+- Prevented direct-reply detection from overriding independently grounded
+  relocation evidence.
+
+### Diagnostics
+
+- Scene state deltas now record privacy-safe completed-relocation,
+  new-setting-activity, and pending-relocation evidence. Rejected,
+  high-confidence provider proposals with a local relocation coverage gap are
+  explicitly reported as `transition_evidence_coverage_risk` rather than as a
+  generic observed-state change.
+
+### Tests
+
+- Added regression coverage for coffee-shop travel with an established table
+  activity, a named possessive room with a new discussion, incomplete return
+  alignment to the following opening, and future travel discussion rejection.
+- Automated verification passed: 389 tests and the 48-check replay regression
+  harness. A new live replay is still required to confirm the affected chat's
+  final scene boundaries.
+
 ## [0.9.6] - 2026-08-20
 
 ### Fixed
