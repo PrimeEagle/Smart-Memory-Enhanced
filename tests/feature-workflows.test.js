@@ -1450,7 +1450,7 @@ test('scene transition alignment runs before gate acceptance and never bypasses 
 test('scene prefilter admits strong deterministic seams locally while keeping provider batching bounded', () => {
   const scenes = read('scenes.js');
   const settings = read('settings.js');
-  assert.match(scenes, /const deterministicSignals = deriveSceneContinuitySignals\(previous, current\)/);
+  assert.match(scenes, /const deterministicSignals = deriveSceneContinuitySignals\(previous, current(?:, \{ candidate_seam_index: index \})?\)/);
   assert.match(scenes, /deterministicStrongAdmission/);
   assert.match(scenes, /strong_transition_candidates_admitted/);
   assert.match(scenes, /strong_transition_candidates_skipped/);

@@ -117,7 +117,7 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     // Tier-A evidence is evaluated locally for every seam. It is still sent
     // through the existing provider batch and final deterministic gate, but
     // cannot disappear merely because the weaker regex prefilter missed it.
-    const deterministicSignals = deriveSceneContinuitySignals(previous, current);
+    const deterministicSignals = deriveSceneContinuitySignals(previous, current, { candidate_seam_index: index });
     const deterministicStrongAdmission = !deterministicSignals.strong_continuity
       && (deterministicSignals.explicit_transition || deterministicSignals.strongly_implied_transition);
     const currentSignals = signalFor(current);

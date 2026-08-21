@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-08-21
+
+### Fixed
+
+- Corrected a false-positive deterministic scene-boundary rescue caused by a
+  destination substring match inside reflective hospital dialogue. The scene
+  gate now requires a real candidate-local destination plus a concrete
+  destination activity before treating a relocation as a strong implied reset.
+- Prevented generic continuity cues from vetoing that complete grounded
+  relocation package, while keeping sustained same-setting activity and
+  ungrounded reflections in the ordinary conservative gate path.
+
+### Diagnostics
+
+- Added privacy-safe relocation provenance for grounded same-message rescues:
+  the candidate seam, evidence source seam, evidence origin, alignment,
+  relocation/activity flags, and continuity-veto status. No chat prose is
+  recorded.
+
+### Tests
+
+- Added regressions for a return to a room followed by care, and for later
+  massage dialogue that must not inherit an earlier return-to-room relocation.
+- Full automated verification passed: 392 tests and the 48-check replay
+  regression harness. A live replay remains required to confirm the affected
+  chat's final boundary list.
+
 ## [0.9.7] - 2026-08-20
 
 ### Fixed

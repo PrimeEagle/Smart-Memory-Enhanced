@@ -30,7 +30,7 @@ export function classifyTemporalReference(message = '') {
   return { type: 'narrative_event', narrative_event: true, final_transition_eligible: true };
 }
 
-export function deriveSceneContinuitySignals(previousMessage = '', currentMessage = '') {
+export function deriveSceneContinuitySignals(previousMessage = '', currentMessage = '', options = {}) {
   const previous = String(previousMessage ?? '').trim();
   const current = String(currentMessage ?? '').trim();
   // Temporal language quoted by a character is dialogue content, not a
@@ -60,7 +60,7 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // narrative-only view has already stripped that dialogue and must not turn
   // its absence into a synthetic time jump.
   const futureContinuation = futureContinuationPattern.test(current) || futureContinuationPattern.test(previous);
-  const narrativeActionOpening = !futureContinuation && /^\s*\*\s*(?:(?:i|we)\s+)?(?:go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fall|fell|drift|doz|show(?:\s+up)?|make|schedule|spend|stay|work|start|finish)/i.test(current);
+  const narrativeActionOpening = !futureContinuation && /^\s*\*\s*(?:(?:i|we)\s+)?(?:get|got|go|went|head|headed|walk|walked|arriv|return|left|leave|wake|woke|fall|fell|drift|doz|show(?:\s+up)?|make|schedule|spend|stay|work|start|finish)/i.test(current);
   const markedDialogue = /^\s*\*\s*(?:[\u201c\u201d\u2018\u2019"']\s*)?(?:you(?:'re| are|\b)|i(?:'m| am|\b)|we(?:'re| are|\b)|he(?:'s| is|\b)|she(?:'s| is|\b)|they(?:'re| are|\b)|yes\b|no\b|okay\b|ok\b|but\b|and\b|because\b)/i.test(current);
   const dialogueLikeCurrent = (/^[\s\u201c\u201d\u2018\u2019"']/.test(current) && !/^\s*\*/.test(current)) || (markedDialogue && !narrativeActionOpening);
   const narrativeTimeOpening = currentTemporalReference.final_transition_eligible
@@ -87,11 +87,19 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   const narrativeContextOpening = /^\s*(?:\*\s*)?(?:(?:inside|outside|back at|across town|at|in)\s+(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)\b|(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)(?:\s+\w+){0,2}\s+(?:was|is|felt|looked|lay|stood)\b)/i.test(narrativeCurrent);
   const completedPriorInteraction = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways)\b/i.test(narrativePrevious);
   const settingNoun = '(?:coffee\\s+shop|cafe|restaurant|bar|lobby|room|bedroom|office|apartment|house|home|place|kitchen|living\\s+room|hospital|table|couch|sofa|bed|park|store|library|school|gym|hotel|car)';
-  const concreteDestination = `(?:(?:the|a|an|my|his|her|their|our)\\s+${settingNoun}|(?:[A-Z][a-z]+(?:[\\u2019\']s)?\\s+)+${settingNoun})`;
-  const completedTravelToDestination = new RegExp(`\\b(?:go|went|walk(?:ed)?|return(?:ed)?|head(?:ed)?|arriv(?:ed|e)?|enter(?:ed)?|came)\\s+(?:(?:down|up|over|back)\\s+)?(?:back\\s+)?(?:to|into)\\s+${concreteDestination}\\b`, 'i').test(narrativeCurrent);
+  // A named destination must use an actual possessive ("Taylor's room"),
+  // rather than accepting an arbitrary capitalized-word sequence. This keeps
+  // the destination local and avoids treating prose such as "this hospital"
+  // as the substring "his hospital".
+  const concreteDestination = `(?:\\b(?:the|a|an|my|his|her|their|our)\\s+${settingNoun}|\\b[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*[\\u2019\']s\\s+${settingNoun})`;
+  const completedTravelToDestination = new RegExp(`\\b(?:get|got|go|went|walk(?:ed)?|return(?:ed)?|head(?:ed)?|arriv(?:ed|e)?|enter(?:ed)?|came)\\s+(?:(?:down|up|over|back)\\s+)?(?:back\\s+)?(?:to|into)\\s+${concreteDestination}\\b`, 'i').test(narrativeCurrent);
   const futureOrHypotheticalTravel = /\b(?:will|would|could|might|should|plan(?:s)? to|intend(?:s)? to|hope(?:s)? to|going to)\s+(?:go|walk|return|head|arrive|enter)\b/i.test(narrativeCurrent);
   const temporalReferenceBlocksRelocation = ['quoted_dialogue', 'preference', 'schedule', 'habitual', 'future_plan', 'hypothetical', 'recalled_event'].includes(currentTemporalReference.type);
-  const establishedDestinationActivity = /\b(?:buy|bought|order|ordered|sit|sat|settle|settled|begin|began|start|started|talk|talking|speak|speaking|discuss(?:ed|ing)?|open|opened|share|eat|ate|drink|drank|meet|met)\b/i.test(narrativeCurrent);
+  // Do not let a later reflection such as "I walked into this hospital" plus
+  // an internal "sit here" thought manufacture a relocation. The new
+  // activity must itself establish the destination: a table/seat, a person
+  // placed in bed, or an explicitly begun interaction.
+  const establishedDestinationActivity = /\b(?:buy|bought|order|ordered)\s+(?:\w+\s+){0,2}(?:coffee|tea|food|drink)\b|\b(?:sit|sat|settle|settled)\s+(?:down\s+)?(?:at|on|in)\s+(?:the|a|an|my|his|her|their|our)\s+(?:table|couch|sofa|bed|chair)\b|\b(?:on|in|at)\s+(?:the|a|an|my|his|her|their|our)\s+(?:couch|sofa|table|bed|chair)\b[^.]{0,90}\b(?:eat|ate|talk|talking|speak|speaking|share|shared)\b|\b(?:help|helped)\s+(?:[A-Z][a-z]+\s+)?(?:back\s+)?(?:into|onto)\s+(?:the|a|an|my|his|her|their|our)\s+bed\b|\b(?:begin|began|start|started)\s+(?:(?:to\s+)?(?:discuss(?:ing)?|talk(?:ing)?|massage(?:ing)?)|(?:\w+\s+){0,2}(?:conversation|discussion|talk|massage|meeting|activity))\b|\b(?:discuss(?:ed|ing)?|talk(?:ed|ing)?)\s+(?:about|through|over)\b/i.test(narrativeCurrent);
   const groundedRelocation = !dialogueLikeCurrent
     && !futureOrHypotheticalTravel
     && !temporalReferenceBlocksRelocation
@@ -110,7 +118,14 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // form as continuity too, while an explicit reset still wins below.
   const attributedReply = /^\s*(?:\*\s*)?(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+)?(?:said|replied|answered|texted|messaged|whispered)\b/i.test(current);
   const emotionalOrReactive = /\b(?:smiled|laughed|cried|sighed|nodded|shook|hugged|kissed|flinched|stared|whispered|replied|answered)\b/i.test(current);
-  const strongContinuity = !explicitTransition && !narrativeContextOpening && (sameChannel || (!groundedRelocation && directResponse) || directTextReply || markupWrappedReply || attributedReply || emotionalOrReactive);
+  const sustainedActivity = /\b(?:massage|massaging|shoulders?|neck|thumbs?|hands?|conversation|talking|coffee|meal|dinner|walking)\b/i.test(previous)
+    && /\b(?:massage|massaging|shoulders?|neck|thumbs?|hands?|conversation|talking|coffee|meal|dinner|walking)\b/i.test(current);
+  // A completed, candidate-local relocation plus destination activity is a
+  // grounded reset. Generic reply/activity cues must not veto that complete
+  // package; the malformed hospital reflection cannot reach this exception
+  // because it has no valid concrete destination match.
+  const strongContinuity = !explicitTransition && !narrativeContextOpening && !sameMessageRelocationAndSetting
+    && (sameChannel || (!groundedRelocation && directResponse) || directTextReply || markupWrappedReply || attributedReply || emotionalOrReactive || sustainedActivity);
   const stronglyImpliedTransition = !strongContinuity && (narrativeContextOpening || completedRelocation || sameMessageRelocationAndSetting);
   return {
     explicit_transition: explicitTransition,
@@ -123,6 +138,15 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
     grounded_relocation_detected: groundedRelocation,
     new_setting_activity_detected: sameMessageRelocationAndSetting,
     pending_relocation_opening: pendingRelocationOpening,
+    relocation_evidence_provenance: groundedRelocation ? {
+      candidate_seam_index: Number.isInteger(options.candidate_seam_index) ? options.candidate_seam_index : null,
+      evidence_source_message_index: Number.isInteger(options.candidate_seam_index) ? options.candidate_seam_index : null,
+      evidence_origin: 'candidate_message',
+      alignment: 'same_message',
+      completed_relocation_signal: true,
+      new_setting_activity_signal: sameMessageRelocationAndSetting,
+      continuity_veto: strongContinuity,
+    } : null,
     temporal_reference_classification: {
       type: currentTemporalReference.type,
       narrative_event: currentTemporalReference.narrative_event,
@@ -139,6 +163,15 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
       ...(stronglyImpliedTransition ? [{
         evidence_group_id: 'narrative_context_reset',
         source_fingerprint: sameMessageRelocationAndSetting ? 'same_message_completed_relocation_and_new_setting' : completedRelocation ? 'completed_relocation_then_new_context' : completedPriorInteraction ? 'completed_interaction_then_new_context' : 'anchored_new_context_opening',
+        evidence_provenance: sameMessageRelocationAndSetting ? {
+          candidate_seam_index: Number.isInteger(options.candidate_seam_index) ? options.candidate_seam_index : null,
+          evidence_source_message_index: Number.isInteger(options.candidate_seam_index) ? options.candidate_seam_index : null,
+          evidence_origin: 'candidate_message',
+          alignment: 'same_message',
+          completed_relocation_signal: true,
+          new_setting_activity_signal: true,
+          continuity_veto: strongContinuity,
+        } : null,
         detector_codes: ['narrative_context_reset'],
         strength: 'strong',
         independent: true,
