@@ -396,6 +396,48 @@ test('a named person possessive room plus a new discussion is a same-message bou
   assert.equal(continuity.strongly_implied_transition, true);
 });
 
+test('returning to a room and beginning care there is a grounded relocation boundary', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'They continue their conversation in the hallway.',
+    '*We get back to the room and help Taylor back into the bed. Kyler sits down. I start massaging her shoulders.*',
+    { candidate_seam_index: 281 },
+  );
+  assert.equal(continuity.grounded_relocation_detected, true);
+  assert.equal(continuity.new_setting_activity_detected, true);
+  assert.equal(continuity.strongly_implied_transition, true);
+  assert.deepEqual(continuity.relocation_evidence_provenance, {
+    candidate_seam_index: 281,
+    evidence_source_message_index: 281,
+    evidence_origin: 'candidate_message',
+    alignment: 'same_message',
+    completed_relocation_signal: true,
+    new_setting_activity_signal: true,
+    continuity_veto: false,
+  });
+});
+
+test('later massage conversation cannot inherit an earlier return-to-room relocation', () => {
+  const continuity = deriveSceneContinuitySignals(
+    'Taylor watches the continuing massage from the bed and responds to Aaron.',
+    'Kyler lets Aaron keep working along her shoulders. She says she is trying to accept his support.',
+    { candidate_seam_index: 285 },
+  );
+  const result = evaluateDeterministicSceneGate({
+    aiRequestedBreak: false,
+    heuristicBreak: true,
+    sceneLength: 15,
+    minimumSceneLength: 3,
+    messageIndex: 285,
+    previousBoundaryIndex: 258,
+    continuity,
+  });
+  assert.equal(continuity.grounded_relocation_detected, false);
+  assert.equal(continuity.new_setting_activity_detected, false);
+  assert.equal(continuity.relocation_evidence_provenance, null);
+  assert.equal(result.accepted, false);
+  assert.notEqual(result.gate_reason_code, 'accepted_deterministic_positive_rescue');
+});
+
 test('a completed return without a new activity aligns only when the following message opens the setting', () => {
   const returnOnly = '*We go back to Taylor\'s room.*';
   const roomOpening = '*Taylor was sitting up in bed when we walked through the door. We begin talking.*';

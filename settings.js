@@ -4409,7 +4409,9 @@ export function bindSettingsUI(ctrl) {
             // triggered by either speaker's transition.
             const heuristicBreak = detectSceneBreakHeuristic(msgText);
             const aiRequestedBreak = settings.scene_ai_detect && Boolean(sceneAudit.ai_decisions?.get(msgIdx));
-            const continuity = deriveSceneContinuitySignals(allMessages[msgIdx - 1]?.mes, msgText);
+            const continuity = deriveSceneContinuitySignals(allMessages[msgIdx - 1]?.mes, msgText, {
+              candidate_seam_index: msg.__sme_original_index ?? msgIdx,
+            });
             // A closing message can contain the evidence that an interaction
             // ends (for example, a text exchange paused until morning), while
             // the following message is the actual next-scene opening. Align
