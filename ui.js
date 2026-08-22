@@ -117,6 +117,7 @@ import {
   mergeCanonicalEntityAcrossStores,
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
+import { validateFinalizedEntityRedirects } from './entity-redirect-utils.js';
 import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeRelationshipPair, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, getFinalizedCanonicalPersonaContext, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, summarizeCanonicalPersonaContext } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
@@ -1755,31 +1756,11 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     observations.push(observation);
     (canonicalGroups.get(key) ?? canonicalGroups.set(key, []).get(key)).push(entity);
   }
-  // Registry entries may be merged across stores below. Keep an immutable
-  // redirect table from every observed durable ID to its authoritative stable
-  // identity so an old long-term reference can still be repaired after its
-  // local registry row is absorbed by a session/card-local representation.
-  const referenceRedirects = new Map(observations.map((observation) => [
-    String(observation.record_id),
-    String(observation.canonical_entity_id),
-  ]));
-  // Persisted merge redirects outlive their source registry row. Add them
-  // before any stale-link audit so a durable reference can be repaired from
-  // merge provenance rather than guessing from narrative text.
+  // Do not consult persistent redirects yet. Cross-store merges can remove a
+  // staged target, so redirect validity must be checked against the exact
+  // finalized registry below rather than this early observation snapshot.
+  const referenceRedirects = new Map();
   const durableRedirects = meta.entity_redirects ?? {};
-  const resolveDurableRedirect = (id) => {
-    const seen = new Set();
-    let current = String(id);
-    while (durableRedirects[current]?.replacement_canonical_id && !seen.has(current)) {
-      seen.add(current);
-      current = String(durableRedirects[current].replacement_canonical_id);
-    }
-    return seen.has(current) ? null : current;
-  };
-  for (const [sourceId, redirect] of Object.entries(durableRedirects)) {
-    const targetId = resolveDurableRedirect(redirect?.replacement_canonical_id);
-    if (targetId) referenceRedirects.set(String(sourceId), targetId);
-  }
   for (const entities of canonicalGroups.values()) {
     if (entities.length < 2) continue;
     // Prefer the session record as the chat-wide canonical target, then the
@@ -1830,6 +1811,19 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
         reason: 'exact_grounded_name_cross_store_type_normalization',
       });
     }
+  }
+
+  // Merge operations above mutate the registry arrays in place. Validate and
+  // flatten every durable redirect only now, using those final materialized
+  // records as the one authoritative scope for both automatic stabilization
+  // and manual idempotence. Invalid self/dangling/cyclic redirects are removed
+  // as unsafe graph edges; their live references remain reviewable and are
+  // never guessed into a name-based merge.
+  const finalizedRegistryRecords = registryGroups.flat().filter((entity) => entity?.id);
+  const redirectLifecycle = validateFinalizedEntityRedirects(durableRedirects, finalizedRegistryRecords);
+  if (redirectLifecycle.changed) meta.entity_redirects = redirectLifecycle.validated_redirects;
+  for (const [sourceId, redirect] of Object.entries(redirectLifecycle.validated_redirects)) {
+    referenceRedirects.set(String(sourceId), String(redirect.replacement_canonical_id));
   }
 
   // Registry and redirect work above can make an alias resolvable only after
@@ -2204,11 +2198,13 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
           const redirectTarget = entityById.get(String(redirectedIdentity))
             ?? (roster.characters ?? []).find((entry) => String(entry.id) === String(redirectedIdentity));
           const target = redirectTarget ?? (canonicalTargets.length === 1 ? canonicalTargets[0] : null);
+          const redirectLifecycleDiagnostic = redirectLifecycle.diagnostics_by_source.get(String(entityId)) ?? null;
           const stale = {
             store, record_id: record?.id ?? null, reference_field_path: `${field}[${entryIndex}]`,
             actual_entity_id: entityId, actual_entity_name: linkedName || null, actual_entity_store: entity ? store : null,
             expected_canonical_identity_id: target?.canonical_id ?? target?.id ?? null, expected_entity_id: target?.id ?? null,
-            stale_reason_code: entity ? 'wrong_scope_reference' : 'missing_registry_record', repair_attempted: Boolean(target), repair_result: target ? 'rewritten' : 'not_safe_to_infer',
+            stale_reason_code: entity ? 'wrong_scope_reference' : redirectLifecycleDiagnostic?.invalid_reason ? 'invalid_redirect_target' : 'missing_registry_record', repair_attempted: Boolean(target), repair_result: target ? 'rewritten' : 'not_safe_to_infer',
+            redirect_invariant_failure: redirectLifecycleDiagnostic?.invalid_reason ?? null,
             resolution_strategies_attempted: ['registry_redirect', 'exact_canonical_roster_name', 'unique_text_name'], selected_strategy: redirectTarget ? 'registry_redirect' : target ? 'unique_text_name' : null,
             candidate_canonical_ids: canonicalTargets.map((entry) => entry.id), selected_canonical_id: target?.id ?? null, failure_reason: target ? null : 'no_unique_authoritative_identity',
           };
@@ -2336,6 +2332,17 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) await auditReferences(records, `card-local:${localName}`, 'entities', true);
   await auditReferences(scenes, 'scenes', 'participant_references');
   await auditReferences(arcs, 'arcs', 'participant_references');
+  for (const [sourceId, diagnostic] of redirectLifecycle.diagnostics_by_source) {
+    const repaired = repairedStaleEntityReferences.filter((entry) => String(entry.actual_entity_id) === sourceId).length;
+    const remaining = staleEntityReferences.filter((entry) => String(entry.actual_entity_id) === sourceId).length;
+    diagnostic.live_reference_count_before_repair = repaired + remaining;
+    diagnostic.live_reference_count_after_repair = remaining;
+    if (repaired) {
+      diagnostic.repair_status = 'applied';
+      diagnostic.rewrite_stage = 'finalized_live_reference_rewrite';
+    }
+    else if (remaining) diagnostic.repair_status = diagnostic.repair_status === 'blocked' ? 'blocked' : 'deferred';
+  }
   observeCardLocalWrites(beforeReferenceAudit, 'repair_entity_references', 'auditReferences', true);
   // The audit mutates the same durable arrays used by long-term, session, and
   // card-local storage. Persist after the final mutation pass, not only before
@@ -2631,6 +2638,12 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     allowed_cross_store_persona_representations: allowedCrossStoreRepresentation.filter((item) => item.canonical_identity.startsWith('persona:')).length,
     allowed_cross_store_card_representations: allowedCrossStoreRepresentation.filter((item) => item.canonical_identity.startsWith('card:')).length,
     malformed_self_card_identities_cleared: malformedSelfCardIdentitiesCleared,
+    redirect_lifecycle: {
+      finalized_registry_record_count: redirectLifecycle.finalized_registry_record_count,
+      redirects_changed: redirectLifecycle.changed,
+      records: redirectLifecycle.diagnostics,
+      invalid_redirect_count: redirectLifecycle.diagnostics.filter((entry) => entry.validation_result === 'removed_invalid_redirect').length,
+    },
     cross_store_type_normalizations: crossStoreTypeNormalizations,
     true_same_scope_duplicates: duplicateCanonicalEntities.filter((item) => item.classification === 'duplicate_within_same_logical_store').length,
     synthetic_identity_remaining: syntheticIdentityRemaining,
