@@ -1333,6 +1333,7 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
       originating_run: meta.active_catchup_run_id ?? null,
       source_store_scopes: [...new Set(sources.map((entry) => entry.scope ?? entry.source ?? 'registry'))],
       migration_schema_version: 1,
+      created_stage: 'mergeCanonicalEntityAcrossStores',
       references_rewritten: false,
       unresolved_reference_count: 0,
     };

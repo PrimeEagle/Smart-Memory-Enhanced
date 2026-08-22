@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-08-22
+
+### Fixed
+
+- Corrected the canonical-entity redirect lifecycle so redirects are validated
+  only after reconciliation has built its final materialized registry.
+- Self redirects, redirect cycles, missing terminal targets, and targets
+  removed during finalization are now removed from the active redirect map.
+  Ambiguous orphaned references remain intact and reviewable rather than being
+  guessed into a name-based merge or silently deleted.
+- Valid redirect chains now flatten to their final registry entity before live
+  durable references are audited and rewritten.
+
+### Diagnostics
+
+- Added privacy-safe redirect lifecycle records covering source/target
+  fingerprints, final-registry membership, invalid-target reason, reference
+  counts, and creation/validation/rewrite/removal stages.
+
+### Tests
+
+- Added coverage for removed targets, self redirects, missing chains, cycles,
+  finalized-registry scope, automatic/manual parity, ambiguous orphaned links,
+  and authoritative terminal recovery.
+- Full automated verification passed: 398 tests and the 48-check replay
+  regression harness. A live replay remains required to verify the affected
+  chat's final post-repair integrity result.
+
 ## [0.9.8] - 2026-08-21
 
 ### Fixed
