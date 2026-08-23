@@ -122,6 +122,7 @@ import { extractArcs, injectArcs, clearArcs, clearArcSummaries, loadArcs, loadAr
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { runModelTest } from './model-test.js';
 import { advanceSceneBufferAtBoundary, coalesceSceneBoundary, deriveSceneCandidateStateDelta, deriveSceneContinuitySignals, evaluateDeterministicSceneGate, shouldDeferSceneBoundaryToNextMessage } from './scene-gate-utils.js';
+import { summarizeSceneCandidateSources } from './scene-candidate-utils.js';
 import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, compareSceneBoundaryRuns } from './scene-stability-utils.js';
 import {
   PROMPT_TASKS,
@@ -4351,7 +4352,7 @@ export function bindSettingsUI(ctrl) {
           const sceneAudit = { run_id: catchUpRunId, created_at: Date.now(), record_source: 'runtime', history_schema_version: 2, candidates: 0, generated: 0, duplicates: 0, failed: 0, detection_failed: 0, heuristic_break_candidates: 0, ai_breaks_rejected_by_deterministic_gate: 0, heuristic_candidates_pre_ai: 0, heuristic_fallback_candidates: 0, heuristic_fallback_breaks: 0, heuristic_fallback_no_breaks: 0, ai_breaks_added: 0, ai_no_breaks: 0, fallback_breaks_added: 0, fallback_no_breaks: 0, ai_decisions_valid: 0, ai_decisions_invalid: 0, ai_decisions_missing: 0, ai_breaks_removed: 0, final_break_indices: [], scene_boundary_source: [], scene_detector_model_request_count: 0, boundary_candidates_evaluated: 0, total_message_boundaries: 0, candidates_after_prefilter: 0, candidates_skipped_by_prefilter: 0, selection_signal_counts: {}, boundary_semantics: 'before_message', requests_sent: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, request_counters_reconciled: true, batch_size_target: 12, average_candidates_per_request: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, fallback_boundaries: 0, boundary_confidences: {}, task_sampling_settings: { temperature: 0, response_length_per_candidate: 32, minimum_response_length: 128, deterministic_break_gate: true }, model_identifier: extension_settings[MODULE_NAME]?.model ?? extension_settings[MODULE_NAME]?.source ?? 'main', connection_profile_identifier: extension_settings[MODULE_NAME]?.connection_profile_id ?? null, scene_detection_run_signature: null, candidate_context_hashes: [], candidate_context_hash_summary: null, prompt_shape_hash: diagnosticFingerprint('scene-boundary-batch-v5|prefiltered-boundary-before-message|requested_candidate_ids|candidate_id|break|confidence|deterministic-break-gate|previous-500|current-700') };
           const aiCandidates = [];
           if (settings.scene_ai_detect) {
-            const selection = selectSceneBoundaryCandidates(allMessages, { cadence: 12 });
+            const selection = selectSceneBoundaryCandidates(allMessages, { cadence: 12, isGroupChat: Boolean(getContext()?.groupId) });
             aiCandidates.push(...selection.candidates);
             Object.assign(sceneAudit, selection.diagnostics);
             const selectionByCandidateId = new Map(selection.candidates.map((candidate) => [candidate.candidate_index, candidate]));
@@ -4368,6 +4369,7 @@ export function bindSettingsUI(ctrl) {
               ...item,
               message_index: item.candidate_id,
               strong_candidate_admission: selectionByCandidateId.get(item.candidate_id)?.strong_candidate_admission ?? null,
+              selection_provenance: selectionByCandidateId.get(item.candidate_id)?.selection_provenance ?? null,
             }));
             sceneAudit.ai_disposition_by_id = new Map(sceneAudit.candidate_dispositions.map((item) => [item.candidate_id, item]));
             sceneAudit.ai_decisions_valid = batchResult.diagnostics.candidate_dispositions.filter((item) => /^ai_/.test(item.terminal_disposition)).length;
@@ -4865,6 +4867,10 @@ export function bindSettingsUI(ctrl) {
           // has accepted a boundary.  This compact audit is intentionally
           // text-free so long-chat replays can be reviewed safely.
           const finalBoundarySet = new Set(sceneAudit.final_break_indices);
+          sceneAudit.candidate_source_outcomes = summarizeSceneCandidateSources(
+            sceneAudit.candidate_dispositions ?? [],
+            sceneAudit.final_break_indices,
+          );
           sceneAudit.scene_boundary_source_audit = {
             accepted_boundaries: (sceneAudit.candidate_dispositions ?? [])
               .filter((candidate) => finalBoundarySet.has(candidate.message_index ?? candidate.candidate_id))

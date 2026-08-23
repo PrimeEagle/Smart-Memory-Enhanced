@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.10] - 2026-08-22
+
+### Improved
+
+- Tightened provider-candidate admission for group chats. A broad legacy scene
+  heuristic, speaker turn, participant change, or weak state observation can
+  no longer send a seam to the provider on its own; it now needs independent,
+  grounded transition support.
+- Preserved guaranteed local admission for explicit time jumps, sleep/wake
+  handoffs, grounded relocation plus a new setting/activity, and other strong
+  deterministic scene transitions.
+
+### Diagnostics
+
+- Added privacy-safe candidate-source admission and outcome audits. Exports
+  now distinguish grounded deterministic, heuristic, speaker-churn, and
+  composite sources, together with provider decisions, final outcomes,
+  rejection reasons, and continuity vetoes—without storing chat prose.
+
+### Tests
+
+- Added group-chat regressions for speaker/participant churn, state-delta
+  noise, explicit time and sleep/wake transitions, grounded relocation, and
+  source-outcome accounting.
+- Full automated verification passed: 403 tests and the 48-check replay
+  regression harness. A live Memorize Chat replay is still needed to measure
+  the production request reduction and reconfirm the affected chat's final
+  boundaries.
+
 ## [0.9.9] - 2026-08-22
 
 ### Fixed

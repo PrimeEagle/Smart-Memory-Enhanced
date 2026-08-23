@@ -56,6 +56,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { deriveSceneContinuitySignals } from './scene-gate-utils.js';
+import { evaluateSceneCandidateAdmission } from './scene-candidate-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, findCanonicalParticipantsInText, formatCanonicalRosterForPrompt } from './canonical-entities.js';
@@ -73,9 +74,15 @@ export { detectSceneBreakHeuristic };
  */
 export function selectSceneBoundaryCandidates(messages = [], options = {}) {
   const cadence = Math.max(4, Number(options.cadence ?? 12));
+  const isGroupChat = Boolean(options.isGroupChat);
   const candidates = [];
   const signalCounts = { heuristic: 0, strong_transition: 0, moderate_transition: 0, weak_transition: 0, continuity_only: 0, cadence_only: 0 };
   const cadenceAudit = { cadence_checkpoints_considered: 0, cadence_checkpoints_promoted: 0, cadence_checkpoints_rejected_locally: 0 };
+  const candidateSourceAudit = {
+    scope: isGroupChat ? 'group_chat' : 'single_chat',
+    selected: { strong_deterministic: 0, heuristic: 0, cadence: 0, observed_location: 0, participant_delta: 0, channel: 0, speaker_churn: 0, combined: 0 },
+    rejected: { group_heuristic_without_grounded_transition: 0, direct_continuation: 0, no_independent_transition_support: 0 },
+  };
   const strongTransitionAudit = {
     total_message_seams: Math.max(0, messages.length - 1),
     strong_transition_seams_detected: 0,
@@ -125,13 +132,27 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     const strong = currentSignals.strong || previousSignals.strong;
     const moderate = currentSignals.moderate + previousSignals.moderate >= 2;
     const continuation = directContinuation(previous, current);
+    const speakerChanged = String(messages[index - 1]?.name ?? '').trim().toLowerCase()
+      !== String(messages[index]?.name ?? '').trim().toLowerCase();
     const checkpoint = sinceCandidate >= cadence;
     if (checkpoint) cadenceAudit.cadence_checkpoints_considered++;
     // Cadence is observability only. It cannot turn ordinary conversation into
     // a provider candidate without independently supported transition evidence.
     if (deterministicStrongAdmission) strongTransitionAudit.strong_transition_seams_detected++;
-    if (checkpoint && !heuristic && !strong && !moderate && !deterministicStrongAdmission) cadenceAudit.cadence_checkpoints_rejected_locally++;
-    if ((!heuristic && !strong && !moderate && !deterministicStrongAdmission) || (continuation && !strong && !deterministicStrongAdmission)) {
+    const admission = evaluateSceneCandidateAdmission({
+      isGroupChat,
+      heuristic,
+      strongTransition: strong,
+      moderateTransition: moderate,
+      deterministicStrongAdmission,
+      directContinuation: continuation && !strong && !deterministicStrongAdmission,
+      currentWeakSignal: currentSignals.weak,
+      previousWeakSignal: previousSignals.weak,
+      speakerChanged,
+    });
+    if (checkpoint && !admission.admitted) cadenceAudit.cadence_checkpoints_rejected_locally++;
+    if (!admission.admitted) {
+      candidateSourceAudit.rejected[admission.rejection_reason] = (candidateSourceAudit.rejected[admission.rejection_reason] ?? 0) + 1;
       if (continuation) signalCounts.continuity_only++;
       sinceCandidate += 1;
       continue;
@@ -155,12 +176,26 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
     if (moderate) { reasons.push('moderate_transition'); signalCounts.moderate_transition += 1; }
     if (currentSignals.weak || previousSignals.weak) signalCounts.weak_transition += 1;
     if (checkpoint) cadenceAudit.cadence_checkpoints_promoted++;
+    for (const source of admission.source_categories) {
+      if (source === 'strong_deterministic') candidateSourceAudit.selected.strong_deterministic++;
+      else if (source === 'heuristic') candidateSourceAudit.selected.heuristic++;
+      else if (source === 'speaker_churn') candidateSourceAudit.selected.speaker_churn++;
+    }
+    if (deterministicSignals.grounded_relocation_detected) candidateSourceAudit.selected.observed_location++;
+    if (deterministicSignals.strong_continuity === false && deterministicSignals.transition_evidence_groups?.some((group) => group?.detector_codes?.includes('channel_transition'))) candidateSourceAudit.selected.channel++;
+    if (admission.composite_source === 'combined') candidateSourceAudit.selected.combined++;
     candidates.push({
       candidate_index: index,
       message: current,
       previous_message: previous,
       boundary_semantics: 'before_message',
       selection_reasons: reasons,
+      selection_provenance: {
+        source_categories: admission.source_categories,
+        composite_source: admission.composite_source,
+        grounded_transition_support: admission.grounded_transition_support,
+        speaker_churn_observed: speakerChanged,
+      },
       strong_candidate_admission: deterministicStrongAdmission ? {
         message_index: index,
         evidence_type: deterministicSignals.explicit_transition ? 'explicit_transition' : 'strongly_implied_transition',
@@ -179,6 +214,7 @@ export function selectSceneBoundaryCandidates(messages = [], options = {}) {
       candidates_after_prefilter: candidates.length,
       candidates_skipped_by_prefilter: Math.max(0, messages.length - 1 - candidates.length),
       selection_signal_counts: signalCounts,
+      candidate_source_admission: candidateSourceAudit,
       scene_prefilter_strong_transition_audit: {
         ...strongTransitionAudit,
         all_strong_candidates_admitted: strongTransitionAudit.strong_transition_candidates_skipped === 0,
