@@ -160,6 +160,7 @@ import {
   revisionMetadataHash,
   normalizeIdempotenceResult,
 } from './idempotence-utils.js';
+import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
 
 /** Set to true while a model test is running to allow cancellation. */
@@ -684,6 +685,25 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         after_first_pass: sceneHistoryHashComponents(durableStateAfterFirstPass),
         after_second_pass: sceneHistoryHashComponents(durableStateAfterSecondPass),
       },
+      // Keep the reconciliation lifecycle tied to immutable snapshots. This
+      // makes a later diagnostics, save, restore, or renderer update
+      // observable without allowing it to rewrite what either pass saw.
+      idempotence_lifecycle_ledger: buildIdempotenceLifecycleLedger([
+        { stage: 'preparation', owner: 'reconciliation', state: durableStateAfterPreparation },
+        {
+          stage: 'first_pass_complete', owner: 'reconciliation',
+          mutation_accounted: (firstPassRepairs.actual_logical_mutations_this_run ?? 0) > 0
+            || (firstPassRepairs.actual_physical_store_mutations_this_run ?? 0) > 0,
+          state: durableStateAfterFirstPass,
+        },
+        { stage: 'second_pass_start', owner: 'reconciliation', state: durableStateBeforeSecondPass },
+        {
+          stage: 'second_pass_complete', owner: 'reconciliation',
+          mutation_accounted: (repairs.actual_logical_mutations_this_run ?? 0) > 0
+            || (repairs.actual_physical_store_mutations_this_run ?? 0) > 0,
+          state: durableStateAfterSecondPass,
+        },
+      ]),
     };
     result.idempotence = deriveIdempotenceResult(baseIdempotence);
     const finalStabilizationPass = stabilizationPasses.at(-1);

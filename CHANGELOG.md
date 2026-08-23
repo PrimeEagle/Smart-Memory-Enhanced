@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.11] - 2026-08-23
+
+### Fixed
+
+- Made idempotence reconciliation retain immutable durable-state snapshots for
+  preparation, first-pass completion, second-pass start, and second-pass
+  completion. Later diagnostics, persistence, restore, and UI activity can no
+  longer overwrite the evidence used to evaluate a reconciliation pass.
+
+### Diagnostics
+
+- Added a privacy-safe lifecycle ledger to reconciliation results. It records
+  durable hashes, bounded structural differences, stage ownership, and whether
+  a changed transition was accounted for, without exporting memory content.
+
+### Tests
+
+- Added lifecycle-ledger coverage for stable automatic/save/manual/restore/
+  export flows, unaccounted semantic transitions, and accounted persistence
+  normalization.
+- Full automated verification passed: 406 tests and the 48-check replay
+  regression harness. Live SillyTavern validation remains recommended before
+  treating lifecycle observations from an existing chat as final evidence.
+
 ## [0.9.10] - 2026-08-22
 
 ### Improved

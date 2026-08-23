@@ -802,6 +802,8 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /grounded_explicit_transition_support/);
   assert.match(settings, /grounded_implied_transition_support/);
   assert.match(settings, /idempotence_result_lifecycle/);
+  assert.match(settings, /buildIdempotenceLifecycleLedger/);
+  assert.match(settings, /idempotence_lifecycle_ledger/);
   assert.match(settings, /developer_idempotence_check = finalResult/);
   assert.match(settings, /durable_state_hash_before/);
   assert.match(settings, /function snapshotIdempotenceDurableState/);
