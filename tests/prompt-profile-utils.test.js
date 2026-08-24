@@ -33,3 +33,16 @@ test('character memory policy change refreshes its descriptive UI', () => {
   const handler = settingsSource.slice(settingsSource.indexOf("$('#sme_character_memory_policy').on('change'"));
   assert.ok(handler.indexOf('updateLongTermUI(characterName);') < handler.indexOf('updateTokenDisplay();'));
 });
+
+test('bulk character policy control applies one confirmed policy to current group members only', () => {
+  const settingsSource = readFileSync(new URL('../settings.js', import.meta.url), 'utf8');
+  const htmlSource = readFileSync(new URL('../settings.html', import.meta.url), 'utf8');
+  assert.match(htmlSource, /id="sme_bulk_character_memory_policy"/);
+  assert.match(htmlSource, /id="sme_apply_bulk_character_memory_policy"/);
+  const handler = settingsSource.slice(settingsSource.indexOf("$('#sme_apply_bulk_character_memory_policy').on('click'"));
+  assert.match(handler, /#sme_group_char_select option/);
+  assert.match(handler, /characterNames\.length < 2/);
+  assert.match(handler, /callGenericPopup/);
+  assert.match(handler, /Existing memories stay in their current stores/);
+  assert.match(handler, /for \(const characterName of characterNames\) setCharacterMemoryPolicy/);
+});

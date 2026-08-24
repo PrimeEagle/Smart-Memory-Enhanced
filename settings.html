@@ -110,6 +110,23 @@
         <div id="sme_character_policy_notice" class="sm-muted" style="margin-top: 5px"></div>
       </div>
 
+      <div id="sme_bulk_character_policy_block" class="sm-block sme_character_policy_block" style="display: none">
+        <label for="sme_bulk_character_memory_policy">Set Policy for All Group Characters</label>
+        <div class="sm-btn-row" style="align-items: center; gap: 6px">
+          <select id="sme_bulk_character_memory_policy" class="text_pole" style="flex: 1">
+            <option value="">Choose a policy…</option>
+            <option value="full">Full — persist and inject memories</option>
+            <option value="chat_local">Chat-Local Only — store memories in this chat only</option>
+            <option value="read_only">Read-Only — inject existing memories, never update them</option>
+            <option value="disabled">Disabled — do not inject or create memories</option>
+          </select>
+          <button id="sme_apply_bulk_character_memory_policy" class="menu_button menu_button_icon" type="button" title="Apply the selected policy to every character card in this group chat">
+            <i class="fa-solid fa-users"></i><span>Apply to All</span>
+          </button>
+        </div>
+        <small class="sm-muted">Applies to every character card in this group chat. It changes policy only; existing memories are not moved or deleted.</small>
+      </div>
+
       <!-- Read-only mode - sits below the chat action buttons since it is a
            chat-level mode switch, not a per-tier setting -->
       <div class="sm-block">

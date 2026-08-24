@@ -3344,6 +3344,32 @@ export function bindSettingsUI(ctrl) {
     updateTokenDisplay();
   });
 
+  $('#sme_apply_bulk_character_memory_policy').on('click', async function () {
+    if (isCatchUpRunning()) return;
+    const policy = $('#sme_bulk_character_memory_policy').val();
+    const characterNames = $('#sme_group_char_select option')
+      .map((_, option) => option.value)
+      .get()
+      .filter(Boolean);
+    if (!policy || characterNames.length < 2) return;
+
+    const policyLabel = $('#sme_bulk_character_memory_policy option:selected').text();
+    const confirmed = await callGenericPopup(
+      `Apply “${policyLabel}” to all ${characterNames.length} character cards in this group chat?\n\n` +
+        'This changes policy only. Existing memories stay in their current stores.',
+      POPUP_TYPE.CONFIRM,
+    );
+    if (!confirmed) return;
+
+    for (const characterName of characterNames) setCharacterMemoryPolicy(characterName, policy);
+    saveSettingsDebounced();
+    const selectedCharacterName = ctrl.getSelectedCharacterName();
+    await injectMemories(selectedCharacterName);
+    updateLongTermUI(selectedCharacterName);
+    updateTokenDisplay();
+    toastr.success(`Applied ${policyLabel} to ${characterNames.length} group characters.`, 'Smart Memory Enhanced');
+  });
+
   $('#sme_extract_now').on('click', async function () {
     if (isCatchUpRunning()) return;
     if (ctrl.extractionRunning || ctrl.consolidationRunning) return;

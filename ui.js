@@ -880,6 +880,16 @@ export function updateCanonUI(characterName) {
 export function updateLongTermUI(characterName) {
   const policy = characterName ? getCharacterMemoryPolicy(characterName) : 'full';
   $('#sme_character_memory_policy').val(policy).prop('disabled', !characterName);
+  const groupCharacterNames = $('#sme_group_char_select option')
+    .map((_, option) => option.value)
+    .get()
+    .filter(Boolean);
+  const showBulkPolicyControl = Boolean(getContext().groupId) && groupCharacterNames.length > 1;
+  $('#sme_bulk_character_policy_block').toggle(showBulkPolicyControl);
+  if (showBulkPolicyControl) {
+    const policies = [...new Set(groupCharacterNames.map((name) => getCharacterMemoryPolicy(name)))];
+    $('#sme_bulk_character_memory_policy').val(policies.length === 1 ? policies[0] : '');
+  }
   const isProtected = policy === 'read_only' || policy === 'disabled';
   const policyText = {
     full: 'Full: this card can create, retain, and inject reusable memories.',

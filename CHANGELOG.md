@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.13] - 2026-08-24
+
+### Added
+
+- Added a group-chat bulk Character Memory Policy control. It applies one
+  selected policy to every character card in the current group chat after
+  confirmation, while retaining the existing per-character control.
+- The bulk control reflects a shared policy when all group cards agree and
+  shows an explicit unselected state when their policies differ. It changes
+  policy only; it does not move or delete existing memories.
+
+### Tests
+
+- Added coverage for the scoped, confirmed bulk policy workflow. Full
+  automated verification passed, including the 48-check replay regression
+  harness.
+
 ## [0.9.12] - 2026-08-24
 
 ### Fixed
