@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.12] - 2026-08-24
+
+### Fixed
+
+- Corrected automatic idempotence lifecycle hashing so the pre-second-pass
+  checkpoint is calculated from the same immutable durable-state projection as
+  the first-pass handoff. Raw chat metadata can no longer produce a false
+  durable-state mismatch under the same lifecycle label.
+
+### Diagnostics
+
+- Versioned and documented automatic-stabilization hash checkpoints with their
+  durable semantic projection, owning lifecycle stage, and comparison scope.
+- Extended scene-provider partial-response diagnostics to distinguish provider
+  omissions, local parser normalization, targeted recovery, and whether a
+  recovered decision survived as a final scene boundary. These records contain
+  only bounded candidate identifiers and outcomes, never chat text.
+
+### Tests
+
+- Added targeted provider-omission/recovery coverage and workflow assertions
+  for the new diagnostics.
+- Full automated verification passed: 407 tests and the 48-check replay
+  regression harness. A live SillyTavern replay remains the final confirmation
+  for the exported lifecycle checkpoint values.
+
 ## [0.9.11] - 2026-08-23
 
 ### Fixed

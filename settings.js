@@ -778,12 +778,33 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     // Persist/reload markers remain explicit rather than inventing a reload
     // that has not happened yet.
     result.idempotence.automatic_stabilization_hash_timeline = {
+      schema_version: 2,
+      projection: 'durable_semantic_state_v1',
+      checkpoint_ownership: {
+        pre_stabilization: 'reconciliation',
+        pre_first_pass: 'reconciliation',
+        post_first_pass_pre_persist: 'reconciliation',
+        pre_second_pass: 'reconciliation',
+        post_second_pass_pre_persist: 'reconciliation',
+        final_export_state: 'diagnostics_export',
+      },
+      checkpoint_scope: {
+        pre_stabilization: 'durable_semantic_state_snapshot',
+        pre_first_pass: 'durable_semantic_state_snapshot',
+        post_first_pass_pre_persist: 'durable_semantic_state_snapshot',
+        pre_second_pass: 'durable_semantic_state_snapshot',
+        post_second_pass_pre_persist: 'durable_semantic_state_snapshot',
+        final_export_state: 'durable_semantic_state_snapshot',
+      },
       pre_stabilization: durableStateHashBefore,
       pre_first_pass: durableStateHash(durableStateAfterPreparation),
       post_first_pass_pre_persist: durableStateHashAfterFirstPass,
       post_first_pass_persisted: null,
       post_first_pass_reloaded: null,
-      pre_second_pass: durableStateHash(metadataBeforeSecondPass),
+      // This must use the same immutable, durable semantic projection as the
+      // inter-pass comparison. Hashing raw metadata here omitted the
+      // character-store projection and produced a contradictory value.
+      pre_second_pass: durableStateHash(durableStateBeforeSecondPass),
       post_second_pass_pre_persist: durableStateHash(durableStateAfterSecondPass),
       post_second_pass_persisted: null,
       post_second_pass_reloaded: null,
@@ -4766,6 +4787,26 @@ export function bindSettingsUI(ctrl) {
               },
             };
           });
+          // Transport recovery never decides a scene boundary by itself. Once
+          // the ordinary gate and assembly have completed, attach the bounded
+          // final outcome for each recovered provider decision so exports can
+          // distinguish a harmless omission from one that retained a boundary.
+          const recoveredFinalBoundaryIds = new Set(sceneAudit.final_break_indices);
+          for (const recovery of sceneAudit.partial_response_recovery?.targeted_recoveries ?? []) {
+            recovery.recovered_decision_outcomes = recovery.requested_candidate_ids.map((candidateId) => {
+              const disposition = sceneAudit.candidate_dispositions?.find((item) => item.candidate_id === candidateId);
+              const retained = recoveredFinalBoundaryIds.has(candidateId);
+              return {
+                candidate_id: candidateId,
+                recovered: !recovery.unresolved_candidate_ids.includes(candidateId),
+                terminal_disposition: disposition?.terminal_break_disposition ?? disposition?.terminal_disposition ?? 'unresolved_after_recovery',
+                final_boundary_retained: retained,
+              };
+            });
+            recovery.final_boundary_effect = recovery.recovered_decision_outcomes.some((outcome) => outcome.final_boundary_retained)
+              ? 'recovered_decision_retained_final_boundary'
+              : 'recovered_decision_did_not_retain_final_boundary';
+          }
           sceneAudit.final_break_support = sceneAudit.final_scene_boundary_evidence.map((boundary) => ({
             message_index: boundary.message_index,
             ai_break: Boolean(sceneAudit.candidate_dispositions?.find((item) => (item.message_index ?? item.candidate_id) === boundary.message_index)?.decision),

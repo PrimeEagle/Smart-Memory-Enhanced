@@ -57,6 +57,7 @@ import { reportTierTrimStats } from './trim-stats.js';
 import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { deriveSceneContinuitySignals } from './scene-gate-utils.js';
 import { evaluateSceneCandidateAdmission } from './scene-candidate-utils.js';
+import { describePartialProviderOmission, describeTargetedProviderRecovery } from './scene-batch-recovery-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, findCanonicalParticipantsInText, formatCanonicalRosterForPrompt } from './canonical-entities.js';
@@ -313,7 +314,8 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     ceiling_history: [batchSize],
   };
   const lineage = options.lineage ?? { next_attempt_id: 1 };
-  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, confidence_outcomes: { confidence_available: 0, confidence_not_returned: 0, confidence_invalid: 0, confidence_removed_during_repair: 0 }, batch_attempts: [], candidate_dispositions: [] };
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, confidence_outcomes: { confidence_available: 0, confidence_not_returned: 0, confidence_invalid: 0, confidence_removed_during_repair: 0 }, partial_response_recovery: { provider_omissions: [], local_normalization: [], targeted_recoveries: [] }, batch_attempts: [], candidate_dispositions: [] };
+  const requestSceneBatch = options.request ?? generateMemoryExtract;
   const parseBatch = (raw, requestedIds) => {
     const original = String(raw ?? '');
     const codeFencePresent = /^\s*```/m.test(original);
@@ -374,12 +376,19 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       // former 16-token allowance frequently cut off confidence fields or all
       // but the first item from local-model responses.
       const responseBudget = attempt.requested_output_budget;
-      const response = await generateMemoryExtract(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
+      const response = await requestSceneBatch(applyPromptOverride(buildSceneDetectBatchPrompt(batch), PROMPT_TASKS.SCENE_SUMMARY), { responseLength: responseBudget, temperature: 0 });
       attempt.request_completed = true; if (!response) { attempt.returned_none = true; throw new Error('Empty scene-boundary batch response.'); }
       let parsed = parseBatch(response, attempt.candidate_ids_requested); Object.assign(attempt, parsed);
       attempt.local_normalization_attempts = 1;
       attempt.local_normalization_succeeded = parsed.ok;
       attempt.original_structural_shape = parsed.top_level_shape ?? null;
+      if (parsed.ok && !parsed.parser_path?.every((step) => ['direct_json', 'canonical_object'].includes(step))) {
+        diagnostics.partial_response_recovery.local_normalization.push({
+          request_attempt_id: attempt.request_attempt_id,
+          parser_path: parsed.parser_path ?? [],
+          recovered_decision_count: parsed.valid_decision_count ?? 0,
+        });
+      }
       if (!parsed.ok) {
         // One formatting-only retry is intentionally bounded. It receives the
         // model's own malformed response and IDs, never the source chat again.
@@ -405,16 +414,32 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       let smallerRetry = null;
       if (parsed.truncated_output_suspected && parsed.missing_candidate_ids.length && batch.length > 1) {
         const missingCandidates = batch.filter((candidate) => parsed.missing_candidate_ids.includes(candidate.candidate_index));
+        attempt.partial_response_cause = 'provider_omitted_candidate_decisions';
+        attempt.partial_response_candidate_ids = [...parsed.missing_candidate_ids];
+        diagnostics.partial_response_recovery.provider_omissions.push(describePartialProviderOmission({
+          rootBatchId: attempt.root_batch_id,
+          requestAttemptId: attempt.request_attempt_id,
+          missingCandidateIds: parsed.missing_candidate_ids,
+          truncationSuspected: parsed.truncated_output_suspected,
+          parserNormalized: parsed.ok,
+        }));
         diagnostics.smaller_batch_retries++;
         // Retrying only the missing tail with a smaller batch limits extra work
         // and avoids discarding decisions already validated from this response.
-        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.min(Math.max(1, Math.floor(batch.length / 2)), adaptiveState.effective_batch_ceiling), onError: options.onError, lineage, adaptiveState, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, split_depth: attempt.split_depth + 1, attempt_type: missingCandidates.length === 1 ? 'single_candidate_retry' : 'partial_missing_retry' });
+        smallerRetry = await detectSceneBreakAIBatch(missingCandidates, { batchSize: Math.min(Math.max(1, Math.floor(batch.length / 2)), adaptiveState.effective_batch_ceiling), onError: options.onError, request: options.request, lineage, adaptiveState, root_batch_id: attempt.root_batch_id, parent_attempt_id: attempt.request_attempt_id, split_depth: attempt.split_depth + 1, attempt_type: missingCandidates.length === 1 ? 'single_candidate_retry' : 'partial_missing_retry' });
         for (const [candidateId, decision] of smallerRetry.decisions) {
           const retryDisposition = smallerRetry.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidateId);
           parsed.valid.set(candidateId, { decision, confidence: smallerRetry.diagnostics.boundary_confidences[candidateId] ?? null, confidence_status: retryDisposition?.confidence_status ?? 'confidence_not_returned', retried: true });
         }
         parsed.missing_candidate_ids = parsed.missing_candidate_ids.filter((candidateId) => !parsed.valid.has(candidateId));
         parsed.valid_decision_count = parsed.valid.size;
+        attempt.candidate_count_recovered = missingCandidates.length - parsed.missing_candidate_ids.length;
+        diagnostics.partial_response_recovery.targeted_recoveries.push(describeTargetedProviderRecovery({
+          rootBatchId: attempt.root_batch_id,
+          parentRequestAttemptId: attempt.request_attempt_id,
+          requestedCandidateIds: missingCandidates.map((candidate) => candidate.candidate_index),
+          unresolvedCandidateIds: parsed.missing_candidate_ids,
+        }));
         for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries', 'initial_batch_requests', 'partial_retry_requests', 'single_candidate_retry_requests', 'format_repair_requests', 'total_provider_requests', 'multi_candidate_requests']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
         Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
         for (const [confidenceStatus, count] of Object.entries(smallerRetry.diagnostics.confidence_outcomes ?? {})) {

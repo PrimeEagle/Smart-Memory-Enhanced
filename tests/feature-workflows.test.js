@@ -840,6 +840,7 @@ test('chat load restores diagnostics export availability from persisted metadata
 
 test('scene provider attempts use globally unique parented request lineage and reconciled counters', () => {
   const scenes = read('scenes.js');
+  const settings = read('settings.js');
   assert.match(scenes, /next_attempt_id/);
   assert.match(scenes, /request_attempt_id/);
   assert.match(scenes, /root_batch_id/);
@@ -847,6 +848,11 @@ test('scene provider attempts use globally unique parented request lineage and r
   assert.match(scenes, /initial_batch_requests/);
   assert.match(scenes, /partial_retry_requests/);
   assert.match(scenes, /single_candidate_retry_requests/);
+  assert.match(scenes, /partial_response_recovery/);
+  assert.match(scenes, /provider_omitted_candidate_decisions/);
+  assert.match(scenes, /describeTargetedProviderRecovery/);
+  assert.match(settings, /recovered_decision_retained_final_boundary/);
+  assert.match(settings, /recovered_decision_did_not_retain_final_boundary/);
   assert.match(scenes, /format_repair_requests/);
   assert.match(scenes, /total_provider_requests/);
 });
