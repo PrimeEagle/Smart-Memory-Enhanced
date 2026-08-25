@@ -1429,6 +1429,15 @@ test('lower navigation sections have distinct theme-neutral header icons', () =>
   assert.match(css, /\.sme_section_icon \{[\s\S]*opacity: 0\.72/);
 });
 
+test('expanded memory sections retain a clear header-to-content hierarchy', () => {
+  const css = read('style.css');
+  assert.match(css, /details\.sm-section > summary[\s\S]*font-size: 0\.82em/);
+  assert.match(css, /details\.sm-section\[open\] > summary/);
+  assert.match(css, /details\.sm-section > \.sm-section-content[\s\S]*margin: 0 4px 2px 10px/);
+  assert.match(css, /border-left: 2px solid/);
+  assert.match(css, /font-size: 0\.93em/);
+});
+
 test('pre-run diagnostics and automatic stabilization share the durable semantic projection', () => {
   const settings = read('settings.js');
   const idempotence = read('idempotence-utils.js');

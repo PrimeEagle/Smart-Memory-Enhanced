@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.15] - 2026-08-25
+
+### Improved
+
+- Improved readability of expanded memory/settings accordions. Tier headers
+  are now larger and more prominent, open sections retain a subtle visual
+  anchor, and their contents use a contained indented column with a guide line.
+- Preserved independent multi-section expansion while making the ownership of
+  controls, labels, and settings clearer when several tiers are open.
+
+### Tests
+
+- Added CSS hierarchy coverage. Full automated verification passed, including
+  the 48-check replay regression harness.
+
 ## [0.9.14] - 2026-08-25
 
 ### Fixed

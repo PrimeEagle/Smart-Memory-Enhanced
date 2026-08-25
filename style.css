@@ -103,7 +103,7 @@
 /* ── Section accordions ──────────────────────────────────────────────────── */
 
 #smart_memory_enhanced_settings details.sm-section {
-  margin-top: 2px;
+  margin-top: 5px;
 }
 
 /*
@@ -116,16 +116,20 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 2px 4px;
+  padding: 8px 7px;
   cursor: pointer;
   user-select: none;
   list-style: none;
-  font-size: 0.68em;
+  /* These are the primary navigation landmarks in a long settings drawer.
+   * Keep them clearly larger than the contained control labels. */
+  font-size: 0.82em;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  opacity: 0.55;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  opacity: 0.76;
+  border: 1px solid transparent;
+  border-bottom-color: rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
 }
 
 /* Suppress the native browser disclosure triangle. */
@@ -134,7 +138,17 @@
 }
 
 #smart_memory_enhanced_settings details.sm-section > summary:hover {
-  opacity: 0.8;
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.08);
+}
+
+/* An open heading remains a reliable visual anchor when several memory tiers
+ * are expanded at once. Theme-neutral neutrals keep this readable in both
+ * light and dark SillyTavern themes. */
+#smart_memory_enhanced_settings details.sm-section[open] > summary {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.12);
+  border-color: rgba(128, 128, 128, 0.45);
 }
 
 #smart_memory_enhanced_settings details.sm-section > summary .sm-section-chevron {
@@ -154,9 +168,16 @@
 }
 
 #smart_memory_enhanced_settings details.sm-section > .sm-section-content {
-  /* Indent control content so it reads as belonging to the open section,
-   * rather than competing visually with the neighboring section headers. */
-  padding: 6px 2px 10px 16px;
+  /* The content is deliberately inset and lightly framed. This makes it read
+   * as a body beneath its header instead of as another adjacent accordion. */
+  margin: 0 4px 2px 10px;
+  padding: 9px 10px 13px 16px;
+  font-size: 0.93em;
+  border-left: 2px solid rgba(128, 128, 128, 0.36);
+  border-right: 1px solid rgba(128, 128, 128, 0.16);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 0 0 4px 0;
+  background: rgba(128, 128, 128, 0.035);
 }
 
 /* ── Info icon and tooltip ───────────────────────────────────────────────── */
