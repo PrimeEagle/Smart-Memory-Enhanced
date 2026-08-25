@@ -895,6 +895,7 @@ import {
   runStateCardExtraction,
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
+import { summarizeProfileTerminalCoverage } from './profile-recovery-utils.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
 import { getTierHWStats, getTierTrimStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
@@ -3956,7 +3957,7 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], family_role_pipeline_traces: [], family_coreference_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_relationship_self_targets_rejected: { count: 0, records: [] }, profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], terminal_accounting: null, family_role_pipeline_traces: [], family_coreference_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_relationship_self_targets_rejected: { count: 0, records: [] }, profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
       identity_review: { existing_at_start: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0 },
       finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
       runtimeContext: canonicalRuntimeContext,
@@ -5077,15 +5078,15 @@ export function bindSettingsUI(ctrl) {
             throwOnFailure: true,
             onTerminal: (detail) => { profileTerminal = detail; },
           }).catch((err) => {
-            recordCatchUpError(err?.sme_profile_malformed_output
-              ? `${name} profile generation produced unparseable output`
-              : `${name} profile generation error`, err);
+            recordCatchUpError(`${name} profile generation error`, err, 'profiles');
             return null;
           });
           if (profileTerminal) runResult.profiles.attempts.push(profileTerminal);
-          if (profileTerminal?.terminal_outcome === 'preserved_prior' || profileTerminal?.terminal_outcome === 'rejected_unparseable') {
+          if (profileTerminal?.format_correction_attempted && profileTerminal?.profile_coverage_outcome !== 'saved_after_format_correction') {
             runResult.profiles.malformed_output++;
             runResult.profiles.malformed_output_details.push(profileTerminal);
+          }
+          if (!['saved_initial', 'saved_after_format_correction'].includes(profileTerminal?.profile_coverage_outcome)) {
             updateFinalizationEta(`profile generation for ${name}`, { completed: true });
             continue;
           }
@@ -5192,6 +5193,7 @@ export function bindSettingsUI(ctrl) {
           world_state: totals.world_state + Number(Boolean(attempt.world_state_detected)),
           relationship_matrix: totals.relationship_matrix + Number(Boolean(attempt.relationship_matrix_detected)),
         }), { character_state: 0, world_state: 0, relationship_matrix: 0 });
+        runResult.profiles.terminal_accounting = summarizeProfileTerminalCoverage(runResult.profiles.attempts);
       }
 
       // Re-injection and panel refresh are presentation-only. Isolate every
@@ -5453,6 +5455,20 @@ export function bindSettingsUI(ctrl) {
         message: 'Final canonical reconciliation failed and was rolled back; validated tier data was preserved.',
       });
       const profileQuality = runResult.profiles.profile_relationship_quality_breakdown;
+      const profileTerminalAccounting = runResult.profiles.terminal_accounting;
+      if (profileTerminalAccounting?.pending_profiles > 0) qualityReasons.push({
+        code: 'profile_generation_pending',
+        tier: 'profiles',
+        severity: 'notice',
+        message: `${profileTerminalAccounting.pending_profiles} profile${profileTerminalAccounting.pending_profiles === 1 ? ' is' : 's are'} pending a future generation after a malformed response; no model-generated facts were saved for those cards.`,
+      });
+      if ((profileTerminalAccounting?.unresolved_profiles ?? 0) > 0 || profileTerminalAccounting?.terminal_reconciled === false) qualityReasons.push({
+        code: 'profile_terminal_coverage_incomplete',
+        tier: 'profiles',
+        message: profileTerminalAccounting?.terminal_reconciled === false
+          ? 'Profile generation terminal accounting did not reconcile.'
+          : `${profileTerminalAccounting.unresolved_profiles} profile generation attempt${profileTerminalAccounting.unresolved_profiles === 1 ? '' : 's'} ended without usable or pending coverage.`,
+      });
       if (profileQuality.fields_dropped_no_supported_descriptors > 0) qualityReasons.push({
         code: 'profile_relationship_fields_unsupported',
         tier: 'profiles',
@@ -5523,7 +5539,8 @@ export function bindSettingsUI(ctrl) {
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
-        ['required_profile_generation_completed', !settings.profiles_enabled || (runResult.profiles?.profiles_saved ?? 0) > 0 || catchUpErrorCount > 0, 'Profile generation did not produce a saved profile.'],
+        ['profile_terminal_accounting_reconciles', !settings.profiles_enabled || Boolean(runResult.profiles?.terminal_accounting?.terminal_reconciled), 'Profile terminal accounting did not reconcile.'],
+        ['profile_coverage_complete', !settings.profiles_enabled || (runResult.profiles?.terminal_accounting?.unresolved_profiles ?? 0) === 0, 'A profile attempt has neither usable nor safe pending coverage.'],
         ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {

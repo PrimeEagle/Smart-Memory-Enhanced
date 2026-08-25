@@ -89,19 +89,21 @@ test('Enhanced slash commands and global UI hooks use independent names', () => 
   assert.match(css, /body\.sme-read-only/);
 });
 
-test('catch-up records one named terminal profile outcome when output remains unparseable', () => {
+test('catch-up records one safe, named terminal profile outcome when output remains unparseable', () => {
   const profiles = read('profiles.js');
   const settings = read('settings.js');
   assert.match(profiles, /options\.throwOnFailure/);
   assert.match(profiles, /options\.onTerminal\?\./);
   assert.match(profiles, /profile_identity: characterName/);
-  assert.match(profiles, /terminal_outcome: prior \? 'preserved_prior' : 'rejected_unparseable'/);
-  assert.match(profiles, /\$\{characterName\} profile generation produced unparseable output/);
+  assert.match(profiles, /saveProfileGenerationPending/);
+  assert.match(profiles, /profile_coverage_outcome: coverageOutcome/);
+  assert.match(profiles, /describeProfileFormatCorrection/);
+  assert.match(profiles, /error_tier: 'profiles'/);
   assert.match(profiles, /return loadProfiles\(characterName\);/);
   assert.match(settings, /onTerminal: \(detail\) => \{ profileTerminal = detail; \}/);
-  assert.match(settings, /\$\{name\} profile generation produced unparseable output/);
-  assert.match(settings, /profiles: \{ profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: \[\], attempts: \[\]/);
-  assert.match(profiles, /profile generation produced unparseable output/);
+  assert.match(settings, /summarizeProfileTerminalCoverage/);
+  assert.match(settings, /profile_terminal_accounting_reconciles/);
+  assert.match(settings, /profile_coverage_complete/);
   for (const file of ['index.js', 'settings.js', 'longterm.js', 'session.js', 'profiles.js']) {
     assert.doesNotMatch(read(file), /\[SmartMemory\]/);
   }
@@ -113,6 +115,8 @@ test('profile recovery repairs formatting once without replacing source evidence
   assert.match(profiles, /let parsed = parseProfileOutput\(response, \{ requireAll: true \}\)/);
   assert.match(profiles, /buildProfileFormatRepairPrompt\(response\)/);
   assert.match(profiles, /parseProfileOutput\(repaired, \{ requireAll: true \}\)/);
+  assert.match(profiles, /const requestProfile = options\.request \?\? generateMemoryExtract/);
+  assert.match(profiles, /format_correction_provider_error/);
   assert.match(profiles, /canonicalizeNarrativeNames\(parsed\[field\], roster\)/);
   assert.match(prompts, /\[PROFILE FORMAT REPAIR\]/);
   assert.match(prompts, /Copy only claims already present/);

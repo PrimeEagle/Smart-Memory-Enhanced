@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.14] - 2026-08-25
+
+### Fixed
+
+- Hardened per-character profile generation when a provider returns non-empty
+  but structurally unparseable output. The existing single, format-only
+  correction request remains bounded to that profile and never generates new
+  substantive facts.
+- When both responses remain unusable, an existing valid profile is preserved
+  unchanged. A card without one now receives a durable, fact-free pending
+  generation state instead of being silently omitted.
+
+### Diagnostics
+
+- Added privacy-safe profile recovery provenance: required-section parse
+  categories, correction provider/parser outcome, terminal profile coverage,
+  usable-profile state, and profiles-tier failure classification.
+- Added exact terminal accounting for initial saves, corrected saves, prior
+  preservation, safe pending state, and unresolved outcomes. Safe pending
+  coverage appears as a Profile safeguards notice without making the entire
+  run partial.
+
+### Tests
+
+- Added profile recovery and terminal-accounting coverage for successful
+  correction, provider failure, empty correction, malformed correction, prior
+  preservation, safe pending state, and unresolved visibility.
+- Full automated verification passed, including the 48-check replay regression
+  harness. Live validation remains needed for a provider-generated malformed
+  profile response.
+
 ## [0.9.13] - 2026-08-24
 
 ### Added

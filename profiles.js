@@ -78,6 +78,7 @@ import {
   renderRelationshipMatrixLine,
 } from './profile-role-utils.js';
 import { isCanonicalProfileSelfTarget } from './profile-self-target-utils.js';
+import { deriveProfileCoverageOutcome, describeProfileFormatCorrection } from './profile-recovery-utils.js';
 
 export { CANONICAL_RELATIONSHIP_ROLE_TOKENS, migrateProfileRoleDescriptorSeparation };
 
@@ -111,7 +112,28 @@ async function saveProfiles(profiles, characterName) {
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   if (!context.chatMetadata[META_KEY].profiles) context.chatMetadata[META_KEY].profiles = {};
   context.chatMetadata[META_KEY].profiles[characterName] = migrateProfileRoleDescriptorSeparation(profiles).profile;
+  // A valid saved profile resolves any prior format-recovery pending state.
+  if (context.chatMetadata[META_KEY].profile_generation_pending) {
+    delete context.chatMetadata[META_KEY].profile_generation_pending[characterName];
+  }
   await saveChatMetadata(context);
+}
+
+/** Stores no generated facts—only an actionable, durable profile coverage state. */
+async function saveProfileGenerationPending(characterName, reason) {
+  const context = getContext();
+  context.chatMetadata ??= {};
+  context.chatMetadata[META_KEY] ??= {};
+  context.chatMetadata[META_KEY].profile_generation_pending ??= {};
+  context.chatMetadata[META_KEY].profile_generation_pending[characterName] = {
+    schema_version: 1,
+    status: 'pending_generation',
+    reason,
+    updated_at: Date.now(),
+    contains_generated_profile_facts: false,
+  };
+  await saveChatMetadata(context);
+  return context.chatMetadata[META_KEY].profile_generation_pending[characterName];
 }
 
 export async function reconcileProfileCanonicalNames(characterName, { roster = null, runtimeSnapshot = null } = {}) {
@@ -1177,7 +1199,7 @@ function escapeRegExp(value) {
  *
  * @param {string} characterName - Active character name.
  * @param {Function|null} [abortCheck] - Optional zero-arg function; if it returns true the write is skipped (chat switched).
- * @param {{throwOnFailure?: boolean, onTerminal?: Function}} [options]
+ * @param {{throwOnFailure?: boolean, onTerminal?: Function, request?: Function}} [options]
  * Lets a transactional caller receive one privacy-safe terminal record for
  * each profile attempt. Raw provider output is never included in that record.
  * @returns {Promise<{character_state: string, world_state: string, relationship_matrix: string, generated_at: number}|null>}
@@ -1234,16 +1256,29 @@ export async function generateProfiles(characterName, abortCheck = null, options
     raw_output_length: 0,
     normalized_output_length: 0,
     sections_detected: [],
+    missing_required_sections: [],
+    invalid_required_sections: [],
     character_state_detected: false,
     world_state_detected: false,
     relationship_matrix_detected: false,
     parser_path: [],
     formatting_repair_attempted: false,
     formatting_repair_succeeded: false,
+    format_correction_attempted: false,
+    format_correction_request_count: 0,
+    format_correction_provider_outcome: 'not_attempted',
+    format_correction_parser_outcome: 'not_attempted',
     parse_error_code: null,
     terminal_outcome: 'returned_none',
     saved: false,
     prior_profile_preserved: false,
+    profile_coverage_outcome: 'unresolved',
+    usable_profile_after_run: false,
+    pending_generation_state: false,
+    error_tier: 'profiles',
+    error_stage: null,
+    severity: 'error',
+    affects_operational_status: true,
     ...detail,
   });
   const inspectStructure = (value) => {
@@ -1255,7 +1290,15 @@ export async function generateProfiles(characterName, abortCheck = null, options
       const label = key.replace('_', '[ _-]*');
       return new RegExp(`(?:<\\s*${label}|(?:^|\\n)\\s*(?:#{1,6}\\s*)?(?:\\*{1,2}\\s*)?${label.replace('[ _-]*', '[ _-]*')})`, 'i').test(normalized);
     });
-    return { raw_output_length: raw.length, normalized_output_length: normalized.length, sections_detected: sections };
+    const loose = parseProfileOutput(normalized) ?? {};
+    const validSections = sections.filter((key) => String(loose[key] ?? '').trim().length > 0);
+    return {
+      raw_output_length: raw.length,
+      normalized_output_length: normalized.length,
+      sections_detected: sections,
+      missing_required_sections: ['character_state', 'world_state', 'relationship_matrix'].filter((key) => !sections.includes(key)),
+      invalid_required_sections: sections.filter((key) => !validSections.includes(key)),
+    };
   };
   const prompt = buildProfileGenerationPrompt(
     characterName,
@@ -1266,16 +1309,17 @@ export async function generateProfiles(characterName, abortCheck = null, options
     relationshipHistory,
     extractCardRelationshipFacts(roster),
   );
+  const requestProfile = options.request ?? generateMemoryExtract;
 
   try {
-    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.PROFILES, characterName), {
+    const response = await requestProfile(applyPromptOverride(prompt, PROMPT_TASKS.PROFILES, characterName), {
       responseLength: settings.profiles_response_length ?? 600,
     });
 
     smLog('[Smart Memory Enhanced] Profile generation response:', response);
 
     if (!response) {
-      emitTerminal({ request_attempted: true, request_completed: true, returned_none: true, terminal_outcome: 'returned_none' });
+      emitTerminal({ request_attempted: true, request_completed: true, returned_none: true, terminal_outcome: 'unresolved', profile_coverage_outcome: 'unresolved', error_stage: 'initial_provider_response' });
       return null;
     }
 
@@ -1283,15 +1327,24 @@ export async function generateProfiles(characterName, abortCheck = null, options
     let parsed = parseProfileOutput(response, { requireAll: true });
     let parserPath = ['strict'];
     let repaired = null;
+    let correctionProviderError = null;
+    let formatCorrectionSucceeded = false;
     // Local models sometimes retain usable facts but miss the parser contract.
     // A single formatting-only repair preserves that evidence without allowing a
     // second model call to invent a replacement profile.
     if (!parsed) {
-      repaired = await generateMemoryExtract(
-        applyPromptOverride(buildProfileFormatRepairPrompt(response), PROMPT_TASKS.PROFILES, characterName),
-        { responseLength: settings.profiles_response_length ?? 600 },
-      );
-      parsed = parseProfileOutput(repaired, { requireAll: true });
+      try {
+        // This request contains only the malformed response and the immutable
+        // schema contract. It is a format re-emission, never new generation.
+        repaired = await requestProfile(
+          applyPromptOverride(buildProfileFormatRepairPrompt(response), PROMPT_TASKS.PROFILES, characterName),
+          { responseLength: settings.profiles_response_length ?? 600 },
+        );
+        parsed = parseProfileOutput(repaired, { requireAll: true });
+        formatCorrectionSucceeded = Boolean(parsed);
+      } catch (err) {
+        correctionProviderError = String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 240);
+      }
       parserPath.push('format_repair', 'strict_repair');
       if (parsed) smLog('[Smart Memory Enhanced] Recovered profile output with a format-only repair.');
     }
@@ -1309,17 +1362,38 @@ export async function generateProfiles(characterName, abortCheck = null, options
     }
     if (!parsed) {
       const prior = loadProfiles(characterName);
-      const error = new Error(`${characterName} profile generation produced unparseable output.`);
-      error.sme_profile_malformed_output = true;
-      console.warn(`[Smart Memory Enhanced] ${error.message} Check format above.`);
+      let pending = null;
+      if (!prior) pending = await saveProfileGenerationPending(characterName, 'unparseable_required_sections_after_format_correction');
+      const coverageOutcome = deriveProfileCoverageOutcome({
+        hasPriorProfile: Boolean(prior),
+        hasSafePendingState: Boolean(pending),
+      });
+      const correctionDiagnostics = describeProfileFormatCorrection({
+        attempted: true,
+        response: repaired,
+        providerError: correctionProviderError,
+        strictParsed: false,
+      });
+      console.warn(`[Smart Memory Enhanced] ${characterName} profile output remained unparseable after a bounded format correction.`);
       emitTerminal({
         request_attempted: true, request_completed: true,
         ...inspectStructure(repaired || response), parser_path: parserPath,
+        response_non_empty: true,
+        initial_parser_outcome: 'unparseable_required_sections',
+        initial_missing_required_sections: initialStructure.missing_required_sections,
+        initial_invalid_required_sections: initialStructure.invalid_required_sections,
+        ...correctionDiagnostics,
+        format_correction_provider_error: correctionProviderError,
         formatting_repair_attempted: true, formatting_repair_succeeded: false,
-        parse_error_code: 'unparseable_required_sections', terminal_outcome: prior ? 'preserved_prior' : 'rejected_unparseable',
+        parse_error_code: 'unparseable_required_sections', terminal_outcome: coverageOutcome,
+        profile_coverage_outcome: coverageOutcome,
         prior_profile_preserved: Boolean(prior),
+        pending_generation_state: Boolean(pending),
+        usable_profile_after_run: Boolean(prior),
+        error_stage: 'format_correction',
+        severity: coverageOutcome === 'unresolved' ? 'error' : 'notice',
+        affects_operational_status: coverageOutcome === 'unresolved',
       });
-      if (options.throwOnFailure) throw error;
       return prior;
     }
     const profileFields = ['character_state', 'world_state', 'relationship_matrix'];
@@ -1486,7 +1560,9 @@ export async function generateProfiles(characterName, abortCheck = null, options
     validateGeneratedRecord(profiles, { allowDerived: true, parentStore: [...longtermMemories, ...sessionMemories] });
     if (!isGeneratedRecordApproved(profiles)) {
       smLog('[Smart Memory Enhanced] Profile generation failed grounding validation; preserving the prior profile.');
-      emitTerminal({ request_attempted: true, request_completed: true, ...initialStructure, parser_path: parserPath, formatting_repair_attempted: Boolean(repaired), formatting_repair_succeeded: Boolean(repaired && parseProfileOutput(repaired, { requireAll: true })), parse_error_code: 'grounding_rejected', terminal_outcome: priorProfiles ? 'preserved_prior' : 'rejected_unparseable', prior_profile_preserved: Boolean(priorProfiles) });
+      const pending = priorProfiles ? null : await saveProfileGenerationPending(characterName, 'grounding_rejected_profile');
+      const coverageOutcome = deriveProfileCoverageOutcome({ hasPriorProfile: Boolean(priorProfiles), hasSafePendingState: Boolean(pending) });
+      emitTerminal({ request_attempted: true, request_completed: true, ...initialStructure, parser_path: parserPath, formatting_repair_attempted: Boolean(repaired), formatting_repair_succeeded: Boolean(repaired && parseProfileOutput(repaired, { requireAll: true })), parse_error_code: 'grounding_rejected', terminal_outcome: coverageOutcome, profile_coverage_outcome: coverageOutcome, prior_profile_preserved: Boolean(priorProfiles), pending_generation_state: Boolean(pending), usable_profile_after_run: Boolean(priorProfiles), error_stage: 'profile_grounding_validation', severity: 'notice', affects_operational_status: false });
       return loadProfiles(characterName);
     }
     if (abortCheck?.()) return null;
@@ -1496,11 +1572,18 @@ export async function generateProfiles(characterName, abortCheck = null, options
       character_state_detected: finalStructure.sections_detected.includes('character_state'),
       world_state_detected: finalStructure.sections_detected.includes('world_state'),
       relationship_matrix_detected: finalStructure.sections_detected.includes('relationship_matrix'),
-      parser_path: parserPath, formatting_repair_attempted: Boolean(repaired), formatting_repair_succeeded: Boolean(repaired && parseProfileOutput(repaired, { requireAll: true })), terminal_outcome: partialProfile ? 'saved_partial' : 'saved_full', saved: true, prior_profile_preserved: preservedPriorFields.length > 0 });
+      parser_path: parserPath,
+      response_non_empty: true,
+      ...describeProfileFormatCorrection({ attempted: parserPath.includes('format_repair'), response: repaired, strictParsed: formatCorrectionSucceeded }),
+      formatting_repair_attempted: parserPath.includes('format_repair'),
+      formatting_repair_succeeded: formatCorrectionSucceeded,
+      terminal_outcome: formatCorrectionSucceeded ? 'saved_after_format_correction' : 'saved_initial',
+      profile_coverage_outcome: formatCorrectionSucceeded ? 'saved_after_format_correction' : 'saved_initial',
+      saved: true, usable_profile_after_run: true, error_stage: null, severity: 'none', affects_operational_status: false, prior_profile_preserved: preservedPriorFields.length > 0 });
     return profiles;
   } catch (err) {
     console.error('[Smart Memory Enhanced] Profile generation failed:', err);
-    if (!err?.sme_profile_malformed_output) emitTerminal({ request_attempted: true, provider_error: String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 240), parse_error_code: 'provider_or_persistence_error', terminal_outcome: 'provider_error' });
+    if (!err?.sme_profile_malformed_output) emitTerminal({ request_attempted: true, provider_error: String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 240), parse_error_code: 'provider_or_persistence_error', terminal_outcome: 'unresolved', profile_coverage_outcome: 'unresolved', error_stage: 'provider_or_persistence', error_tier: 'profiles', severity: 'error', affects_operational_status: true });
     if (options.throwOnFailure) throw err;
     return null;
   }
@@ -1614,6 +1697,11 @@ export async function clearProfiles(characterName) {
     } else {
       delete context.chatMetadata[META_KEY].profiles;
     }
+    await saveChatMetadata(context);
+  }
+  if (context.chatMetadata?.[META_KEY]?.profile_generation_pending) {
+    if (characterName) delete context.chatMetadata[META_KEY].profile_generation_pending[characterName];
+    else delete context.chatMetadata[META_KEY].profile_generation_pending;
     await saveChatMetadata(context);
   }
   setExtensionPrompt(PROMPT_KEY_PROFILES, '', extension_prompt_types.NONE, 0);
