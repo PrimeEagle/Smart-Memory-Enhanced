@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.16] - 2026-08-26
+
+### Fixed
+
+- Prevented long-chat long-term and session extraction requests from exceeding
+  the provider context window after their complete prompt framing is rendered.
+  Each request now uses the configured context limit, reserved output length,
+  and a safety margin before it is sent.
+- Oversized source windows are deterministically repartitioned into smaller,
+  contiguous child windows. Original chat indices, order, and citation mapping
+  are retained across every child request.
+- Restricted overflow recovery to provider HTTP 400 failures explicitly
+  classified as estimated context overflow. Other provider failures retain
+  their existing failure handling and are never misclassified as a split retry.
+- Made an individually unfit source message an explicit unresolved coverage
+  outcome rather than silently dropping it or reporting successful coverage.
+
+### Diagnostics
+
+- Added long-term and session extraction-coverage ledgers with parent/child
+  lineage, source ranges, final-prompt preflight accounting, request outcome,
+  citation-mapping validity, and terminal coverage state.
+- Runs with incomplete source coverage now report a named tier-quality reason;
+  successfully repartitioned windows remain complete rather than appearing as
+  provider failures.
+
+### Tests
+
+- Added final-prompt budget, lossless partitioning, oversized-message,
+  provider-overflow classification, coverage-summary, and workflow integration
+  coverage. Full automated verification passed: 419 tests and the 48-check
+  replay regression harness.
+
 ## [0.9.15] - 2026-08-25
 
 ### Improved

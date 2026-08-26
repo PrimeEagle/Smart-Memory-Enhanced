@@ -61,6 +61,7 @@ import {
   onMemoryRequestRetry,
   retryTransientMemoryOperation,
 } from './generate.js';
+import { summarizeExtractionCoverage } from './extraction-window-utils.js';
 import {
   beginCatchUpTransaction,
   commitCatchUpTransaction,
@@ -3925,6 +3926,10 @@ export function bindSettingsUI(ctrl) {
       warningsSuppressed: 0,
       status: 'completed',
       chunks: [],
+      extractionCoverage: {
+        longterm: { records: [], summary: null },
+        session: { records: [], summary: null },
+      },
       arcResolution: { resolved: 0, still_open: 0, abandoned: 0, superseded: 0, insufficient_evidence: 0 },
       arcExtraction: { attempted: 0, request_completed: 0, provider_error: 0, http_status: null, error_class: null, non_retryable: false, returned_none: 0, malformed_output: 0, parsed_candidates: 0, accepted_open_threads: 0, rejected_completed_events: 0, rejected_background_facts: 0, rejected_relationship_states: 0, rejected_scene_details: 0, rejected_malformed: 0, participant_repairs: 0, participant_review_items: 0, terminal_reconciled: false, malformed_request: 0, input_token_budget: 0, input_token_estimate: 0, input_messages: 0, omitted_messages: 0, truncated_message: false, terminal_outcome: null },
       arcPipeline: { classifiedResolved: 0, generationAttempted: 0, generatorNone: 0, generatorMalformed: 0, preverificationRejected: 0, verifiedSupported: 0, verifiedAmbiguous: 0, verifiedUnsupported: 0, persisted: 0, providerError: 0, records: [] },
@@ -4277,7 +4282,7 @@ export function bindSettingsUI(ctrl) {
             setStatusMessage(
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
             );
-            await extractAndStoreMemories(name, nameChunk, setStatusMessage).catch((err) => {
+            await extractAndStoreMemories(name, nameChunk, setStatusMessage, { extractionCoverage: runResult.extractionCoverage }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
             });
             // Consolidate after each chunk so near-duplicates are collapsed before
@@ -4292,7 +4297,7 @@ export function bindSettingsUI(ctrl) {
         }
         if (settings.session_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
-          await extractSessionMemories(chunk, null, { sessionDiagnostics: runResult.sessionExtraction }).catch((err) => {
+          await extractSessionMemories(chunk, null, { sessionDiagnostics: runResult.sessionExtraction, extractionCoverage: runResult.extractionCoverage }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
           });
           setStatusMessage(`Catching up... (${i}/${total} messages - consolidating session)`);
@@ -5408,6 +5413,22 @@ export function bindSettingsUI(ctrl) {
         runResult.arcExtraction.terminalOutcome = runResult.arcExtraction.terminal_outcome;
       }
       const qualityReasons = [];
+      // Extraction coverage is independent of candidate quality: a window is
+      // covered only when it completed itself or every deterministic child
+      // window completed. This prevents a context-overflow split from being
+      // reported as clean merely because later tiers succeeded.
+      for (const tier of ['longterm', 'session']) {
+        const coverage = runResult.extractionCoverage[tier];
+        coverage.summary = summarizeExtractionCoverage(coverage.records);
+        if (!coverage.summary.coverage_complete) {
+          qualityReasons.push({
+            code: `${tier}_extraction_coverage_incomplete`,
+            tier: tier === 'longterm' ? 'long-term' : 'session',
+            message: `${coverage.summary.unresolved_ranges} ${tier === 'longterm' ? 'long-term' : 'session'} source window${coverage.summary.unresolved_ranges === 1 ? '' : 's'} could not be covered within the provider context limit.`,
+            unresolved_range_ids: coverage.summary.unresolved_range_ids,
+          });
+        }
+      }
       const sessionFailureRatio = runResult.sessionExtraction.emitted > 0
         ? runResult.sessionExtraction.missingProvenance / runResult.sessionExtraction.emitted
         : 0;
@@ -5662,6 +5683,7 @@ export function bindSettingsUI(ctrl) {
         arcExtraction: runResult.arcExtraction,
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
+        extraction_coverage: runResult.extractionCoverage,
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,

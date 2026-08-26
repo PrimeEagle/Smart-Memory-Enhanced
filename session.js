@@ -40,7 +40,7 @@ import {
   extension_prompt_types,
   extension_prompt_roles,
 } from '../../../../script.js';
-import { generateMemoryExtract } from './generate.js';
+import { generateMemoryExtract, getMemoryRequestBudget } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
@@ -91,6 +91,39 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
+import {
+  isEstimatedContextOverflow,
+  makeExtractionPreflight,
+  partitionSourceWindow,
+  sourceRange,
+} from './extraction-window-utils.js';
+
+const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
+
+function extractionRangeId(tier, range, depth) {
+  return `${tier}:chat:${range.start ?? 'none'}-${range.end ?? 'none'}:d${depth}`;
+}
+
+function recordExtractionCoverage(ledger, record) {
+  if (!ledger) return;
+  ledger.records ??= [];
+  const index = ledger.records.findIndex((entry) => entry.range_id === record.range_id);
+  if (index >= 0) ledger.records[index] = { ...ledger.records[index], ...record };
+  else ledger.records.push(record);
+}
+
+function contextOverflowError(preflight, range) {
+  const error = new Error('Session extraction window exceeds the configured context budget before request dispatch.');
+  error.sme_request_diagnostics = {
+    http_status: 400,
+    likely_cause: 'estimated_context_overflow',
+    request_prevented: true,
+    ...preflight,
+    source_start_index: range.start,
+    source_end_index: range.end,
+  };
+  return error;
+}
 
 /**
  * Filters session memory candidates against existing entries, removing
@@ -393,14 +426,132 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const longtermText =
       longtermMemories.length > 0 ? formatMemoriesForPrompt(longtermMemories.slice(0, 15)) : '';
 
-    const response = await generateMemoryExtract(
-      applyPromptOverride(
-        buildSessionExtractionPrompt(chatHistory, existingText, longtermText, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()))),
-        PROMPT_TASKS.SESSION_EXTRACTION,
-        characterName,
+    // Preflight the final rendered prompt, not the inexpensive raw-message
+    // chunk used by catch-up scheduling. Stored-memory and roster framing can
+    // otherwise push a seemingly safe source window past the provider limit.
+    const responseLength = settings.session_response_length ?? 500;
+    const rosterText = formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()));
+    const renderPrompt = (messages) => applyPromptOverride(
+      buildSessionExtractionPrompt(
+        messages.map((m, index) => `[${index}] ${m.name}: ${m.mes}`).join('\n\n'),
+        existingText,
+        longtermText,
+        rosterText,
       ),
-      { responseLength: settings.session_response_length ?? 500 },
+      PROMPT_TASKS.SESSION_EXTRACTION,
+      characterName,
     );
+    const prompt = renderPrompt(sourceMessages);
+    const requestBudget = getMemoryRequestBudget(responseLength);
+    const preflight = makeExtractionPreflight({
+      prompt,
+      estimateTokens,
+      configuredContextLimit: requestBudget.configuredContextLimit,
+      reservedOutputTokens: requestBudget.reservedOutputTokens,
+      safetyMargin: requestBudget.safetyMargin,
+    });
+    const depth = Number(options._contextOverflowDepth ?? 0);
+    const range = sourceRange(sourceMessages);
+    const rangeId = options._contextOverflowRangeId
+      ?? extractionRangeId('session', range, depth);
+    const coverageLedger = options.extractionCoverage?.session;
+    const coverageBase = {
+      range_id: rangeId,
+      parent_range_id: options._contextOverflowParentRangeId ?? null,
+      tier: 'session',
+      original_range: { start: range.start, end: range.end, message_count: range.message_count },
+      effective_range: { start: range.start, end: range.end, message_count: range.message_count },
+      citation_mapping_valid: range.source_indices.every(Number.isInteger),
+      preflight,
+      request_sent: false,
+    };
+    const splitWindow = async (reason) => {
+      const split = partitionSourceWindow(
+        sourceMessages,
+        renderPrompt,
+        (candidatePrompt) => makeExtractionPreflight({
+          prompt: candidatePrompt,
+          estimateTokens,
+          configuredContextLimit: requestBudget.configuredContextLimit,
+          reservedOutputTokens: requestBudget.reservedOutputTokens,
+          safetyMargin: requestBudget.safetyMargin,
+        }),
+      );
+      recordExtractionCoverage(coverageLedger, {
+        ...coverageBase,
+        provider_outcome: reason,
+        coverage_terminal_state: split.partitions.length ? 'repartitioning' : 'unresolved_context_overflow',
+        child_range_count: split.partitions.length + split.oversized.length,
+      });
+      if (depth >= MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH || !split.partitions.length) {
+        recordExtractionCoverage(coverageLedger, {
+          ...coverageBase,
+          provider_outcome: reason,
+          coverage_terminal_state: 'unresolved_context_overflow',
+          unresolved_reason: 'split_depth_or_partition_failure',
+        });
+        throw contextOverflowError(preflight, range);
+      }
+      let added = 0;
+      try {
+        for (const child of split.partitions) {
+          const childRange = sourceRange(child);
+          added += await extractSessionMemories(child, abortCheck, {
+            ...options,
+            _contextOverflowDepth: depth + 1,
+            _contextOverflowParentRangeId: rangeId,
+            _contextOverflowRangeId: extractionRangeId('session', childRange, depth + 1),
+          });
+        }
+      } catch (err) {
+        recordExtractionCoverage(coverageLedger, {
+          ...coverageBase,
+          provider_outcome: reason,
+          coverage_terminal_state: 'unresolved_child_window_failure',
+        });
+        throw err;
+      }
+      if (split.oversized.length) {
+        recordExtractionCoverage(coverageLedger, {
+          ...coverageBase,
+          provider_outcome: reason,
+          coverage_terminal_state: 'unresolved_context_overflow',
+          unresolved_reason: 'single_message_exceeds_context_budget',
+          recovered_child_ranges: split.partitions.length,
+        });
+        throw contextOverflowError(preflight, range);
+      }
+      recordExtractionCoverage(coverageLedger, {
+        ...coverageBase,
+        provider_outcome: reason,
+        coverage_terminal_state: 'repartitioned_completed',
+        all_source_messages_covered: true,
+      });
+      return added;
+    };
+
+    if (!preflight.fits) return splitWindow('prevented_preflight_context_overflow');
+
+    let response;
+    try {
+      response = await generateMemoryExtract(prompt, { responseLength });
+      recordExtractionCoverage(coverageLedger, {
+        ...coverageBase,
+        request_sent: true,
+        provider_outcome: 'completed',
+        coverage_terminal_state: 'completed',
+        all_source_messages_covered: true,
+      });
+    } catch (err) {
+      if (isEstimatedContextOverflow(err)) return splitWindow('provider_estimated_context_overflow');
+      recordExtractionCoverage(coverageLedger, {
+        ...coverageBase,
+        request_sent: true,
+        provider_outcome: 'failed_non_overflow',
+        coverage_terminal_state: 'unresolved_provider_failure',
+      });
+      throw err;
+    }
 
     smLog('[Smart Memory Enhanced] Session extraction response:', response);
 

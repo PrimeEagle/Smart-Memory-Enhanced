@@ -253,6 +253,23 @@ export function getMemoryInputBudget(responseLength) {
   return Math.max(500, contextLimit - Math.max(0, output) - 1000);
 }
 
+/** Returns the exact context accounting contract used by extraction preflight. */
+export function getMemoryRequestBudget(responseLength) {
+  const settings = extension_settings[MODULE_NAME] ?? {};
+  const profileId = getConnectionProfileId();
+  const profileLimit = settings.connection_profile_context_sizes?.[profileId];
+  const configuredContextLimit = getSource() === memory_sources.connection_profile && Number(profileLimit) > 0
+    ? Number(profileLimit)
+    : getMaxContextSize(responseLength);
+  const reservedOutputTokens = responseLength > 0 ? responseLength : getGenerationBudget();
+  return {
+    configuredContextLimit,
+    reservedOutputTokens: Math.max(0, reservedOutputTokens),
+    safetyMargin: 1000,
+    usableInputTokens: Math.max(500, configuredContextLimit - Math.max(0, reservedOutputTokens) - 1000),
+  };
+}
+
 /**
  * Returns the configured ST connection profile ID, or null if not set.
  * @returns {string|null}

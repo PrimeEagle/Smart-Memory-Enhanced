@@ -1070,7 +1070,7 @@ test('integrity round: primary provenance is prepared before verification and co
   const longterm = read('longterm.js');
   const session = read('session.js');
   const validation = read('record-validation.js');
-  assert.match(longterm, /applyDirectProvenance\(parsed, recentMessages, provenanceWindowStart/);
+  assert.match(longterm, /applyDirectProvenance\(parsed, sourceMessages, provenanceWindowStart/);
   assert.match(session, /const sourceMessages = recentMessages\.filter\(\(m\) => m\.mes && !m\.is_system\)/);
   assert.match(session, /applyDirectProvenance\(citedCandidates, sourceMessages, provenanceWindowStart/);
   assert.match(validation, /prepareRecordForValidation/);
@@ -1427,6 +1427,25 @@ test('lower navigation sections have distinct theme-neutral header icons', () =>
   }
   const css = read('style.css');
   assert.match(css, /\.sme_section_icon \{[\s\S]*opacity: 0\.72/);
+});
+
+test('long-chat extraction preflights final prompts and records bounded overflow coverage', () => {
+  const longterm = read('longterm.js');
+  const session = read('session.js');
+  const settings = read('settings.js');
+  for (const source of [longterm, session]) {
+    assert.match(source, /getMemoryRequestBudget/);
+    assert.match(source, /makeExtractionPreflight/);
+    assert.match(source, /partitionSourceWindow/);
+    assert.match(source, /isEstimatedContextOverflow/);
+    assert.match(source, /prevented_preflight_context_overflow/);
+    assert.match(source, /provider_estimated_context_overflow/);
+    assert.match(source, /single_message_exceeds_context_budget/);
+  }
+  assert.match(settings, /extractionCoverage/);
+  assert.match(settings, /summarizeExtractionCoverage/);
+  assert.match(settings, /extraction_coverage_incomplete/);
+  assert.match(settings, /extraction_coverage: runResult\.extractionCoverage/);
 });
 
 test('expanded memory sections retain a clear header-to-content hierarchy', () => {
