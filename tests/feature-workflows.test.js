@@ -1448,6 +1448,21 @@ test('long-chat extraction preflights final prompts and records bounded overflow
   assert.match(settings, /extraction_coverage: runResult\.extractionCoverage/);
 });
 
+test('Memorize Chat checkpoints only committed chunks and exposes guarded recovery', () => {
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  const index = read('index.js');
+  assert.match(html, /sme_resume_catch_up/);
+  assert.match(html, /sme_catch_up_recovery_status/);
+  assert.match(settings, /catch_up_checkpoint/);
+  assert.match(settings, /validateCatchUpResumeSource/);
+  assert.match(settings, /checkpointForCommit\.next_source_offset = processed/);
+  assert.match(settings, /if \(chunkCommitted\) i \+= chunk\.length/);
+  assert.match(settings, /delete catchUpContext\.chatMetadata\[META_KEY\]\.catch_up_checkpoint/);
+  assert.match(settings, /sme:chat-changed\.sme-catchup-recovery/);
+  assert.match(index, /\$\(document\)\.trigger\('sme:chat-changed'\)/);
+});
+
 test('expanded memory sections retain a clear header-to-content hierarchy', () => {
   const css = read('style.css');
   assert.match(css, /details\.sm-section > summary[\s\S]*font-size: 0\.82em/);

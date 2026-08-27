@@ -54,7 +54,18 @@
             <i class="fa-solid fa-xmark"></i>
             <span>Cancel</span>
           </button>
+          <button
+            id="sme_resume_catch_up"
+            class="menu_button menu_button_icon"
+            type="button"
+            title="Resume the last incomplete Memorize Chat run from its last safely committed chunk."
+            disabled
+          >
+            <i class="fa-solid fa-play"></i>
+            <span>Resume Incomplete Run</span>
+          </button>
         </div>
+        <small id="sme_catch_up_recovery_status" class="sm-muted" aria-live="polite" style="display: none"></small>
         <div class="sm-btn-row">
           <button id="sme_preview_catch_up" class="menu_button menu_button_icon" title="Run a small, recent-message preflight through the memory extractors without saving. Use it to verify your provider and prompt setup before a full Memorize Chat run.">
             <i class="fa-solid fa-magnifying-glass"></i><span>Preview Memorize Chat</span>

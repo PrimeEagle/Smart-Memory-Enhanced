@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.17] - 2026-08-27
+
+### Added
+
+- Added crash-safe Memorize Chat recovery. A durable chat-local checkpoint is
+  saved before provider work starts and advances only after a chunk's staged
+  persistence succeeds.
+- Added a disabled-by-default **Resume Incomplete Run** control and a concise
+  progress indicator showing the number of source messages safely committed.
+- Added automatic recovery after a SillyTavern restart. An in-progress run
+  resumes once the chat metadata and selected group card are restored.
+
+### Fixed
+
+- Resume now reuses the original source-window boundary, participant scope,
+  and canonical runtime context. Committed chunks are not reprocessed, and
+  messages appended after an interruption are not mixed into the prior rebuild.
+- A manually cancelled run remains available for manual recovery but does not
+  auto-resume unexpectedly. Completed runs remove their checkpoint.
+- Fresh Start and Forget This Chat now clear incomplete-run recovery metadata.
+
+### Tests
+
+- Added checkpoint validation and workflow coverage for valid resume offsets,
+  completed/malformed checkpoints, changed source windows, guarded controls,
+  and commit-boundary advancement. Full automated verification passed: 422
+  tests and the 48-check replay regression harness.
+
 ## [0.9.16] - 2026-08-26
 
 ### Fixed

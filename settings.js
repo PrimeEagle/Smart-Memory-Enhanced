@@ -62,6 +62,7 @@ import {
   retryTransientMemoryOperation,
 } from './generate.js';
 import { summarizeExtractionCoverage } from './extraction-window-utils.js';
+import { normalizeCatchUpCheckpoint, validateCatchUpResumeSource } from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
   commitCatchUpTransaction,
@@ -1622,6 +1623,40 @@ function showError(operation, err) {
  */
 export function bindSettingsUI(ctrl) {
   const s = extension_settings[MODULE_NAME];
+  const autoResumeAttemptedRunIds = new Set();
+
+  const getResumableCatchUpCheckpoint = (context = getContext()) => {
+    const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+    return normalizeCatchUpCheckpoint(checkpoint);
+  };
+
+  const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
+    const checkpoint = getResumableCatchUpCheckpoint();
+    const $resume = $('#sme_resume_catch_up');
+    const $status = $('#sme_catch_up_recovery_status');
+    if (!checkpoint) {
+      $resume.prop('disabled', true);
+      $status.hide().empty();
+      return;
+    }
+    const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
+    const total = Number(checkpoint.source_message_count) || 0;
+    $resume.prop('disabled', Boolean(ctrl.extractionRunning || ctrl.compactionRunning));
+    $status.text(`Incomplete Memorize Chat run available: ${committed}/${total} source messages safely committed. Resuming continues from that point.`).show();
+    if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
+      autoResumeAttemptedRunIds.add(checkpoint.run_id);
+      window.setTimeout(() => {
+        if (!getResumableCatchUpCheckpoint() || ctrl.extractionRunning || ctrl.compactionRunning) return;
+        $('#sme_catch_up').data('smeResumeRequested', true).trigger('click');
+      }, 400);
+    }
+  };
+
+  // Chat loading completes after this UI is initially bound. A restarted
+  // SillyTavern emits this event once metadata is available, letting the same
+  // persisted checkpoint drive both the resume button and auto-resume path.
+  $(document).on('sme:chat-changed.sme-catchup-recovery', () => refreshCatchUpRecoveryUI({ autoResume: true }));
+  refreshCatchUpRecoveryUI();
 
   /**
    * Returns true and shows a warning toast if a catch-up or compaction is
@@ -1699,7 +1734,7 @@ export function bindSettingsUI(ctrl) {
       'scene_stability_history', 'request_efficiency_history', 'repair_history',
       'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
       'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
-      'active_catchup_run_id', 'parser_debris_cleanup',
+      'active_catchup_run_id', 'catch_up_checkpoint', 'parser_debris_cleanup',
       'fresh_start_postcondition_audit',
     ]) delete metadata[key];
     return {
@@ -3825,11 +3860,22 @@ export function bindSettingsUI(ctrl) {
   // Token budget for chat content per catch-up chunk is computed dynamically
   // from the configured context size at the time catch-up runs - see below.
 
+  $('#sme_resume_catch_up').on('click', function () {
+    if (ctrl.extractionRunning || ctrl.compactionRunning) return;
+    if (!getResumableCatchUpCheckpoint()) {
+      refreshCatchUpRecoveryUI();
+      return;
+    }
+    $('#sme_catch_up').data('smeResumeRequested', true).trigger('click');
+  });
+
   $('#sme_catch_up').on('click', async function () {
     if (ctrl.extractionRunning || ctrl.compactionRunning) {
       toastr.warning('An extraction is already running.', 'Smart Memory Enhanced', { timeOut: 3000 });
       return;
     }
+    const resumeRequested = $(this).data('smeResumeRequested') === true;
+    $(this).removeData('smeResumeRequested');
     const characterName = ctrl.getSelectedCharacterName();
     if (!characterName) {
       toastr.warning('No character is active.', 'Smart Memory Enhanced', { timeOut: 3000 });
@@ -3844,16 +3890,24 @@ export function bindSettingsUI(ctrl) {
     // call. Imported JSONL headers can contain placeholder persona fields, so
     // final reconciliation must never rediscover this from serialized chat
     // metadata after a long run.
-    const canonicalRuntimeContext = snapshotCanonicalRuntimeContext(getLivePersonaCaptureContext(catchUpContext));
+    const resumableCheckpoint = resumeRequested ? getResumableCatchUpCheckpoint(catchUpContext) : null;
+    if (resumeRequested && !resumableCheckpoint) {
+      toastr.warning('There is no compatible incomplete Memorize Chat run to resume.', 'Smart Memory Enhanced', { timeOut: 4000 });
+      refreshCatchUpRecoveryUI();
+      return;
+    }
+    const canonicalRuntimeContext = resumableCheckpoint?.canonical_runtime_context
+      ?? snapshotCanonicalRuntimeContext(getLivePersonaCaptureContext(catchUpContext));
     const catchUpGroup = catchUpContext.groupId
       ? catchUpContext.groups?.find((group) => group.id === catchUpContext.groupId)
       : null;
-    const historicalParticipantScope = resolveHistoricalGroupParticipants({
-      group: catchUpGroup,
-      characters: catchUpContext.characters ?? [],
-      messages: catchUpContext.chat ?? [],
-      fallbackCharacterName: characterName,
-    });
+    const historicalParticipantScope = resumableCheckpoint?.historical_participant_scope
+      ?? resolveHistoricalGroupParticipants({
+        group: catchUpGroup,
+        characters: catchUpContext.characters ?? [],
+        messages: catchUpContext.chat ?? [],
+        fallbackCharacterName: characterName,
+      });
     const catchUpCharacterNames = historicalParticipantScope.participant_names;
     const catchUpProfileCharacterNames = historicalParticipantScope.semantic_participant_names ?? catchUpCharacterNames;
 
@@ -3861,7 +3915,7 @@ export function bindSettingsUI(ctrl) {
     const existingMemories = catchUpCharacterNames.some(
       (name) => loadCharacterMemories(name).length > 0,
     );
-    if (existingMemories) {
+    if (existingMemories && !resumableCheckpoint) {
       if (
         !(await callGenericPopup(
           'Memories already exist for one or more characters. Running Memorize Chat again may add near-duplicate entries on top of existing ones.\n\nContinue?',
@@ -3879,6 +3933,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.extractionRunning = true;
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
+    $('#sme_resume_catch_up').prop('disabled', true);
     // The developer check touches the same durable stores as catch-up. Make
     // its unavailable state visible instead of relying only on a click-time
     // warning.
@@ -3887,7 +3942,7 @@ export function bindSettingsUI(ctrl) {
     // A run ID is written before extraction so every entity link resolved by
     // a tier can distinguish this run from legacy/mirrored data at final
     // reconciliation. It is persisted by the existing staged chat save.
-    const catchUpRunId = generateMemoryId();
+    const catchUpRunId = resumableCheckpoint?.run_id ?? generateMemoryId();
     catchUpContext.chatMetadata = catchUpContext.chatMetadata ?? {};
     catchUpContext.chatMetadata[META_KEY] = catchUpContext.chatMetadata[META_KEY] ?? {};
     // Preserve the reset proof created before this run.  Catch-up diagnostics
@@ -4039,7 +4094,7 @@ export function bindSettingsUI(ctrl) {
 
       // Filter to real messages only so system/hidden entries don't inflate
       // the chunk count or confuse the model.
-      const allMessages = stableChat
+      const discoveredMessages = stableChat
         .map((message, stableIndex) => {
           // Non-enumerable metadata is intentionally omitted from chat saves.
           // It lets every catch-up extraction retain source indices from the
@@ -4049,7 +4104,41 @@ export function bindSettingsUI(ctrl) {
           return message;
         })
         .filter((m) => m.mes && !m.is_system);
+      const resumeSourceValidation = resumableCheckpoint
+        ? validateCatchUpResumeSource(resumableCheckpoint, discoveredMessages)
+        : null;
+      if (resumableCheckpoint && !resumeSourceValidation.valid) {
+        throw new Error('The chat source window changed before the incomplete run could be resumed. Start a new Memorize Chat run instead.');
+      }
+      // A resumed run intentionally retains the original source-window end.
+      // Messages appended after a crash are left for normal post-recovery
+      // extraction rather than being mixed into the historical rebuild.
+      const allMessages = resumableCheckpoint
+        ? discoveredMessages.slice(0, resumeSourceValidation.source_message_count)
+        : discoveredMessages;
       const total = allMessages.length;
+      const resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
+      const checkpoint = resumableCheckpoint ?? {
+        schema_version: 1,
+        run_id: catchUpRunId,
+        started_at: Date.now(),
+        source_message_count: total,
+        source_last_original_index: allMessages.at(-1)?.__sme_original_index ?? null,
+        next_source_offset: 0,
+        committed_chunks: 0,
+        historical_participant_scope: structuredClone(historicalParticipantScope),
+        canonical_runtime_context: structuredClone(canonicalRuntimeContext),
+      };
+      checkpoint.status = 'in_progress';
+      checkpoint.updated_at = Date.now();
+      checkpoint.next_source_offset = resumeOffset;
+      checkpoint.source_message_count = total;
+      checkpoint.source_last_original_index = allMessages.at(-1)?.__sme_original_index ?? null;
+      catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint = checkpoint;
+      // Persist before any provider work. If the process exits during the
+      // first request, a restart can still resume from the known zero offset.
+      await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
+      refreshCatchUpRecoveryUI();
       const timingSignature = diagnosticFingerprint(JSON.stringify({
         source: settings.source ?? 'main',
         model: settings.connection_profile_id ?? settings.openai_compat_model ?? settings.ollama_model ?? null,
@@ -4241,7 +4330,10 @@ export function bindSettingsUI(ctrl) {
       // Budget = 35% of the configured context size, leaving the remainder for
       // prompt overhead (instructions, existing memories) and the model response.
       const catchUpTokenBudget = Math.max(500, Math.floor(getMaxContextSize(0) * 0.35));
-      let i = 0;
+      let i = resumeOffset;
+      if (resumableCheckpoint) {
+        setStatusMessage(`Resuming Memorize Chat from ${i}/${total} safely committed source messages...`);
+      }
       while (i < total) {
         if (ctrl.catchUpCancelled) break;
         currentChunkFailed = false;
@@ -4350,12 +4442,25 @@ export function bindSettingsUI(ctrl) {
           }
         }
 
+        let chunkCommitted = false;
+        const checkpointForCommit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+        if (checkpointForCommit) {
+          checkpointForCommit.next_source_offset = processed;
+          checkpointForCommit.committed_chunks = Number(checkpointForCommit.committed_chunks ?? 0) + 1;
+          checkpointForCommit.last_committed_source_start_index = chunk[0]?.__sme_original_index ?? null;
+          checkpointForCommit.last_committed_source_end_index = chunk.at(-1)?.__sme_original_index ?? null;
+          checkpointForCommit.updated_at = Date.now();
+        }
         try {
           await retryTransientMemoryOperation(() => commitCatchUpTransaction(chunkTransaction));
+          chunkCommitted = true;
         } catch (err) {
           // The transaction restores both chat metadata and extension state.
-          // This chunk is deliberately not treated as completed or committed.
+          // Do not advance past an uncommitted chunk: the persisted checkpoint
+          // remains on its previous boundary and a later resume can safely
+          // retry this exact window without loss or duplication.
           recordCatchUpError('chunk persistence error', err, null, true);
+          ctrl.catchUpCancelled = true;
         }
 
         // Update progress and token display after each chunk so the user can
@@ -4376,7 +4481,7 @@ export function bindSettingsUI(ctrl) {
         if (currentChunkFailed) runResult.failedChunks++;
         else runResult.completedChunks++;
 
-        i += chunk.length;
+        if (chunkCommitted) i += chunk.length;
       }
 
       // Scene detection and the final cross-tier passes run after the chunk
@@ -5819,6 +5924,16 @@ export function bindSettingsUI(ctrl) {
             : 'decreased_logical_repair_volume';
       catchUpContext.chatMetadata[META_KEY].last_catchup_run_id = catchUpRunId;
       delete catchUpContext.chatMetadata[META_KEY].active_catchup_run_id;
+      // A final transaction is the completion boundary. Until it commits, the
+      // checkpoint remains durable and resumable; a crash in late stages will
+      // restart finalization from the last committed extraction chunk.
+      if (ctrl.catchUpCancelled) {
+        const checkpoint = catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
+        if (checkpoint) {
+          checkpoint.status = 'awaiting_manual_resume';
+          checkpoint.updated_at = Date.now();
+        }
+      } else delete catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
       catchUpContext.chatMetadata[META_KEY].request_efficiency_history = diagnostics.request_efficiency_history;
@@ -5957,6 +6072,7 @@ export function bindSettingsUI(ctrl) {
         $('#sme_catch_up').show().prop('disabled', false);
         $('#sme_run_idempotence_check').prop('disabled', false);
         $('#sme_catch_up_eta').hide().empty();
+        refreshCatchUpRecoveryUI();
       } catch (cleanupErr) {
         console.warn('[Smart Memory Enhanced] Catch-up control cleanup warning:', cleanupErr);
       }
@@ -6001,6 +6117,8 @@ export function bindSettingsUI(ctrl) {
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
     try {
       await runStagedChatCleanup(context, async () => {
+        delete context.chatMetadata[META_KEY].catch_up_checkpoint;
+        delete context.chatMetadata[META_KEY].active_catchup_run_id;
         // Wipe short-term summary state.
         delete context.chatMetadata[META_KEY].summary;
         delete context.chatMetadata[META_KEY].summaryEnd;
@@ -6046,6 +6164,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;
     setCatchUpErrorCount(0);
+    refreshCatchUpRecoveryUI();
     setStatusMessage('Chat context cleared.');
   });
 
@@ -6200,6 +6319,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;
     setCatchUpErrorCount(0);
+    refreshCatchUpRecoveryUI();
     // The completed reset audit is exportable even before the next Memorize
     // Chat run, so users can verify the clean starting point first.
     $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics());

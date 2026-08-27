@@ -489,6 +489,9 @@ async function onCharacterMessageRendered(messageId, type) {
     return;
   }
 
+  // Solo chats do not need a group selector, so recovery can inspect the
+  // restored metadata immediately.
+  $(document).trigger('sme:chat-changed');
   const characterName = getCurrentCharacterName();
 
   // Capture the current chat generation so we can abort before any write if
@@ -1133,6 +1136,9 @@ async function onChatChangedImpl() {
     // Show the group character selector and pre-populate panels and token
     // display for whichever member is selected (first member by default).
     updateGroupCharSelector();
+    // Recovery needs the selected card to be available before it can resume a
+    // historical group run.
+    $(document).trigger('sme:chat-changed');
     // Migrate the selected character's data container before any reads so that
     // confidence/decay fields and other v2+ additions are present. Other members
     // are migrated lazily on their first onGroupMemberDrafted.
