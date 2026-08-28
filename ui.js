@@ -128,6 +128,35 @@ import {
   markTrimToastFired,
   isChatLoadComplete,
 } from './trim-stats.js';
+import { getLiveMemoryHealthSummary } from './live-memory-health.js';
+
+/** Renders the compact, text-free live-memory health status card. */
+export function updateLiveMemoryHealthUI() {
+  const target = $('#sme_live_memory_health');
+  if (!target.length) return;
+  const summary = getLiveMemoryHealthSummary(getContext().chatMetadata?.[META_KEY]);
+  if (!summary?.last_extraction && !summary?.last_injection) {
+    target.hide().empty();
+    return;
+  }
+  const displayTime = (timestamp) => timestamp
+    ? new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : 'not run';
+  const extraction = summary.last_extraction
+    ? `${summary.last_extraction.tier}: ${summary.last_extraction.terminal_health} (${displayTime(summary.last_extraction.timestamp)})`
+    : 'not run';
+  const injection = summary.last_injection
+    ? `${summary.last_injection.mode}: ${summary.last_injection.terminal_health} (${displayTime(summary.last_injection.timestamp)})`
+    : 'not run';
+  const tierTokens = summary.injected_tier_tokens?.filter((tier) => tier.tokens > 0)
+    .map((tier) => `${tier.tier} ${tier.tokens}`).join(', ') || 'none';
+  const attention = summary.attention_reason_codes?.length
+    ? ` Attention: ${summary.attention_reason_codes.join(', ').replaceAll('_', ' ')}.`
+    : '';
+  target.text(`Live memory health — extraction ${extraction}; injection ${injection}; injected tokens: ${tierTokens}.${attention}`)
+    .toggleClass('sme_live_health_attention', Boolean(summary.attention_reason_codes?.length))
+    .show();
+}
 import {
   loadEpistemicKnowledge,
   saveEpistemicKnowledge,

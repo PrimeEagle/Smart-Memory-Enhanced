@@ -752,8 +752,15 @@ function mergeMemories(existing, incoming, maxTotal) {
  */
 export async function extractAndStoreMemories(characterName, recentMessages, statusFn = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
+  // The live caller supplies a small mutable diagnostic handle. Catch-up and
+  // manual extraction intentionally omit it, keeping their existing ledgers.
+  const healthUpdate = (patch) => options.liveHealth?.update?.(patch);
+  const healthFinish = (patch) => options.liveHealth?.finish?.(patch);
   const policy = getCharacterMemoryPolicy(characterName);
-  if (!settings.longterm_enabled || !characterName || policy === CHARACTER_MEMORY_POLICIES.DISABLED || policy === CHARACTER_MEMORY_POLICIES.READ_ONLY) return 0;
+  if (!settings.longterm_enabled || !characterName || policy === CHARACTER_MEMORY_POLICIES.DISABLED || policy === CHARACTER_MEMORY_POLICIES.READ_ONLY) {
+    healthFinish({ terminal_health: 'skipped', attention_reason_codes: ['disabled_or_read_only_policy'] });
+    return 0;
+  }
 
   try {
     const sourceMessages = recentMessages.filter((m) => m.mes && !m.is_system);
@@ -761,7 +768,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       .map((m, index) => `[${index}] ${m.name}: ${m.mes}`)
       .join('\n\n');
 
-    if (!chatHistory.trim()) return 0;
+    if (!chatHistory.trim()) {
+      healthFinish({ terminal_health: 'skipped', attention_reason_codes: ['empty_source_window'] });
+      return 0;
+    }
 
     const existingMemories = loadCharacterMemories(characterName);
 
@@ -797,6 +807,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       configuredContextLimit: requestBudget.configuredContextLimit,
       reservedOutputTokens: requestBudget.reservedOutputTokens,
       safetyMargin: requestBudget.safetyMargin,
+    });
+    healthUpdate({
+      preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens },
+      citation_mapping_valid: sourceMessages.every((message) => Number.isInteger(message.__sme_original_index) || getContext().chat?.includes(message)),
     });
     const depth = Number(options._contextOverflowDepth ?? 0);
     const range = sourceRange(sourceMessages);
@@ -847,6 +861,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           const childRange = sourceRange(child);
           added += await extractAndStoreMemories(characterName, child, statusFn, {
             ...options,
+            // One live event describes the root incremental window. Child
+            // partitions are recovery details, not independent live turns.
+            liveHealth: null,
             _contextOverflowDepth: depth + 1,
             _contextOverflowParentRangeId: rangeId,
             _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + 1),
@@ -879,7 +896,12 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       return added;
     };
 
-    if (!preflight.fits) return splitWindow('prevented_preflight_context_overflow');
+    if (!preflight.fits) {
+      healthUpdate({ provider_outcome: 'locally_prevented', preflight: { ...preflight, prevented: true, resized_or_repartitioned: true } });
+      const added = await splitWindow('prevented_preflight_context_overflow');
+      healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
+      return added;
+    }
 
     let response;
     try {
@@ -892,7 +914,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         all_source_messages_covered: true,
       });
     } catch (err) {
-      if (isEstimatedContextOverflow(err)) return splitWindow('provider_estimated_context_overflow');
+      if (isEstimatedContextOverflow(err)) {
+        healthUpdate({ provider_outcome: 'classified_context_overflow', preflight: { ...preflight, resized_or_repartitioned: true } });
+        const added = await splitWindow('provider_estimated_context_overflow');
+        healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
+        return added;
+      }
+      healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
         request_sent: true,
@@ -904,13 +932,18 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
 
-    if (!response || response.trim().toUpperCase() === 'NONE') return 0;
+    if (!response || response.trim().toUpperCase() === 'NONE') {
+      healthFinish({ provider_outcome: 'none_response', terminal_health: 'empty', persistence: 'not_needed', candidates: { emitted: 0 } });
+      return 0;
+    }
 
     const parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
       smLog('[Smart Memory Enhanced] Extraction response produced no parseable lines. Check format above.');
+      healthFinish({ provider_outcome: 'malformed_response', terminal_health: 'malformed_response', attention_reason_codes: ['unparseable_provider_response'] });
       return 0;
     }
+    healthUpdate({ provider_outcome: 'completed', candidates: { emitted: parsed.length } });
 
     // Source citations belong to the numbered extraction window.  Translate
     // and validate them before candidate verification so every later pipeline
@@ -934,6 +967,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       smLog(
         `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
       );
+      healthFinish({ terminal_health: 'completed', persistence: 'not_needed', candidates: { accepted: 0, rejected_duplicate: parsed.length } });
       return 0;
     }
 
@@ -1277,8 +1311,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     smLog(
       `[Smart Memory Enhanced] Saved ${added} new memories for "${characterName}". Active: ${finalActive.length}, Retired: ${updatedRetired.length}`,
     );
+    healthFinish({
+      terminal_health: 'completed',
+      persistence: 'saved',
+      candidates: { accepted: added, rejected_duplicate: Math.max(0, parsed.length - newMemories.length) },
+      canonical: { accepted_reference_count: newMemories.length, suppressed_invalid_reference_count: 0, reason_codes: [] },
+    });
     return added;
   } catch (err) {
+    healthFinish({ terminal_health: 'provider_failure', persistence: 'preserved', attention_reason_codes: ['extraction_or_persistence_failure'] });
     console.error('[Smart Memory Enhanced] Memory extraction failed:', err);
     throw err;
   }

@@ -62,6 +62,12 @@ import {
   retryTransientMemoryOperation,
 } from './generate.js';
 import { summarizeExtractionCoverage } from './extraction-window-utils.js';
+import {
+  exportLiveMemoryHealth,
+  beginLiveExtractionEvent,
+  updateLiveExtractionEvent,
+  finishLiveExtractionEvent,
+} from './live-memory-health.js';
 import { normalizeCatchUpCheckpoint, validateCatchUpResumeSource } from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
@@ -918,7 +924,32 @@ import {
   reconcileCanonicalEntities,
   updateEmbeddingNotice,
   setCatchUpErrorCount,
+  updateLiveMemoryHealthUI,
 } from './ui.js';
+
+function createManualLiveHealth(context, tier, messages) {
+  const metadata = context.chatMetadata?.[META_KEY];
+  if (!metadata) return null;
+  const indices = (messages ?? []).map((message) => context.chat?.indexOf(message)).filter(Number.isInteger);
+  const event = beginLiveExtractionEvent(metadata, {
+    chat_turn_id: context.chat?.length ?? null,
+    tier,
+    trigger_reason: 'manual_extract_now',
+    window_selection_reason: 'stable_window_with_fallback',
+    source_start: indices.length ? Math.min(...indices) : null,
+    source_end: indices.length ? Math.max(...indices) : null,
+    message_count: indices.length,
+  });
+  return {
+    update: (patch) => updateLiveExtractionEvent(event, patch),
+    finish: (patch) => {
+      const result = finishLiveExtractionEvent(metadata, event, patch);
+      $('#sme_export_diagnostics').prop('disabled', false);
+      updateLiveMemoryHealthUI();
+      return result;
+    },
+  };
+}
 
 /**
  * Builds the explicit live-persona input used for a long-running Memorize
@@ -2103,13 +2134,18 @@ export function bindSettingsUI(ctrl) {
   const getExportableDiagnostics = () => {
     const metadata = getContext().chatMetadata?.[META_KEY] ?? {};
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
-    if (completedRun) return completedRun;
+    const liveMemoryHealth = metadata.live_memory_health ? exportLiveMemoryHealth(metadata) : null;
+    if (completedRun) {
+      // Keep live, incremental health alongside an existing historical report.
+      // This clone makes the export path strictly read-only.
+      return { ...completedRun, live_memory_health: liveMemoryHealth };
+    }
     // Fresh Start is itself a consequential, persisted operation. Its
     // postcondition needs to be inspectable before a long historical rebuild,
     // rather than requiring a new Memorize Chat just to enable export.
     const freshStartAudit = metadata.fresh_start_postcondition_audit ?? null;
     const manualIdempotence = metadata.developer_idempotence_check ?? null;
-    if (!freshStartAudit && !manualIdempotence) return null;
+    if (!freshStartAudit && !manualIdempotence && !liveMemoryHealth) return null;
     return {
       version: 1,
       created_at: Date.now(),
@@ -2120,6 +2156,7 @@ export function bindSettingsUI(ctrl) {
       manual_idempotence: manualIdempotence,
       automatic_stabilization: null,
       provider_calls_during_audit: 0,
+      live_memory_health: liveMemoryHealth,
     };
   };
   const exportCatchUpDiagnostics = () => {
@@ -3421,7 +3458,9 @@ export function bindSettingsUI(ctrl) {
     try {
       const context = getContext();
       const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 20);
-      const count = await extractAndStoreMemories(characterName, recentMessages, setStatusMessage);
+      const count = await extractAndStoreMemories(characterName, recentMessages, setStatusMessage, {
+        liveHealth: createManualLiveHealth(context, 'longterm', recentMessages),
+      });
       saveSettingsDebounced();
       updateLongTermUI(characterName);
       updateRelationshipHistoryUI(characterName);
@@ -3537,7 +3576,9 @@ export function bindSettingsUI(ctrl) {
     try {
       const context = getContext();
       const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 40);
-      const count = await extractSessionMemories(recentMessages);
+      const count = await extractSessionMemories(recentMessages, null, {
+        liveHealth: createManualLiveHealth(context, 'session', recentMessages),
+      });
       await injectSessionMemories();
       updateSessionUI();
       updateTokenDisplay();

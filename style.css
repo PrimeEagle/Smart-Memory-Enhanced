@@ -142,6 +142,18 @@
   background: rgba(128, 128, 128, 0.08);
 }
 
+#smart_memory_enhanced_settings .sme_live_memory_health {
+  display: block;
+  padding: 5px 7px;
+  border-left: 3px solid var(--SmartThemeQuoteColor, #6f849d);
+  background: color-mix(in srgb, var(--SmartThemeQuoteColor, #6f849d) 10%, transparent);
+}
+
+#smart_memory_enhanced_settings .sme_live_memory_health.sme_live_health_attention {
+  border-left-color: var(--SmartThemeWarningColor, #d39b33);
+  background: color-mix(in srgb, var(--SmartThemeWarningColor, #d39b33) 12%, transparent);
+}
+
 /* An open heading remains a reliable visual anchor when several memory tiers
  * are expanded at once. Theme-neutral neutrals keep this readable in both
  * light and dark SillyTavern themes. */

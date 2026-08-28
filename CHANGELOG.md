@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.20] - 2026-08-28
+
+### Added
+
+- Added **Live Memory Health** diagnostics for incremental Session and Long-Term
+  extraction in solo and group chats. The bounded, chat-local ledger records
+  safe source ranges, final rendered-request preflight data, provider outcome,
+  candidate dispositions, citation mapping, persistence, and terminal health
+  without storing chat text, memory text, or provider responses.
+- Added a compact Live Memory Health panel summary with the latest extraction
+  and injection status, current tier token breakdown, and actionable attention
+  reasons. Export Diagnostics now includes the health ledger even before a
+  Memorize Chat run.
+- Added injection refresh health events for individual and unified modes,
+  including per-tier token use, configured budgets, stale-slot checks, and
+  bounded integrity counters.
+
+### Fixed
+
+- Incremental extraction now records locally prevented and recovered context
+  overflow windows rather than silently treating them as ordinary empty runs.
+
+### Tests
+
+- Added bounded-retention, preflight, candidate-accounting, injection, and
+  read-only export coverage for Live Memory Health.
+
 ## [0.9.19] - 2026-08-27
 
 ### Improved

@@ -40,6 +40,7 @@ import {
   saveSettingsDebounced,
   setExtensionPrompt,
   extension_prompt_types,
+  extension_prompts,
 } from '../../../../script.js';
 import {
   getContext,
@@ -61,6 +62,8 @@ import {
   PROMPT_KEY_RELATIONSHIPS,
   PROMPT_KEY_EPISTEMIC,
   PROMPT_KEY_STATE_LEDGER,
+  PROMPT_KEY_UNIFIED,
+  estimateTokens,
 } from './constants.js';
 import { isRecordApprovedForPropagation } from './record-validation.js';
 import { memory_sources, abortCurrentMemoryGeneration } from './generate.js';
@@ -159,9 +162,16 @@ import {
   showSearchResults,
   initTooltips,
   initTypePickers,
+  updateLiveMemoryHealthUI,
 } from './ui.js';
 import { defaultSettings, loadSettings, bindSettingsUI, autoTuneBudgets } from './settings.js';
 import { clearTierTrimStats, resetTrimToastFlag, markChatLoadComplete } from './trim-stats.js';
+import {
+  beginLiveExtractionEvent,
+  updateLiveExtractionEvent,
+  finishLiveExtractionEvent,
+  recordLiveInjectionEvent,
+} from './live-memory-health.js';
 
 // ---- Module-level state -------------------------------------------------
 
@@ -227,6 +237,87 @@ let repairInjectedThisRound = false;
 // Last observed chat length, used to distinguish new messages from swipes.
 // CHARACTER_MESSAGE_RENDERED fires on both; swipes do not grow the chat array.
 let lastKnownChatLength = 0;
+
+function messageRange(chat, window) {
+  const indices = (window ?? []).map((message) => chat.indexOf(message)).filter(Number.isInteger);
+  return {
+    source_start: indices.length ? Math.min(...indices) : null,
+    source_end: indices.length ? Math.max(...indices) : null,
+    message_count: indices.length,
+  };
+}
+
+function beginLiveTierHealth(context, tier, window, triggerReason = 'periodic_cadence') {
+  const metadata = context.chatMetadata?.[META_KEY];
+  if (!metadata) return null;
+  const event = beginLiveExtractionEvent(metadata, {
+    chat_turn_id: context.chat?.length ?? null,
+    tier,
+    trigger_reason: triggerReason,
+    window_selection_reason: 'stable_window_with_fallback',
+    ...messageRange(context.chat ?? [], window),
+  });
+  return {
+    update: (patch) => updateLiveExtractionEvent(event, patch),
+    finish: (patch) => {
+      const result = finishLiveExtractionEvent(metadata, event, patch);
+      $('#sme_export_diagnostics').prop('disabled', false);
+      updateLiveMemoryHealthUI();
+      return result;
+    },
+  };
+}
+
+function countInjectedRecords(content) {
+  return String(content ?? '').split(/\n/).filter((line) => /^[-*•]|^\[/.test(line.trim())).length;
+}
+
+function recordLiveInjectionHealth(context, settings, reason = 'periodic_refresh') {
+  const metadata = context.chatMetadata?.[META_KEY];
+  if (!metadata) return null;
+  const tiers = [
+    ['short_term', PROMPT_KEY_SHORT, settings.shortterm_response_length ?? 0],
+    ['long_term', PROMPT_KEY_LONG, settings.longterm_inject_budget ?? 0],
+    ['session', PROMPT_KEY_SESSION, settings.session_inject_budget ?? 0],
+    ['scenes', PROMPT_KEY_SCENES, settings.scene_inject_budget ?? 0],
+    ['arcs', PROMPT_KEY_ARCS, settings.arcs_inject_budget ?? 0],
+    ['profiles', PROMPT_KEY_PROFILES, settings.profiles_inject_budget ?? 0],
+    ['canon', PROMPT_KEY_CANON, settings.canon_inject_budget ?? 0],
+  ].map(([tier, key, budget]) => {
+    const content = extension_prompts[key]?.value ?? '';
+    const tokens = estimateTokens(content);
+    const records = countInjectedRecords(content);
+    return { tier, available_eligible_count: records, selected_count: records, injected_count: records, estimated_visible_tokens: tokens, injected_tokens: tokens, budget_remaining: Math.max(0, Number(budget) - tokens), exclusion_counts: tokens > Number(budget) && Number(budget) > 0 ? { budget_truncation: 1 } : {} };
+  });
+  const individualKeys = [PROMPT_KEY_SHORT, PROMPT_KEY_LONG, PROMPT_KEY_SESSION, PROMPT_KEY_SCENES, PROMPT_KEY_ARCS, PROMPT_KEY_PROFILES, PROMPT_KEY_CANON];
+  const staleSlots = settings.unified_injection
+    ? individualKeys.filter((key) => String(extension_prompts[key]?.value ?? '').trim()).length
+    : 0;
+  const unifiedContent = extension_prompts[PROMPT_KEY_UNIFIED]?.value ?? '';
+  if (settings.unified_injection) {
+    const tokens = estimateTokens(unifiedContent);
+    tiers.push({ tier: 'unified', available_eligible_count: countInjectedRecords(unifiedContent), selected_count: countInjectedRecords(unifiedContent), injected_count: countInjectedRecords(unifiedContent), estimated_visible_tokens: tokens, injected_tokens: tokens, budget_remaining: 0, exclusion_counts: {} });
+  }
+  const attention = [
+    ...(staleSlots ? ['stale_individual_slots_remaining'] : []),
+    ...(tiers.some((tier) => Object.keys(tier.exclusion_counts).length) ? ['budget_truncation'] : []),
+  ];
+  const result = recordLiveInjectionEvent(metadata, {
+    chat_turn_id: context.chat?.length ?? null,
+    mode: settings.unified_injection ? 'unified' : 'individual',
+    placement: settings.unified_injection ? { position: settings.unified_position, depth: settings.unified_depth, role: settings.unified_role } : { refresh_reason: reason },
+    configured_budgets: Object.fromEntries(tiers.map((tier) => [tier.tier, tier.injected_tokens + tier.budget_remaining])),
+    tiers,
+    cache_invalidated: Boolean(staleSlots),
+    cache_invalidation_reason: staleSlots ? 'unified_slot_replacement' : null,
+    integrity: { duplicate_record_fingerprints: 0, dangling_canonical_references: 0, stale_tier_slots_remaining: staleSlots, token_budget_respected: !tiers.some((tier) => Object.keys(tier.exclusion_counts).length) },
+    terminal_health: tiers.every((tier) => tier.injected_tokens === 0) ? 'empty' : 'completed',
+    attention_reason_codes: attention,
+  });
+  $('#sme_export_diagnostics').prop('disabled', false);
+  updateLiveMemoryHealthUI();
+  return result;
+}
 
 // ---- Activity indicator helpers -----------------------------------------
 
@@ -738,7 +829,9 @@ async function onCharacterMessageRendered(messageId, type) {
                   .filter(Boolean),
               );
 
-              const count = await extractSessionMemories(sessionWindow, chatChanged).catch(
+              const count = await extractSessionMemories(sessionWindow, chatChanged, {
+                liveHealth: beginLiveTierHealth(context, 'session', sessionWindow),
+              }).catch(
                 (err) => {
                   console.error('[Smart Memory Enhanced] Session extraction error:', err);
                   return 0;
@@ -781,6 +874,7 @@ async function onCharacterMessageRendered(messageId, type) {
                 characterName,
                 longtermWindow,
                 setStatusMessage,
+                { liveHealth: beginLiveTierHealth(context, 'longterm', longtermWindow) },
               ).catch((err) => {
                 console.error('[Smart Memory Enhanced] Long-term extraction error:', err);
                 return 0;
@@ -887,7 +981,10 @@ async function onCharacterMessageRendered(messageId, type) {
 
             // Refresh entity panel after extraction since new entities may have been linked.
             updateEntityPanel(characterName);
-            if (shouldRefreshInjections) maybeInjectUnified();
+            if (shouldRefreshInjections) {
+              maybeInjectUnified();
+              recordLiveInjectionHealth(context, settings);
+            }
             updateTokenDisplay();
             autoTuneBudgets(characterName);
             setStatusMessage(
@@ -1161,6 +1258,8 @@ async function onChatChangedImpl() {
     updateEntityPanel(selectedGroupCharacter);
 
     maybeInjectUnified();
+    recordLiveInjectionHealth(getContext(), settings, 'chat_load');
+    updateLiveMemoryHealthUI();
     updateTokenDisplay();
     autoTuneBudgets(selectedGroupCharacter);
     // Mark load complete so the trim toast can fire on the next injection cycle,
@@ -1255,6 +1354,8 @@ async function onChatChangedImpl() {
   updateCanonUI(characterName);
   updateProfilesUI(loadProfiles(characterName));
   maybeInjectUnified();
+  recordLiveInjectionHealth(getContext(), settings, 'chat_load');
+  updateLiveMemoryHealthUI();
   updateTokenDisplay();
   autoTuneBudgets(characterName);
   updateEmbeddingNotice();
@@ -1637,7 +1738,9 @@ async function onGroupWrapperFinished({ type } = {}) {
                     .filter(Boolean),
                 );
 
-                const count = await extractSessionMemories(sessionWindow, chatChanged).catch(
+                const count = await extractSessionMemories(sessionWindow, chatChanged, {
+                  liveHealth: beginLiveTierHealth(context, 'session', sessionWindow),
+                }).catch(
                   (err) => {
                     console.error('[Smart Memory Enhanced] Session extraction error:', err);
                     return 0;
@@ -1687,6 +1790,7 @@ async function onGroupWrapperFinished({ type } = {}) {
                     characterName,
                     characterLongtermWindow,
                     setStatusMessage,
+                    { liveHealth: beginLiveTierHealth(context, 'longterm', characterLongtermWindow) },
                   ).catch((err) => {
                     console.error('[Smart Memory Enhanced] Long-term extraction error:', err);
                     return 0;
@@ -1906,6 +2010,7 @@ async function onGroupWrapperFinished({ type } = {}) {
         injectCanon(selectedGroupCharacter);
         injectProfiles(selectedGroupCharacter);
         maybeInjectUnified();
+        recordLiveInjectionHealth(context, settings, 'group_round_restore');
         updateTokenDisplay();
       }
 

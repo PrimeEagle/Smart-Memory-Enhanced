@@ -384,7 +384,12 @@ async function deduplicateSession(existing, incoming, max) {
  */
 export async function extractSessionMemories(recentMessages, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
-  if (!settings.session_enabled) return 0;
+  const healthUpdate = (patch) => options.liveHealth?.update?.(patch);
+  const healthFinish = (patch) => options.liveHealth?.finish?.(patch);
+  if (!settings.session_enabled) {
+    healthFinish({ terminal_health: 'skipped', attention_reason_codes: ['tier_disabled'] });
+    return 0;
+  }
   const sessionDiagnostics = options.sessionDiagnostics;
   let parsedCandidateCount = 0;
   let terminalCandidateCount = 0;
@@ -404,7 +409,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       .map((m, index) => `[${index}] ${m.name}: ${m.mes}`)
       .join('\n\n');
 
-    if (!chatHistory.trim()) return 0;
+    if (!chatHistory.trim()) {
+      healthFinish({ terminal_health: 'skipped', attention_reason_codes: ['empty_source_window'] });
+      return 0;
+    }
 
     const existingAll = loadSessionMemories();
 
@@ -450,6 +458,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       reservedOutputTokens: requestBudget.reservedOutputTokens,
       safetyMargin: requestBudget.safetyMargin,
     });
+    healthUpdate({ preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens } });
     const depth = Number(options._contextOverflowDepth ?? 0);
     const range = sourceRange(sourceMessages);
     const rangeId = options._contextOverflowRangeId
@@ -498,6 +507,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           const childRange = sourceRange(child);
           added += await extractSessionMemories(child, abortCheck, {
             ...options,
+            // Preserve one bounded health event for the root live window.
+            liveHealth: null,
             _contextOverflowDepth: depth + 1,
             _contextOverflowParentRangeId: rangeId,
             _contextOverflowRangeId: extractionRangeId('session', childRange, depth + 1),
@@ -530,7 +541,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       return added;
     };
 
-    if (!preflight.fits) return splitWindow('prevented_preflight_context_overflow');
+    if (!preflight.fits) {
+      healthUpdate({ provider_outcome: 'locally_prevented', preflight: { ...preflight, prevented: true, resized_or_repartitioned: true } });
+      const added = await splitWindow('prevented_preflight_context_overflow');
+      healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
+      return added;
+    }
 
     let response;
     try {
@@ -543,7 +559,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         all_source_messages_covered: true,
       });
     } catch (err) {
-      if (isEstimatedContextOverflow(err)) return splitWindow('provider_estimated_context_overflow');
+      if (isEstimatedContextOverflow(err)) {
+        healthUpdate({ provider_outcome: 'classified_context_overflow', preflight: { ...preflight, resized_or_repartitioned: true } });
+        const added = await splitWindow('provider_estimated_context_overflow');
+        healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
+        return added;
+      }
+      healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
         request_sent: true,
@@ -557,6 +579,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     if (!response || response.trim().toUpperCase() === 'NONE') {
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
+      healthFinish({ provider_outcome: 'none_response', terminal_health: 'empty', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
     }
 
@@ -585,6 +608,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       };
     }
     const parsedCandidates = parseSessionOutput(response);
+    healthUpdate({ provider_outcome: 'completed', candidates: { emitted: parsedCandidates.length } });
     // Stable within-request IDs make citation repair an association task rather
     // than a best-effort text match. They are transient and never persisted in
     // a memory record or exported with memory text.
@@ -1130,7 +1154,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const added = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`)).length;
     if (abortCheck?.()) return 0;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
-
+    healthFinish({
+      terminal_health: 'completed', persistence: 'saved',
+      candidates: {
+        accepted: added,
+        accepted_after_citation_repair: acceptedAfterRepair,
+        rejected_missing_provenance: missingProvenance,
+        rejected_duplicate: (verificationDispositions.duplicate_same_pass ?? 0) + (verificationDispositions.duplicate_existing ?? 0),
+        rejected_validation: verificationDispositions.malformed_candidate ?? 0,
+      },
+      citation_mapping_valid: provenanceOriginalIndices.every(Number.isInteger),
+    });
     return added;
   } catch (err) {
     if (sessionDiagnostics) {
@@ -1140,6 +1174,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       // a terminal outcome so diagnostics still reconcile exactly.
       recordDisposition('provider_or_parser_error', Math.max(0, parsedCandidateCount - terminalCandidateCount));
     }
+    healthFinish({ terminal_health: 'provider_failure', persistence: 'preserved', attention_reason_codes: ['extraction_or_persistence_failure'] });
     console.error('[Smart Memory Enhanced] Session extraction failed:', err);
     throw err;
   }
