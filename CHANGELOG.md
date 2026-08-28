@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.22] - 2026-08-28
+
+### Added
+
+- Added direct numeric entry fields beside every settings slider. Values can be
+  typed as well as adjusted with the slider, including token budgets,
+  extraction intervals, thresholds, response lengths, and depths.
+
+### Fixed
+
+- Typed values are validated against each slider's own minimum, maximum, and
+  step: whole-number controls reject decimals, decimal controls accept only
+  valid increments, and invalid or blank values explain the permitted range.
+- Direct-entry fields remain synchronized when Smart Memory resets, totals,
+  auto-allocation, auto-tuning, or extraction-frequency presets adjust sliders
+  programmatically.
+
+### Tests
+
+- Added workflow coverage for generic direct-entry validation and synchronized
+  slider updates.
+
 ## [0.9.21] - 2026-08-28
 
 ### Fixed

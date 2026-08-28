@@ -953,6 +953,87 @@ function createManualLiveHealth(context, tier, messages) {
 }
 
 /**
+ * Adds a direct numeric entry field beside every Smart Memory range input.
+ * The slider remains the source of truth: this control reads min/max/step from
+ * it, accepts decimals only when its step permits them, and fires the slider's
+ * normal input handler after a valid entry. No setting-specific duplicate
+ * validation is needed.
+ */
+function installDirectRangeInputs() {
+  const isValidRangeValue = (value, min, max, step) => {
+    if (!Number.isFinite(value) || value < min || value > max) return false;
+    if (!Number.isFinite(step) || step <= 0) return true;
+    const steps = (value - min) / step;
+    return Math.abs(steps - Math.round(steps)) < 1e-8;
+  };
+
+  $('#smart_memory_enhanced_settings input[type="range"]').each(function () {
+    const $slider = $(this);
+    if ($slider.data('sme-direct-range-installed')) return;
+    $slider.data('sme-direct-range-installed', true);
+
+    const min = Number($slider.attr('min'));
+    const max = Number($slider.attr('max'));
+    const rawStep = $slider.attr('step') ?? '1';
+    const step = rawStep === 'any' ? null : Number(rawStep);
+    const decimals = step && !Number.isInteger(step)
+      ? Math.min(8, String(step).split('.')[1]?.length ?? 0)
+      : 0;
+    const inputMode = decimals ? 'decimal' : 'numeric';
+    const $entry = $('<input>', {
+      type: 'number',
+      class: 'text_pole sme_range_direct_input',
+      min,
+      max,
+      step: rawStep,
+      inputmode: inputMode,
+      'aria-label': `${$slider.attr('id') || 'Slider'} value`,
+      title: `Enter a value from ${min} to ${max}${step ? ` in increments of ${step}` : ''}.`,
+    }).val($slider.val());
+    $slider.data('sme-direct-range-entry', $entry);
+    const $wrap = $('<div class="sme_range_control"></div>');
+    $slider.before($wrap);
+    $wrap.append($slider, $entry);
+
+    const syncFromSlider = () => {
+      $entry.val($slider.val()).removeClass('sme_range_input_invalid').removeAttr('aria-invalid');
+      $entry[0].setCustomValidity('');
+    };
+    $slider.on('input.smeDirectRange change.smeDirectRange', syncFromSlider);
+    $entry.on('input.smeDirectRange', function () {
+      $entry.removeClass('sme_range_input_invalid').removeAttr('aria-invalid');
+      $entry[0].setCustomValidity('');
+    });
+    $entry.on('change.smeDirectRange keydown.smeDirectRange', function (event) {
+      if (event.type === 'keydown' && event.key !== 'Enter') return;
+      if (event.type === 'keydown') event.preventDefault();
+      const rawValue = String($entry.val() ?? '').trim();
+      const value = rawValue === '' ? Number.NaN : Number(rawValue);
+      const valid = isValidRangeValue(value, min, max, step);
+      if (!valid) {
+        const integerNote = decimals ? '' : ' Enter a whole number.';
+        const message = `Use a value from ${min} to ${max}${step ? ` in increments of ${step}.` : '.'}${integerNote}`;
+        $entry.addClass('sme_range_input_invalid').attr('aria-invalid', 'true');
+        $entry[0].setCustomValidity(message);
+        $entry[0].reportValidity();
+        return;
+      }
+      const normalized = decimals ? Number(value.toFixed(decimals)) : Math.round(value);
+      $slider.val(normalized).trigger('input').trigger('change');
+    });
+  });
+}
+
+/** Refreshes direct-entry fields after an internal slider value update. */
+function refreshDirectRangeInputs() {
+  $('#smart_memory_enhanced_settings input[type="range"]').each(function () {
+    const $slider = $(this);
+    const $entry = $slider.data('sme-direct-range-entry');
+    if ($entry?.length) $entry.val($slider.val());
+  });
+}
+
+/**
  * Builds the explicit live-persona input used for a long-running Memorize
  * Chat.  `user_avatar` plus `power_user.personas` is SillyTavern's selected
  * persona registry; serialized/imported chat headers are only fallbacks.
@@ -1295,6 +1376,11 @@ function applyTotalBudget(total, s) {
   s.relationships_inject_budget = snap(total * BUDGET_RATIOS.relationships);
   s.epistemic_inject_budget = snap(total * BUDGET_RATIOS.epistemic);
   s.state_ledger_inject_budget = snap(total * BUDGET_RATIOS.state_ledger);
+  for (const { setting, slider, display, fmt } of TUNABLE_TIERS) {
+    $(`#${slider}`).val(s[setting]);
+    $(`#${display}`).text(fmt(s[setting]));
+  }
+  refreshDirectRangeInputs();
 }
 
 /**
@@ -1454,6 +1540,7 @@ function allocateBudgetsFromCurrentUsage(characterName) {
   const total = totalBudgetFromSettings(settings);
   $('#sme_total_budget').val(total);
   $('#sme_total_budget_value').text(total);
+  refreshDirectRangeInputs();
   saveSettingsDebounced();
   reinjectAfterBudgetChange(characterName);
   toastr.success(`Allocated ${updatedTiers} budget${updatedTiers === 1 ? '' : 's'} from current usage + 10%.`, 'Smart Memory Enhanced');
@@ -1525,6 +1612,7 @@ export function autoTuneBudgets(characterName) {
   }
 
   if (changed) {
+    refreshDirectRangeInputs();
     saveSettingsDebounced();
     reinjectAfterBudgetChange(characterName);
   }
@@ -1543,6 +1631,7 @@ function applySettingsMode(mode) {
     const total = totalBudgetFromSettings(extension_settings[MODULE_NAME]);
     $('#sme_total_budget').val(total);
     $('#sme_total_budget_value').text(total);
+    refreshDirectRangeInputs();
   }
 }
 
@@ -1919,6 +2008,7 @@ export function bindSettingsUI(ctrl) {
     const total = totalBudgetFromSettings(cur);
     $('#sme_total_budget').val(total);
     $('#sme_total_budget_value').text(total);
+    refreshDirectRangeInputs();
     saveSettingsDebounced();
     reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
   });
@@ -2710,6 +2800,7 @@ export function bindSettingsUI(ctrl) {
       $('#sme_longterm_extract_every_value').text(every);
       $('#sme_session_extract_every').val(every);
       $('#sme_session_extract_every_value').text(every);
+      refreshDirectRangeInputs();
     });
 
   // ---- Short-term (compaction) ----------------------------------------
@@ -7045,6 +7136,11 @@ export function bindSettingsUI(ctrl) {
       large: false,
     });
   });
+
+  // Run after every setting-specific slider has installed its input handler,
+  // so typed values travel through exactly the same save/reinjection path as a
+  // physical slider adjustment.
+  installDirectRangeInputs();
 }
 
 function summarizeArcSummaryVerification(summaries = [], arcs = []) {

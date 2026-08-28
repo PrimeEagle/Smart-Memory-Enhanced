@@ -1441,6 +1441,21 @@ test('memory and navigation sections have distinct theme-neutral header icons', 
   assert.match(css, /\.sme_section_icon \{[\s\S]*opacity: 0\.72/);
 });
 
+test('every memory settings slider has a validated direct numeric entry field', () => {
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  const css = read('style.css');
+  const sliderCount = (html.match(/type="range"/g) ?? []).length;
+  assert.ok(sliderCount >= 25);
+  assert.match(settings, /#smart_memory_enhanced_settings input\[type="range"\]/);
+  assert.match(settings, /isValidRangeValue/);
+  assert.match(settings, /Number\.isFinite\(value\) \|\| value < min \|\| value > max/);
+  assert.match(settings, /rawValue === '' \? Number\.NaN : Number\(rawValue\)/);
+  assert.match(settings, /\$slider\.val\(normalized\)\.trigger\('input'\)\.trigger\('change'\)/);
+  assert.match(settings, /function refreshDirectRangeInputs\(\)/);
+  assert.match(css, /\.sme_range_direct_input/);
+});
+
 test('Memorize Chat cancellation aborts active memory work and preserves the prior checkpoint boundary', () => {
   const generate = read('generate.js');
   const settings = read('settings.js');

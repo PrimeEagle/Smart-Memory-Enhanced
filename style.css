@@ -29,6 +29,30 @@
   margin-bottom: 8px;
 }
 
+/* A slider and its validated direct-entry field share one compact control
+ * row. The range retains the available width; the field is wide enough for
+ * the largest token budget without crowding narrow panels. */
+#smart_memory_enhanced_settings .sme_range_control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#smart_memory_enhanced_settings .sme_range_control input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#smart_memory_enhanced_settings .sme_range_direct_input {
+  flex: 0 0 5.5em;
+  width: 5.5em;
+  text-align: right;
+}
+
+#smart_memory_enhanced_settings .sme_range_direct_input.sme_range_input_invalid {
+  outline: 1px solid var(--SmartThemeWarningColor, #d39b33);
+}
+
 /* Prompt Studio assignment labels stay beside their own dropdowns, avoiding
  * ambiguity when several scopes are configured together. */
 #smart_memory_enhanced_settings .sme_prompt_assignment_row {
