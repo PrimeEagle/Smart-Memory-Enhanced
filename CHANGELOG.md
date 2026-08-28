@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.19] - 2026-08-27
+
+### Improved
+
+- Added a matching, theme-neutral consolidation icon so every expandable memory
+  and workflow section has a clear visual identifier.
+
+### Tests
+
+- Extended the section-icon workflow coverage to include Consolidation. Targeted
+  verification passed: 94 tests.
+
 ## [0.9.18] - 2026-08-27
 
 ### Improved
