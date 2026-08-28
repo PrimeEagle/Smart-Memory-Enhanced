@@ -1441,6 +1441,16 @@ test('memory and navigation sections have distinct theme-neutral header icons', 
   assert.match(css, /\.sme_section_icon \{[\s\S]*opacity: 0\.72/);
 });
 
+test('Memorize Chat cancellation aborts active memory work and preserves the prior checkpoint boundary', () => {
+  const generate = read('generate.js');
+  const settings = read('settings.js');
+  assert.match(generate, /memoryCancellationEpoch/);
+  assert.match(generate, /while \(requestQueue\.length\) requestQueue\.shift\(\)\.resolve\(''\)/);
+  assert.match(generate, /if \(cancellationEpoch !== memoryCancellationEpoch\) return ''/);
+  assert.match(settings, /abortCurrentMemoryGeneration\(\);\s*setStatusMessage\('Cancelling current request\.\.\.'\)/);
+  assert.match(settings, /if \(ctrl\.catchUpCancelled\) \{\s*rollbackCatchUpTransaction\(chunkTransaction\);\s*break;/);
+});
+
 test('long-chat extraction preflights final prompts and records bounded overflow coverage', () => {
   const longterm = read('longterm.js');
   const session = read('session.js');

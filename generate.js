@@ -66,6 +66,9 @@ function getGenerationBudget() {
  * abortCurrentMemoryGeneration() when a swipe is requested.
  */
 let memoryAbortController = null;
+// Monotonically increases whenever a caller cancels memory work. Retry loops
+// capture it so a cancellation never waits through a provider backoff.
+let memoryCancellationEpoch = 0;
 
 // All Smart Memory provider calls share one queue. This prevents catch-up tiers
 // (or background work) from overwhelming hosted APIs with simultaneous requests.
@@ -157,12 +160,17 @@ function retryAfterMs(value) {
 
 export async function retryTransientMemoryOperation(run) {
   const { delayMs, maxRetries } = providerSettings();
+  const cancellationEpoch = memoryCancellationEpoch;
   for (let attempt = 0; ; attempt++) {
     try {
+      if (cancellationEpoch !== memoryCancellationEpoch) return '';
       const result = await run();
+      if (cancellationEpoch !== memoryCancellationEpoch) return '';
       if (delayMs) await sleep(delayMs);
+      if (cancellationEpoch !== memoryCancellationEpoch) return '';
       return result;
     } catch (err) {
+      if (cancellationEpoch !== memoryCancellationEpoch) return '';
       if (!isTransientProviderError(err) || attempt >= maxRetries) throw err;
       const backoff = Math.max(retryAfterMs(err.retryAfter), 10000 * 2 ** attempt);
       retryListeners.forEach((listener) => listener({ attempt: attempt + 1, delayMs: backoff, error: err }));
@@ -213,10 +221,15 @@ function stripThinkingBlocks(text) {
  * Has no effect if no external generation is currently running.
  */
 export function abortCurrentMemoryGeneration() {
+  memoryCancellationEpoch++;
   if (memoryAbortController) {
     memoryAbortController.abort();
     memoryAbortController = null;
   }
+  // Requests not yet started have no fetch to abort. Resolve them as an empty
+  // provider result so existing empty-response safeguards preserve the last
+  // committed state instead of leaving queue promises stranded.
+  while (requestQueue.length) requestQueue.shift().resolve('');
 }
 
 /** Available LLM sources for memory operations. */

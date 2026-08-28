@@ -60,6 +60,7 @@ import {
   fetchOllamaModels,
   onMemoryRequestRetry,
   retryTransientMemoryOperation,
+  abortCurrentMemoryGeneration,
 } from './generate.js';
 import { summarizeExtractionCoverage } from './extraction-window-utils.js';
 import {
@@ -4421,6 +4422,7 @@ export function bindSettingsUI(ctrl) {
             await extractAndStoreMemories(name, nameChunk, setStatusMessage, { extractionCoverage: runResult.extractionCoverage }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
             });
+            if (ctrl.catchUpCancelled) break;
             // Consolidate after each chunk so near-duplicates are collapsed before
             // the next chunk can add more similar entries.
             if (settings.consolidation_enabled) {
@@ -4431,11 +4433,19 @@ export function bindSettingsUI(ctrl) {
             }
           }
         }
+        if (ctrl.catchUpCancelled) {
+          rollbackCatchUpTransaction(chunkTransaction);
+          break;
+        }
         if (settings.session_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
           await extractSessionMemories(chunk, null, { sessionDiagnostics: runResult.sessionExtraction, extractionCoverage: runResult.extractionCoverage }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
           });
+          if (ctrl.catchUpCancelled) {
+            rollbackCatchUpTransaction(chunkTransaction);
+            break;
+          }
           setStatusMessage(`Catching up... (${i}/${total} messages - consolidating session)`);
           await consolidateSessionMemories().catch((err) => {
             recordCatchUpError('session consolidation error (chunk)', err, 'session');
@@ -4446,6 +4456,10 @@ export function bindSettingsUI(ctrl) {
           await runStateCardExtraction(characterName, chunk).catch((err) => {
             recordCatchUpError('State Ledger extraction error (chunk)', err, 'state-ledger');
           });
+        }
+        if (ctrl.catchUpCancelled) {
+          rollbackCatchUpTransaction(chunkTransaction);
+          break;
         }
 
         // Re-inject after each chunk so the token display reflects what is
@@ -6146,7 +6160,8 @@ export function bindSettingsUI(ctrl) {
   $('#sme_cancel_catch_up').on('click', function () {
     ctrl.catchUpCancelled = true;
     $(this).prop('disabled', true);
-    setStatusMessage('Cancelling...');
+    abortCurrentMemoryGeneration();
+    setStatusMessage('Cancelling current request...');
   });
 
   // ---- Clear Chat Context ---------------------------------------------

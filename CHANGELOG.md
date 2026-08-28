@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.21] - 2026-08-28
+
+### Fixed
+
+- Made **Cancel** interrupt Memorize Chat promptly. It now aborts active
+  cancellable memory requests, clears queued Smart Memory work, and stops retry
+  backoff waits instead of waiting for them to expire.
+- Cancelling during a chunk now rolls that uncommitted chunk back before
+  consolidation, injection, or checkpoint advancement. Resume Incomplete Run
+  continues from the prior safely committed chunk without loss or duplication.
+- Connection-profile requests that SillyTavern cannot cancel still finish their
+  active provider call, but no subsequent retry or catch-up stage is started.
+
+### Tests
+
+- Added workflow coverage for aborting active/queued work and preserving the
+  safe checkpoint boundary.
+
 ## [0.9.20] - 2026-08-28
 
 ### Added
