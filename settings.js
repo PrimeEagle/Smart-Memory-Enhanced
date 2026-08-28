@@ -1641,8 +1641,11 @@ export function bindSettingsUI(ctrl) {
     }
     const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
     const total = Number(checkpoint.source_message_count) || 0;
-    $resume.prop('disabled', Boolean(ctrl.extractionRunning || ctrl.compactionRunning));
-    $status.text(`Incomplete Memorize Chat run available: ${committed}/${total} source messages safely committed. Resuming continues from that point.`).show();
+    const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
+    $resume.prop('disabled', running);
+    $status.text(running
+      ? `Crash recovery checkpoint: ${committed}/${total} source messages safely committed.`
+      : `Incomplete Memorize Chat run available: ${committed}/${total} source messages safely committed. Resuming continues from that point.`).show();
     if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
@@ -4454,6 +4457,11 @@ export function bindSettingsUI(ctrl) {
         try {
           await retryTransientMemoryOperation(() => commitCatchUpTransaction(chunkTransaction));
           chunkCommitted = true;
+          // The displayed recovery offset is intentionally refreshed only
+          // after the same transaction succeeds. Live processing progress may
+          // be ahead of this value, but the checkpoint always reflects what a
+          // crash can safely resume without duplication.
+          refreshCatchUpRecoveryUI();
         } catch (err) {
           // The transaction restores both chat metadata and extension state.
           // Do not advance past an uncommitted chunk: the persisted checkpoint

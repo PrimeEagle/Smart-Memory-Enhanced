@@ -1412,16 +1412,27 @@ test('live prompt inspection preserves protected Session, Arc, and Profile contr
   assert.match(arcs, /buildArcExtractionPrompt\(chatHistory, existingText, formatCanonicalRosterForPrompt/);
 });
 
-test('lower navigation sections have distinct theme-neutral header icons', () => {
+test('memory and navigation sections have distinct theme-neutral header icons', () => {
   const html = read('settings.html');
-  for (const [section, icon] of [
+  for (const [marker, icon] of [
+    ['sme_longterm_enabled', 'fa-brain'],
+    ['sme_session_enabled', 'fa-layer-group'],
+    ['sme_compaction_enabled', 'fa-file-lines'],
+    ['sme_scene_enabled', 'fa-map-location-dot'],
+    ['sme_arcs_enabled', 'fa-book-open'],
+    ['sme_canon_enabled', 'fa-scroll'],
+    ['sme_profiles_enabled', 'fa-user-group'],
+    ['sme_relationships_enabled', 'fa-heart-pulse'],
+    ['sme_epistemic_enabled', 'fa-user-secret'],
+    ['sme_state_ledger_enabled', 'fa-clipboard-list'],
+    ['sme_recap_enabled', 'fa-clock-rotate-left'],
     ['Entity Registry', 'fa-diagram-project'],
     ['Continuity Checker', 'fa-shield-halved'],
     ['Prompt Studio', 'fa-wand-magic-sparkles'],
     ['Configuration', 'fa-sliders'],
     ['Developer', 'fa-code'],
   ]) {
-    const sectionIndex = html.lastIndexOf(section);
+    const sectionIndex = html.lastIndexOf(marker);
     const nearby = html.slice(Math.max(0, sectionIndex - 250), sectionIndex);
     assert.match(nearby, new RegExp(`${icon} sme_section_icon`));
   }
@@ -1458,6 +1469,8 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /validateCatchUpResumeSource/);
   assert.match(settings, /checkpointForCommit\.next_source_offset = processed/);
   assert.match(settings, /if \(chunkCommitted\) i \+= chunk\.length/);
+  assert.match(settings, /Crash recovery checkpoint:/);
+  assert.match(settings, /after the same transaction succeeds/);
   assert.match(settings, /delete catchUpContext\.chatMetadata\[META_KEY\]\.catch_up_checkpoint/);
   assert.match(settings, /sme:chat-changed\.sme-catchup-recovery/);
   assert.match(index, /\$\(document\)\.trigger\('sme:chat-changed'\)/);

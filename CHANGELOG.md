@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.18] - 2026-08-27
+
+### Improved
+
+- Added distinct, theme-neutral icons to every expandable memory section,
+  from Long-Term Memory through Away Recap, matching the existing navigation
+  section icon treatment.
+- Clarified the crash-recovery display during an active Memorize Chat run.
+  It now identifies the value as a **Crash recovery checkpoint** rather than
+  implying an incomplete run is already waiting to be resumed.
+
+### Fixed
+
+- Refresh the recovery checkpoint indicator only after a chunk's staged save
+  succeeds. Live progress may be ahead of this value, while the checkpoint
+  always represents the exact safe resume boundary.
+
+### Tests
+
+- Expanded section-icon and recovery-checkpoint workflow coverage. Full
+  automated verification passed: 422 tests and the 48-check replay regression
+  harness.
+
 ## [0.9.17] - 2026-08-27
 
 ### Added
