@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.24] - 2026-08-29
+
+### Added
+
+- Added bounded, privacy-safe **Continuity Health** diagnostics to the existing
+  Live Memory Health export and a compact Continuity Checker status line. It
+  reports source availability, token accounting, preflight/selection outcome,
+  provider and parser status, contradiction count, and repair lifecycle
+  without exporting source, response, or repair prose.
+
+### Fixed
+
+- Continuity Check now preflights its complete rendered request and selects
+  deterministic, source-diverse fact blocks within the configured context
+  budget. Unsafe oversized checks are prevented instead of sent to the model.
+- Empty, malformed, and provider-failed check responses are now distinct
+  attention outcomes rather than a misleading "No contradictions found."
+- Pending repairs are validated against conservative size limits and retain
+  bounded owner/target lifecycle metadata for queue, restore, cancel, consume,
+  and expiry handling.
+
+### Tests
+
+- Added parser, budget-selection, repair-validation, retention, and
+  privacy-safety coverage for Continuity Health.
+
 ## [0.9.23] - 2026-08-28
 
 ### Improved

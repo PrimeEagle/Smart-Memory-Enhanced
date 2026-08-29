@@ -6,6 +6,9 @@ import {
   updateLiveExtractionEvent,
   finishLiveExtractionEvent,
   recordLiveInjectionEvent,
+  CONTINUITY_HEALTH_MAX_EVENTS,
+  beginContinuityEvent,
+  finishContinuityEvent,
   exportLiveMemoryHealth,
 } from '../live-memory-health.js';
 
@@ -68,4 +71,15 @@ test('live health export is a read-only privacy-safe clone', () => {
   exported.recent_extraction_events[0].tier = 'changed';
   assert.equal(metadata.live_memory_health.recent_extraction_events[0].tier, 'session');
   assert.doesNotMatch(JSON.stringify(exported), /chat text|provider response|api key/i);
+});
+
+test('continuity diagnostics are bounded and exclude prompt, response, and repair prose', () => {
+  const metadata = {};
+  for (let index = 0; index < CONTINUITY_HEALTH_MAX_EVENTS + 2; index++) {
+    const event = beginContinuityEvent(metadata, { trigger: 'manual', fact_sources: { summary: 1 }, input_tokens: { summary: 12 } });
+    finishContinuityEvent(metadata, event, { terminal_outcome: 'clean', parser_outcome: 'clean' });
+  }
+  const exported = exportLiveMemoryHealth(metadata);
+  assert.equal(exported.recent_continuity_events.length, CONTINUITY_HEALTH_MAX_EVENTS);
+  assert.doesNotMatch(JSON.stringify(exported), /secret prompt|provider response|repair prose/i);
 });

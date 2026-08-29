@@ -106,6 +106,7 @@ import {
 } from './arcs.js';
 import {
   checkContinuity,
+  checkContinuityDetailed,
   generateRepair,
   injectRepair,
   clearRepair,
@@ -163,6 +164,7 @@ import {
   initTooltips,
   initTypePickers,
   updateLiveMemoryHealthUI,
+  updateContinuityHealthUI,
 } from './ui.js';
 import { defaultSettings, loadSettings, bindSettingsUI, autoTuneBudgets } from './settings.js';
 import { clearTierTrimStats, resetTrimToastFlag, markChatLoadComplete } from './trim-stats.js';
@@ -1056,7 +1058,7 @@ async function onCharacterMessageRendered(messageId, type) {
 
       // Step 5: clear any pending continuity repair - it was injected for this
       // response turn and should not carry over to the next message.
-      clearRepair();
+      clearRepair('repair_consumed');
 
       // Step 6 (Profile B only): silent continuity check after each AI turn.
       // Fire-and-forget so it does not block the event handler while the model
@@ -1070,16 +1072,17 @@ async function onCharacterMessageRendered(messageId, type) {
       ) {
         continuityCheckRunning = true;
         const continuityHandle = startActivityLoader(settings, 'Checking continuity...');
-        checkContinuity(characterName)
-          .then(async (contradictions) => {
-            setContinuityBadge(contradictions.length);
+        checkContinuityDetailed(characterName, { trigger: 'profile_b_auto' })
+          .then(async (continuity) => {
+            const contradictions = continuity.contradictions;
+            setContinuityBadge(continuity.outcome === 'clean' ? 0 : contradictions.length || null);
             // Populate the result panel so the user can read the contradictions
             // when they open the settings panel - same display as the manual check.
             const $result = $('#sme_continuity_result');
             $result.empty().removeClass('sme_continuity_clean sme_continuity_warn');
-            if (contradictions.length === 0) {
+            if (continuity.outcome === 'clean') {
               $result.addClass('sme_continuity_clean').text('No contradictions found.').show();
-            } else {
+            } else if (continuity.outcome === 'contradictions_found') {
               $result.addClass('sme_continuity_warn');
               $result.append('<b>Contradictions found:</b>');
               const $ul = $('<ul>');
@@ -1087,8 +1090,9 @@ async function onCharacterMessageRendered(messageId, type) {
               $result.append($ul).show();
               if (getSettings().continuity_auto_repair) {
                 try {
-                  const note = await generateRepair(contradictions, characterName);
-                  injectRepair(note);
+                  const note = await generateRepair(contradictions, characterName, { continuityEventId: continuity.event_id });
+                  const queued = injectRepair(note, { continuityEventId: continuity.event_id });
+                  if (!queued?.queued) throw new Error(queued?.reason ?? 'repair_rejected');
                   const $repairBlock = $('<div class="sme_repair_queued">');
                   $repairBlock.append($('<p>').text('Correction queued for next response:'));
                   $repairBlock.append($('<p class="sme_repair_note">').text(note));
@@ -1096,7 +1100,7 @@ async function onCharacterMessageRendered(messageId, type) {
                     '<button class="menu_button sme_repair_cancel">Cancel correction</button>',
                   );
                   $cancel.on('click', () => {
-                    clearRepair();
+                    clearRepair('repair_cancelled');
                     $repairBlock.remove();
                   });
                   $repairBlock.append($cancel);
@@ -1114,12 +1118,15 @@ async function onCharacterMessageRendered(messageId, type) {
                   );
                 }
               }
+            } else {
+              $result.addClass('sme_continuity_warn').text(`Continuity check unavailable: ${continuity.outcome.replaceAll('_', ' ')}.`).show();
             }
           })
           .catch((err) => {
             console.error('[Smart Memory Enhanced] Auto-continuity check failed:', err);
           })
           .finally(() => {
+            updateContinuityHealthUI();
             stopActivityLoader(continuityHandle);
             continuityCheckRunning = false;
           });
@@ -1512,7 +1519,7 @@ async function onGroupMemberDrafted(chId) {
     loadAndInjectRepair();
     repairInjectedThisRound = true;
   } else {
-    clearRepair();
+    clearRepair('repair_consumed');
   }
 
   // The token display is NOT updated here. Injecting this character's slots
@@ -1968,7 +1975,7 @@ async function onGroupWrapperFinished({ type } = {}) {
       }
 
       // Step 5: clear any pending continuity repair carried over from last round.
-      clearRepair();
+      clearRepair('repair_consumed');
 
       // Step 6 (Profile B only): silent continuity check - once per round using
       // the last character who responded. Running per-character would multiply
@@ -1982,18 +1989,20 @@ async function onGroupWrapperFinished({ type } = {}) {
       ) {
         continuityCheckRunning = true;
         const continuityHandle = startActivityLoader(settings, 'Checking continuity...');
-        checkContinuity(lastResponder)
-          .then(async (contradictions) => {
-            setContinuityBadge(contradictions.length);
-            if (contradictions.length > 0 && getSettings().continuity_auto_repair) {
-              const note = await generateRepair(contradictions, lastResponder);
-              injectRepair(note);
+        checkContinuityDetailed(lastResponder, { trigger: 'profile_b_auto_group' })
+          .then(async (continuity) => {
+            const contradictions = continuity.contradictions;
+            setContinuityBadge(continuity.outcome === 'clean' ? 0 : contradictions.length || null);
+            if (continuity.outcome === 'contradictions_found' && getSettings().continuity_auto_repair) {
+              const note = await generateRepair(contradictions, lastResponder, { continuityEventId: continuity.event_id });
+              injectRepair(note, { continuityEventId: continuity.event_id });
             }
           })
           .catch((err) => {
             console.error('[Smart Memory Enhanced] Auto-continuity check failed:', err);
           })
           .finally(() => {
+            updateContinuityHealthUI();
             stopActivityLoader(continuityHandle);
             continuityCheckRunning = false;
           });

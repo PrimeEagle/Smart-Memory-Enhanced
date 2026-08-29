@@ -882,7 +882,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
   }
   return result;
 }
-import { checkContinuity, generateRepair, injectRepair, clearRepair } from './continuity.js';
+import { checkContinuityDetailed, generateRepair, injectRepair, clearRepair } from './continuity.js';
 import {
   getHardwareProfile,
   getEmbeddingBatch,
@@ -926,6 +926,7 @@ import {
   updateEmbeddingNotice,
   setCatchUpErrorCount,
   updateLiveMemoryHealthUI,
+  updateContinuityHealthUI,
 } from './ui.js';
 
 function createLiveHealth(context, tier, messages, triggerReason = 'manual_extract_now') {
@@ -7075,15 +7076,17 @@ export function bindSettingsUI(ctrl) {
     setStatusMessage('Checking continuity...');
     $('#sme_continuity_result').hide().empty();
     try {
-      const contradictions = await checkContinuity(characterName);
-      if (contradictions.length === 0) {
+      const continuity = await checkContinuityDetailed(characterName, { trigger: 'manual' });
+      updateContinuityHealthUI();
+      const contradictions = continuity.contradictions;
+      if (continuity.outcome === 'clean') {
         $('#sme_continuity_result')
           .addClass('sme_continuity_clean')
           .removeClass('sme_continuity_warn')
           .text('No contradictions found.')
           .show();
         setStatusMessage('Continuity OK.');
-      } else {
+      } else if (continuity.outcome === 'contradictions_found') {
         const $result = $('#sme_continuity_result')
           .addClass('sme_continuity_warn')
           .removeClass('sme_continuity_clean');
@@ -7102,8 +7105,9 @@ export function bindSettingsUI(ctrl) {
         if (extension_settings[MODULE_NAME].continuity_auto_repair) {
           setStatusMessage('Generating repair...');
           try {
-            const note = await generateRepair(contradictions, characterName);
-            injectRepair(note);
+            const note = await generateRepair(contradictions, characterName, { continuityEventId: continuity.event_id });
+            const queued = injectRepair(note, { continuityEventId: continuity.event_id });
+            if (!queued?.queued) throw new Error(queued?.reason ?? 'repair_rejected');
             const $repairBlock = $('<div class="sme_repair_queued">');
             $repairBlock.append($('<p>').text('Correction queued for next response:'));
             $repairBlock.append($('<p class="sme_repair_note">').text(note));
@@ -7111,7 +7115,7 @@ export function bindSettingsUI(ctrl) {
               '<button class="menu_button sme_repair_cancel">Cancel correction</button>',
             );
             $cancel.on('click', () => {
-              clearRepair();
+              clearRepair('repair_cancelled');
               $repairBlock.remove();
               setStatusMessage('Correction cancelled.');
             });
@@ -7124,6 +7128,13 @@ export function bindSettingsUI(ctrl) {
             setStatusMessage('Repair failed - see console.');
           }
         }
+      } else {
+        $('#sme_continuity_result')
+          .addClass('sme_continuity_warn')
+          .removeClass('sme_continuity_clean')
+          .text(`Continuity check unavailable: ${continuity.outcome.replaceAll('_', ' ')}.`)
+          .show();
+        setStatusMessage('Continuity check needs attention.');
       }
     } catch (err) {
       showError('Continuity check', err);

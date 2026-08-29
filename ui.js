@@ -168,6 +168,20 @@ export function updateLiveMemoryHealthUI() {
     .toggleClass('sme_live_health_attention', Boolean(summary.attention_reason_codes?.length))
     .show();
 }
+
+/** Renders a compact, content-free Continuity Check status line. */
+export function updateContinuityHealthUI() {
+  const target = $('#sme_continuity_health');
+  if (!target.length) return;
+  const continuity = getLiveMemoryHealthSummary(getContext().chatMetadata?.[META_KEY])?.last_continuity;
+  if (!continuity) return target.hide().empty();
+  const attention = continuity.attention_reason_codes?.length
+    ? ` Attention: ${continuity.attention_reason_codes.join(', ').replaceAll('_', ' ')}.`
+    : '';
+  target.text(`Continuity health — ${continuity.terminal_outcome.replaceAll('_', ' ')}; ${continuity.contradiction_count} contradictions; repair ${continuity.repair_lifecycle.replaceAll('_', ' ')}.${attention}`)
+    .toggleClass('sme_live_health_attention', Boolean(continuity.attention_reason_codes?.length))
+    .show();
+}
 import {
   loadEpistemicKnowledge,
   saveEpistemicKnowledge,

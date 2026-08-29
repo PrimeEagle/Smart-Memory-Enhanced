@@ -39,7 +39,7 @@
  * loadAndInjectRepair - restores a stored repair injection on chat load
  */
 
-import { generateMemoryExtract } from './generate.js';
+import { generateMemoryExtract, getMemoryRequestBudget } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import {
@@ -48,12 +48,15 @@ import {
   extension_prompt_roles,
 } from '../../../../script.js';
 import { power_user } from '../../../../scripts/power-user.js';
-import { MODULE_NAME, META_KEY, PROMPT_KEY_REPAIR } from './constants.js';
+import { MODULE_NAME, META_KEY, PROMPT_KEY_REPAIR, estimateTokens } from './constants.js';
 import { buildContinuityPrompt, buildRepairPrompt } from './prompts.js';
 import { loadCharacterMemories } from './longterm.js';
 import { loadSessionMemories } from './session.js';
-import { parseContradictions } from './parsers.js';
+import { parseContinuityVerdict } from './parsers.js';
 import { smLog } from './logging.js';
+import { makeExtractionPreflight } from './extraction-window-utils.js';
+import { selectContinuityFactBlocks, validateContinuityRepair } from './continuity-utils.js';
+import { beginContinuityEvent, updateContinuityEvent, finishContinuityEvent, recordContinuityRepairLifecycle } from './live-memory-health.js';
 
 /**
  * Collects all established facts into a single labelled text block.
@@ -62,10 +65,11 @@ import { smLog } from './logging.js';
  * @param {string} characterName
  * @returns {string} Multi-section fact block, or empty string if nothing is stored.
  */
-function gatherEstablishedFacts(characterName) {
+function gatherEstablishedFactBlocks(characterName) {
   const context = getContext();
   const meta = context.chatMetadata?.[META_KEY];
   const parts = [];
+  const add = (source, text, count = 1) => { if (text?.trim()) parts.push({ source, text, count }); };
 
   // The character card is the canonical source of truth - check it first.
   // Characters may contradict their card (wrong gender, species, etc.) in ways
@@ -79,7 +83,7 @@ function gatherEstablishedFacts(characterName) {
     if (char.personality) cardParts.push('Personality: ' + char.personality);
     if (char.scenario) cardParts.push('Scenario: ' + char.scenario);
     if (cardParts.length > 0) {
-      parts.push('-- CHARACTER CARD --\n' + cardParts.join('\n'));
+      add('character_card', '-- CHARACTER CARD --\n' + cardParts.join('\n'));
     }
   }
 
@@ -87,32 +91,39 @@ function gatherEstablishedFacts(characterName) {
   // accurate descriptions of the user's character as contradictions.
   const personaDesc = power_user?.persona_description?.trim();
   if (personaDesc) {
-    parts.push('-- USER PERSONA --\n' + personaDesc);
+    add('persona', '-- USER PERSONA --\n' + personaDesc);
   }
 
   if (meta?.summary) {
-    parts.push('-- STORY SUMMARY --\n' + meta.summary);
+    add('summary', '-- STORY SUMMARY --\n' + meta.summary);
   }
 
   if (characterName) {
     const longterm = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
     if (longterm.length > 0) {
-      const text = longterm.map((m) => `[${m.type}] ${m.content}`).join('\n');
-      parts.push('-- LONG-TERM MEMORIES --\n' + text);
+      for (const memory of longterm) add('longterm', `-- LONG-TERM MEMORY --\n[${memory.type}] ${memory.content}`);
     }
   }
 
   const session = loadSessionMemories().filter((m) => !m.superseded_by);
   if (session.length > 0) {
-    const text = session.map((m) => `[${m.type}] ${m.content}`).join('\n');
-    parts.push('-- SESSION DETAILS --\n' + text);
+    for (const memory of session) add('session', `-- SESSION DETAIL --\n[${memory.type}] ${memory.content}`);
   }
 
-  return parts.join('\n\n');
+  return parts;
+}
+
+function gatherEstablishedFacts(characterName) {
+  return gatherEstablishedFactBlocks(characterName).map((block) => block.text).join('\n\n');
 }
 
 // chatMetadata key under META_KEY where the pending repair note is stored.
 const REPAIR_KEY = 'pendingRepair';
+const REPAIR_LIFECYCLE_KEY = 'pendingRepairLifecycle';
+
+function repairOwnerKey(context) {
+  return String(context.chatId ?? context.groupId ?? context.characterId ?? context.name2 ?? '').trim() || null;
+}
 
 /**
  * Runs a continuity check against the last AI message in the current chat.
@@ -121,34 +132,61 @@ const REPAIR_KEY = 'pendingRepair';
  * @param {string} characterName - Used to load the correct long-term memories.
  * @returns {Promise<string[]>} Array of contradiction descriptions, or [] if clean or on error.
  */
-export async function checkContinuity(characterName) {
+export async function checkContinuityDetailed(characterName, { trigger = 'manual' } = {}) {
   const settings = extension_settings[MODULE_NAME];
-
+  const context = getContext();
+  const metadata = context.chatMetadata?.[META_KEY];
+  const lastAiMessage = context.chat
+    ?.slice()
+    .reverse()
+    .find((m) => !m.is_user && !m.is_system && m.mes);
+  const blocks = gatherEstablishedFactBlocks(characterName);
+  const sourceCounts = Object.fromEntries(['character_card', 'persona', 'summary', 'longterm', 'session'].map((source) => [source, blocks.filter((block) => block.source === source).length]));
+  const sourceTokens = Object.fromEntries(Object.keys(sourceCounts).map((source) => [source, blocks.filter((block) => block.source === source).reduce((total, block) => total + estimateTokens(block.text), 0)]));
+  const responseLength = settings.continuity_response_length ?? 300;
+  const budget = getMemoryRequestBudget(responseLength);
+  const event = beginContinuityEvent(metadata, {
+    chat_turn_id: context.chat?.length ?? null, group_mode: Boolean(context.groupId), trigger,
+    target_status: characterName ? 'available' : 'missing', fact_sources: sourceCounts,
+    input_tokens: sourceTokens, latest_response_tokens: estimateTokens(lastAiMessage?.mes ?? ''),
+  });
+  const complete = (result) => ({ ...result, event_id: event?.event_id ?? null });
+  if (!lastAiMessage) {
+    finishContinuityEvent(metadata, event, { terminal_outcome: 'empty_response', parser_outcome: 'not_started', attention_reason_codes: ['no_latest_ai_response'] });
+    return complete({ outcome: 'empty_response', contradictions: [], attention: true });
+  }
+  if (!blocks.length) {
+    finishContinuityEvent(metadata, event, { terminal_outcome: 'prevented', attention_reason_codes: ['no_established_facts'] });
+    return complete({ outcome: 'prevented', contradictions: [], attention: true });
+  }
+  const render = (facts) => applyPromptOverride(buildContinuityPrompt(facts, lastAiMessage.mes), PROMPT_TASKS.CONTINUITY, characterName);
+  const selection = selectContinuityFactBlocks(blocks, {
+    buildPrompt: render, estimateTokens,
+    preflight: (prompt) => makeExtractionPreflight({ prompt, estimateTokens, configuredContextLimit: budget.configuredContextLimit, reservedOutputTokens: budget.reservedOutputTokens, safetyMargin: budget.safetyMargin }),
+  });
+  updateContinuityEvent(metadata, event, { preflight: selection.preflight, selection });
+  if (!selection.facts.trim() || !selection.preflight.fits) {
+    finishContinuityEvent(metadata, event, { terminal_outcome: 'prevented', attention_reason_codes: ['continuity_request_exceeds_budget'] });
+    return complete({ outcome: 'prevented', contradictions: [], attention: true });
+  }
   try {
-    const context = getContext();
-    const lastAiMessage = context.chat
-      ?.slice()
-      .reverse()
-      .find((m) => !m.is_user && !m.is_system && m.mes);
-
-    if (!lastAiMessage) return [];
-
-    const facts = gatherEstablishedFacts(characterName);
-    if (!facts.trim()) return [];
-
-    const prompt = buildContinuityPrompt(facts, lastAiMessage.mes);
-
-    const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.CONTINUITY, characterName), {
+    const response = await generateMemoryExtract(render(selection.facts), {
       responseLength: settings.continuity_response_length ?? 300,
     });
-
-    smLog('[Smart Memory Enhanced] Continuity check response:', response);
-
-    return parseContradictions(response);
+    const verdict = parseContinuityVerdict(response);
+    const attention = ['empty_response', 'malformed_or_unusable_response'].includes(verdict.outcome);
+    finishContinuityEvent(metadata, event, { terminal_outcome: verdict.outcome, provider_outcome: 'completed', parser_outcome: verdict.outcome, contradiction_count: verdict.contradictions.length, attention_reason_codes: attention ? [verdict.outcome] : [] });
+    return complete({ ...verdict, attention });
   } catch (err) {
     console.error('[Smart Memory Enhanced] Continuity check failed:', err);
-    throw err;
+    finishContinuityEvent(metadata, event, { terminal_outcome: 'provider_failure', provider_outcome: 'provider_failure', parser_outcome: 'not_started', attention_reason_codes: ['provider_failure'] });
+    return complete({ outcome: 'provider_failure', contradictions: [], attention: true, error: err });
   }
+}
+
+/** Backward-compatible list-only continuity API. */
+export async function checkContinuity(characterName, options) {
+  return (await checkContinuityDetailed(characterName, options)).contradictions;
 }
 
 /**
@@ -158,7 +196,7 @@ export async function checkContinuity(characterName) {
  * @param {string} characterName - Used to load the correct long-term memories.
  * @returns {Promise<string>} The corrective note text.
  */
-export async function generateRepair(contradictions, characterName) {
+export async function generateRepair(contradictions, characterName, { continuityEventId = null } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const facts = gatherEstablishedFacts(characterName);
   const prompt = buildRepairPrompt(contradictions, facts);
@@ -167,8 +205,12 @@ export async function generateRepair(contradictions, characterName) {
     responseLength: settings.continuity_response_length ?? 300,
   });
 
-  smLog('[Smart Memory Enhanced] Repair note generated:', note);
-  return typeof note === 'string' ? note.trim() : null;
+  const validation = validateContinuityRepair(note, estimateTokens);
+  smLog('[Smart Memory Enhanced] Repair note outcome:', validation.valid ? 'usable' : validation.reason);
+  const metadata = getContext().chatMetadata?.[META_KEY];
+  if (!validation.valid) recordContinuityRepairLifecycle(metadata, continuityEventId, 'repair_rejected', validation.reason);
+  else recordContinuityRepairLifecycle(metadata, continuityEventId, 'repair_generated');
+  return validation.valid ? validation.note : null;
 }
 
 /**
@@ -177,31 +219,45 @@ export async function generateRepair(contradictions, characterName) {
  * The note is one-shot - clearRepair() removes it after the next render.
  * @param {string} repairNote - The corrective note text.
  */
-export function injectRepair(repairNote) {
+export function injectRepair(repairNote, { continuityEventId = null } = {}) {
   const context = getContext();
   if (!context.chatMetadata) return;
+  const validation = validateContinuityRepair(repairNote, estimateTokens);
+  if (!validation.valid) return { queued: false, reason: validation.reason };
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY][REPAIR_KEY] = repairNote;
+  const metadata = context.chatMetadata[META_KEY];
+  metadata[REPAIR_KEY] = validation.note;
+  metadata[REPAIR_LIFECYCLE_KEY] = {
+    continuity_event_id: continuityEventId, owner_key: repairOwnerKey(context),
+    target_turn: context.chat?.length ?? null, state: 'repair_queued', created_at: Date.now(),
+  };
+  recordContinuityRepairLifecycle(metadata, continuityEventId, 'repair_queued');
   context.saveMetadata()?.catch(console.error);
 
   setExtensionPrompt(
     PROMPT_KEY_REPAIR,
-    `[Continuity correction - apply to this response: ${repairNote}]`,
+    `[Continuity correction - apply to this response: ${validation.note}]`,
     extension_prompt_types.IN_CHAT,
     0,
     false,
     extension_prompt_roles.SYSTEM,
   );
+  return { queued: true, estimated_tokens: validation.estimated_tokens };
 }
 
 /**
  * Removes the pending repair note from chatMetadata and clears the injection
  * slot. Called after the next AI message is rendered.
  */
-export function clearRepair() {
+export function clearRepair(reason = 'repair_cancelled') {
   const context = getContext();
   if (context.chatMetadata?.[META_KEY]) {
-    delete context.chatMetadata[META_KEY][REPAIR_KEY];
+    const metadata = context.chatMetadata[META_KEY];
+    if (metadata[REPAIR_KEY]) {
+      metadata[REPAIR_LIFECYCLE_KEY] = { ...(metadata[REPAIR_LIFECYCLE_KEY] ?? {}), state: reason, cleared_at: Date.now() };
+      recordContinuityRepairLifecycle(metadata, metadata[REPAIR_LIFECYCLE_KEY]?.continuity_event_id, reason);
+    }
+    delete metadata[REPAIR_KEY];
     context.saveMetadata()?.catch(console.error);
   }
   setExtensionPrompt(PROMPT_KEY_REPAIR, '', extension_prompt_types.NONE, 0);
@@ -214,8 +270,18 @@ export function clearRepair() {
  */
 export function loadAndInjectRepair() {
   const context = getContext();
-  const repair = context.chatMetadata?.[META_KEY]?.[REPAIR_KEY];
+  const metadata = context.chatMetadata?.[META_KEY];
+  const repair = metadata?.[REPAIR_KEY];
+  const lifecycle = metadata?.[REPAIR_LIFECYCLE_KEY];
+  if (repair && lifecycle?.owner_key && lifecycle.owner_key !== repairOwnerKey(context)) {
+    clearRepair('repair_expired');
+    return;
+  }
   if (repair) {
+    if (metadata[REPAIR_LIFECYCLE_KEY]) {
+      metadata[REPAIR_LIFECYCLE_KEY].state = 'repair_restored';
+      recordContinuityRepairLifecycle(metadata, metadata[REPAIR_LIFECYCLE_KEY].continuity_event_id, 'repair_restored');
+    }
     setExtensionPrompt(
       PROMPT_KEY_REPAIR,
       `[Continuity correction - apply to this response: ${repair}]`,

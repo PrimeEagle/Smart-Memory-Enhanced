@@ -8,6 +8,7 @@ import {
   parseArcOutput,
   parseSceneSummaryOutput,
   parseContradictions,
+  parseContinuityVerdict,
   formatSummary,
   detectSceneBreakHeuristic,
   parseProfileOutput,
@@ -686,6 +687,13 @@ test('parseProfileOutput: accepts labelled Markdown headings from local models',
   const result = parseProfileOutput('## Character State\nGoals: keep the treaty intact\n\n## World State\nLocation: council chamber');
   assert.equal(result.character_state, 'Goals: keep the treaty intact');
   assert.equal(result.world_state, 'Location: council chamber');
+});
+
+test('parseContinuityVerdict distinguishes clean, contradictions, empty, and malformed provider replies', () => {
+  assert.equal(parseContinuityVerdict('NONE').outcome, 'clean');
+  assert.deepEqual(parseContinuityVerdict('- The response changes the established location.').contradictions, ['The response changes the established location.']);
+  assert.equal(parseContinuityVerdict('').outcome, 'empty_response');
+  assert.equal(parseContinuityVerdict('###').outcome, 'malformed_or_unusable_response');
 });
 
 test('detectSceneBreakHeuristic: does not treat a dialogue reference to the morning after as a transition', () => {

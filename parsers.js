@@ -388,8 +388,10 @@ const ALL_CLEAR_PATTERNS = [
  * @param {string} text - Raw model response.
  * @returns {string[]}
  */
-export function parseContradictions(text) {
-  if (!text || text.trim().toUpperCase() === 'NONE') return [];
+export function parseContinuityVerdict(text) {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  if (!raw) return { outcome: 'empty_response', contradictions: [] };
+  if (raw.toUpperCase() === 'NONE') return { outcome: 'clean', contradictions: [] };
 
   // Local models often write a verdict on the first line ("NO CONFLICTS",
   // "No contradictions found") followed by a verbose explanation, rather than
@@ -400,16 +402,22 @@ export function parseContradictions(text) {
     .split('\n')
     .map((l) => l.trim())
     .find((l) => l.length > 0);
-  if (firstLine && ALL_CLEAR_PATTERNS.some((p) => p.test(firstLine))) return [];
+  if (firstLine && ALL_CLEAR_PATTERNS.some((p) => p.test(firstLine))) return { outcome: 'clean', contradictions: [] };
 
-  return (
-    text
+  const contradictions = raw
       .split('\n')
       .map((line) => line.replace(/^[-•*\d.]+\s*/, '').trim())
       // Lines ending with ':' are section headers ("Here are the issues I found:"),
       // not contradictions. Filtering them prevents inflating the badge count.
-      .filter((line) => line.length > 0 && !line.endsWith(':'))
-  );
+      .filter((line) => line.length > 4 && !line.endsWith(':'));
+  return contradictions.length
+    ? { outcome: 'contradictions_found', contradictions }
+    : { outcome: 'malformed_or_unusable_response', contradictions: [] };
+}
+
+/** Backward-compatible contradiction-list helper. */
+export function parseContradictions(text) {
+  return parseContinuityVerdict(text).contradictions;
 }
 
 // ---- Summary formatting -------------------------------------------------

@@ -8,6 +8,7 @@
 
 export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 1;
 export const LIVE_MEMORY_HEALTH_MAX_EVENTS = 75;
+export const CONTINUITY_HEALTH_MAX_EVENTS = 75;
 
 const extractionTerminalStates = new Set([
   'completed', 'completed_with_repairs', 'completed_repartitioned', 'empty',
@@ -44,11 +45,71 @@ export function ensureLiveMemoryHealth(metadata) {
   health.sequence = number(health.sequence);
   health.recent_extraction_events ??= [];
   health.recent_injection_events ??= [];
+  health.recent_continuity_events ??= [];
   health.aggregate ??= { extraction: {}, injection: {}, attention_count: 0 };
   health.aggregate.extraction ??= {};
   health.aggregate.injection ??= {};
+  health.aggregate.continuity ??= {};
   trimEvents(health);
   return health;
+}
+
+export function beginContinuityEvent(metadata, input = {}) {
+  const health = ensureLiveMemoryHealth(metadata);
+  if (!health) return null;
+  const event = {
+    event_id: nextId(health, 'continuity'), timestamp: Date.now(),
+    chat_turn_id: input.chat_turn_id ?? null, group_mode: Boolean(input.group_mode),
+    trigger: input.trigger ?? 'manual', target_status: input.target_status ?? 'available',
+    fact_sources: input.fact_sources ?? {}, input_tokens: input.input_tokens ?? {},
+    latest_response_tokens: number(input.latest_response_tokens), preflight: input.preflight ?? null,
+    selection: { selected: [], excluded: [] }, provider_outcome: 'not_started',
+    parser_outcome: 'not_started', contradiction_count: 0, repair_lifecycle: 'not_applicable',
+    terminal_outcome: 'running', attention_reason_codes: [],
+  };
+  health.recent_continuity_events.push(event);
+  health.last_continuity = { event_id: event.event_id, timestamp: event.timestamp, terminal_outcome: 'running', contradiction_count: 0, repair_lifecycle: 'not_applicable', attention_reason_codes: [] };
+  increment(health.aggregate.continuity, 'attempted');
+  health.recent_continuity_events = health.recent_continuity_events.slice(-CONTINUITY_HEALTH_MAX_EVENTS);
+  return event;
+}
+
+export function updateContinuityEvent(metadata, event, patch = {}) {
+  if (!event) return;
+  for (const key of ['preflight', 'selection', 'provider_outcome', 'parser_outcome', 'repair_lifecycle']) {
+    if (key in patch) event[key] = patch[key];
+  }
+  if ('contradiction_count' in patch) event.contradiction_count = number(patch.contradiction_count);
+  if (patch.attention_reason_codes) event.attention_reason_codes = boundedReasonCodes(patch.attention_reason_codes);
+  const summary = metadata?.live_memory_health?.last_continuity;
+  if (summary?.event_id === event.event_id) Object.assign(summary, { contradiction_count: event.contradiction_count, repair_lifecycle: event.repair_lifecycle, attention_reason_codes: event.attention_reason_codes });
+}
+
+export function finishContinuityEvent(metadata, event, patch = {}) {
+  if (!event) return null;
+  updateContinuityEvent(metadata, event, patch);
+  const health = ensureLiveMemoryHealth(metadata);
+  event.terminal_outcome = patch.terminal_outcome ?? 'malformed_or_unusable_response';
+  event.duration_ms = Math.max(0, Date.now() - number(event.timestamp, Date.now()));
+  increment(health.aggregate.continuity, event.terminal_outcome);
+  if (event.attention_reason_codes.length || ['prevented', 'provider_failure', 'empty_response', 'malformed_or_unusable_response', 'repair_rejected', 'repair_lifecycle_error'].includes(event.terminal_outcome)) increment(health.aggregate, 'attention_count');
+  health.last_continuity = { event_id: event.event_id, timestamp: event.timestamp, terminal_outcome: event.terminal_outcome, contradiction_count: event.contradiction_count, repair_lifecycle: event.repair_lifecycle, attention_reason_codes: event.attention_reason_codes };
+  return event;
+}
+
+/** Records a repair state without retaining the repair text itself. */
+export function recordContinuityRepairLifecycle(metadata, eventId, state, reason = null) {
+  const health = ensureLiveMemoryHealth(metadata);
+  if (!health) return;
+  const event = (health.recent_continuity_events ?? []).findLast((item) => item.event_id === eventId)
+    ?? (health.recent_continuity_events ?? []).at(-1);
+  if (!event) return;
+  event.repair_lifecycle = state;
+  if (reason) event.attention_reason_codes = boundedReasonCodes([...event.attention_reason_codes, reason]);
+  if (health.last_continuity?.event_id === event.event_id) {
+    health.last_continuity.repair_lifecycle = state;
+    health.last_continuity.attention_reason_codes = event.attention_reason_codes;
+  }
 }
 
 export function beginLiveExtractionEvent(metadata, input = {}) {
@@ -188,7 +249,7 @@ export function getLiveMemoryHealthSummary(metadata) {
   if (!health) return null;
   const lastExtractionEvent = (health.recent_extraction_events ?? []).findLast((event) => event.event_id === health.last_extraction?.event_id) ?? null;
   const lastInjectionEvent = (health.recent_injection_events ?? []).findLast((event) => event.event_id === health.last_injection?.event_id) ?? null;
-  const attention = [health.last_extraction, health.last_injection].flatMap((event) => event?.attention_reason_codes ?? []);
+  const attention = [health.last_extraction, health.last_injection, health.last_continuity].flatMap((event) => event?.attention_reason_codes ?? []);
   return {
     last_extraction: health.last_extraction ?? null,
     last_extraction_event: lastExtractionEvent,
@@ -196,6 +257,7 @@ export function getLiveMemoryHealthSummary(metadata) {
     attention_reason_codes: boundedReasonCodes(attention),
     injected_tier_tokens: (lastInjectionEvent?.tiers ?? []).map((tier) => ({ tier: tier.tier, tokens: tier.injected_tokens })),
     aggregate: health.aggregate ?? {},
+    last_continuity: health.last_continuity ?? null,
   };
 }
 
@@ -212,5 +274,7 @@ export function exportLiveMemoryHealth(metadata) {
     last_injection: health.last_injection ?? null,
     recent_extraction_events: health.recent_extraction_events,
     recent_injection_events: health.recent_injection_events,
+    last_continuity: health.last_continuity ?? null,
+    recent_continuity_events: health.recent_continuity_events,
   }));
 }
