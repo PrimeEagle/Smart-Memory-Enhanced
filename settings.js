@@ -928,21 +928,29 @@ import {
   updateLiveMemoryHealthUI,
 } from './ui.js';
 
-function createManualLiveHealth(context, tier, messages) {
+function createLiveHealth(context, tier, messages, triggerReason = 'manual_extract_now') {
   const metadata = context.chatMetadata?.[META_KEY];
   if (!metadata) return null;
-  const indices = (messages ?? []).map((message) => context.chat?.indexOf(message)).filter(Number.isInteger);
+  const indices = (messages ?? [])
+    .map((message) => Number.isInteger(message?.__sme_original_index)
+      ? message.__sme_original_index
+      : context.chat?.indexOf(message))
+    .filter(Number.isInteger);
   const event = beginLiveExtractionEvent(metadata, {
     chat_turn_id: context.chat?.length ?? null,
     tier,
-    trigger_reason: 'manual_extract_now',
+    trigger_reason: triggerReason,
     window_selection_reason: 'stable_window_with_fallback',
     source_start: indices.length ? Math.min(...indices) : null,
     source_end: indices.length ? Math.max(...indices) : null,
     message_count: indices.length,
   });
+  updateLiveMemoryHealthUI();
   return {
-    update: (patch) => updateLiveExtractionEvent(event, patch),
+    update: (patch) => {
+      updateLiveExtractionEvent(event, patch);
+      updateLiveMemoryHealthUI();
+    },
     finish: (patch) => {
       const result = finishLiveExtractionEvent(metadata, event, patch);
       $('#sme_export_diagnostics').prop('disabled', false);
@@ -3551,7 +3559,7 @@ export function bindSettingsUI(ctrl) {
       const context = getContext();
       const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 20);
       const count = await extractAndStoreMemories(characterName, recentMessages, setStatusMessage, {
-        liveHealth: createManualLiveHealth(context, 'longterm', recentMessages),
+        liveHealth: createLiveHealth(context, 'longterm', recentMessages),
       });
       saveSettingsDebounced();
       updateLongTermUI(characterName);
@@ -3669,7 +3677,7 @@ export function bindSettingsUI(ctrl) {
       const context = getContext();
       const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 40);
       const count = await extractSessionMemories(recentMessages, null, {
-        liveHealth: createManualLiveHealth(context, 'session', recentMessages),
+        liveHealth: createLiveHealth(context, 'session', recentMessages),
       });
       await injectSessionMemories();
       updateSessionUI();
@@ -4510,7 +4518,10 @@ export function bindSettingsUI(ctrl) {
             setStatusMessage(
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
             );
-            await extractAndStoreMemories(name, nameChunk, setStatusMessage, { extractionCoverage: runResult.extractionCoverage }).catch((err) => {
+            await extractAndStoreMemories(name, nameChunk, setStatusMessage, {
+              extractionCoverage: runResult.extractionCoverage,
+              liveHealth: createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'),
+            }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
             });
             if (ctrl.catchUpCancelled) break;
@@ -4530,7 +4541,11 @@ export function bindSettingsUI(ctrl) {
         }
         if (settings.session_enabled && !isFreshStart()) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
-          await extractSessionMemories(chunk, null, { sessionDiagnostics: runResult.sessionExtraction, extractionCoverage: runResult.extractionCoverage }).catch((err) => {
+          await extractSessionMemories(chunk, null, {
+            sessionDiagnostics: runResult.sessionExtraction,
+            extractionCoverage: runResult.extractionCoverage,
+            liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
+          }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
           });
           if (ctrl.catchUpCancelled) {

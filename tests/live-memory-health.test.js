@@ -12,6 +12,7 @@ import {
 test('live extraction health records preflight, repairs, and one reconciled terminal outcome', () => {
   const metadata = {};
   const event = beginLiveExtractionEvent(metadata, { tier: 'session', chat_turn_id: 12, source_start: 8, source_end: 11, message_count: 4 });
+  assert.equal(metadata.live_memory_health.last_extraction.terminal_health, 'running');
   updateLiveExtractionEvent(event, {
     preflight: { configured_context_limit: 8192, estimated_input_tokens: 1200, reserved_output_tokens: 500, safety_margin_tokens: 1000, usable_input_tokens: 6692, fits: true },
     provider_outcome: 'completed',
@@ -22,6 +23,18 @@ test('live extraction health records preflight, repairs, and one reconciled term
   assert.equal(event.candidates.unresolved, 1);
   assert.equal(event.preflight.usable_input_budget, 6692);
   assert.equal(exportLiveMemoryHealth(metadata).recent_extraction_events[0].provider_outcome, 'completed');
+});
+
+test('live health exposes an active catch-up extraction before it reaches a terminal result', async () => {
+  const { getLiveMemoryHealthSummary } = await import('../live-memory-health.js');
+  const metadata = {};
+  const event = beginLiveExtractionEvent(metadata, {
+    tier: 'longterm', trigger_reason: 'memorize_chat_catch_up', source_start: 2400, source_end: 2599, message_count: 200,
+  });
+  const summary = getLiveMemoryHealthSummary(metadata);
+  assert.equal(summary.last_extraction.terminal_health, 'running');
+  assert.equal(summary.last_extraction_event.event_id, event.event_id);
+  assert.deepEqual(summary.last_extraction_event.source_range, { start: 2400, end: 2599, message_count: 200 });
 });
 
 test('live health retains only bounded events while aggregate counters remain accurate', () => {

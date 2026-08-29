@@ -77,6 +77,16 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
     attention_reason_codes: [],
   };
   health.recent_extraction_events.push(event);
+  // Surface a running event immediately. The health card must describe the
+  // current extraction rather than continuing to show an older completed one
+  // until this request reaches its terminal path.
+  health.last_extraction = {
+    event_id: event.event_id,
+    timestamp: event.timestamp,
+    tier: event.tier,
+    terminal_health: event.terminal_health,
+    attention_reason_codes: event.attention_reason_codes,
+  };
   increment(health.aggregate.extraction, 'attempted');
   trimEvents(health);
   return event;
@@ -176,10 +186,12 @@ export function recordLiveInjectionEvent(metadata, input = {}) {
 export function getLiveMemoryHealthSummary(metadata) {
   const health = metadata?.live_memory_health;
   if (!health) return null;
+  const lastExtractionEvent = (health.recent_extraction_events ?? []).findLast((event) => event.event_id === health.last_extraction?.event_id) ?? null;
   const lastInjectionEvent = (health.recent_injection_events ?? []).findLast((event) => event.event_id === health.last_injection?.event_id) ?? null;
   const attention = [health.last_extraction, health.last_injection].flatMap((event) => event?.attention_reason_codes ?? []);
   return {
     last_extraction: health.last_extraction ?? null,
+    last_extraction_event: lastExtractionEvent,
     last_injection: health.last_injection ?? null,
     attention_reason_codes: boundedReasonCodes(attention),
     injected_tier_tokens: (lastInjectionEvent?.tiers ?? []).map((tier) => ({ tier: tier.tier, tokens: tier.injected_tokens })),

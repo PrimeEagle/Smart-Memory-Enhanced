@@ -1182,6 +1182,18 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /aiRequestedBreak: settings\.scene_ai_detect \? aiRequestedBreak : heuristicBreak/);
 });
 
+test('Memorize Chat feeds active Long-Term and Session extraction health into the live health card', () => {
+  const settings = read('settings.js');
+  const ui = read('ui.js');
+  assert.match(settings, /function createLiveHealth\(context, tier, messages, triggerReason = 'manual_extract_now'\)/);
+  assert.match(settings, /createLiveHealth\(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'\)/);
+  assert.match(settings, /createLiveHealth\(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'\)/);
+  assert.match(settings, /updateLiveMemoryHealthUI\(\);/);
+  assert.match(ui, /last_extraction_event\?\.source_range/);
+  assert.match(ui, /latest injection/);
+  assert.match(ui, /preparing request/);
+});
+
 test('dry run: primary extraction returns grounded candidates before persistence', () => {
   const longterm = read('longterm.js');
   const session = read('session.js');

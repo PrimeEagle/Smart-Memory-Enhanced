@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.23] - 2026-08-28
+
+### Improved
+
+- Live Memory Health now follows **Memorize Chat** in real time. Each
+  Long-Term and Session extraction records its active source range and refreshes
+  the panel as preflight, provider, and persistence outcomes arrive.
+- The health card now distinguishes the active extraction from the latest
+  completed injection, avoiding stale injection data being mistaken for the
+  current stage.
+
+### Tests
+
+- Added live-health coverage for active catch-up events, source ranges, and
+  Memorize Chat wiring for both Long-Term and Session extraction.
+
 ## [0.9.22] - 2026-08-28
 
 ### Added

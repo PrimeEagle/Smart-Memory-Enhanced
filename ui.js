@@ -142,8 +142,19 @@ export function updateLiveMemoryHealthUI() {
   const displayTime = (timestamp) => timestamp
     ? new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : 'not run';
+  const sourceRange = summary.last_extraction_event?.source_range;
+  const sourceLabel = Number.isInteger(sourceRange?.start) && Number.isInteger(sourceRange?.end)
+    ? `, messages ${sourceRange.start + 1}\u2013${sourceRange.end + 1}`
+    : '';
+  const isExtractionRunning = summary.last_extraction?.terminal_health === 'running';
+  const providerOutcome = summary.last_extraction_event?.provider_outcome;
+  const runningStage = isExtractionRunning
+    ? ` \u2014 ${providerOutcome && providerOutcome !== 'not_started'
+      ? providerOutcome.replaceAll('_', ' ')
+      : 'preparing request'}`
+    : '';
   const extraction = summary.last_extraction
-    ? `${summary.last_extraction.tier}: ${summary.last_extraction.terminal_health} (${displayTime(summary.last_extraction.timestamp)})`
+    ? `${summary.last_extraction.tier}: ${summary.last_extraction.terminal_health}${sourceLabel}${runningStage} (${displayTime(summary.last_extraction.timestamp)})`
     : 'not run';
   const injection = summary.last_injection
     ? `${summary.last_injection.mode}: ${summary.last_injection.terminal_health} (${displayTime(summary.last_injection.timestamp)})`
@@ -153,7 +164,7 @@ export function updateLiveMemoryHealthUI() {
   const attention = summary.attention_reason_codes?.length
     ? ` Attention: ${summary.attention_reason_codes.join(', ').replaceAll('_', ' ')}.`
     : '';
-  target.text(`Live memory health — extraction ${extraction}; injection ${injection}; injected tokens: ${tierTokens}.${attention}`)
+  target.text(`Live memory health — extraction ${extraction}; latest injection ${injection}; injected tokens: ${tierTokens}.${attention}`)
     .toggleClass('sme_live_health_attention', Boolean(summary.attention_reason_codes?.length))
     .show();
 }
