@@ -77,6 +77,7 @@ import {
   recordCommittedCatchUpRange,
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
+  summarizeCatchUpCheckpoint,
 } from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
@@ -1769,12 +1770,17 @@ export function bindSettingsUI(ctrl) {
   };
 
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
-    const checkpoint = getResumableCatchUpCheckpoint();
+    const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
+    const checkpoint = normalizeCatchUpCheckpoint(rawCheckpoint);
     const $resume = $('#sme_resume_catch_up');
     const $status = $('#sme_catch_up_recovery_status');
     if (!checkpoint) {
       $resume.prop('disabled', true);
-      $status.hide().empty();
+      const recovery = summarizeCatchUpCheckpoint(rawCheckpoint);
+      if (recovery.available) {
+        const reason = recovery.reason_code ? ` Reason: ${recovery.reason_code.replaceAll('_', ' ')}.` : '';
+        $status.text(`Incomplete Memorize Chat run cannot safely resume (${recovery.status ?? 'invalid checkpoint'}). Start a new run after inspecting diagnostics.${reason}`).show();
+      } else $status.hide().empty();
       return;
     }
     const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
@@ -1800,6 +1806,10 @@ export function bindSettingsUI(ctrl) {
   // persisted checkpoint drive both the resume button and auto-resume path.
   $(document).on('sme:chat-changed.sme-catchup-recovery', () => refreshCatchUpRecoveryUI({ autoResume: true }));
   refreshCatchUpRecoveryUI();
+  // Some SillyTavern reload paths hydrate chat metadata shortly after the
+  // panel binds without emitting a second extension event. Recheck briefly so
+  // a persisted crash checkpoint is never mistaken for an absent one.
+  [400, 1500, 4000].forEach((delay) => window.setTimeout(() => refreshCatchUpRecoveryUI({ autoResume: true }), delay));
 
   /**
    * Returns true and shows a warning toast if a catch-up or compaction is
@@ -2245,28 +2255,30 @@ export function bindSettingsUI(ctrl) {
     const metadata = getContext().chatMetadata?.[META_KEY] ?? {};
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
     const liveMemoryHealth = metadata.live_memory_health ? exportLiveMemoryHealth(metadata) : null;
+    const recovery = summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint);
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
-      return { ...completedRun, live_memory_health: liveMemoryHealth };
+      return { ...completedRun, live_memory_health: liveMemoryHealth, catch_up_recovery: recovery };
     }
     // Fresh Start is itself a consequential, persisted operation. Its
     // postcondition needs to be inspectable before a long historical rebuild,
     // rather than requiring a new Memorize Chat just to enable export.
     const freshStartAudit = metadata.fresh_start_postcondition_audit ?? null;
     const manualIdempotence = metadata.developer_idempotence_check ?? null;
-    if (!freshStartAudit && !manualIdempotence && !liveMemoryHealth) return null;
+    if (!freshStartAudit && !manualIdempotence && !liveMemoryHealth && !recovery.available) return null;
     return {
       version: 1,
       created_at: Date.now(),
-      diagnostic_type: 'pre_run_state_audit',
-      status: 'not_run',
-      operational_status: 'not_run',
+      diagnostic_type: recovery.available ? 'incomplete_catchup_recovery' : 'pre_run_state_audit',
+      status: recovery.available ? 'incomplete' : 'not_run',
+      operational_status: recovery.available ? 'incomplete' : 'not_run',
       fresh_start_postcondition_audit: freshStartAudit,
       manual_idempotence: manualIdempotence,
       automatic_stabilization: null,
       provider_calls_during_audit: 0,
       live_memory_health: liveMemoryHealth,
+      catch_up_recovery: recovery,
     };
   };
   const exportCatchUpDiagnostics = () => {

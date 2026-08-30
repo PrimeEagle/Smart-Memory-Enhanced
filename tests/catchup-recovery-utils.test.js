@@ -8,6 +8,7 @@ import {
   recordCommittedCatchUpRange,
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
+  summarizeCatchUpCheckpoint,
 } from '../catchup-recovery-utils.js';
 
 const checkpoint = {
@@ -75,4 +76,13 @@ test('uncommitted and incomplete tier ranges cannot be mistaken for full cumulat
   assert.equal(summary.remaining_gap_count, 4);
   assert.equal(summary.cumulative_tier_coverage.longterm.coverage_complete, false);
   assert.equal(summary.cumulative_tier_coverage.session.coverage_complete, false);
+});
+
+test('checkpoint diagnostics distinguish missing, resumable, and invalidated recovery states', () => {
+  assert.deepEqual(summarizeCatchUpCheckpoint(null), { available: false, resumable: false, reason_code: 'no_checkpoint' });
+  assert.equal(summarizeCatchUpCheckpoint(checkpoint).resumable, true);
+  const invalid = summarizeCatchUpCheckpoint({ ...checkpoint, status: 'invalidated_source_mismatch', run_manifest: { terminal_reason_code: 'source_window_boundary_changed' } });
+  assert.equal(invalid.resumable, false);
+  assert.equal(invalid.status, 'invalidated_source_mismatch');
+  assert.equal(invalid.reason_code, 'source_window_boundary_changed');
 });

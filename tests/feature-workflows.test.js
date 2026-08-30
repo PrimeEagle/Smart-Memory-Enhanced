@@ -1248,7 +1248,8 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /current_chat_identity_reviews_removed/);
   assert.match(freshStart, /sme_export_diagnostics/);
   assert.match(settings, /preRunFreshStartAudit/);
-  assert.match(settings, /diagnostic_type: 'pre_run_state_audit'/);
+  assert.match(settings, /diagnostic_type: recovery\.available \? 'incomplete_catchup_recovery' : 'pre_run_state_audit'/);
+  assert.match(settings, /catch_up_recovery: recovery/);
   assert.match(settings, /provider_calls_during_audit: 0/);
   assert.match(settings, /'entity_redirects'/);
   assert.match(settings, /'developer_idempotence_check'/);

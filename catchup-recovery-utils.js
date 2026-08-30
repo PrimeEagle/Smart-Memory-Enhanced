@@ -198,3 +198,18 @@ export function summarizeCatchUpRunManifest(manifest) {
     checkpoint_transitions: next.checkpoint_transitions,
   };
 }
+
+/** Export-safe checkpoint state for recovery UI and diagnostics. */
+export function summarizeCatchUpCheckpoint(checkpoint) {
+  if (!checkpoint || typeof checkpoint !== 'object') return { available: false, resumable: false, reason_code: 'no_checkpoint' };
+  const normalized = normalizeCatchUpCheckpoint(checkpoint);
+  return {
+    available: true,
+    resumable: Boolean(normalized),
+    status: checkpoint.status ?? 'unknown',
+    reason_code: checkpoint.run_manifest?.terminal_reason_code ?? null,
+    source_message_count: Number(checkpoint.source_message_count ?? 0),
+    safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
+    logical_run: summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null),
+  };
+}

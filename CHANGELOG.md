@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.26] - 2026-08-30
+
+### Fixed
+
+- Restart recovery now rechecks after delayed chat-metadata hydration, so a
+  persisted crash checkpoint is not missed when SillyTavern finishes loading
+  the chat after the extension panel. Diagnostics export the checkpoint's
+  resumability and invalidation reason instead of silently reporting only a
+  generic pre-run state.
+
+### Tests
+
+- Added checkpoint-state coverage for missing, resumable, and invalidated
+  recovery records.
+
 ## [0.9.25] - 2026-08-30
 
 ### Added
