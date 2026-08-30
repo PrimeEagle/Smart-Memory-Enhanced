@@ -1506,7 +1506,9 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /catch_up_checkpoint/);
   assert.match(settings, /validateCatchUpResumeSource/);
   assert.match(settings, /checkpointForCommit\.next_source_offset = processed/);
-  assert.match(settings, /if \(chunkCommitted\) i \+= chunk\.length/);
+  assert.match(settings, /if \(chunkCommitted\) \{[\s\S]*i \+= chunk\.length/);
+  assert.match(settings, /recordCommittedCatchUpRange/);
+  assert.match(settings, /logical_run: summarizeCatchUpRunManifest/);
   assert.match(settings, /Crash recovery checkpoint:/);
   assert.match(settings, /after the same transaction succeeds/);
   assert.match(settings, /delete catchUpContext\.chatMetadata\[META_KEY\]\.catch_up_checkpoint/);

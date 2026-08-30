@@ -69,7 +69,15 @@ import {
   updateLiveExtractionEvent,
   finishLiveExtractionEvent,
 } from './live-memory-health.js';
-import { normalizeCatchUpCheckpoint, validateCatchUpResumeSource } from './catchup-recovery-utils.js';
+import {
+  normalizeCatchUpCheckpoint,
+  validateCatchUpResumeSource,
+  ensureCatchUpRunManifest,
+  beginCatchUpAttempt,
+  recordCommittedCatchUpRange,
+  finalizeCatchUpRunManifest,
+  summarizeCatchUpRunManifest,
+} from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
   commitCatchUpTransaction,
@@ -1771,11 +1779,13 @@ export function bindSettingsUI(ctrl) {
     }
     const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
     const total = Number(checkpoint.source_message_count) || 0;
+    const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
+    const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
     $resume.prop('disabled', running);
     $status.text(running
-      ? `Crash recovery checkpoint: ${committed}/${total} source messages safely committed.`
-      : `Incomplete Memorize Chat run available: ${committed}/${total} source messages safely committed. Resuming continues from that point.`).show();
+      ? `Crash recovery checkpoint: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText}.`
+      : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText}. Resuming continues from that point.`).show();
     if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
@@ -1867,7 +1877,7 @@ export function bindSettingsUI(ctrl) {
       'scene_stability_history', 'request_efficiency_history', 'repair_history',
       'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
       'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
-      'active_catchup_run_id', 'catch_up_checkpoint', 'parser_debris_cleanup',
+      'active_catchup_run_id', 'catch_up_checkpoint', 'catch_up_run_manifests', 'parser_debris_cleanup',
       'fresh_start_postcondition_audit',
     ]) delete metadata[key];
     return {
@@ -4253,6 +4263,15 @@ export function bindSettingsUI(ctrl) {
         ? validateCatchUpResumeSource(resumableCheckpoint, discoveredMessages)
         : null;
       if (resumableCheckpoint && !resumeSourceValidation.valid) {
+        const invalidCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+        if (invalidCheckpoint) {
+          invalidCheckpoint.status = 'invalidated_source_mismatch';
+          invalidCheckpoint.run_manifest = finalizeCatchUpRunManifest(invalidCheckpoint.run_manifest, {
+            status: 'invalidated_source_mismatch', reasonCode: resumeSourceValidation.reason,
+          });
+          invalidCheckpoint.updated_at = Date.now();
+          await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
+        }
         throw new Error('The chat source window changed before the incomplete run could be resumed. Start a new Memorize Chat run instead.');
       }
       // A resumed run intentionally retains the original source-window end.
@@ -4264,7 +4283,7 @@ export function bindSettingsUI(ctrl) {
       const total = allMessages.length;
       const resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
       const checkpoint = resumableCheckpoint ?? {
-        schema_version: 1,
+        schema_version: 2,
         run_id: catchUpRunId,
         started_at: Date.now(),
         source_message_count: total,
@@ -4274,6 +4293,23 @@ export function bindSettingsUI(ctrl) {
         historical_participant_scope: structuredClone(historicalParticipantScope),
         canonical_runtime_context: structuredClone(canonicalRuntimeContext),
       };
+      const sourceWindow = {
+        source_message_count: total,
+        source_start_index: allMessages[0]?.__sme_original_index ?? null,
+        source_end_index: allMessages.at(-1)?.__sme_original_index ?? null,
+        fingerprint: diagnosticFingerprint(JSON.stringify({
+          source_message_count: total,
+          source_start_index: allMessages[0]?.__sme_original_index ?? null,
+          source_end_index: allMessages.at(-1)?.__sme_original_index ?? null,
+        })),
+      };
+      checkpoint.run_manifest = ensureCatchUpRunManifest(checkpoint, sourceWindow);
+      checkpoint.run_manifest = beginCatchUpAttempt(checkpoint.run_manifest, {
+        type: resumableCheckpoint
+          ? (resumableCheckpoint.status === 'awaiting_manual_resume' ? 'resumed_after_manual_cancel' : 'resumed_after_crash')
+          : 'initial',
+        resumeOffset,
+      });
       checkpoint.status = 'in_progress';
       checkpoint.updated_at = Date.now();
       checkpoint.next_source_offset = resumeOffset;
@@ -4614,6 +4650,32 @@ export function bindSettingsUI(ctrl) {
           checkpointForCommit.committed_chunks = Number(checkpointForCommit.committed_chunks ?? 0) + 1;
           checkpointForCommit.last_committed_source_start_index = chunk[0]?.__sme_original_index ?? null;
           checkpointForCommit.last_committed_source_end_index = chunk.at(-1)?.__sme_original_index ?? null;
+          const chunkStartIndex = chunk[0]?.__sme_original_index ?? null;
+          const chunkEndIndex = chunk.at(-1)?.__sme_original_index ?? null;
+          const rangeMatchesCurrentChunk = (record) => record?.original_range?.start === chunkStartIndex
+            && record?.original_range?.end === chunkEndIndex
+            && record?.coverage_terminal_state === 'completed';
+          const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
+          const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
+          const completedLongtermOwners = runResult.extractionCoverage.longterm.records
+            .filter(rangeMatchesCurrentChunk).length;
+          const completedSessionRanges = runResult.extractionCoverage.session.records
+            .filter(rangeMatchesCurrentChunk).length;
+          checkpointForCommit.run_manifest = recordCommittedCatchUpRange(
+            checkpointForCommit.run_manifest,
+            {
+              start_offset: i,
+              end_offset: processed - 1,
+              source_start_index: chunkStartIndex,
+              source_end_index: chunkEndIndex,
+            },
+            {
+              tierOutcomes: {
+                longterm: { enabled: longtermEnabledForRun, complete: longtermEnabledForRun && completedLongtermOwners >= catchUpCharacterNames.length },
+                session: { enabled: sessionEnabledForRun, complete: sessionEnabledForRun && completedSessionRanges >= 1 },
+              },
+            },
+          );
           checkpointForCommit.updated_at = Date.now();
         }
         try {
@@ -4639,19 +4701,20 @@ export function bindSettingsUI(ctrl) {
         updateCatchUpEta(processed);
         await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
 
-        runResult.totalChunks++;
-        runResult.chunks.push({
-          number: runResult.totalChunks,
-          source_start_index: chunk[0]?.__sme_original_index ?? null,
-          source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
-          message_count: chunk.length,
-          token_estimate: chunkTokens,
-          status: currentChunkFailed ? 'partial' : 'completed',
-        });
-        if (currentChunkFailed) runResult.failedChunks++;
-        else runResult.completedChunks++;
-
-        if (chunkCommitted) i += chunk.length;
+        if (chunkCommitted) {
+          runResult.totalChunks++;
+          runResult.chunks.push({
+            number: runResult.totalChunks,
+            source_start_index: chunk[0]?.__sme_original_index ?? null,
+            source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
+            message_count: chunk.length,
+            token_estimate: chunkTokens,
+            status: currentChunkFailed ? 'partial' : 'completed',
+          });
+          if (currentChunkFailed) runResult.failedChunks++;
+          else runResult.completedChunks++;
+          i += chunk.length;
+        }
       }
 
       // Scene detection and the final cross-tier passes run after the chunk
@@ -5923,6 +5986,8 @@ export function bindSettingsUI(ctrl) {
         status: projectedStatus,
         operational_status: projectedStatus,
         chunks: runResult.chunks,
+        current_attempt_chunks: runResult.chunks,
+        logical_run: summarizeCatchUpRunManifest(catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint?.run_manifest ?? null),
         sceneDetection: runResult.sceneDetection ?? null,
         tiers: runResult.extractionFailuresByTier,
         identityResolution: runResult.identityResolution ?? null,
@@ -6006,6 +6071,29 @@ export function bindSettingsUI(ctrl) {
           };
         })(),
         quality: runResult.quality,
+        relationship_quality: (() => {
+          const integrity = runResult.finalReconciliation?.integrity_audit ?? {};
+          const safeRejectionCodes = new Set([
+            'profile_relationship_fields_unsupported',
+            'profile_relationship_placeholders_dropped',
+            'profile_relationship_descriptors_unsupported',
+          ]);
+          const safeRejections = runResult.quality.reasons.filter((reason) => safeRejectionCodes.has(reason.code));
+          const unresolvedSafe = (runResult.profiles?.profile_field_terminal_outcomes ?? [])
+            .filter((entry) => String(entry?.terminal_outcome ?? '').startsWith('unresolved_')).length;
+          const legacyPairKeyDebt = integrity.relationship_pair_key_issues?.length ?? 0;
+          const integrityErrors = integrity.relationship_integrity_errors?.length ?? 0;
+          return {
+            safe_model_output_rejections: { count: safeRejections.length, disposition: 'informational_preserved_or_dropped_safely' },
+            legacy_pair_key_normalization_debt: { count: legacyPairKeyDebt, disposition: legacyPairKeyDebt ? 'review_or_safe_rekey_if_deterministic' : 'none' },
+            unresolved_but_safe_records: { count: unresolvedSafe, disposition: 'retained_without_identity_guessing' },
+            actual_integrity_errors: { count: integrityErrors, disposition: integrityErrors ? 'attention_required' : 'none' },
+          };
+        })(),
+        continuity_health_status: (() => {
+          const continuity = catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.recent_continuity_events;
+          return Array.isArray(continuity) && continuity.length ? 'recorded' : 'not_run';
+        })(),
         timing_estimate: {
           signature: timingSignature,
           comparable_completed_runs: comparableTimingHistory.length,
@@ -6097,13 +6185,34 @@ export function bindSettingsUI(ctrl) {
       // A final transaction is the completion boundary. Until it commits, the
       // checkpoint remains durable and resumable; a crash in late stages will
       // restart finalization from the last committed extraction chunk.
+      const terminalCheckpoint = catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
       if (ctrl.catchUpCancelled) {
-        const checkpoint = catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
-        if (checkpoint) {
-          checkpoint.status = 'awaiting_manual_resume';
-          checkpoint.updated_at = Date.now();
+        if (terminalCheckpoint) {
+          terminalCheckpoint.status = 'awaiting_manual_resume';
+          terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
+            status: 'awaiting_manual_resume', reasonCode: 'manual_cancel',
+          });
+          terminalCheckpoint.updated_at = Date.now();
+          diagnostics.logical_run = summarizeCatchUpRunManifest(terminalCheckpoint.run_manifest);
         }
-      } else delete catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
+      } else if (terminalCheckpoint) {
+        terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
+          status: 'completed', reasonCode: 'finalization_committed',
+        });
+        diagnostics.logical_run = summarizeCatchUpRunManifest(terminalCheckpoint.run_manifest);
+        const coverageAttention = !diagnostics.logical_run.all_original_source_messages_covered
+          || Object.values(diagnostics.logical_run.cumulative_tier_coverage ?? {}).some((tier) => tier.enabled === true && tier.coverage_complete !== true);
+        diagnostics.coverage_status = coverageAttention ? 'attention' : 'complete';
+        diagnostics.coverage_attention_reason = coverageAttention ? 'cumulative_source_or_tier_coverage_incomplete' : null;
+        // Retain only a compact bounded manifest history after completion. The
+        // live checkpoint is removed so an already-completed run cannot resume.
+        const manifests = catchUpContext.chatMetadata[META_KEY].catch_up_run_manifests ?? [];
+        catchUpContext.chatMetadata[META_KEY].catch_up_run_manifests = [
+          ...manifests.filter((entry) => entry?.logical_run_id !== diagnostics.logical_run.logical_run_id),
+          diagnostics.logical_run,
+        ].slice(-3);
+        delete catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
+      }
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
       catchUpContext.chatMetadata[META_KEY].request_efficiency_history = diagnostics.request_efficiency_history;
@@ -6202,6 +6311,13 @@ export function bindSettingsUI(ctrl) {
           { timeOut: 8000, positionClass: 'toast-bottom-right' },
         );
       } else {
+        const logicalRun = diagnostics.logical_run ?? null;
+        const recoveryDetail = logicalRun?.attempt_count > 1
+          ? ` Completed after ${logicalRun.attempt_count - 1} resume${logicalRun.attempt_count === 2 ? '' : 's'}; ${logicalRun.cumulative_committed_count}/${logicalRun.source_window?.message_count ?? 0} source messages are safely committed across all attempts.`
+          : '';
+        const coverageDetail = diagnostics.coverage_status === 'attention'
+          ? ` Coverage attention: ${logicalRun?.remaining_gap_count ?? 0} source message${logicalRun?.remaining_gap_count === 1 ? '' : 's'} or one or more enabled tiers remain unconfirmed.`
+          : '';
         const sceneAudit = runResult.sceneDetection;
         const sceneSummary = sceneAudit
           ? ` Scenes: ${sceneAudit.candidates} detected, ${sceneAudit.generated} generated, ${sceneAudit.duplicates} duplicates, ${sceneAudit.failed} failed, ${sceneAudit.retained} archived, ${sceneAudit.injected} injected.`
@@ -6217,9 +6333,9 @@ export function bindSettingsUI(ctrl) {
         const maintenanceDetail = repairedLinks > 0
           ? ` ${repairedLinks} entity link${repairedLinks === 1 ? '' : 's'} repaired${repairStores > 1 ? ` across ${repairStores} durable store mutations` : ''}.`
           : '';
-        setStatusMessage(`Catch-up complete.${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`);
+        setStatusMessage(`Catch-up complete.${recoveryDetail}${coverageDetail}${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`);
         const notifier = runResult.quality.status === 'degraded' ? toastr.warning : toastr.success;
-        notifier(`Full catch-up extraction finished.${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
+        notifier(`Full catch-up extraction finished.${recoveryDetail}${coverageDetail}${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
           timeOut: runResult.quality.status === 'degraded' ? 8000 : 4000,
           positionClass: 'toast-bottom-right',
         });

@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.25] - 2026-08-30
+
+### Added
+
+- Memorize Chat now keeps a bounded, privacy-safe logical-run manifest across
+  crash and manual-cancel resumes. Diagnostics distinguish each attempt from
+  the cumulative committed source ranges and report independent Long-Term and
+  Session coverage, remaining gaps, checkpoint transitions, and final status.
+
+### Fixed
+
+- A completed resumed run no longer exports only its final tail as though it
+  were the entire rebuild. Completion UI now identifies recovered runs and
+  confirms cumulative committed coverage; incomplete tier coverage is surfaced
+  as attention instead of being silently presented as a clean rebuild.
+- Chunks are now added to the per-attempt report only after their durable
+  transaction commits, so a cancelled or failed uncommitted range cannot be
+  counted as completed.
+- Diagnostics now classify relationship-quality notices separately from legacy
+  pair-key review debt, unresolved-but-safe records, and actual integrity
+  errors. Continuity is explicitly reported as `not_run` when absent.
+
+### Tests
+
+- Added logical-run resume coverage tests for multiple attempts, cumulative
+  tier coverage, and uncommitted-range exclusion.
+
 ## [0.9.24] - 2026-08-29
 
 ### Added
