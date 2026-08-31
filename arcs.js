@@ -1097,6 +1097,9 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         applyPromptOverride(buildArcExtractionPrompt(chatHistory, existingText, formatCanonicalRosterForPrompt(roster)), PROMPT_TASKS.ARC_EXTRACTION, characterName),
         { responseLength, task: 'initial-arc-extraction' },
       );
+      // Some connection profiles cannot abort an active request. Once it does
+      // return, cancellation must stop before any parsing or persistence.
+      if (abortCheck?.()) return 0;
       // Keep each response attached to its ordered source window.  Flattening
       // the outputs before parsing used to make every final arc appear to be
       // supported by the entire chat, which erased chronology and made later
@@ -1196,6 +1199,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
         const sessionTexts = sessionMemories.map((m) => m.content.toLowerCase().trim());
         const arcTexts = rawAdd.map((a) => a.content.toLowerCase().trim());
         const vectorMap = await getEmbeddingBatch([...sessionTexts, ...arcTexts]);
+        if (abortCheck?.()) return 0;
         const useEmbeddings = vectorMap.size > 0;
 
         add = rawAdd.filter((arc) => {
@@ -1242,7 +1246,9 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // safe against concurrent UI edits (delete, add) during the model call window.
     const resolvedArcObjects = [];
     for (const candidate of resolve.map((i) => activeExisting[i]).filter(Boolean)) {
+      if (abortCheck?.()) return 0;
       const decision = await classifyArcResolution(candidate, messages);
+      if (abortCheck?.()) return 0;
       if (options.arcResolutionStats) options.arcResolutionStats[decision.status] = (options.arcResolutionStats[decision.status] ?? 0) + 1;
       if (decision.status === 'resolved') {
         if (arcPipeline) arcPipeline.classifiedResolved = (arcPipeline.classifiedResolved ?? 0) + 1;
@@ -1256,9 +1262,11 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     if (resolvedArcObjects.length > 0) {
       const arcSummaries = loadArcSummaries();
       for (const resolved of resolvedArcObjects) {
+        if (abortCheck?.()) return 0;
         try {
           if (arcPipeline) arcPipeline.generationAttempted = (arcPipeline.generationAttempted ?? 0) + 1;
           const result = await generateArcSummary(resolved, messages);
+          if (abortCheck?.()) return 0;
           if (!result) {
             traceArcTerminal(resolved, 'generator_none', 'summary_generator_returned_none');
           } else {
@@ -1354,6 +1362,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // Clean up any duplicates that accumulated in storage from previous passes.
     // deduplicateArcs skips resolved arcs automatically.
     afterResolve = await deduplicateArcs(afterResolve);
+    if (abortCheck?.()) return 0;
 
     // Drop new arcs that are semantically redundant with active arcs.
     // Resolved arcs are excluded - a resolved thread does not block a genuinely
@@ -1365,9 +1374,11 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     const addKeys = add.map((a) => a.content.toLowerCase().trim());
     const activeKeys = activeAfterResolve.map((a) => a.content.toLowerCase().trim());
     const addVectorMap = await getEmbeddingBatch([...addKeys, ...activeKeys]);
+    if (abortCheck?.()) return 0;
 
     const dedupedAdd = [];
     for (const newArc of add) {
+      if (abortCheck?.()) return 0;
       let isDup = false;
       for (const ex of activeAfterResolve) {
         if (arcIsDuplicateSync(newArc.content, ex.content, addVectorMap)) {

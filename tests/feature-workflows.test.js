@@ -330,7 +330,7 @@ test('final catch-up stage order builds scenes before one complete arc pass and 
   const settings = read('settings.js');
   const sceneStage = settings.indexOf("setStatusMessage('Detecting scene breaks...')");
   const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
-  const profileStage = settings.indexOf('const profiles = await generateProfiles(name, null, {');
+  const profileStage = settings.indexOf('const profiles = await generateProfiles(name, () => ctrl.catchUpCancelled, {');
   const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
   const stagedCommit = settings.indexOf('commitCatchUpTransaction(finalTransaction)');
   assert.ok(sceneStage >= 0 && sceneStage < arcStage);
@@ -1475,8 +1475,14 @@ test('Memorize Chat cancellation aborts active memory work and preserves the pri
   assert.match(generate, /memoryCancellationEpoch/);
   assert.match(generate, /while \(requestQueue\.length\) requestQueue\.shift\(\)\.resolve\(''\)/);
   assert.match(generate, /if \(cancellationEpoch !== memoryCancellationEpoch\) return ''/);
-  assert.match(settings, /abortCurrentMemoryGeneration\(\);\s*setStatusMessage\('Cancelling current request\.\.\.'\)/);
+  assert.match(settings, /abortCurrentMemoryGeneration\(\);\s*\/\/ Direct-fetch sources are aborted immediately/);
   assert.match(settings, /if \(ctrl\.catchUpCancelled\) \{\s*rollbackCatchUpTransaction\(chunkTransaction\);\s*break;/);
+  assert.match(settings, /extractArcs\(allMessages, characterName, \(\) => ctrl\.catchUpCancelled/);
+  assert.match(settings, /if \(!ctrl\.catchUpCancelled && settings\.compaction_enabled\)/);
+  assert.match(settings, /generateProfiles\(name, \(\) => ctrl\.catchUpCancelled/);
+  const arcs = read('arcs.js');
+  assert.match(arcs, /const response = await generateMemoryExtract\([\s\S]*?if \(abortCheck\?\.\(\)\) return 0;/);
+  assert.match(arcs, /const result = await generateArcSummary\(resolved, messages\);\s*if \(abortCheck\?\.\(\)\) return 0;/);
 });
 
 test('long-chat extraction preflights final prompts and records bounded overflow coverage', () => {

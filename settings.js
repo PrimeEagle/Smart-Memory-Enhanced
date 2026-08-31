@@ -4753,6 +4753,7 @@ export function bindSettingsUI(ctrl) {
         // after the final identity-reconciliation phase has already begun.
         if (settings.longterm_enabled && settings.consolidation_enabled) {
           for (const name of catchUpCharacterNames) {
+            if (ctrl.catchUpCancelled) break;
             updateFinalizationEta(`long-term consolidation for ${name}`);
             setStatusMessage(`Consolidating long-term memories for ${name}...`);
             await consolidateMemories(name, true).catch((err) => {
@@ -4762,7 +4763,7 @@ export function bindSettingsUI(ctrl) {
           }
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
-        if (settings.session_enabled) {
+        if (!ctrl.catchUpCancelled && settings.session_enabled) {
           updateFinalizationEta('session-memory consolidation');
           setStatusMessage('Consolidating session memories...');
           await consolidateSessionMemories(true).catch((err) => {
@@ -4775,7 +4776,7 @@ export function bindSettingsUI(ctrl) {
         // Scene: walk through the full chat detecting and summarizing scenes.
         // When scene_ai_detect is enabled, AI detection runs on each AI message
         // (matching normal flow). When disabled, the heuristic is used instead.
-        if (settings.scene_enabled) {
+        if (!ctrl.catchUpCancelled && settings.scene_enabled) {
           updateFinalizationEta('scene detection and summaries');
           setStatusMessage('Detecting scene breaks...');
           const sceneHistory = loadSceneHistory();
@@ -5398,10 +5399,10 @@ export function bindSettingsUI(ctrl) {
         // scene and epistemic passes. This is intentionally not per chunk:
         // otherwise a later chunk can create or resolve identities after the
         // staged final reconciliation has consumed an earlier partial graph.
-        if (settings.arcs_enabled && !isFreshStart()) {
+        if (!ctrl.catchUpCancelled && settings.arcs_enabled && !isFreshStart()) {
           updateFinalizationEta('story-arc extraction');
           setStatusMessage('Extracting and resolving story arcs...');
-          await extractArcs(allMessages, characterName, null, {
+          await extractArcs(allMessages, characterName, () => ctrl.catchUpCancelled, {
             arcResolutionStats: runResult.arcResolution,
             arcPipeline: runResult.arcPipeline,
             arcExtraction: runResult.arcExtraction,
@@ -5409,12 +5410,12 @@ export function bindSettingsUI(ctrl) {
           }).catch((err) => {
             recordCatchUpError('arc extraction error (final)', err, 'arcs');
           });
-          updateFinalizationEta('story-arc extraction', { completed: true });
+          if (!ctrl.catchUpCancelled) updateFinalizationEta('story-arc extraction', { completed: true });
         }
 
         // Short-term compaction runs once at the end - it uses the real token
         // count to decide what to include, so chunking doesn't apply.
-        if (settings.compaction_enabled) {
+        if (!ctrl.catchUpCancelled && settings.compaction_enabled) {
           updateFinalizationEta('short-term memory extraction');
           setStatusMessage('Extracting short-term memories...');
           await runCompaction({ includeLastMessage: true })
@@ -5436,11 +5437,12 @@ export function bindSettingsUI(ctrl) {
       // Skipped on cancel - partial data may produce low-quality profiles.
       if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
         for (const name of catchUpProfileCharacterNames) {
+          if (ctrl.catchUpCancelled) break;
           updateFinalizationEta(`profile generation for ${name}`);
           setStatusMessage(`Generating character & world profiles for ${name}...`);
           runResult.profiles.profiles_attempted++;
           let profileTerminal = null;
-          const profiles = await generateProfiles(name, null, {
+          const profiles = await generateProfiles(name, () => ctrl.catchUpCancelled, {
             throwOnFailure: true,
             onTerminal: (detail) => { profileTerminal = detail; },
           }).catch((err) => {
@@ -6407,7 +6409,10 @@ export function bindSettingsUI(ctrl) {
     ctrl.catchUpCancelled = true;
     $(this).prop('disabled', true);
     abortCurrentMemoryGeneration();
-    setStatusMessage('Cancelling current request...');
+    // Direct-fetch sources are aborted immediately. Connection-manager
+    // profiles do not expose an AbortSignal, so the active request must settle
+    // first; all remaining finalization work is skipped at that safe boundary.
+    setStatusMessage('Cancelling — stopping after the active provider request finishes...');
   });
 
   // ---- Clear Chat Context ---------------------------------------------

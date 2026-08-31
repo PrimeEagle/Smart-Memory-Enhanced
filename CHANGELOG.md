@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.28] - 2026-08-30
+
+### Fixed
+
+- Cancelling Memorize Chat during finalization now reaches story-arc extraction
+  and profile generation through cooperative cancellation checks, then skips
+  later provider-backed finalization stages. A late provider response is
+  ignored before it can trigger arc parsing, embeddings, summaries, or persistence.
+  Direct provider requests still abort immediately; connection-manager
+  profiles now clearly report that their active request must finish before the
+  safe cancellation boundary is reached.
+
+### Tests
+
+- Extended cancellation coverage for final story-arc work, compaction/profile
+  skipping, and post-request cancellation boundaries.
+
 ## [0.9.27] - 2026-08-30
 
 ### Improved
