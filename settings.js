@@ -1774,8 +1774,13 @@ export function bindSettingsUI(ctrl) {
     const checkpoint = normalizeCatchUpCheckpoint(rawCheckpoint);
     const $resume = $('#sme_resume_catch_up');
     const $status = $('#sme_catch_up_recovery_status');
+    const setResumeLabel = (label, title) => {
+      $resume.find('span').first().text(label);
+      $resume.attr('title', title);
+    };
     if (!checkpoint) {
       $resume.prop('disabled', true);
+      setResumeLabel('Resume Incomplete Run', 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.');
       const recovery = summarizeCatchUpCheckpoint(rawCheckpoint);
       if (recovery.available) {
         const reason = recovery.reason_code ? ` Reason: ${recovery.reason_code.replaceAll('_', ' ')}.` : '';
@@ -1789,8 +1794,14 @@ export function bindSettingsUI(ctrl) {
     const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
     $resume.prop('disabled', running);
+    setResumeLabel(
+      running ? 'Resumed Automatically' : 'Resume Incomplete Run',
+      running
+        ? 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
+        : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
+    );
     $status.text(running
-      ? `Crash recovery checkpoint: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText}.`
+      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText}.`
       : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText}. Resuming continues from that point.`).show();
     if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);

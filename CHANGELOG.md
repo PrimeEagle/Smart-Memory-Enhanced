@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.27] - 2026-08-30
+
+### Improved
+
+- During automatic crash recovery, the disabled recovery control now reads
+  **“Resumed Automatically”** and the status line explains that processing is
+  already continuing from the safely committed checkpoint. The control returns
+  to its normal manual-resume label only when a resumable run is idle.
+
 ## [0.9.26] - 2026-08-30
 
 ### Fixed
