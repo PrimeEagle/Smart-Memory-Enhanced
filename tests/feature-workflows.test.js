@@ -1244,6 +1244,8 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /await clearProfiles\(memberName\)/);
   assert.match(freshStart, /clearCharacterDurableDataForFreshStart\(memberName\)/);
   assert.match(freshStart, /clearFreshStartRunMetadata\(context, freshStartCharacterNames\)/);
+  assert.match(freshStart, /updateLiveMemoryHealthUI\(\);/);
+  assert.match(freshStart, /updateContinuityHealthUI\(\);/);
   assert.match(freshStart, /fresh_start_postcondition_audit/);
   assert.match(freshStart, /current_chat_identity_reviews_removed/);
   assert.match(freshStart, /sme_export_diagnostics/);
@@ -1253,6 +1255,7 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(settings, /provider_calls_during_audit: 0/);
   assert.match(settings, /'entity_redirects'/);
   assert.match(settings, /'developer_idempotence_check'/);
+  assert.match(settings, /'live_memory_health'/);
   assert.match(settings, /remainingReviewQueue/);
   assert.doesNotMatch(freshStart, /group\.disabled_members/);
   assert.match(freshStart, /clearChatLocalCharacterData\(context\);/);

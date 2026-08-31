@@ -1900,7 +1900,7 @@ export function bindSettingsUI(ctrl) {
       'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
       'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
       'active_catchup_run_id', 'catch_up_checkpoint', 'catch_up_run_manifests', 'parser_debris_cleanup',
-      'fresh_start_postcondition_audit',
+      'fresh_start_postcondition_audit', 'live_memory_health',
     ]) delete metadata[key];
     return {
       identity_reviews_removed: reviewQueue.length - remainingReviewQueue.length,
@@ -6704,6 +6704,11 @@ export function bindSettingsUI(ctrl) {
     updateArcsUI();
     updateCanonUI(characterName);
     updateProfilesUI(null);
+    // The health card is scoped to the discarded chat memory state. Refresh
+    // after its persisted metadata has been removed so no completed run or
+    // stale budget warning remains visible after Fresh Start.
+    updateLiveMemoryHealthUI();
+    updateContinuityHealthUI();
     updateTokenDisplay();
     ctrl.sceneMessageBuffer = [];
     ctrl.sceneBufferLastIndex = -1;

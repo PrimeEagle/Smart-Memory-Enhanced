@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.30] - 2026-08-31
+
+### Fixed
+
+- Fresh Start now removes the chat-scoped Live Memory Health history and
+  immediately refreshes both memory and Continuity Health cards, so a prior
+  run’s extraction, injection, and budget-warning status cannot remain visible
+  after the reset.
+
 ## [0.9.29] - 2026-08-31
 
 ### Fixed
