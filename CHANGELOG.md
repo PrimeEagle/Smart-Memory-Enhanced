@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.29] - 2026-08-31
+
+### Fixed
+
+- Recovery diagnostics no longer label coalesced committed source ranges as
+  extraction chunks. Each attempt and the cumulative logical run now report
+  independently scoped actual chunk counts and coalesced range counts.
+- Diagnostics explicitly distinguish the final/current attempt’s chunk and
+  extraction-coverage detail from cumulative logical-run coverage across crash
+  and manual-resume attempts. Completion wording now confirms full cumulative
+  coverage after resumed runs.
+- Recovery timing and retry/failure counters are retained per attempt and
+  summarized cumulatively only when their scope is available.
+
+### Compatibility
+
+- Older range-only checkpoints retain their coverage information but export
+  unavailable chunk counts as `null` with a `legacy_chunk_detail_unavailable`
+  reason rather than guessing from ranges.
+
+### Tests
+
+- Added recovery accounting coverage for three attempts, coalesced-range versus
+  actual-chunk counts, scoped timing/request counters, and legacy manifests.
+
 ## [0.9.28] - 2026-08-30
 
 ### Fixed

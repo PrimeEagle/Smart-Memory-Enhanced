@@ -1515,7 +1515,12 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /checkpointForCommit\.next_source_offset = processed/);
   assert.match(settings, /if \(chunkCommitted\) \{[\s\S]*i \+= chunk\.length/);
   assert.match(settings, /recordCommittedCatchUpRange/);
-  assert.match(settings, /logical_run: summarizeCatchUpRunManifest/);
+  assert.match(settings, /const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest/);
+  assert.match(settings, /chunks_scope: 'current_attempt'/);
+  assert.match(settings, /scope: 'cumulative_logical_run_across_attempts'/);
+  assert.match(settings, /full cumulative coverage confirmed/);
+  assert.match(settings, /source_message_count: Math\.max\(0, total - resumeOffset\)/);
+  assert.match(settings, /timing_scope: 'current_attempt_plus_finalization_only'/);
   assert.match(settings, /Incomplete Memorize Chat run available:/);
   assert.match(settings, /Resumed Automatically/);
   assert.match(settings, /Resumed automatically — processing continues/);

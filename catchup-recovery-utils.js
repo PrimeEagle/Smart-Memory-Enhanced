@@ -33,6 +33,7 @@ export function validateCatchUpResumeSource(checkpoint, messages = []) {
 
 const MAX_CATCH_UP_ATTEMPTS = 8;
 const MAX_COMMITTED_RANGES = 512;
+const MAX_COMMITTED_CHUNK_DETAILS = 512;
 
 function number(value, fallback = 0) {
   const parsed = Number(value);
@@ -77,12 +78,36 @@ function gapsForRanges(ranges, total) {
   return gaps;
 }
 
+function sameChunk(left, right) {
+  return left?.start_offset === right?.start_offset
+    && left?.end_offset === right?.end_offset
+    && left?.source_start_index === right?.source_start_index
+    && left?.source_end_index === right?.source_end_index;
+}
+
+function normalizeAttempt(attempt) {
+  const ranges = mergeRanges(attempt?.current_attempt_ranges ?? []);
+  const chunksAvailable = Array.isArray(attempt?.current_attempt_chunks);
+  const chunks = chunksAvailable
+    ? attempt.current_attempt_chunks.map(normalizeRange).filter(Boolean).slice(-MAX_COMMITTED_CHUNK_DETAILS)
+    : null;
+  return {
+    ...attempt,
+    current_attempt_ranges: ranges,
+    current_attempt_range_count: ranges.length,
+    current_attempt_chunks: chunks,
+    current_attempt_chunk_count: chunksAvailable ? Number(attempt?.current_attempt_chunk_count ?? chunks.length) : null,
+    current_attempt_chunk_count_available: chunksAvailable,
+    current_attempt_chunk_count_reason: chunksAvailable ? null : 'legacy_chunk_detail_unavailable',
+  };
+}
+
 /** Creates or normalizes the bounded, privacy-safe manifest for one logical Memorize Chat run. */
 export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
   const prior = checkpoint?.run_manifest && typeof checkpoint.run_manifest === 'object' ? checkpoint.run_manifest : {};
   const sourceMessageCount = number(sourceWindow.source_message_count ?? prior.source_window?.message_count ?? checkpoint?.source_message_count, 0);
   return {
-    schema_version: 1,
+    schema_version: 2,
     logical_run_id: prior.logical_run_id ?? checkpoint?.run_id ?? null,
     source_window: {
       message_count: sourceMessageCount,
@@ -90,8 +115,18 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
       source_end_index: Number.isInteger(Number(sourceWindow.source_end_index)) ? Number(sourceWindow.source_end_index) : (prior.source_window?.source_end_index ?? checkpoint?.source_last_original_index ?? null),
       fingerprint: sourceWindow.fingerprint ?? prior.source_window?.fingerprint ?? null,
     },
-    attempts: Array.isArray(prior.attempts) ? prior.attempts.slice(-MAX_CATCH_UP_ATTEMPTS) : [],
+    attempts: Array.isArray(prior.attempts) ? prior.attempts.map(normalizeAttempt).slice(-MAX_CATCH_UP_ATTEMPTS) : [],
     committed_ranges: mergeRanges(prior.committed_ranges ?? []).slice(-MAX_COMMITTED_RANGES),
+    // Schema v1 retained only coalesced coverage ranges. Those ranges cannot
+    // be reverse-engineered into real extraction chunks, so never relabel them.
+    committed_chunks: Array.isArray(prior.committed_chunks)
+      ? prior.committed_chunks.map(normalizeRange).filter(Boolean).slice(-MAX_COMMITTED_CHUNK_DETAILS)
+      : [],
+    cumulative_chunk_count: Array.isArray(prior.committed_chunks)
+      ? Number(prior.cumulative_chunk_count ?? prior.committed_chunks.length)
+      : null,
+    cumulative_chunk_count_available: Array.isArray(prior.committed_chunks),
+    cumulative_chunk_count_reason: Array.isArray(prior.committed_chunks) ? null : 'legacy_chunk_detail_unavailable',
     tier_coverage: Object.fromEntries(['longterm', 'session'].map((tier) => [tier, {
       enabled: prior.tier_coverage?.[tier]?.enabled ?? null,
       committed_ranges: mergeRanges(prior.tier_coverage?.[tier]?.committed_ranges ?? []).slice(-MAX_COMMITTED_RANGES),
@@ -107,7 +142,10 @@ export function beginCatchUpAttempt(manifest, { type = 'initial', resumeOffset =
   const next = ensureCatchUpRunManifest({ run_manifest: manifest });
   const priorCommitted = mergeRanges(next.committed_ranges);
   const previous = next.attempts.at(-1);
-  if (previous?.status === 'in_progress') previous.status = 'interrupted_before_next_attempt';
+  if (previous?.status === 'in_progress') {
+    previous.status = 'interrupted_before_next_attempt';
+    previous.ended_at = now;
+  }
   const attempt = {
     attempt_number: (next.attempts.at(-1)?.attempt_number ?? 0) + 1,
     type,
@@ -115,7 +153,12 @@ export function beginCatchUpAttempt(manifest, { type = 'initial', resumeOffset =
     resume_checkpoint_offset: number(resumeOffset),
     prior_safely_committed_count: priorCommitted.reduce((sum, range) => sum + range.message_count, 0),
     current_attempt_ranges: [],
+    current_attempt_range_count: 0,
+    current_attempt_chunks: [],
     current_attempt_chunk_count: 0,
+    current_attempt_chunk_count_available: true,
+    current_attempt_chunk_count_reason: null,
+    request_counters: { retry_count: 0, provider_failure_count: 0 },
     status: 'in_progress',
   };
   next.attempts = [...next.attempts, attempt].slice(-MAX_CATCH_UP_ATTEMPTS);
@@ -126,7 +169,7 @@ export function beginCatchUpAttempt(manifest, { type = 'initial', resumeOffset =
 }
 
 /** Records a chunk only after its transaction has committed durably. */
-export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(), tierOutcomes = {} } = {}) {
+export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(), tierOutcomes = {}, attemptMetrics = {} } = {}) {
   const next = ensureCatchUpRunManifest({ run_manifest: manifest });
   const normalized = normalizeRange(range);
   if (!normalized) return next;
@@ -134,8 +177,22 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
   const attempt = next.attempts.at(-1);
   if (attempt) {
     attempt.current_attempt_ranges = mergeRanges([...(attempt.current_attempt_ranges ?? []), normalized]).slice(-MAX_COMMITTED_RANGES);
-    attempt.current_attempt_chunk_count = attempt.current_attempt_ranges.length;
+    attempt.current_attempt_range_count = attempt.current_attempt_ranges.length;
+    if (Array.isArray(attempt.current_attempt_chunks)) {
+      const isNewChunk = !attempt.current_attempt_chunks.some((chunk) => sameChunk(chunk, normalized));
+      if (isNewChunk) attempt.current_attempt_chunks = [...attempt.current_attempt_chunks, normalized].slice(-MAX_COMMITTED_CHUNK_DETAILS);
+      if (isNewChunk) attempt.current_attempt_chunk_count = Number(attempt.current_attempt_chunk_count ?? 0) + 1;
+    }
+    attempt.request_counters = {
+      retry_count: Number(attemptMetrics.retry_count ?? attempt.request_counters?.retry_count ?? 0),
+      provider_failure_count: Number(attemptMetrics.provider_failure_count ?? attempt.request_counters?.provider_failure_count ?? 0),
+    };
     attempt.updated_at = now;
+  }
+  if (next.cumulative_chunk_count_available) {
+    const isNewChunk = !next.committed_chunks.some((chunk) => sameChunk(chunk, normalized));
+    if (isNewChunk) next.committed_chunks = [...next.committed_chunks, normalized].slice(-MAX_COMMITTED_CHUNK_DETAILS);
+    if (isNewChunk) next.cumulative_chunk_count = Number(next.cumulative_chunk_count ?? 0) + 1;
   }
   for (const tier of ['longterm', 'session']) {
     const outcome = tierOutcomes[tier];
@@ -151,10 +208,17 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
   return next;
 }
 
-export function finalizeCatchUpRunManifest(manifest, { status, reasonCode = null, now = Date.now() } = {}) {
+export function finalizeCatchUpRunManifest(manifest, { status, reasonCode = null, now = Date.now(), attemptMetrics = {} } = {}) {
   const next = ensureCatchUpRunManifest({ run_manifest: manifest });
   const attempt = next.attempts.at(-1);
-  if (attempt) { attempt.status = status; attempt.ended_at = now; }
+  if (attempt) {
+    attempt.status = status;
+    attempt.ended_at = now;
+    attempt.request_counters = {
+      retry_count: Number(attemptMetrics.retry_count ?? attempt.request_counters?.retry_count ?? 0),
+      provider_failure_count: Number(attemptMetrics.provider_failure_count ?? attempt.request_counters?.provider_failure_count ?? 0),
+    };
+  }
   next.terminal_status = status;
   next.terminal_reason_code = reasonCode;
   next.checkpoint_transitions = [...next.checkpoint_transitions, { state: status, at: now, reason_code: reasonCode }].slice(-24);
@@ -180,15 +244,43 @@ export function summarizeCatchUpRunManifest(manifest) {
       remaining_gaps: tierGaps,
     }];
   }));
+  const attempts = next.attempts.map((attempt) => {
+    const normalized = normalizeAttempt(attempt);
+    const started = Number(normalized.started_at);
+    const ended = Number(normalized.ended_at);
+    return {
+      ...normalized,
+      timing_scope: 'current_attempt',
+      duration_ms: Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : null,
+      request_counter_scope: 'current_attempt',
+    };
+  });
+  const allAttemptTimingAvailable = attempts.every((attempt) => attempt.duration_ms !== null);
+  const allRequestCountersAvailable = attempts.every((attempt) => attempt.request_counters && Number.isFinite(Number(attempt.request_counters.retry_count)) && Number.isFinite(Number(attempt.request_counters.provider_failure_count)));
   return {
     schema_version: next.schema_version,
     logical_run_id: next.logical_run_id,
     source_window: next.source_window,
     attempt_count: next.attempts.length,
-    attempts: next.attempts.map((attempt) => ({ ...attempt, current_attempt_ranges: mergeRanges(attempt.current_attempt_ranges ?? []) })),
+    scope: 'cumulative_logical_run_across_attempts',
+    attempts,
     cumulative_committed_ranges: committed,
     cumulative_committed_count: count,
-    cumulative_chunk_count: committed.length,
+    cumulative_range_count: committed.length,
+    cumulative_chunk_count: next.cumulative_chunk_count_available ? next.cumulative_chunk_count : null,
+    cumulative_chunk_count_available: next.cumulative_chunk_count_available,
+    cumulative_chunk_count_reason: next.cumulative_chunk_count_reason,
+    cumulative_committed_chunk_details: next.cumulative_chunk_count_available ? next.committed_chunks : null,
+    cumulative_committed_chunk_details_retained_count: next.cumulative_chunk_count_available ? next.committed_chunks.length : null,
+    cumulative_timing_scope: 'cumulative_logical_run_across_attempts',
+    cumulative_attempt_elapsed_ms: allAttemptTimingAvailable ? attempts.reduce((sum, attempt) => sum + attempt.duration_ms, 0) : null,
+    cumulative_attempt_elapsed_ms_available: allAttemptTimingAvailable,
+    cumulative_request_counter_scope: 'cumulative_logical_run_across_attempts',
+    cumulative_request_counters: allRequestCountersAvailable ? {
+      retry_count: attempts.reduce((sum, attempt) => sum + Number(attempt.request_counters.retry_count), 0),
+      provider_failure_count: attempts.reduce((sum, attempt) => sum + Number(attempt.request_counters.provider_failure_count), 0),
+    } : null,
+    cumulative_request_counters_available: allRequestCountersAvailable,
     cumulative_tier_coverage: tierCoverage,
     all_original_source_messages_covered: total === 0 ? true : gaps.length === 0,
     remaining_gaps: gaps,

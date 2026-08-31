@@ -1792,6 +1792,7 @@ export function bindSettingsUI(ctrl) {
     const total = Number(checkpoint.source_message_count) || 0;
     const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
     const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
+    const rangeText = `${manifest.cumulative_range_count ?? 0} coalesced committed range${manifest.cumulative_range_count === 1 ? '' : 's'}`;
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
     $resume.prop('disabled', running);
     setResumeLabel(
@@ -1801,8 +1802,8 @@ export function bindSettingsUI(ctrl) {
         : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
     );
     $status.text(running
-      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText}.`
-      : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText}. Resuming continues from that point.`).show();
+      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).`
+      : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.`).show();
     if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
@@ -4419,6 +4420,8 @@ export function bindSettingsUI(ctrl) {
       // reliable work-unit count and must not be represented as a precise ETA.
       const catchUpTiming = {
         started_at: Date.now(),
+        scope: 'current_attempt',
+        source_message_count: Math.max(0, total - resumeOffset),
         completed_messages: 0,
         elapsed_ms: 0,
         estimated_remaining_ms: null,
@@ -4435,7 +4438,13 @@ export function bindSettingsUI(ctrl) {
       };
       const updateCatchUpEta = (completedMessages, { finalizing = false } = {}) => {
         const eta = $('#sme_catch_up_eta');
-        catchUpTiming.completed_messages = Math.max(0, Math.min(total, Number(completedMessages) || 0));
+        // `processed` is an absolute source offset. A resumed attempt must
+        // measure only its own completed work, never divide its elapsed time
+        // by messages safely committed by an earlier attempt.
+        catchUpTiming.completed_messages = Math.max(0, Math.min(
+          catchUpTiming.source_message_count,
+          (Number(completedMessages) || 0) - resumeOffset,
+        ));
         catchUpTiming.elapsed_ms = Date.now() - catchUpTiming.started_at;
         if (finalizing) {
           catchUpTiming.estimated_remaining_ms = null;
@@ -4447,13 +4456,13 @@ export function bindSettingsUI(ctrl) {
           ? catchUpTiming.elapsed_ms / catchUpTiming.completed_messages
           : null;
         const chunkRate = observedChunkRate ?? historicalChunkMsPerMessage;
-        if (!total || !chunkRate) {
+        if (!catchUpTiming.source_message_count || !chunkRate) {
           catchUpTiming.estimated_remaining_ms = null;
           catchUpTiming.estimate_available = false;
           eta.text('Estimating chunk-processing time…').show();
           return;
         }
-        const chunkRemaining = Math.round(chunkRate * (total - catchUpTiming.completed_messages));
+        const chunkRemaining = Math.round(chunkRate * (catchUpTiming.source_message_count - catchUpTiming.completed_messages));
         const finalizationRemaining = historicalFinalizationMsPerUnit
           ? Math.round(historicalFinalizationMsPerUnit * estimatedFinalizationUnits)
           : Math.max(60_000, Math.round((chunkRemaining + catchUpTiming.elapsed_ms) * 0.25));
@@ -4693,6 +4702,10 @@ export function bindSettingsUI(ctrl) {
               source_end_index: chunkEndIndex,
             },
             {
+              attemptMetrics: {
+                retry_count: runResult.retriedRequests,
+                provider_failure_count: runResult.providerFailures.length,
+              },
               tierOutcomes: {
                 longterm: { enabled: longtermEnabledForRun, complete: longtermEnabledForRun && completedLongtermOwners >= catchUpCharacterNames.length },
                 session: { enabled: sessionEnabledForRun, complete: sessionEnabledForRun && completedSessionRanges >= 1 },
@@ -5982,11 +5995,14 @@ export function bindSettingsUI(ctrl) {
           signature: timingSignature,
           completed: true,
           recorded_at: Date.now(),
-          message_count: total,
-          chunk_ms_per_message: total > 0
-            ? Math.round((finalizationTiming.started_at - catchUpTiming.started_at) / total)
+          timing_scope: 'current_attempt_plus_finalization_only',
+          source_window_message_count: total,
+          current_attempt_message_count: catchUpTiming.source_message_count,
+          chunk_ms_per_message: catchUpTiming.source_message_count > 0
+            ? Math.round((finalizationTiming.started_at - catchUpTiming.started_at) / catchUpTiming.source_message_count)
             : null,
           finalization_ms: Date.now() - finalizationTiming.started_at,
+          finalization_timing_scope: 'finalization_only_current_attempt',
           finalization_units: finalizationTiming.planned_units,
           finalization_ms_per_unit: Math.round((Date.now() - finalizationTiming.started_at) / finalizationTiming.planned_units),
           finalization_phase_durations: finalizationTiming.phase_durations,
@@ -6005,20 +6021,44 @@ export function bindSettingsUI(ctrl) {
       // reflected in the user-visible completion status below.
       const projectedStatus = projectedOperationalStatus;
       // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
+      const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest(catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint?.run_manifest ?? null);
+      const currentAttemptAtDiagnosticBuild = logicalRunAtDiagnosticBuild.attempts.at(-1) ?? null;
       const diagnostics = {
-        version: 1,
+        version: 2,
         created_at: Date.now(),
         status: projectedStatus,
         operational_status: projectedStatus,
+        // Compatibility field: this is intentionally only the attempt that
+        // just ran. The explicitly scoped object below is the canonical view.
         chunks: runResult.chunks,
+        chunks_scope: 'current_attempt',
         current_attempt_chunks: runResult.chunks,
-        logical_run: summarizeCatchUpRunManifest(catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint?.run_manifest ?? null),
+        current_attempt: {
+          scope: 'current_attempt',
+          chunk_count: runResult.chunks.length,
+          range_count: currentAttemptAtDiagnosticBuild?.current_attempt_range_count ?? null,
+          chunks: runResult.chunks,
+          extraction_coverage_scope: 'current_attempt',
+          extraction_coverage: runResult.extractionCoverage,
+          timing: {
+            scope: 'current_attempt',
+            started_at: currentAttemptAtDiagnosticBuild?.started_at ?? null,
+            elapsed_ms: currentAttemptAtDiagnosticBuild?.duration_ms ?? null,
+          },
+          request_counters: {
+            scope: 'current_attempt',
+            retry_count: runResult.retriedRequests,
+            provider_failure_count: runResult.providerFailures.length,
+          },
+        },
+        logical_run: logicalRunAtDiagnosticBuild,
         sceneDetection: runResult.sceneDetection ?? null,
         tiers: runResult.extractionFailuresByTier,
         identityResolution: runResult.identityResolution ?? null,
         identityResolutionDetails: runResult.identityResolutionDetails ?? null,
         persistence_failures: runResult.saveFailures,
         retried_requests: runResult.retriedRequests,
+        retried_requests_scope: 'current_attempt',
         errors: catchUpErrorCount,
         error_details: runResult.errors,
         warnings: runResult.warnings,
@@ -6049,6 +6089,7 @@ export function bindSettingsUI(ctrl) {
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
         extraction_coverage: runResult.extractionCoverage,
+        extraction_coverage_scope: 'current_attempt',
         sessionExtraction: runResult.sessionExtraction,
         profiles: runResult.profiles,
         finalReconciliation: runResult.finalReconciliation,
@@ -6216,19 +6257,52 @@ export function bindSettingsUI(ctrl) {
           terminalCheckpoint.status = 'awaiting_manual_resume';
           terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
             status: 'awaiting_manual_resume', reasonCode: 'manual_cancel',
+            attemptMetrics: {
+              retry_count: runResult.retriedRequests,
+              provider_failure_count: runResult.providerFailures.length,
+            },
           });
           terminalCheckpoint.updated_at = Date.now();
           diagnostics.logical_run = summarizeCatchUpRunManifest(terminalCheckpoint.run_manifest);
+          diagnostics.recovery_summary = {
+            scope: 'cumulative_logical_run_across_attempts',
+            attempt_count: diagnostics.logical_run.attempt_count,
+            resumption_count: Math.max(0, diagnostics.logical_run.attempt_count - 1),
+            original_source_message_count: diagnostics.logical_run.source_window?.message_count ?? null,
+            cumulative_committed_message_count: diagnostics.logical_run.cumulative_committed_count,
+            cumulative_range_count: diagnostics.logical_run.cumulative_range_count,
+            cumulative_chunk_count: diagnostics.logical_run.cumulative_chunk_count,
+            cumulative_chunk_count_available: diagnostics.logical_run.cumulative_chunk_count_available,
+            remaining_gap_count: diagnostics.logical_run.remaining_gap_count,
+            safely_resumable_offset: terminalCheckpoint.next_source_offset,
+            full_cumulative_coverage_confirmed: false,
+          };
         }
       } else if (terminalCheckpoint) {
         terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
           status: 'completed', reasonCode: 'finalization_committed',
+          attemptMetrics: {
+            retry_count: runResult.retriedRequests,
+            provider_failure_count: runResult.providerFailures.length,
+          },
         });
         diagnostics.logical_run = summarizeCatchUpRunManifest(terminalCheckpoint.run_manifest);
         const coverageAttention = !diagnostics.logical_run.all_original_source_messages_covered
           || Object.values(diagnostics.logical_run.cumulative_tier_coverage ?? {}).some((tier) => tier.enabled === true && tier.coverage_complete !== true);
         diagnostics.coverage_status = coverageAttention ? 'attention' : 'complete';
         diagnostics.coverage_attention_reason = coverageAttention ? 'cumulative_source_or_tier_coverage_incomplete' : null;
+        diagnostics.recovery_summary = {
+          scope: 'cumulative_logical_run_across_attempts',
+          attempt_count: diagnostics.logical_run.attempt_count,
+          resumption_count: Math.max(0, diagnostics.logical_run.attempt_count - 1),
+          original_source_message_count: diagnostics.logical_run.source_window?.message_count ?? null,
+          cumulative_committed_message_count: diagnostics.logical_run.cumulative_committed_count,
+          cumulative_range_count: diagnostics.logical_run.cumulative_range_count,
+          cumulative_chunk_count: diagnostics.logical_run.cumulative_chunk_count,
+          cumulative_chunk_count_available: diagnostics.logical_run.cumulative_chunk_count_available,
+          remaining_gap_count: diagnostics.logical_run.remaining_gap_count,
+          full_cumulative_coverage_confirmed: diagnostics.logical_run.all_original_source_messages_covered,
+        };
         // Retain only a compact bounded manifest history after completion. The
         // live checkpoint is removed so an already-completed run cannot resume.
         const manifests = catchUpContext.chatMetadata[META_KEY].catch_up_run_manifests ?? [];
@@ -6338,7 +6412,7 @@ export function bindSettingsUI(ctrl) {
       } else {
         const logicalRun = diagnostics.logical_run ?? null;
         const recoveryDetail = logicalRun?.attempt_count > 1
-          ? ` Completed after ${logicalRun.attempt_count - 1} resume${logicalRun.attempt_count === 2 ? '' : 's'}; ${logicalRun.cumulative_committed_count}/${logicalRun.source_window?.message_count ?? 0} source messages are safely committed across all attempts.`
+          ? ` Completed after ${logicalRun.attempt_count - 1} resume${logicalRun.attempt_count === 2 ? '' : 's'} — full cumulative coverage confirmed: ${logicalRun.cumulative_committed_count}/${logicalRun.source_window?.message_count ?? 0} messages.`
           : '';
         const coverageDetail = diagnostics.coverage_status === 'attention'
           ? ` Coverage attention: ${logicalRun?.remaining_gap_count ?? 0} source message${logicalRun?.remaining_gap_count === 1 ? '' : 's'} or one or more enabled tiers remain unconfirmed.`

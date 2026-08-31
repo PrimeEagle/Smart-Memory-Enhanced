@@ -65,6 +65,54 @@ test('a resumed logical run retains cumulative committed coverage while keeping 
   assert.equal(summary.attempts[1].current_attempt_ranges[0].start_offset, 5);
 });
 
+test('recovery accounting keeps actual chunks distinct from coalesced coverage ranges across attempts', () => {
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-3', source_message_count: 293 }, {
+    source_message_count: 293, source_start_index: 0, source_end_index: 292,
+  });
+  manifest = beginCatchUpAttempt(manifest, { type: 'initial', now: 1 });
+  manifest = recordCommittedCatchUpRange(manifest, { start_offset: 0, end_offset: 69 }, { now: 2 });
+  manifest = recordCommittedCatchUpRange(manifest, { start_offset: 70, end_offset: 139 }, { now: 3 });
+  manifest = beginCatchUpAttempt(manifest, { type: 'resumed_after_crash', resumeOffset: 140, now: 4 });
+  manifest = recordCommittedCatchUpRange(manifest, { start_offset: 140, end_offset: 199 }, { now: 5 });
+  manifest = recordCommittedCatchUpRange(manifest, { start_offset: 200, end_offset: 259 }, { now: 6 });
+  manifest = finalizeCatchUpRunManifest(manifest, { status: 'awaiting_manual_resume', now: 7, attemptMetrics: { retry_count: 1, provider_failure_count: 0 } });
+  manifest = beginCatchUpAttempt(manifest, { type: 'resumed_after_manual_cancel', resumeOffset: 260, now: 8 });
+  manifest = recordCommittedCatchUpRange(manifest, { start_offset: 260, end_offset: 279 }, { now: 9 });
+  manifest = recordCommittedCatchUpRange(manifest, { start_offset: 280, end_offset: 292 }, { now: 10 });
+  const summary = summarizeCatchUpRunManifest(finalizeCatchUpRunManifest(manifest, {
+    status: 'completed', now: 11, attemptMetrics: { retry_count: 2, provider_failure_count: 1 },
+  }));
+
+  assert.equal(summary.scope, 'cumulative_logical_run_across_attempts');
+  assert.equal(summary.attempt_count, 3);
+  assert.equal(summary.cumulative_range_count, 1);
+  assert.equal(summary.cumulative_chunk_count, 6);
+  assert.equal(summary.cumulative_chunk_count_available, true);
+  assert.equal(summary.attempts[2].current_attempt_range_count, 1);
+  assert.equal(summary.attempts[2].current_attempt_chunk_count, 2);
+  assert.equal(summary.attempts[2].current_attempt_chunks.length, 2);
+  assert.equal(summary.cumulative_committed_count, 293);
+  assert.equal(summary.remaining_gap_count, 0);
+  assert.equal(summary.cumulative_request_counters.retry_count, 3);
+  assert.equal(summary.cumulative_request_counters.provider_failure_count, 1);
+  assert.equal(summary.cumulative_attempt_elapsed_ms_available, true);
+});
+
+test('legacy range-only checkpoint data never masquerades as chunk accounting', () => {
+  const summary = summarizeCatchUpRunManifest({
+    schema_version: 1,
+    source_window: { message_count: 4 },
+    committed_ranges: [{ start_offset: 0, end_offset: 3 }],
+    attempts: [{ attempt_number: 1, current_attempt_ranges: [{ start_offset: 0, end_offset: 3 }], current_attempt_chunk_count: 1 }],
+  });
+  assert.equal(summary.cumulative_range_count, 1);
+  assert.equal(summary.cumulative_chunk_count, null);
+  assert.equal(summary.cumulative_chunk_count_available, false);
+  assert.equal(summary.cumulative_chunk_count_reason, 'legacy_chunk_detail_unavailable');
+  assert.equal(summary.attempts[0].current_attempt_chunk_count, null);
+  assert.equal(summary.attempts[0].current_attempt_chunk_count_reason, 'legacy_chunk_detail_unavailable');
+});
+
 test('uncommitted and incomplete tier ranges cannot be mistaken for full cumulative coverage', () => {
   let manifest = ensureCatchUpRunManifest({ run_id: 'run-2', source_message_count: 8 }, { source_message_count: 8 });
   manifest = beginCatchUpAttempt(manifest, { type: 'initial' });
