@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveProfileCoverageOutcome, describeProfileFormatCorrection, summarizeProfileTerminalCoverage } from '../profile-recovery-utils.js';
+import { deriveProfileCoverageOutcome, describeProfileFormatCorrection, summarizeProfileTerminalCoverage, summarizeProfileCompletion } from '../profile-recovery-utils.js';
 
 test('profile format correction coverage distinguishes recovered, prior, and safe pending outcomes', () => {
   assert.equal(deriveProfileCoverageOutcome({ parsedInitial: true }), 'saved_initial');
@@ -42,4 +42,40 @@ test('unresolved profile coverage remains visible rather than being silently cou
   assert.equal(summary.unresolved_profiles, 1);
   assert.equal(summary.pending_profiles, 0);
   assert.equal(summary.terminal_reconciled, true);
+});
+
+test('pending profile without a usable result is a recoverable generation-quality attention state', () => {
+  const summary = summarizeProfileCompletion([
+    { profile_coverage_outcome: 'saved_initial', usable_profile_after_run: true },
+    { profile_coverage_outcome: 'safe_pending_or_fallback', pending_generation_state: true, usable_profile_after_run: false, error_stage: 'format_correction' },
+  ], { enabledProfileCount: 2 });
+  assert.equal(summary.enabled_profile_count, 2);
+  assert.equal(summary.usable_profile_count, 1);
+  assert.equal(summary.pending_profile_count, 1);
+  assert.equal(summary.attention_required, true);
+  assert.equal(summary.user_action_available, true);
+  assert.ok(summary.quality_attention_reason_codes.includes('profile_pending_regeneration'));
+});
+
+test('preserved prior profile stays usable after a malformed refresh', () => {
+  const summary = summarizeProfileCompletion([
+    { profile_coverage_outcome: 'preserved_prior', usable_profile_after_run: true, prior_profile_preserved: true, error_stage: 'format_correction' },
+  ]);
+  assert.equal(summary.pending_profile_count, 0);
+  assert.equal(summary.attention_required, true);
+  assert.equal(summary.usable_profile_count, 1);
+  assert.equal(summary.preserved_prior_profile_count, 1);
+});
+
+test('provider failure and cancellation remain distinct profile terminal states', () => {
+  const providerFailure = summarizeProfileCompletion([
+    { profile_coverage_outcome: 'safe_pending_or_fallback', pending_generation_state: true, usable_profile_after_run: false, error_stage: 'provider_or_persistence' },
+  ]);
+  assert.equal(providerFailure.provider_failure_count, 1);
+  assert.ok(providerFailure.quality_attention_reason_codes.includes('profile_provider_failure'));
+  const cancelled = summarizeProfileCompletion([
+    { terminal_outcome: 'skipped_due_to_cancellation', profile_coverage_outcome: 'safe_pending_or_fallback', error_stage: 'cancelled' },
+  ]);
+  assert.equal(cancelled.skipped_due_to_cancellation_count, 1);
+  assert.equal(cancelled.malformed_output_count, 0);
 });

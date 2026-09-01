@@ -913,7 +913,7 @@ import {
   runStateCardExtraction,
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
-import { summarizeProfileTerminalCoverage } from './profile-recovery-utils.js';
+import { summarizeProfileCompletion } from './profile-recovery-utils.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
 import { getTierHWStats, getTierTrimStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
@@ -5574,7 +5574,7 @@ export function bindSettingsUI(ctrl) {
           world_state: totals.world_state + Number(Boolean(attempt.world_state_detected)),
           relationship_matrix: totals.relationship_matrix + Number(Boolean(attempt.relationship_matrix_detected)),
         }), { character_state: 0, world_state: 0, relationship_matrix: 0 });
-        runResult.profiles.terminal_accounting = summarizeProfileTerminalCoverage(runResult.profiles.attempts);
+        runResult.profiles.terminal_accounting = summarizeProfileCompletion(runResult.profiles.attempts, { enabledProfileCount: catchUpProfileCharacterNames.length });
       }
 
       // Re-injection and panel refresh are presentation-only. Isolate every
@@ -5856,8 +5856,7 @@ export function bindSettingsUI(ctrl) {
       if (profileTerminalAccounting?.pending_profiles > 0) qualityReasons.push({
         code: 'profile_generation_pending',
         tier: 'profiles',
-        severity: 'notice',
-        message: `${profileTerminalAccounting.pending_profiles} profile${profileTerminalAccounting.pending_profiles === 1 ? ' is' : 's are'} pending a future generation after a malformed response; no model-generated facts were saved for those cards.`,
+        message: `Completed with profile attention: ${profileTerminalAccounting.pending_profiles} profile${profileTerminalAccounting.pending_profiles === 1 ? ' is' : 's are'} pending regeneration; no malformed profile data was saved.`,
       });
       if ((profileTerminalAccounting?.unresolved_profiles ?? 0) > 0 || profileTerminalAccounting?.terminal_reconciled === false) qualityReasons.push({
         code: 'profile_terminal_coverage_incomplete',
@@ -7384,6 +7383,65 @@ export function bindSettingsUI(ctrl) {
       wide: false,
       large: false,
     });
+  });
+
+  const pendingProfileNames = () => Object.entries(getContext().chatMetadata?.[META_KEY]?.profile_generation_pending ?? {})
+    .filter(([, value]) => value?.status === 'pending_generation')
+    .map(([name]) => name);
+  const updatePendingProfilesButton = () => {
+    const count = pendingProfileNames().length;
+    $('#sme_profiles_regenerate_pending')
+      .prop('disabled', count === 0 || ctrl.isCatchUpRunning)
+      .attr('title', count ? `Regenerate ${count} pending profile${count === 1 ? '' : 's'} only.` : 'No profiles are pending regeneration.');
+  };
+  updatePendingProfilesButton();
+  $('#sme_profiles_regenerate_pending').on('click', async function () {
+    if (ctrl.isCatchUpRunning) return;
+    const names = pendingProfileNames();
+    if (!names.length) {
+      updatePendingProfilesButton();
+      return;
+    }
+    const $button = $(this).prop('disabled', true);
+    let saved = 0;
+    let stillPending = 0;
+    const terminals = [];
+    setStatusMessage(`Regenerating ${names.length} pending profile${names.length === 1 ? '' : 's'}...`);
+    try {
+      for (const name of names) {
+        let terminal = null;
+        const profile = await generateProfiles(name, null, { onTerminal: (detail) => { terminal = detail; } });
+        if (terminal) terminals.push(terminal);
+        if (profile) saved++;
+        else if (getContext().chatMetadata?.[META_KEY]?.profile_generation_pending?.[name]) stillPending++;
+      }
+      const context = getContext();
+      const report = context.chatMetadata?.[META_KEY]?.catch_up_diagnostics;
+      if (report?.profiles && terminals.length) {
+        // Replace the prior terminal record for each retried profile so the
+        // completed-run summary describes current coverage, not stale failed attempts.
+        const replaced = new Map(terminals.map((item) => [item.profile_identity, item]));
+        report.profiles.attempts = (report.profiles.attempts ?? []).map((item) => replaced.get(item.profile_identity) ?? item);
+        report.profiles.attempts.push(...terminals.filter((item) => !(report.profiles.attempts ?? []).some((old) => old.profile_identity === item.profile_identity)));
+        report.profiles.terminal_accounting = summarizeProfileCompletion(report.profiles.attempts, { enabledProfileCount: report.profiles.terminal_accounting?.enabled_profile_count ?? report.profiles.attempts.length });
+        report.profiles.pending_profile_regeneration = {
+          requested_count: names.length,
+          saved_count: saved,
+          remaining_pending_count: stillPending,
+          terminal_outcome_counts: report.profiles.terminal_accounting.terminal_outcome_counts,
+        };
+        await saveChatMetadata(context);
+      }
+      if (saved) injectProfiles(ctrl.getSelectedCharacterName());
+      updateProfilesUI(loadProfiles(ctrl.getSelectedCharacterName()));
+      setStatusMessage(stillPending ? `Profile regeneration complete with attention: ${stillPending} still pending.` : `Regenerated ${saved} pending profile${saved === 1 ? '' : 's'}.`);
+    } catch (err) {
+      showError('Pending profile regeneration', err);
+      setStatusMessage('Pending profile regeneration could not complete.');
+    } finally {
+      $button.prop('disabled', false);
+      updatePendingProfilesButton();
+    }
   });
 
   // Run after every setting-specific slider has installed its input handler,

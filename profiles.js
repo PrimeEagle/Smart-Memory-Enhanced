@@ -1311,6 +1311,11 @@ export async function generateProfiles(characterName, abortCheck = null, options
   );
   const requestProfile = options.request ?? generateMemoryExtract;
 
+  if (abortCheck?.()) {
+    emitTerminal({ terminal_outcome: 'skipped_due_to_cancellation', profile_coverage_outcome: 'preserved_prior', prior_profile_preserved: Boolean(loadProfiles(characterName)), usable_profile_after_run: Boolean(loadProfiles(characterName)), error_stage: 'cancelled', severity: 'none', affects_operational_status: false });
+    return loadProfiles(characterName);
+  }
+
   try {
     const response = await requestProfile(applyPromptOverride(prompt, PROMPT_TASKS.PROFILES, characterName), {
       responseLength: settings.profiles_response_length ?? 600,
@@ -1318,6 +1323,10 @@ export async function generateProfiles(characterName, abortCheck = null, options
 
     smLog('[Smart Memory Enhanced] Profile generation response:', response);
 
+    if (abortCheck?.()) {
+      emitTerminal({ request_attempted: true, request_completed: true, terminal_outcome: 'skipped_due_to_cancellation', profile_coverage_outcome: loadProfiles(characterName) ? 'preserved_prior' : 'safe_pending_or_fallback', prior_profile_preserved: Boolean(loadProfiles(characterName)), usable_profile_after_run: Boolean(loadProfiles(characterName)), error_stage: 'cancelled', severity: 'none', affects_operational_status: false });
+      return loadProfiles(characterName);
+    }
     if (!response) {
       emitTerminal({ request_attempted: true, request_completed: true, returned_none: true, terminal_outcome: 'unresolved', profile_coverage_outcome: 'unresolved', error_stage: 'initial_provider_response' });
       return null;
@@ -1405,7 +1414,15 @@ export async function generateProfiles(characterName, abortCheck = null, options
       // An empty or placeholder-only response must never erase a useful,
       // previously approved profile.
       smLog('[Smart Memory Enhanced] Profile generation produced no supported fields; preserving the prior profile.');
-      return loadProfiles(characterName);
+      const prior = loadProfiles(characterName);
+      const pending = prior ? null : await saveProfileGenerationPending(characterName, 'placeholder_only_profile');
+      const coverageOutcome = deriveProfileCoverageOutcome({ hasPriorProfile: Boolean(prior), hasSafePendingState: Boolean(pending) });
+      emitTerminal({ request_attempted: true, request_completed: true, ...initialStructure, parser_path: parserPath,
+        response_non_empty: true, parse_error_code: 'placeholder_only_profile', terminal_outcome: coverageOutcome,
+        profile_coverage_outcome: coverageOutcome, prior_profile_preserved: Boolean(prior),
+        pending_generation_state: Boolean(pending), usable_profile_after_run: Boolean(prior),
+        error_stage: 'profile_grounding_validation', severity: 'notice', affects_operational_status: false });
+      return prior;
     }
 
     const identityReplacements = [];
@@ -1488,7 +1505,14 @@ export async function generateProfiles(characterName, abortCheck = null, options
     }
     if (!profileFields.some((field) => String(parsed[field] ?? '').trim())) {
       smLog('[Smart Memory Enhanced] Profile generation had no grounded fields; preserving the prior profile.');
-      return loadProfiles(characterName);
+      const pending = priorProfiles ? null : await saveProfileGenerationPending(characterName, 'profile_fields_empty_after_validation');
+      const coverageOutcome = deriveProfileCoverageOutcome({ hasPriorProfile: Boolean(priorProfiles), hasSafePendingState: Boolean(pending) });
+      emitTerminal({ request_attempted: true, request_completed: true, ...initialStructure, parser_path: parserPath,
+        response_non_empty: true, parse_error_code: 'profile_fields_empty_after_validation', terminal_outcome: coverageOutcome,
+        profile_coverage_outcome: coverageOutcome, prior_profile_preserved: Boolean(priorProfiles),
+        pending_generation_state: Boolean(pending), usable_profile_after_run: Boolean(priorProfiles),
+        error_stage: 'profile_grounding_validation', severity: 'notice', affects_operational_status: false });
+      return priorProfiles;
     }
 
     const profileDescriptorTerminalOutcomes = relationshipCheck.descriptor_terminal_outcomes ?? [];
@@ -1565,7 +1589,10 @@ export async function generateProfiles(characterName, abortCheck = null, options
       emitTerminal({ request_attempted: true, request_completed: true, ...initialStructure, parser_path: parserPath, formatting_repair_attempted: Boolean(repaired), formatting_repair_succeeded: Boolean(repaired && parseProfileOutput(repaired, { requireAll: true })), parse_error_code: 'grounding_rejected', terminal_outcome: coverageOutcome, profile_coverage_outcome: coverageOutcome, prior_profile_preserved: Boolean(priorProfiles), pending_generation_state: Boolean(pending), usable_profile_after_run: Boolean(priorProfiles), error_stage: 'profile_grounding_validation', severity: 'notice', affects_operational_status: false });
       return loadProfiles(characterName);
     }
-    if (abortCheck?.()) return null;
+    if (abortCheck?.()) {
+      emitTerminal({ request_attempted: true, request_completed: true, terminal_outcome: 'skipped_due_to_cancellation', profile_coverage_outcome: priorProfiles ? 'preserved_prior' : 'safe_pending_or_fallback', prior_profile_preserved: Boolean(priorProfiles), usable_profile_after_run: Boolean(priorProfiles), error_stage: 'cancelled', severity: 'none', affects_operational_status: false });
+      return priorProfiles;
+    }
     await saveProfiles(profiles, characterName);
     const finalStructure = inspectStructure(repaired || response);
     emitTerminal({ request_attempted: true, request_completed: true, ...finalStructure,
@@ -1583,7 +1610,11 @@ export async function generateProfiles(characterName, abortCheck = null, options
     return profiles;
   } catch (err) {
     console.error('[Smart Memory Enhanced] Profile generation failed:', err);
-    if (!err?.sme_profile_malformed_output) emitTerminal({ request_attempted: true, provider_error: String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 240), parse_error_code: 'provider_or_persistence_error', terminal_outcome: 'unresolved', profile_coverage_outcome: 'unresolved', error_stage: 'provider_or_persistence', error_tier: 'profiles', severity: 'error', affects_operational_status: true });
+    if (!err?.sme_profile_malformed_output) {
+      const prior = loadProfiles(characterName);
+      const pending = !prior && !abortCheck?.() ? await saveProfileGenerationPending(characterName, 'provider_failure') : null;
+      emitTerminal({ request_attempted: true, provider_error: String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 240), parse_error_code: 'provider_or_persistence_error', terminal_outcome: abortCheck?.() ? 'skipped_due_to_cancellation' : 'provider_failure', profile_coverage_outcome: prior ? 'preserved_prior' : pending ? 'safe_pending_or_fallback' : 'unresolved', prior_profile_preserved: Boolean(prior), pending_generation_state: Boolean(pending), usable_profile_after_run: Boolean(prior), error_stage: abortCheck?.() ? 'cancelled' : 'provider_or_persistence', error_tier: 'profiles', severity: abortCheck?.() ? 'none' : 'notice', affects_operational_status: false });
+    }
     if (options.throwOnFailure) throw err;
     return null;
   }

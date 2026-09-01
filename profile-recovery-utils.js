@@ -65,3 +65,55 @@ export function summarizeProfileTerminalCoverage(attempts = []) {
     unresolved_profiles: coverage.unresolved,
   };
 }
+
+
+/**
+ * Converts terminal attempt records into the single, privacy-safe completion
+ * view used by status, export, and the pending-profile UI.  A safe pending
+ * record is deliberately not an integrity error, but it is not a clean
+ * generation result when no usable profile exists.
+ */
+export function summarizeProfileCompletion(attempts = [], { enabledProfileCount = null } = {}) {
+  const coverage = summarizeProfileTerminalCoverage(attempts);
+  const terminalOutcomeCounts = {};
+  let savedProfileCount = 0;
+  let preservedPriorProfileCount = 0;
+  let skippedDueToCancellationCount = 0;
+  let providerFailureCount = 0;
+  let malformedOutputCount = 0;
+  for (const attempt of attempts) {
+    const outcome = String(attempt?.profile_coverage_outcome ?? attempt?.terminal_outcome ?? 'unresolved');
+    terminalOutcomeCounts[outcome] = (terminalOutcomeCounts[outcome] ?? 0) + 1;
+    if (['saved_initial', 'saved_after_format_correction'].includes(outcome)) savedProfileCount++;
+    if (outcome === 'preserved_prior' || attempt?.prior_profile_preserved) preservedPriorProfileCount++;
+    if (attempt?.terminal_outcome === 'skipped_due_to_cancellation' || attempt?.error_stage === 'cancelled') skippedDueToCancellationCount++;
+    if (attempt?.error_stage === 'provider_or_persistence') providerFailureCount++;
+    if (['format_correction', 'profile_grounding_validation'].includes(attempt?.error_stage)) malformedOutputCount++;
+  }
+  const pendingProfileCount = attempts.filter((attempt) => Boolean(attempt?.pending_generation_state) && !attempt?.usable_profile_after_run).length;
+  const unresolvedProfileCount = attempts.filter((attempt) => !attempt?.usable_profile_after_run
+    && !attempt?.pending_generation_state
+    && attempt?.terminal_outcome !== 'skipped_due_to_cancellation').length;
+  const attentionReasonCodes = [];
+  if (pendingProfileCount) attentionReasonCodes.push('profile_pending_regeneration');
+  if (unresolvedProfileCount) attentionReasonCodes.push('profile_no_usable_result');
+  if (providerFailureCount) attentionReasonCodes.push('profile_provider_failure');
+  if (malformedOutputCount) attentionReasonCodes.push('profile_malformed_output');
+  return {
+    ...coverage,
+    enabled_profile_count: enabledProfileCount ?? attempts.length,
+    attempted_profile_count: attempts.length,
+    usable_profile_count: coverage.usable_profiles,
+    saved_profile_count: savedProfileCount,
+    preserved_prior_profile_count: preservedPriorProfileCount,
+    pending_profile_count: pendingProfileCount,
+    unresolved_profile_count: unresolvedProfileCount,
+    skipped_due_to_cancellation_count: skippedDueToCancellationCount,
+    provider_failure_count: providerFailureCount,
+    malformed_output_count: malformedOutputCount,
+    terminal_outcome_counts: terminalOutcomeCounts,
+    quality_attention_reason_codes: attentionReasonCodes,
+    attention_required: attentionReasonCodes.length > 0,
+    user_action_available: pendingProfileCount > 0,
+  };
+}

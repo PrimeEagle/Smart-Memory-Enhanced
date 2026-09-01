@@ -101,7 +101,8 @@ test('catch-up records one safe, named terminal profile outcome when output rema
   assert.match(profiles, /error_tier: 'profiles'/);
   assert.match(profiles, /return loadProfiles\(characterName\);/);
   assert.match(settings, /onTerminal: \(detail\) => \{ profileTerminal = detail; \}/);
-  assert.match(settings, /summarizeProfileTerminalCoverage/);
+  assert.match(settings, /summarizeProfileCompletion/);
+  assert.match(settings, /sme_profiles_regenerate_pending/);
   assert.match(settings, /profile_terminal_accounting_reconciles/);
   assert.match(settings, /profile_coverage_complete/);
   for (const file of ['index.js', 'settings.js', 'longterm.js', 'session.js', 'profiles.js']) {

@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.31] - 2026-08-31
+
+### Fixed
+
+- Completed Memorize Chat runs now report generation-quality attention when a
+  profile has no usable result and is safely pending regeneration. This keeps
+  operational completion and memory-integrity status separate from profile
+  quality, while preserving the existing refusal to save malformed profiles.
+- Profile terminal diagnostics now include privacy-safe completion counts,
+  outcome classifications, attention codes, and whether a targeted user action
+  is available. A failed refresh with a preserved prior profile remains usable
+  rather than being presented as missing.
+- Profile requests that cross a cancellation boundary now record an explicit
+  skipped state instead of being misclassified as malformed provider output.
+
+### Added
+
+- Added **Regenerate Pending Profiles**, a scoped recovery action that retries
+  only profiles marked pending, uses the normal bounded parser/format-repair
+  pipeline, and refreshes the completed-run diagnostic summary without
+  repeating extraction or other finalization work.
+
+### Tests
+
+- Added profile-completion coverage for recoverable pending profiles and valid
+  prior-profile preservation after a malformed refresh.
+
 ## [0.9.30] - 2026-08-31
 
 ### Fixed
