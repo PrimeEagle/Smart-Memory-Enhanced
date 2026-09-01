@@ -147,6 +147,26 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
 }
 
 /**
+ * Enforces the configured short-term budget before persistence. Provider
+ * response-length is a request, not a hard limit, so a completed Memorize
+ * Chat can otherwise save a summary which is immediately trimmed only at
+ * injection time. The same deterministic sentence-aware reduction is used by
+ * both paths, keeping the stored and injected summaries identical.
+ */
+export function capSummaryToBudget(summary, budget) {
+  const source = String(summary ?? '').trim();
+  const safeBudget = Math.max(1, Number(budget) || 1);
+  if (estimateTokens(source) <= safeBudget) return source;
+  const suffix = ' ... [truncated]';
+  const usableBudget = Math.max(1, safeBudget - estimateTokens(suffix));
+  const ratio = usableBudget / estimateTokens(source);
+  const sliceAt = Math.max(1, Math.floor(source.length * ratio));
+  const boundary = source.lastIndexOf('.', sliceAt);
+  const reduced = boundary > sliceAt * 0.8 ? source.slice(0, boundary + 1) : source.slice(0, sliceAt);
+  return `${reduced.trim()}${suffix}`;
+}
+
+/**
  * Returns true if the unsummarized portion of the chat has crossed the
  * configured compaction threshold. Only messages after summaryEnd (the last
  * message already included in the existing summary) are counted - this prevents
@@ -302,7 +322,13 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
 
     if (!raw || raw.trim() === '') return null;
 
-    const summary = formatSummary(raw);
+    // Providers may exceed the requested response length. Persist the capped
+    // form so a finished Memorize Chat cannot immediately display a persistent
+    // short-term "trimmed" state with no available higher setting.
+    const summary = capSummaryToBudget(
+      formatSummary(raw),
+      settings.compaction_response_length ?? 2000,
+    );
 
     if (!context.chatMetadata) context.chatMetadata = {};
     if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
@@ -349,14 +375,7 @@ export function injectSummary(summary) {
   const tokenCount = estimateTokens(summaryText);
   const fullTokens = tokenCount;
   if (tokenCount > budget) {
-    const ratio = budget / tokenCount;
-    const sliceAt = Math.floor(summaryText.length * ratio);
-    // Try to break at the last sentence boundary within the sliced region
-    // so we don't cut mid-word or mid-thought.
-    const boundary = summaryText.lastIndexOf('.', sliceAt);
-    summaryText =
-      boundary > sliceAt * 0.8 ? summaryText.slice(0, boundary + 1) : summaryText.slice(0, sliceAt);
-    summaryText += ' ... [truncated]';
+    summaryText = capSummaryToBudget(summaryText, budget);
   }
 
   const template = settings.compaction_template || 'Story so far:\n{{summary}}';

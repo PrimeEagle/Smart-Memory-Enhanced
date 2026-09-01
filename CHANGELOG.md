@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.32] - 2026-09-01
+
+### Fixed
+
+- Memorize Chat now caps an overlong provider-generated short-term summary
+  before saving it, using the same sentence-aware reduction used for injection.
+  Stored and injected summaries therefore remain aligned instead of ending a
+  run with a persistent short-term trim warning at the maximum available cap.
+
 ## [0.9.31] - 2026-08-31
 
 ### Fixed

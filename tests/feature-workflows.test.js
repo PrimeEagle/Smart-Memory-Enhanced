@@ -25,6 +25,8 @@ test('compaction uses the context-window guard for both first and incremental su
   assert.match(compaction, /Preserve an exceptionally long message by splitting it/);
   assert.match(compaction, /let low = 1/);
   assert.match(compaction, /pending\.unshift\(\{ \.\.\.message, mes: remainder \}\)/);
+  assert.match(compaction, /export function capSummaryToBudget/);
+  assert.match(compaction, /const summary = capSummaryToBudget\(/);
   const incremental = compaction.slice(
     compaction.indexOf('if (existingSummary && summaryEnd > 0'),
     compaction.indexOf('// Full compaction:'),
