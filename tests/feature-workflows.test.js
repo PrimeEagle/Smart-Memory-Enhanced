@@ -1538,8 +1538,13 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
 
 test('finalization phases commit independently and resume their saved settings snapshot', () => {
   const settings = read('settings.js');
-  assert.match(settings, /const snapshotRunSettings/);
+  assert.match(settings, /function snapshotMemorizeRunSettings/);
+  assert.match(settings, /CATCH_UP_SETTINGS_SIDECAR_KEY/);
+  assert.match(settings, /matchingCatchUpSettingsSidecar/);
+  assert.match(settings, /persistSettingsImmediately/);
   assert.match(settings, /run_settings_snapshot/);
+  assert.match(settings, /run_settings_snapshot_updated_at/);
+  assert.match(settings, /recoverySettingsSidecar\?\.settings \?\? resumableCheckpoint\?\.run_settings_snapshot/);
   assert.match(settings, /const commitFinalizationPhase/);
   assert.match(settings, /hasCompletedFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /commitFinalizationPhase\('shortterm_extraction'\)/);

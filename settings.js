@@ -1051,6 +1051,37 @@ function refreshDirectRangeInputs() {
   });
 }
 
+// A Memorize Chat transaction deliberately stages its chat-metadata writes so
+// a crash can never persist half of a memory phase.  Settings are different:
+// their newest user-selected values must survive even when that transaction is
+// still in progress.  Keep the compact, relevant subset in the ordinary
+// settings store as a run-scoped recovery sidecar, then copy it back into the
+// chat checkpoint at the next safe transaction boundary.
+const CATCH_UP_SETTINGS_SIDECAR_KEY = 'catch_up_run_settings_snapshot';
+
+function snapshotMemorizeRunSettings(settings) {
+  return Object.fromEntries(Object.entries(settings ?? {})
+    .filter(([key, value]) => (/_inject_budget$|_response_length$|^compaction_response_length$|^scene_inject_count$|^scene_min_messages$|^scene_ai_detect$|^consolidation_enabled$/.test(key))
+      && ['string', 'number', 'boolean'].includes(typeof value)));
+}
+
+function matchingCatchUpSettingsSidecar(settings, checkpoint, context) {
+  const sidecar = settings?.[CATCH_UP_SETTINGS_SIDECAR_KEY];
+  if (!sidecar || typeof sidecar !== 'object' || !sidecar.settings || typeof sidecar.settings !== 'object') return null;
+  if (sidecar.run_id !== checkpoint?.run_id) return null;
+  if ((sidecar.chat_id ?? null) !== (context?.chatId ?? null)) return null;
+  if ((sidecar.group_id ?? null) !== (context?.groupId ?? null)) return null;
+  return sidecar;
+}
+
+function persistSettingsImmediately() {
+  saveSettingsDebounced();
+  // SillyTavern currently exposes its settings writer as a debounced function.
+  // Flush when available so a hard exit immediately after a budget edit does
+  // not discard the only copy of the recovery sidecar.
+  saveSettingsDebounced.flush?.();
+}
+
 /**
  * Builds the explicit live-persona input used for a long-running Memorize
  * Chat.  `user_avatar` plus `power_user.personas` is SillyTavern's selected
@@ -1768,6 +1799,38 @@ export function bindSettingsUI(ctrl) {
     const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
     return normalizeCatchUpCheckpoint(checkpoint);
   };
+
+  let catchUpSettingsSnapshotQueued = false;
+  const persistActiveCatchUpSettingsSnapshot = () => {
+    catchUpSettingsSnapshotQueued = false;
+    const context = getContext();
+    const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+    if (!checkpoint || !['in_progress', 'awaiting_manual_resume'].includes(checkpoint.status)) return;
+    const now = Date.now();
+    const snapshot = snapshotMemorizeRunSettings(extension_settings[MODULE_NAME]);
+    checkpoint.run_settings_snapshot = snapshot;
+    checkpoint.run_settings_snapshot_updated_at = now;
+    checkpoint.updated_at = now;
+    extension_settings[MODULE_NAME][CATCH_UP_SETTINGS_SIDECAR_KEY] = {
+      schema_version: 1,
+      run_id: checkpoint.run_id,
+      chat_id: context.chatId ?? null,
+      group_id: context.groupId ?? null,
+      updated_at: now,
+      settings: snapshot,
+    };
+    persistSettingsImmediately();
+  };
+  const queueActiveCatchUpSettingsSnapshot = () => {
+    if (catchUpSettingsSnapshotQueued) return;
+    catchUpSettingsSnapshotQueued = true;
+    // Direct setting handlers update extension_settings first. Defer this
+    // delegated observer until they have supplied the validated value.
+    queueMicrotask(persistActiveCatchUpSettingsSnapshot);
+  };
+  $(document)
+    .off('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input')
+    .on('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input', queueActiveCatchUpSettingsSnapshot);
 
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
     const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
@@ -4267,15 +4330,16 @@ export function bindSettingsUI(ctrl) {
     try {
       const context = getContext();
       const settings = extension_settings[MODULE_NAME];
-      // Settings writes in SillyTavern are debounced. Retain the run's
-      // relevant controls in the durable chat checkpoint as well, so a hard
-      // crash cannot make a resumed run silently fall back to older budgets.
-      const snapshotRunSettings = () => Object.fromEntries(Object.entries(settings)
-        .filter(([key, value]) => (/_inject_budget$|_response_length$|^compaction_response_length$|^scene_inject_count$|^scene_min_messages$|^scene_ai_detect$|^consolidation_enabled$/.test(key))
-          && ['string', 'number', 'boolean'].includes(typeof value)));
-      if (resumableCheckpoint?.run_settings_snapshot) {
-        Object.assign(settings, resumableCheckpoint.run_settings_snapshot);
-        saveSettingsDebounced();
+      // Prefer a newer run-scoped sidecar over the last checkpoint copy.
+      // The checkpoint cannot be written during a staged memory transaction,
+      // while this sidecar is flushed with every budget edit.  Without this
+      // ordering, a resume would overwrite a recently saved budget with the
+      // stale value captured when the run originally began.
+      const recoverySettingsSidecar = matchingCatchUpSettingsSidecar(settings, resumableCheckpoint, catchUpContext);
+      const recoverySettingsSnapshot = recoverySettingsSidecar?.settings ?? resumableCheckpoint?.run_settings_snapshot;
+      if (recoverySettingsSnapshot) {
+        Object.assign(settings, recoverySettingsSnapshot);
+        persistSettingsImmediately();
       }
 
       // Use the stable window first so an in-progress trailing swipe candidate
@@ -4331,7 +4395,8 @@ export function bindSettingsUI(ctrl) {
         historical_participant_scope: structuredClone(historicalParticipantScope),
         canonical_runtime_context: structuredClone(canonicalRuntimeContext),
       };
-      checkpoint.run_settings_snapshot = snapshotRunSettings();
+      checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
+      checkpoint.run_settings_snapshot_updated_at = recoverySettingsSidecar?.updated_at ?? Date.now();
       checkpoint.finalization = checkpoint.finalization && typeof checkpoint.finalization === 'object'
         ? checkpoint.finalization
         : { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
@@ -4798,7 +4863,8 @@ export function bindSettingsUI(ctrl) {
         checkpoint.finalization.completed_phases[key] = { completed_at: Date.now() };
         checkpoint.finalization.active_phase = null;
         checkpoint.finalization.updated_at = Date.now();
-        checkpoint.run_settings_snapshot = snapshotRunSettings();
+        checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
+        checkpoint.run_settings_snapshot_updated_at = Date.now();
         checkpoint.updated_at = Date.now();
         // Save through the active transaction, then make this phase's full
         // durable state the new recovery boundary before the next phase.
@@ -4809,7 +4875,8 @@ export function bindSettingsUI(ctrl) {
       const startFinalizationPhase = async (key) => {
         checkpoint.finalization.active_phase = key;
         checkpoint.finalization.updated_at = Date.now();
-        checkpoint.run_settings_snapshot = snapshotRunSettings();
+        checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
+        checkpoint.run_settings_snapshot_updated_at = Date.now();
         checkpoint.updated_at = Date.now();
         await saveChatMetadata(catchUpContext);
         // Persist the active marker before entering a provider request. A
@@ -6416,6 +6483,13 @@ export function bindSettingsUI(ctrl) {
           diagnostics.logical_run,
         ].slice(-3);
         delete catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
+        // The sidecar exists only to bridge a crash while the checkpoint is
+        // active. Do not let a completed run later override a new run's
+        // settings during a future resume.
+        if (extension_settings[MODULE_NAME]?.[CATCH_UP_SETTINGS_SIDECAR_KEY]?.run_id === catchUpRunId) {
+          delete extension_settings[MODULE_NAME][CATCH_UP_SETTINGS_SIDECAR_KEY];
+          persistSettingsImmediately();
+        }
       }
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
