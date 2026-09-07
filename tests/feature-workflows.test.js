@@ -1563,6 +1563,8 @@ test('catch-up keeps a rough finalization ETA after the chunk phase completes', 
   assert.match(settings, /const finalizationTiming =/);
   assert.match(settings, /const updateFinalizationEta =/);
   assert.match(settings, /rough remaining estimate/);
+  assert.match(settings, /activeEstimateExceeded/);
+  assert.match(settings, /has exceeded its observed estimate/);
   assert.match(settings, /updateFinalizationEta\('short-term memory extraction'\)/);
   assert.match(settings, /updateFinalizationEta\('final identity reconciliation and save'\)/);
 });

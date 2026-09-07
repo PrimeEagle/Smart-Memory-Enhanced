@@ -4527,13 +4527,28 @@ export function bindSettingsUI(ctrl) {
           const estimate = phaseEstimate(kind);
           return estimate ? totalMs + estimate : totalMs;
         }, 0);
-        const estimatedRemaining = !Number.isFinite(activeEstimate) || futureKinds.some((kind) => !Number.isFinite(phaseEstimate(kind)))
+        const activeEstimateExceeded = Boolean(finalizationTiming.active_phase)
+          && Number.isFinite(activeEstimate)
+          && activeElapsed >= activeEstimate;
+        // A provider-backed finalization phase has no reliable sub-request
+        // progress signal. Once it outlives the observed estimate, subtracting
+        // elapsed time would manufacture a tiny (or negative) ETA while the
+        // request can still take hours. Keep future-phase estimates separate,
+        // but make the active phase honestly indeterminate until its safe
+        // provider boundary completes.
+        const estimatedRemaining = activeEstimateExceeded || !Number.isFinite(activeEstimate) || futureKinds.some((kind) => !Number.isFinite(phaseEstimate(kind)))
           ? null
           : Math.max(0, Math.round(Math.max(0, activeEstimate - activeElapsed) + futureEstimate));
         catchUpTiming.estimated_remaining_ms = estimatedRemaining;
         catchUpTiming.estimate_available = estimatedRemaining !== null;
         const displayPhase = Math.min(completedUnits + (finalizationTiming.active_phase ? 1 : 0), finalizationTiming.planned_units);
-        eta.text(`Finalizing: ${finalizationTiming.active_label ?? label} (${displayPhase}/${finalizationTiming.planned_units} phases)${estimatedRemaining !== null ? ` - rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.` : ' - estimating remaining time from completed phases.'}`).show();
+        const elapsedDetail = `running for ${formatCatchUpDuration(activeElapsed)}`;
+        const etaDetail = activeEstimateExceeded
+          ? ` - ${elapsedDetail}; this phase has exceeded its observed estimate, so remaining time is unavailable until the current request completes.`
+          : estimatedRemaining !== null
+            ? ` - rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
+            : ` - ${elapsedDetail}; estimating remaining time from completed phases.`;
+        eta.text(`Finalizing: ${finalizationTiming.active_label ?? label} (${displayPhase}/${finalizationTiming.planned_units} phases)${etaDetail}`).show();
       };
       updateCatchUpEta(0);
 
