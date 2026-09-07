@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.35] - 2026-09-07
+
+### Fixed
+
+- Token-budget and related Memorize Chat controls changed during an active run
+  now save immediately to a run-scoped recovery snapshot. After a crash, resume
+  uses that newer snapshot rather than overwriting it with the budget values
+  captured when the run began.
+
 ## [0.9.34] - 2026-09-07
 
 ### Fixed
