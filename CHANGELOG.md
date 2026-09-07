@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.34] - 2026-09-07
+
+### Fixed
+
+- Memorize Chat recovery now persists completed finalization phases as durable
+  boundaries. After a crash or cancellation, completed consolidation, scene,
+  arc, short-term, and profile phases are skipped; only an unfinished phase is
+  retried. Recovery status and exported checkpoint diagnostics identify the
+  completed and active finalization phases.
+- Active runs retain a chat-scoped snapshot of token budgets and other relevant
+  generation controls. A resumed run restores that snapshot, so a hard crash
+  cannot silently fall back to older debounced settings values.
+
 ## [0.9.33] - 2026-09-06
 
 ### Fixed

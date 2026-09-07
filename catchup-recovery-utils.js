@@ -302,6 +302,16 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     reason_code: checkpoint.run_manifest?.terminal_reason_code ?? null,
     source_message_count: Number(checkpoint.source_message_count ?? 0),
     safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
+    finalization: {
+      schema_version: Number(checkpoint.finalization?.schema_version ?? 0) || null,
+      active_phase: checkpoint.finalization?.active_phase ?? null,
+      completed_phases: Object.keys(checkpoint.finalization?.completed_phases ?? {}),
+      completed_phase_count: Object.keys(checkpoint.finalization?.completed_phases ?? {}).length,
+    },
+    run_settings_snapshot: {
+      available: Boolean(checkpoint.run_settings_snapshot && typeof checkpoint.run_settings_snapshot === 'object'),
+      setting_keys: Object.keys(checkpoint.run_settings_snapshot ?? {}).sort(),
+    },
     logical_run: summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null),
   };
 }

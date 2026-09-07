@@ -1791,8 +1791,12 @@ export function bindSettingsUI(ctrl) {
     const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
     const total = Number(checkpoint.source_message_count) || 0;
     const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
+    const finalization = summarizeCatchUpCheckpoint(checkpoint).finalization;
     const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
     const rangeText = `${manifest.cumulative_range_count ?? 0} coalesced committed range${manifest.cumulative_range_count === 1 ? '' : 's'}`;
+    const finalizationText = finalization?.completed_phase_count
+      ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${finalization.active_phase.replaceAll('_', ' ')}` : ''}.`
+      : '';
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
     $resume.prop('disabled', running);
     setResumeLabel(
@@ -1802,8 +1806,8 @@ export function bindSettingsUI(ctrl) {
         : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
     );
     $status.text(running
-      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).`
-      : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.`).show();
+      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}`
+      : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.${finalizationText}`).show();
     if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
@@ -4263,6 +4267,16 @@ export function bindSettingsUI(ctrl) {
     try {
       const context = getContext();
       const settings = extension_settings[MODULE_NAME];
+      // Settings writes in SillyTavern are debounced. Retain the run's
+      // relevant controls in the durable chat checkpoint as well, so a hard
+      // crash cannot make a resumed run silently fall back to older budgets.
+      const snapshotRunSettings = () => Object.fromEntries(Object.entries(settings)
+        .filter(([key, value]) => (/_inject_budget$|_response_length$|^compaction_response_length$|^scene_inject_count$|^scene_min_messages$|^scene_ai_detect$|^consolidation_enabled$/.test(key))
+          && ['string', 'number', 'boolean'].includes(typeof value)));
+      if (resumableCheckpoint?.run_settings_snapshot) {
+        Object.assign(settings, resumableCheckpoint.run_settings_snapshot);
+        saveSettingsDebounced();
+      }
 
       // Use the stable window first so an in-progress trailing swipe candidate
       // is not ingested during catch-up.
@@ -4307,7 +4321,7 @@ export function bindSettingsUI(ctrl) {
       const total = allMessages.length;
       const resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
       const checkpoint = resumableCheckpoint ?? {
-        schema_version: 2,
+        schema_version: 3,
         run_id: catchUpRunId,
         started_at: Date.now(),
         source_message_count: total,
@@ -4317,6 +4331,10 @@ export function bindSettingsUI(ctrl) {
         historical_participant_scope: structuredClone(historicalParticipantScope),
         canonical_runtime_context: structuredClone(canonicalRuntimeContext),
       };
+      checkpoint.run_settings_snapshot = snapshotRunSettings();
+      checkpoint.finalization = checkpoint.finalization && typeof checkpoint.finalization === 'object'
+        ? checkpoint.finalization
+        : { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
       const sourceWindow = {
         source_message_count: total,
         source_start_index: allMessages[0]?.__sme_original_index ?? null,
@@ -4768,10 +4786,42 @@ export function bindSettingsUI(ctrl) {
         }
       }
 
-      // Scene detection and the final cross-tier passes run after the chunk
-      // loop. Keep one transaction open for this whole phase so their metadata
-      // writes do not fall back to individual SillyTavern chat saves.
+      // Each expensive finalization phase receives its own durable commit.
+      // This keeps the existing extraction checkpoint semantics while allowing
+      // a crash during a later phase to resume without repeating already safe
+      // consolidation, scene, arc, compaction, or profile work.
       finalTransaction = beginCatchUpTransaction(catchUpContext);
+      const completedFinalizationPhases = checkpoint.finalization?.completed_phases ?? {};
+      const hasCompletedFinalizationPhase = (key) => Boolean(completedFinalizationPhases[key]?.completed_at);
+      const commitFinalizationPhase = async (key) => {
+        checkpoint.finalization ??= { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
+        checkpoint.finalization.completed_phases[key] = { completed_at: Date.now() };
+        checkpoint.finalization.active_phase = null;
+        checkpoint.finalization.updated_at = Date.now();
+        checkpoint.run_settings_snapshot = snapshotRunSettings();
+        checkpoint.updated_at = Date.now();
+        // Save through the active transaction, then make this phase's full
+        // durable state the new recovery boundary before the next phase.
+        await saveChatMetadata(catchUpContext);
+        await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+        finalTransaction = beginCatchUpTransaction(catchUpContext);
+      };
+      const startFinalizationPhase = async (key) => {
+        checkpoint.finalization.active_phase = key;
+        checkpoint.finalization.updated_at = Date.now();
+        checkpoint.run_settings_snapshot = snapshotRunSettings();
+        checkpoint.updated_at = Date.now();
+        await saveChatMetadata(catchUpContext);
+        // Persist the active marker before entering a provider request. A
+        // crash now has an explicit safe boundary: completed earlier phases
+        // remain skipped, while only this unfinished phase is retried.
+        await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+        finalTransaction = beginCatchUpTransaction(catchUpContext);
+      };
+      const skipFinalizationPhase = (label) => {
+        updateFinalizationEta(label);
+        updateFinalizationEta(label, { completed: true });
+      };
 
       if (!ctrl.catchUpCancelled) {
         // The first actual finalization task starts the ETA clock. Do not make
@@ -4780,31 +4830,44 @@ export function bindSettingsUI(ctrl) {
         // stages a stable, consolidated store and avoids creating a new arc
         // after the final identity-reconciliation phase has already begun.
         if (settings.longterm_enabled && settings.consolidation_enabled) {
-          for (const name of catchUpCharacterNames) {
-            if (ctrl.catchUpCancelled) break;
-            updateFinalizationEta(`long-term consolidation for ${name}`);
-            setStatusMessage(`Consolidating long-term memories for ${name}...`);
-            await consolidateMemories(name, true).catch((err) => {
-              recordCatchUpError('final long-term consolidation error', err);
-            });
-            updateFinalizationEta(`long-term consolidation for ${name}`, { completed: true });
+          if (hasCompletedFinalizationPhase('longterm_consolidation')) {
+            for (const name of catchUpCharacterNames) skipFinalizationPhase(`long-term consolidation for ${name}`);
+          } else {
+            await startFinalizationPhase('longterm_consolidation');
+            for (const name of catchUpCharacterNames) {
+              if (ctrl.catchUpCancelled) break;
+              updateFinalizationEta(`long-term consolidation for ${name}`);
+              setStatusMessage(`Consolidating long-term memories for ${name}...`);
+              await consolidateMemories(name, true).catch((err) => {
+                recordCatchUpError('final long-term consolidation error', err);
+              });
+              updateFinalizationEta(`long-term consolidation for ${name}`, { completed: true });
+            }
+            if (!ctrl.catchUpCancelled) await commitFinalizationPhase('longterm_consolidation');
           }
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
         if (!ctrl.catchUpCancelled && settings.session_enabled) {
-          updateFinalizationEta('session-memory consolidation');
-          setStatusMessage('Consolidating session memories...');
-          await consolidateSessionMemories(true).catch((err) => {
-            recordCatchUpError('final session consolidation error', err);
-          });
-          updateFinalizationEta('session-memory consolidation', { completed: true });
+          if (hasCompletedFinalizationPhase('session_consolidation')) {
+            skipFinalizationPhase('session-memory consolidation');
+          } else {
+            await startFinalizationPhase('session_consolidation');
+            updateFinalizationEta('session-memory consolidation');
+            setStatusMessage('Consolidating session memories...');
+            await consolidateSessionMemories(true).catch((err) => {
+              recordCatchUpError('final session consolidation error', err);
+            });
+            updateFinalizationEta('session-memory consolidation', { completed: true });
+            if (!ctrl.catchUpCancelled) await commitFinalizationPhase('session_consolidation');
+          }
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
 
         // Scene: walk through the full chat detecting and summarizing scenes.
         // When scene_ai_detect is enabled, AI detection runs on each AI message
         // (matching normal flow). When disabled, the heuristic is used instead.
-        if (!ctrl.catchUpCancelled && settings.scene_enabled) {
+        if (!ctrl.catchUpCancelled && settings.scene_enabled && !hasCompletedFinalizationPhase('scene_detection')) {
+          await startFinalizationPhase('scene_detection');
           updateFinalizationEta('scene detection and summaries');
           setStatusMessage('Detecting scene breaks...');
           const sceneHistory = loadSceneHistory();
@@ -5421,13 +5484,17 @@ export function bindSettingsUI(ctrl) {
           ctrl.sceneBufferLastIndex = -1;
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
           updateFinalizationEta('scene detection and summaries', { completed: true });
+          if (!ctrl.catchUpCancelled) await commitFinalizationPhase('scene_detection');
+        } else if (!ctrl.catchUpCancelled && settings.scene_enabled) {
+          skipFinalizationPhase('scene detection and summaries');
         }
 
         // Extract arcs once against the complete, consolidated chat after the
         // scene and epistemic passes. This is intentionally not per chunk:
         // otherwise a later chunk can create or resolve identities after the
         // staged final reconciliation has consumed an earlier partial graph.
-        if (!ctrl.catchUpCancelled && settings.arcs_enabled && !isFreshStart()) {
+        if (!ctrl.catchUpCancelled && settings.arcs_enabled && !isFreshStart() && !hasCompletedFinalizationPhase('arc_extraction')) {
+          await startFinalizationPhase('arc_extraction');
           updateFinalizationEta('story-arc extraction');
           setStatusMessage('Extracting and resolving story arcs...');
           await extractArcs(allMessages, characterName, () => ctrl.catchUpCancelled, {
@@ -5438,12 +5505,18 @@ export function bindSettingsUI(ctrl) {
           }).catch((err) => {
             recordCatchUpError('arc extraction error (final)', err, 'arcs');
           });
-          if (!ctrl.catchUpCancelled) updateFinalizationEta('story-arc extraction', { completed: true });
+          if (!ctrl.catchUpCancelled) {
+            updateFinalizationEta('story-arc extraction', { completed: true });
+            await commitFinalizationPhase('arc_extraction');
+          }
+        } else if (!ctrl.catchUpCancelled && settings.arcs_enabled && !isFreshStart()) {
+          skipFinalizationPhase('story-arc extraction');
         }
 
         // Short-term compaction runs once at the end - it uses the real token
         // count to decide what to include, so chunking doesn't apply.
-        if (!ctrl.catchUpCancelled && settings.compaction_enabled) {
+        if (!ctrl.catchUpCancelled && settings.compaction_enabled && !hasCompletedFinalizationPhase('shortterm_extraction')) {
+          await startFinalizationPhase('shortterm_extraction');
           updateFinalizationEta('short-term memory extraction');
           setStatusMessage('Extracting short-term memories...');
           await runCompaction({ includeLastMessage: true })
@@ -5458,12 +5531,16 @@ export function bindSettingsUI(ctrl) {
           });
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
           updateFinalizationEta('short-term memory extraction', { completed: true });
+          if (!ctrl.catchUpCancelled) await commitFinalizationPhase('shortterm_extraction');
+        } else if (!ctrl.catchUpCancelled && settings.compaction_enabled) {
+          skipFinalizationPhase('short-term memory extraction');
         }
       }
 
       // Generate character & world profiles once at the end of a completed run.
       // Skipped on cancel - partial data may produce low-quality profiles.
-      if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
+      if (!ctrl.catchUpCancelled && settings.profiles_enabled && !hasCompletedFinalizationPhase('profile_generation')) {
+        await startFinalizationPhase('profile_generation');
         for (const name of catchUpProfileCharacterNames) {
           if (ctrl.catchUpCancelled) break;
           updateFinalizationEta(`profile generation for ${name}`);
@@ -5590,6 +5667,9 @@ export function bindSettingsUI(ctrl) {
           relationship_matrix: totals.relationship_matrix + Number(Boolean(attempt.relationship_matrix_detected)),
         }), { character_state: 0, world_state: 0, relationship_matrix: 0 });
         runResult.profiles.terminal_accounting = summarizeProfileCompletion(runResult.profiles.attempts, { enabledProfileCount: catchUpProfileCharacterNames.length });
+        if (!ctrl.catchUpCancelled) await commitFinalizationPhase('profile_generation');
+      } else if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
+        for (const name of catchUpProfileCharacterNames) skipFinalizationPhase(`profile generation for ${name}`);
       }
 
       // Re-injection and panel refresh are presentation-only. Isolate every
@@ -5622,7 +5702,17 @@ export function bindSettingsUI(ctrl) {
       };
       let reconciliation;
       runResult.finalReconciliation.attempted = 1;
-      try {
+      if (hasCompletedFinalizationPhase('final_reconciliation')) {
+        const priorAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.integrity_audit;
+        reconciliation = {
+          matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
+          persona_roster_size: 0, participant_lists_rewritten: 0, resolved_review_items_removed: 0,
+          quarantined_arc_summaries: 0, integrity_audit: priorAudit ?? { status: 'clean', stale_entity_references: [] },
+        };
+        runResult.finalReconciliation.completed = 1;
+        skipFinalizationPhase('final identity reconciliation and save');
+      } else try {
+        await startFinalizationPhase('final_reconciliation');
         updateFinalizationEta('final identity reconciliation and save');
         setStatusMessage('Finalizing identity reconciliation and saving memory tiers...');
         reconciliation = await runFinalIntegrityReconciliation(characterName);
@@ -5642,6 +5732,7 @@ export function bindSettingsUI(ctrl) {
         }
         runResult.finalReconciliation.completed = 1;
         updateFinalizationEta('final identity reconciliation and save', { completed: true });
+        await commitFinalizationPhase('final_reconciliation');
       } catch (err) {
         // Roll back only the partially-applied reconciliation edits while
         // preserving scenes, profiles, and every earlier validated tier.

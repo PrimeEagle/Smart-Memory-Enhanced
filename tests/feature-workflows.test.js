@@ -335,7 +335,7 @@ test('final catch-up stage order builds scenes before one complete arc pass and 
   const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
   const profileStage = settings.indexOf('const profiles = await generateProfiles(name, () => ctrl.catchUpCancelled, {');
   const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
-  const stagedCommit = settings.indexOf('commitCatchUpTransaction(finalTransaction)');
+  const stagedCommit = settings.lastIndexOf('commitCatchUpTransaction(finalTransaction)');
   assert.ok(sceneStage >= 0 && sceneStage < arcStage);
   assert.ok(arcStage < profileStage && profileStage < reconcileStage);
   assert.ok(reconcileStage < stagedCommit);
@@ -1534,6 +1534,16 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /delete catchUpContext\.chatMetadata\[META_KEY\]\.catch_up_checkpoint/);
   assert.match(settings, /sme:chat-changed\.sme-catchup-recovery/);
   assert.match(index, /\$\(document\)\.trigger\('sme:chat-changed'\)/);
+});
+
+test('finalization phases commit independently and resume their saved settings snapshot', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /const snapshotRunSettings/);
+  assert.match(settings, /run_settings_snapshot/);
+  assert.match(settings, /const commitFinalizationPhase/);
+  assert.match(settings, /hasCompletedFinalizationPhase\('shortterm_extraction'\)/);
+  assert.match(settings, /commitFinalizationPhase\('shortterm_extraction'\)/);
+  assert.match(settings, /completed_phase_count/);
 });
 
 test('expanded memory sections retain a clear header-to-content hierarchy', () => {

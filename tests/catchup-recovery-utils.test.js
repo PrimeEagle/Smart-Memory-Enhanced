@@ -134,3 +134,15 @@ test('checkpoint diagnostics distinguish missing, resumable, and invalidated rec
   assert.equal(invalid.status, 'invalidated_source_mismatch');
   assert.equal(invalid.reason_code, 'source_window_boundary_changed');
 });
+
+test('checkpoint diagnostics retain completed finalization phases and the recovery settings snapshot', () => {
+  const summary = summarizeCatchUpCheckpoint({
+    ...checkpoint,
+    finalization: { schema_version: 1, active_phase: 'shortterm_extraction', completed_phases: { scene_detection: { completed_at: 1 } } },
+    run_settings_snapshot: { compaction_response_length: 3000, longterm_inject_budget: 600 },
+  });
+  assert.equal(summary.finalization.active_phase, 'shortterm_extraction');
+  assert.deepEqual(summary.finalization.completed_phases, ['scene_detection']);
+  assert.equal(summary.run_settings_snapshot.available, true);
+  assert.deepEqual(summary.run_settings_snapshot.setting_keys, ['compaction_response_length', 'longterm_inject_budget']);
+});
