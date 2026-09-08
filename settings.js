@@ -59,6 +59,7 @@ import {
   memory_sources,
   fetchOllamaModels,
   onMemoryRequestRetry,
+  onMemoryRequestProgress,
   retryTransientMemoryOperation,
   abortCurrentMemoryGeneration,
 } from './generate.js';
@@ -4570,9 +4571,30 @@ export function bindSettingsUI(ctrl) {
         active_phase: null,
         active_label: null,
         active_phase_started_at: null,
+        active_request: null,
         phase_durations: {},
       };
       let finalizationEtaRefreshTimer = null;
+      const unsubscribeProgress = onMemoryRequestProgress((event) => {
+        if (!finalizationTiming.active_phase) return;
+        if (event?.event === 'started') {
+          finalizationTiming.active_request = {
+            request_id: event.request_id,
+            source: event.source,
+            streaming: Boolean(event.streaming),
+            started_at: event.started_at ?? Date.now(),
+            requested_output_tokens: event.requested_output_tokens ?? null,
+            generated_output_tokens: 0,
+          };
+        } else if (finalizationTiming.active_request?.request_id === event?.request_id) {
+          finalizationTiming.active_request.streaming ||= Boolean(event.streaming);
+          finalizationTiming.active_request.generated_output_tokens = Math.max(
+            finalizationTiming.active_request.generated_output_tokens ?? 0,
+            Number(event.generated_output_tokens) || 0,
+          );
+        }
+        updateFinalizationEta(finalizationTiming.active_label, { refreshOnly: true });
+      });
       const updateFinalizationEta = (label, { completed = false, refreshOnly = false } = {}) => {
         const eta = $('#sme_catch_up_eta');
         if (!finalizationTiming.started_at) {
@@ -4588,6 +4610,7 @@ export function bindSettingsUI(ctrl) {
           finalizationTiming.active_phase = null;
           finalizationTiming.active_label = null;
           finalizationTiming.active_phase_started_at = null;
+          finalizationTiming.active_request = null;
         } else if (!refreshOnly && !finalizationTiming.active_phase) {
           finalizationTiming.active_phase = phaseKind;
           finalizationTiming.active_label = label;
@@ -4604,13 +4627,23 @@ export function bindSettingsUI(ctrl) {
           ? Math.round(historicalFinalizationMsPerUnit * finalizationTiming.planned_units * ((finalizationPhaseWeights[kind] ?? 1) / totalFinalizationWeight))
           : null;
         const phaseEstimate = (kind) => historicalPhaseMs[kind] ?? weightedHistoricalEstimate(kind) ?? observedPhaseAverage ?? null;
-        const activeEstimate = finalizationTiming.active_phase ? phaseEstimate(finalizationTiming.active_phase) : 0;
+        const activeRequest = finalizationTiming.active_request;
+        const streamedTokens = Number(activeRequest?.generated_output_tokens) || 0;
+        const requestedTokens = Number(activeRequest?.requested_output_tokens) || 0;
+        const requestElapsed = activeRequest?.started_at ? Math.max(0, now - activeRequest.started_at) : 0;
+        const streamedTokenRate = activeRequest?.streaming && streamedTokens >= 8 && requestElapsed >= 5_000
+          ? streamedTokens / (requestElapsed / 1000)
+          : null;
+        const streamedRequestRemaining = streamedTokenRate && requestedTokens > streamedTokens
+          ? Math.round(((requestedTokens - streamedTokens) / streamedTokenRate) * 1000)
+          : null;
+        const activeEstimate = streamedRequestRemaining ?? (finalizationTiming.active_phase ? phaseEstimate(finalizationTiming.active_phase) : 0);
         const futureKinds = finalizationPlan.slice(completedUnits + (finalizationTiming.active_phase ? 1 : 0));
         const futureEstimate = futureKinds.reduce((totalMs, kind) => {
           const estimate = phaseEstimate(kind);
           return estimate ? totalMs + estimate : totalMs;
         }, 0);
-        const activeEstimateExceeded = Boolean(finalizationTiming.active_phase)
+        const activeEstimateExceeded = streamedRequestRemaining === null && Boolean(finalizationTiming.active_phase)
           && Number.isFinite(activeEstimate)
           && activeElapsed >= activeEstimate;
         // A provider-backed finalization phase has no reliable sub-request
@@ -4626,11 +4659,14 @@ export function bindSettingsUI(ctrl) {
         catchUpTiming.estimate_available = estimatedRemaining !== null;
         const displayPhase = Math.min(completedUnits + (finalizationTiming.active_phase ? 1 : 0), finalizationTiming.planned_units);
         const elapsedDetail = `running for ${formatCatchUpDuration(activeElapsed)}`;
-        const etaDetail = activeEstimateExceeded
-          ? ` - ${elapsedDetail}; this phase has exceeded its observed estimate, so remaining time is unavailable until the current request completes.`
+        const liveProgressDetail = streamedTokenRate
+          ? ` - live provider progress: ~${streamedTokens}/${requestedTokens || '?'} output tokens at ~${streamedTokenRate.toFixed(1)} tok/s; rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
+          : null;
+        const etaDetail = liveProgressDetail ?? (activeEstimateExceeded
+          ? ` - ${elapsedDetail}; this phase has exceeded its observed estimate and the provider has not exposed live token progress, so remaining time is unavailable until the current request completes.`
           : estimatedRemaining !== null
             ? ` - rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
-            : ` - ${elapsedDetail}; estimating remaining time from completed phases.`;
+            : ` - ${elapsedDetail}; estimating remaining time from completed phases.`);
         eta.text(`Finalizing: ${finalizationTiming.active_label ?? label} (${displayPhase}/${finalizationTiming.planned_units} phases)${etaDetail}`).show();
       };
       updateCatchUpEta(0);
@@ -6654,6 +6690,11 @@ export function bindSettingsUI(ctrl) {
         unsubscribeRetry();
       } catch (cleanupErr) {
         console.warn('[Smart Memory Enhanced] Retry listener cleanup warning:', cleanupErr);
+      }
+      try {
+        unsubscribeProgress();
+      } catch (cleanupErr) {
+        console.warn('[Smart Memory Enhanced] Provider-progress listener cleanup warning:', cleanupErr);
       }
     }
   });

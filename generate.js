@@ -75,6 +75,7 @@ let memoryCancellationEpoch = 0;
 const requestQueue = [];
 let activeRequests = 0;
 const retryListeners = new Set();
+const requestProgressListeners = new Set();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -232,6 +233,44 @@ export function abortCurrentMemoryGeneration() {
   while (requestQueue.length) requestQueue.shift().resolve('');
 }
 
+/**
+ * Subscribe to bounded, content-free provider progress. Direct local
+ * providers can report generated-output estimates while connection profiles
+ * report request start/completion only, because their service returns a final
+ * response rather than a stream.
+ */
+export function onMemoryRequestProgress(listener) {
+  requestProgressListeners.add(listener);
+  return () => requestProgressListeners.delete(listener);
+}
+
+function emitMemoryRequestProgress(event) {
+  for (const listener of requestProgressListeners) {
+    try { listener(event); } catch (error) { console.warn(`[${MODULE_NAME}] Progress listener failed:`, error); }
+  }
+}
+
+function createMemoryRequestProgress(source, requestedOutputTokens, task = null) {
+  const requestId = `memory-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const base = {
+    request_id: requestId,
+    source,
+    task: task ?? null,
+    requested_output_tokens: Number(requestedOutputTokens) > 0 ? Number(requestedOutputTokens) : null,
+    started_at: Date.now(),
+  };
+  emitMemoryRequestProgress({ ...base, event: 'started', streaming: false, generated_output_tokens: 0 });
+  return {
+    update: (generatedOutputTokens, { streaming = true } = {}) => emitMemoryRequestProgress({
+      ...base, event: 'progress', streaming, generated_output_tokens: Math.max(0, Number(generatedOutputTokens) || 0),
+    }),
+    complete: (output) => emitMemoryRequestProgress({
+      ...base, event: 'completed', streaming: false, generated_output_tokens: estimateTokens(output ?? ''), completed_at: Date.now(),
+    }),
+    fail: () => emitMemoryRequestProgress({ ...base, event: 'failed', streaming: false, completed_at: Date.now() }),
+  };
+}
+
 /** Available LLM sources for memory operations. */
 export const memory_sources = {
   main: 'main',
@@ -355,11 +394,15 @@ async function generateWithConnectionProfile(
   const rawMessageCount = [...priorMessages, { role: 'user', content: prompt }]
     .filter((message) => message?.content?.trim()).length;
   const limit = maxTokens > 0 ? maxTokens : undefined;
+  const progress = createMemoryRequestProgress(memory_sources.connection_profile, limit, diagnosticContext.task);
   try {
     const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
     // result is ExtractedData with a `.content` field containing the response text.
-    return result?.content ?? '';
+    const output = result?.content ?? '';
+    progress.complete(output);
+    return output;
   } catch (error) {
+    progress.fail();
     // Connection profiles hide their serialized request behind SillyTavern's
     // request service. Keep a small, content-free footprint on the error so
     // an HTTP 400 can be diagnosed from exported catch-up diagnostics without
@@ -452,6 +495,52 @@ export async function fetchOllamaModels(baseUrl) {
     .sort();
 }
 
+async function readOllamaStream(response, progress) {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let output = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      output += event?.message?.content ?? '';
+      progress.update(estimateTokens(output));
+    }
+    if (done) break;
+  }
+  return output;
+}
+
+async function readOpenAiStream(response, progress) {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let output = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      const event = JSON.parse(payload);
+      output += event?.choices?.[0]?.delta?.content ?? '';
+      progress.update(estimateTokens(output));
+    }
+    if (done) break;
+  }
+  return output;
+}
+
 /**
  * Sends a prompt to an Ollama instance and returns the response text.
  * Uses the /api/chat endpoint with a single user message.
@@ -460,7 +549,7 @@ export async function fetchOllamaModels(baseUrl) {
  * @param {number} [numPredict] - Token generation limit passed as Ollama's num_predict option.
  * @returns {Promise<string>}
  */
-async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget()) {
+async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget(), { task = null } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const url = getOllamaUrl();
   const model = settings?.ollama_model;
@@ -470,6 +559,8 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
 
   const thisController = new AbortController();
   memoryAbortController = thisController;
+  const progress = createMemoryRequestProgress(memory_sources.ollama, numPredict, task);
+  const stream = requestProgressListeners.size > 0;
   try {
     const response = await fetch(`${url}/api/chat`, {
       method: 'POST',
@@ -477,7 +568,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
       body: JSON.stringify({
         model,
         messages,
-        stream: false,
+        stream,
         options: {
           num_predict: numPredict,
         },
@@ -485,10 +576,12 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
       signal: thisController.signal,
     });
     if (!response.ok) throw new Error(`Ollama responded with ${response.status}`);
-    const data = await response.json();
-    return data.message?.content ?? '';
+    const output = stream ? await readOllamaStream(response, progress) : (await response.json()).message?.content ?? '';
+    progress.complete(output);
+    return output;
   } catch (err) {
-    if (err.name === 'AbortError') return '';
+    if (err.name === 'AbortError') { progress.fail(); return ''; }
+    progress.fail();
     throw err;
   } finally {
     if (memoryAbortController === thisController) memoryAbortController = null;
@@ -542,6 +635,7 @@ async function generateOpenAICompat(
   prompt,
   priorMessages = [],
   responseLength = getGenerationBudget(),
+  { task = null } = {},
 ) {
   const settings = extension_settings[MODULE_NAME];
   const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '').replace(/\/v1$/, '');
@@ -554,6 +648,8 @@ async function generateOpenAICompat(
   {
     const thisController = new AbortController();
     memoryAbortController = thisController;
+    const progress = createMemoryRequestProgress(memory_sources.openai_compatible, responseLength, task);
+    const stream = requestProgressListeners.size > 0 && isLocalUrl(baseUrl);
     try {
       let response;
       if (isLocalUrl(baseUrl)) {
@@ -567,7 +663,7 @@ async function generateOpenAICompat(
             model: model || undefined,
             messages,
             max_tokens: responseLength > 0 ? responseLength : undefined,
-            stream: false,
+            stream,
           }),
           signal: thisController.signal,
         });
@@ -596,9 +692,11 @@ async function generateOpenAICompat(
       }
 
       if (response.ok) {
-        const data = await response.json();
+        const data = stream ? null : await response.json();
         if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
-        return data.choices?.[0]?.message?.content ?? '';
+        const output = stream ? await readOpenAiStream(response, progress) : data.choices?.[0]?.message?.content ?? '';
+        progress.complete(output);
+        return output;
       }
 
       const error = new Error(`OpenAI Compatible API responded with ${response.status}`);
@@ -606,7 +704,8 @@ async function generateOpenAICompat(
       error.retryAfter = response.headers.get('Retry-After');
       throw error;
     } catch (err) {
-      if (err.name === 'AbortError') return '';
+      if (err.name === 'AbortError') { progress.fail(); return ''; }
+      progress.fail();
       throw err;
     } finally {
       if (memoryAbortController === thisController) memoryAbortController = null;
@@ -633,9 +732,9 @@ export async function generateMemoryExtract(prompt, { responseLength = 600, task
       let raw;
 
   if (source === memory_sources.ollama) {
-    raw = await generateOllama(prompt, []);
+    raw = await generateOllama(prompt, [], responseLength, { task });
   } else if (source === memory_sources.openai_compatible) {
-    raw = await generateOpenAICompat(prompt, []);
+    raw = await generateOpenAICompat(prompt, [], responseLength, { task });
   } else if (source === memory_sources.connection_profile) {
     raw = await generateWithConnectionProfile(prompt, [], responseLength, { task });
   } else if (source === memory_sources.webllm) {
@@ -713,7 +812,7 @@ function trimToBudget(messages, budget) {
  */
 export async function generateMemorySummarize(
   quietPrompt,
-  { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null } = {},
+  { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null, task = null } = {},
 ) {
   return queueMemoryRequest(() =>
     retryTransientMemoryOperation(async () => {
@@ -753,11 +852,11 @@ export async function generateMemorySummarize(
 
     let rawDirect;
     if (source === memory_sources.ollama) {
-      rawDirect = await generateOllama(quietPrompt, priorMessages);
+      rawDirect = await generateOllama(quietPrompt, priorMessages, responseLength, { task });
     } else if (source === memory_sources.connection_profile) {
-      rawDirect = await generateWithConnectionProfile(quietPrompt, priorMessages, responseLength);
+      rawDirect = await generateWithConnectionProfile(quietPrompt, priorMessages, responseLength, { task });
     } else {
-      rawDirect = await generateOpenAICompat(quietPrompt, priorMessages);
+      rawDirect = await generateOpenAICompat(quietPrompt, priorMessages, responseLength, { task });
     }
     const strippedDirect = stripThinkingBlocks(rawDirect ?? '');
     const charLimitDirect =

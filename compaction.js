@@ -96,7 +96,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     if (estimateTokens(prompt) > inputBudget) {
       throw new Error(`Compaction prompt exceeds its ${inputBudget}-token input budget.`);
     }
-    const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [] });
+    const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: 'shortterm_compaction' });
     if (!response?.trim()) throw new Error('Compaction provider returned an empty response.');
     rollingSummary = formatSummary(response);
     chunk = [];
@@ -316,6 +316,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {
           responseLength,
           includeLastMessage,
+          task: 'shortterm_compaction',
         });
       }
     }

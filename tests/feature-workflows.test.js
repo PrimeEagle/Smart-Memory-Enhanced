@@ -1580,6 +1580,12 @@ test('catch-up keeps a rough finalization ETA after the chunk phase completes', 
   assert.match(settings, /rough remaining estimate/);
   assert.match(settings, /activeEstimateExceeded/);
   assert.match(settings, /has exceeded its observed estimate/);
+  assert.match(settings, /onMemoryRequestProgress/);
+  assert.match(settings, /live provider progress/);
+  assert.match(settings, /streamedTokenRate/);
+  assert.match(read('generate.js'), /onMemoryRequestProgress/);
+  assert.match(read('generate.js'), /readOllamaStream/);
+  assert.match(read('generate.js'), /readOpenAiStream/);
   assert.match(settings, /updateFinalizationEta\('short-term memory extraction'\)/);
   assert.match(settings, /updateFinalizationEta\('final identity reconciliation and save'\)/);
 });
