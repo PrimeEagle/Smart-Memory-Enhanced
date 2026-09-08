@@ -1059,6 +1059,7 @@ function refreshDirectRangeInputs() {
 // settings store as a run-scoped recovery sidecar, then copy it back into the
 // chat checkpoint at the next safe transaction boundary.
 const CATCH_UP_SETTINGS_SIDECAR_KEY = 'catch_up_run_settings_snapshot';
+const CATCH_UP_SETTINGS_STORAGE_PREFIX = 'smart-memory-enhanced:catch-up-settings:';
 
 function snapshotMemorizeRunSettings(settings) {
   return Object.fromEntries(Object.entries(settings ?? {})
@@ -1073,6 +1074,42 @@ function matchingCatchUpSettingsSidecar(settings, checkpoint, context) {
   if ((sidecar.chat_id ?? null) !== (context?.chatId ?? null)) return null;
   if ((sidecar.group_id ?? null) !== (context?.groupId ?? null)) return null;
   return sidecar;
+}
+
+function catchUpSettingsStorageKey(context) {
+  // This key contains no chat content or prompts. It only scopes a small
+  // recovery record to the active persisted chat identity.
+  const scope = context?.groupId ?? context?.chatId ?? context?.characterId ?? context?.name2 ?? 'unknown';
+  return `${CATCH_UP_SETTINGS_STORAGE_PREFIX}${String(scope)}`;
+}
+
+function readCatchUpSettingsStorage(checkpoint, context) {
+  try {
+    const sidecar = JSON.parse(localStorage.getItem(catchUpSettingsStorageKey(context)) ?? 'null');
+    if (!sidecar?.settings || typeof sidecar.settings !== 'object') return null;
+    if (sidecar.run_id !== checkpoint?.run_id) return null;
+    return sidecar;
+  } catch {
+    return null;
+  }
+}
+
+function writeCatchUpSettingsStorage(sidecar, context) {
+  try {
+    localStorage.setItem(catchUpSettingsStorageKey(context), JSON.stringify(sidecar));
+  } catch (error) {
+    // Browser storage is an additional crash-safety copy. The ordinary
+    // settings sidecar remains available if storage is blocked or full.
+    console.warn(`[${MODULE_NAME}] Could not persist local recovery settings snapshot:`, error);
+  }
+}
+
+function clearCatchUpSettingsStorage(runId, context) {
+  try {
+    const key = catchUpSettingsStorageKey(context);
+    const sidecar = JSON.parse(localStorage.getItem(key) ?? 'null');
+    if (sidecar?.run_id === runId) localStorage.removeItem(key);
+  } catch { /* Nonessential cleanup. */ }
 }
 
 function persistSettingsImmediately() {
@@ -1812,7 +1849,7 @@ export function bindSettingsUI(ctrl) {
     checkpoint.run_settings_snapshot = snapshot;
     checkpoint.run_settings_snapshot_updated_at = now;
     checkpoint.updated_at = now;
-    extension_settings[MODULE_NAME][CATCH_UP_SETTINGS_SIDECAR_KEY] = {
+    const sidecar = {
       schema_version: 1,
       run_id: checkpoint.run_id,
       chat_id: context.chatId ?? null,
@@ -1820,6 +1857,10 @@ export function bindSettingsUI(ctrl) {
       updated_at: now,
       settings: snapshot,
     };
+    extension_settings[MODULE_NAME][CATCH_UP_SETTINGS_SIDECAR_KEY] = sidecar;
+    // localStorage writes synchronously, unlike SillyTavern's debounced
+    // settings save. This is the crash-safe authoritative newest edit.
+    writeCatchUpSettingsStorage(sidecar, context);
     persistSettingsImmediately();
   };
   const queueActiveCatchUpSettingsSnapshot = () => {
@@ -4336,7 +4377,9 @@ export function bindSettingsUI(ctrl) {
       // while this sidecar is flushed with every budget edit.  Without this
       // ordering, a resume would overwrite a recently saved budget with the
       // stale value captured when the run originally began.
-      const recoverySettingsSidecar = matchingCatchUpSettingsSidecar(settings, resumableCheckpoint, catchUpContext);
+      const persistedRecoverySettings = readCatchUpSettingsStorage(resumableCheckpoint, catchUpContext);
+      const recoverySettingsSidecar = persistedRecoverySettings
+        ?? matchingCatchUpSettingsSidecar(settings, resumableCheckpoint, catchUpContext);
       const recoverySettingsSnapshot = recoverySettingsSidecar?.settings ?? resumableCheckpoint?.run_settings_snapshot;
       if (recoverySettingsSnapshot) {
         Object.assign(settings, recoverySettingsSnapshot);
@@ -4662,7 +4705,10 @@ export function bindSettingsUI(ctrl) {
         const liveProgressDetail = streamedTokenRate
           ? ` - live provider progress: ~${streamedTokens}/${requestedTokens || '?'} output tokens at ~${streamedTokenRate.toFixed(1)} tok/s; rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
           : null;
-        const etaDetail = liveProgressDetail ?? (activeEstimateExceeded
+        const noStreamDetail = activeRequest && !activeRequest.streaming
+          ? ` - live token progress is unavailable through this provider; ${estimatedRemaining !== null ? `rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.` : `${elapsedDetail}; waiting for the current request to complete.`}`
+          : null;
+        const etaDetail = liveProgressDetail ?? noStreamDetail ?? (activeEstimateExceeded
           ? ` - ${elapsedDetail}; this phase has exceeded its observed estimate and the provider has not exposed live token progress, so remaining time is unavailable until the current request completes.`
           : estimatedRemaining !== null
             ? ` - rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
@@ -6526,6 +6572,7 @@ export function bindSettingsUI(ctrl) {
           delete extension_settings[MODULE_NAME][CATCH_UP_SETTINGS_SIDECAR_KEY];
           persistSettingsImmediately();
         }
+        clearCatchUpSettingsStorage(catchUpRunId, catchUpContext);
       }
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;

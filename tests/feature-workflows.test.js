@@ -1540,7 +1540,10 @@ test('finalization phases commit independently and resume their saved settings s
   const settings = read('settings.js');
   assert.match(settings, /function snapshotMemorizeRunSettings/);
   assert.match(settings, /CATCH_UP_SETTINGS_SIDECAR_KEY/);
+  assert.match(settings, /CATCH_UP_SETTINGS_STORAGE_PREFIX/);
   assert.match(settings, /matchingCatchUpSettingsSidecar/);
+  assert.match(settings, /readCatchUpSettingsStorage/);
+  assert.match(settings, /writeCatchUpSettingsStorage/);
   assert.match(settings, /persistSettingsImmediately/);
   assert.match(settings, /run_settings_snapshot/);
   assert.match(settings, /run_settings_snapshot_updated_at/);
@@ -1582,6 +1585,7 @@ test('catch-up keeps a rough finalization ETA after the chunk phase completes', 
   assert.match(settings, /has exceeded its observed estimate/);
   assert.match(settings, /onMemoryRequestProgress/);
   assert.match(settings, /live provider progress/);
+  assert.match(settings, /live token progress is unavailable through this provider/);
   assert.match(settings, /streamedTokenRate/);
   assert.match(read('generate.js'), /onMemoryRequestProgress/);
   assert.match(read('generate.js'), /readOllamaStream/);
