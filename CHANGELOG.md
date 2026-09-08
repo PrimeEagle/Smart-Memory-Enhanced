@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.36] - 2026-09-07
+
+### Added
+
+- Finalization ETA now consumes live, privacy-safe provider progress from
+  direct local Ollama and OpenAI-compatible endpoints. When streaming is
+  available it shows approximate generated tokens, token rate, and a
+  continually refreshed rough remaining estimate. Connection Profiles retain
+  their explicit no-stream fallback because SillyTavern returns only a final
+  response through that route.
+
 ## [0.9.35] - 2026-09-07
 
 ### Fixed
