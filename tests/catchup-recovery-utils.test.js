@@ -6,6 +6,7 @@ import {
   ensureCatchUpRunManifest,
   beginCatchUpAttempt,
   recordCommittedCatchUpRange,
+  getCatchUpTierRangeStatus,
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
@@ -120,10 +121,51 @@ test('uncommitted and incomplete tier ranges cannot be mistaken for full cumulat
     tierOutcomes: { longterm: { enabled: true, complete: false }, session: { enabled: true, complete: true } },
   });
   const summary = summarizeCatchUpRunManifest(manifest);
-  assert.equal(summary.cumulative_committed_count, 4);
-  assert.equal(summary.remaining_gap_count, 4);
+  assert.equal(summary.cumulative_committed_count, 0);
+  assert.equal(summary.remaining_gap_count, 8);
   assert.equal(summary.cumulative_tier_coverage.longterm.coverage_complete, false);
   assert.equal(summary.cumulative_tier_coverage.session.coverage_complete, false);
+  assert.equal(summary.full_cumulative_coverage_confirmed, false);
+  assert.equal(summary.cumulative_tier_coverage.longterm.pending_obligations[0].reason_code, 'not_safely_committed');
+});
+
+test('a resumed tier obligation replays only its missing tier and makes the range source-safe once complete', () => {
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-tier-replay', source_message_count: 4 }, { source_message_count: 4 });
+  manifest = beginCatchUpAttempt(manifest, { type: 'initial', now: 1 });
+  const range = { start_offset: 0, end_offset: 3, source_start_index: 10, source_end_index: 13 };
+  manifest = recordCommittedCatchUpRange(manifest, range, {
+    now: 2,
+    tierOutcomes: {
+      longterm: { enabled: true, complete: true },
+      session: { enabled: true, complete: false, reason_code: 'provider_retry_exhausted' },
+    },
+  });
+  assert.equal(getCatchUpTierRangeStatus(manifest, 'longterm', range).safely_committed, true);
+  assert.equal(getCatchUpTierRangeStatus(manifest, 'session', range).safely_committed, false);
+  manifest = beginCatchUpAttempt(manifest, { type: 'resumed_after_crash', now: 3 });
+  manifest = recordCommittedCatchUpRange(manifest, range, {
+    now: 4,
+    tierOutcomes: {
+      longterm: { enabled: true, complete: true }, // retained, not replayed
+      session: { enabled: true, complete: true },
+    },
+  });
+  const summary = summarizeCatchUpRunManifest(manifest);
+  assert.equal(summary.cumulative_committed_count, 4);
+  assert.equal(summary.full_cumulative_coverage_confirmed, true);
+  assert.equal(summary.cumulative_tier_coverage.session.pending_obligations.length, 0);
+  assert.equal(summary.attempt_count, 2);
+  assert.equal(summary.resumption_count, 1);
+});
+
+test('total attempt counters remain exact after bounded detail retention', () => {
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-attempts', source_message_count: 0 }, { source_message_count: 0 });
+  for (let index = 0; index < 10; index++) manifest = beginCatchUpAttempt(manifest, { type: index ? 'resumed_after_crash' : 'initial', now: index + 1 });
+  const summary = summarizeCatchUpRunManifest(manifest);
+  assert.equal(summary.attempt_count, 10);
+  assert.equal(summary.resumption_count, 9);
+  assert.equal(summary.retained_detailed_attempt_count, 8);
+  assert.equal(summary.omitted_attempt_detail_count, 2);
 });
 
 test('checkpoint diagnostics distinguish missing, resumable, and invalidated recovery states', () => {

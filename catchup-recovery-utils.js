@@ -34,6 +34,7 @@ export function validateCatchUpResumeSource(checkpoint, messages = []) {
 const MAX_CATCH_UP_ATTEMPTS = 8;
 const MAX_COMMITTED_RANGES = 512;
 const MAX_COMMITTED_CHUNK_DETAILS = 512;
+const MAX_TIER_OBLIGATIONS = 1024;
 
 function number(value, fallback = 0) {
   const parsed = Number(value);
@@ -85,6 +86,32 @@ function sameChunk(left, right) {
     && left?.source_end_index === right?.source_end_index;
 }
 
+function terminalTierOutcome(outcome = {}) {
+  return outcome.safely_committed === true || outcome.complete === true
+    || outcome.not_applicable === true || outcome.alternative_resolved === true;
+}
+
+function obligationKey(tier, range) {
+  return `${tier}:${range.start_offset}-${range.end_offset}`;
+}
+
+/** Returns the durable state of one tier/range without exposing source text. */
+export function getCatchUpTierRangeStatus(manifest, tier, range) {
+  const normalized = normalizeRange(range);
+  if (!normalized || !['longterm', 'session'].includes(tier)) return null;
+  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
+  return next.tier_obligations.find((entry) => entry.key === obligationKey(tier, normalized)) ?? null;
+}
+
+/** True when an older range-only manifest already covers the entire range. */
+export function isCatchUpTierRangeSafelyCovered(manifest, tier, range) {
+  const normalized = normalizeRange(range);
+  if (!normalized || !['longterm', 'session'].includes(tier)) return false;
+  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
+  return mergeRanges(next.tier_coverage?.[tier]?.committed_ranges ?? [])
+    .some((covered) => covered.start_offset <= normalized.start_offset && covered.end_offset >= normalized.end_offset);
+}
+
 function normalizeAttempt(attempt) {
   const ranges = mergeRanges(attempt?.current_attempt_ranges ?? []);
   const chunksAvailable = Array.isArray(attempt?.current_attempt_chunks);
@@ -107,7 +134,7 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
   const prior = checkpoint?.run_manifest && typeof checkpoint.run_manifest === 'object' ? checkpoint.run_manifest : {};
   const sourceMessageCount = number(sourceWindow.source_message_count ?? prior.source_window?.message_count ?? checkpoint?.source_message_count, 0);
   return {
-    schema_version: 2,
+    schema_version: 3,
     logical_run_id: prior.logical_run_id ?? checkpoint?.run_id ?? null,
     source_window: {
       message_count: sourceMessageCount,
@@ -116,6 +143,8 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
       fingerprint: sourceWindow.fingerprint ?? prior.source_window?.fingerprint ?? null,
     },
     attempts: Array.isArray(prior.attempts) ? prior.attempts.map(normalizeAttempt).slice(-MAX_CATCH_UP_ATTEMPTS) : [],
+    total_attempt_count: Math.max(number(prior.total_attempt_count), Array.isArray(prior.attempts) ? prior.attempts.length : 0),
+    total_resumption_count: Math.max(number(prior.total_resumption_count), Math.max(0, (Array.isArray(prior.attempts) ? prior.attempts.length : 0) - 1)),
     committed_ranges: mergeRanges(prior.committed_ranges ?? []).slice(-MAX_COMMITTED_RANGES),
     // Schema v1 retained only coalesced coverage ranges. Those ranges cannot
     // be reverse-engineered into real extraction chunks, so never relabel them.
@@ -131,6 +160,21 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
       enabled: prior.tier_coverage?.[tier]?.enabled ?? null,
       committed_ranges: mergeRanges(prior.tier_coverage?.[tier]?.committed_ranges ?? []).slice(-MAX_COMMITTED_RANGES),
     }])),
+    tier_obligations: Array.isArray(prior.tier_obligations) ? prior.tier_obligations
+      .map((entry) => {
+        const range = normalizeRange(entry);
+        if (!range || !['longterm', 'session'].includes(entry?.tier)) return null;
+        return {
+          key: obligationKey(entry.tier, range), tier: entry.tier, ...range,
+          enabled: entry.enabled !== false, applicable: entry.applicable !== false,
+          safely_committed: entry.safely_committed === true,
+          terminal_outcome: entry.terminal_outcome ?? (entry.safely_committed ? 'safely_committed' : 'pending'),
+          reason_code: entry.reason_code ?? null,
+          retry_replay_count: number(entry.retry_replay_count),
+          attempt_number: number(entry.attempt_number) || null,
+          checkpoint_boundary: number(entry.checkpoint_boundary) || null,
+        };
+      }).filter(Boolean).slice(-MAX_TIER_OBLIGATIONS) : [],
     checkpoint_transitions: Array.isArray(prior.checkpoint_transitions) ? prior.checkpoint_transitions.slice(-24) : [],
     terminal_status: prior.terminal_status ?? 'in_progress',
     terminal_reason_code: prior.terminal_reason_code ?? null,
@@ -147,7 +191,7 @@ export function beginCatchUpAttempt(manifest, { type = 'initial', resumeOffset =
     previous.ended_at = now;
   }
   const attempt = {
-    attempt_number: (next.attempts.at(-1)?.attempt_number ?? 0) + 1,
+    attempt_number: next.total_attempt_count + 1,
     type,
     started_at: now,
     resume_checkpoint_offset: number(resumeOffset),
@@ -162,6 +206,8 @@ export function beginCatchUpAttempt(manifest, { type = 'initial', resumeOffset =
     status: 'in_progress',
   };
   next.attempts = [...next.attempts, attempt].slice(-MAX_CATCH_UP_ATTEMPTS);
+  next.total_attempt_count += 1;
+  if (next.total_attempt_count > 1) next.total_resumption_count += 1;
   next.checkpoint_transitions = [...next.checkpoint_transitions, { state: 'in_progress', at: now, reason_code: type }].slice(-24);
   next.terminal_status = 'in_progress';
   next.terminal_reason_code = null;
@@ -173,7 +219,9 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
   const next = ensureCatchUpRunManifest({ run_manifest: manifest });
   const normalized = normalizeRange(range);
   if (!normalized) return next;
-  next.committed_ranges = mergeRanges([...next.committed_ranges, normalized]).slice(-MAX_COMMITTED_RANGES);
+  const enabledOutcomes = Object.values(tierOutcomes).filter((outcome) => outcome?.enabled === true && outcome?.applicable !== false);
+  const sourceSafelyCommitted = enabledOutcomes.every(terminalTierOutcome);
+  if (sourceSafelyCommitted) next.committed_ranges = mergeRanges([...next.committed_ranges, normalized]).slice(-MAX_COMMITTED_RANGES);
   const attempt = next.attempts.at(-1);
   if (attempt) {
     attempt.current_attempt_ranges = mergeRanges([...(attempt.current_attempt_ranges ?? []), normalized]).slice(-MAX_COMMITTED_RANGES);
@@ -189,7 +237,7 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
     };
     attempt.updated_at = now;
   }
-  if (next.cumulative_chunk_count_available) {
+  if (next.cumulative_chunk_count_available && sourceSafelyCommitted) {
     const isNewChunk = !next.committed_chunks.some((chunk) => sameChunk(chunk, normalized));
     if (isNewChunk) next.committed_chunks = [...next.committed_chunks, normalized].slice(-MAX_COMMITTED_CHUNK_DETAILS);
     if (isNewChunk) next.cumulative_chunk_count = Number(next.cumulative_chunk_count ?? 0) + 1;
@@ -198,7 +246,20 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
     const outcome = tierOutcomes[tier];
     if (!outcome) continue;
     next.tier_coverage[tier].enabled = Boolean(outcome.enabled);
-    if (outcome.complete) {
+    const safelyCommitted = terminalTierOutcome(outcome);
+    const key = obligationKey(tier, normalized);
+    const prior = next.tier_obligations.find((entry) => entry.key === key);
+    const record = {
+      key, tier, ...normalized, enabled: Boolean(outcome.enabled), applicable: outcome.applicable !== false,
+      safely_committed: safelyCommitted,
+      terminal_outcome: outcome.not_applicable ? 'not_applicable' : outcome.alternative_resolved ? 'alternative_resolved' : safelyCommitted ? 'safely_committed' : 'pending',
+      reason_code: outcome.reason_code ?? (safelyCommitted ? null : 'not_safely_committed'),
+      retry_replay_count: Number(prior?.retry_replay_count ?? 0) + (prior ? 1 : 0),
+      attempt_number: attempt?.attempt_number ?? null,
+      checkpoint_boundary: normalized.end_offset,
+    };
+    next.tier_obligations = [...next.tier_obligations.filter((entry) => entry.key !== key), record].slice(-MAX_TIER_OBLIGATIONS);
+    if (safelyCommitted && outcome.enabled) {
       next.tier_coverage[tier].committed_ranges = mergeRanges([
         ...next.tier_coverage[tier].committed_ranges,
         normalized,
@@ -236,12 +297,15 @@ export function summarizeCatchUpRunManifest(manifest) {
     const coverage = next.tier_coverage?.[tier] ?? {};
     const ranges = mergeRanges(coverage.committed_ranges ?? []);
     const tierGaps = coverage.enabled ? gapsForRanges(ranges, total) : [];
+    const obligations = next.tier_obligations.filter((entry) => entry.tier === tier && entry.enabled && entry.applicable);
+    const pendingObligations = obligations.filter((entry) => !entry.safely_committed);
     return [tier, {
       enabled: coverage.enabled,
       committed_ranges: ranges,
       committed_count: ranges.reduce((sum, range) => sum + range.message_count, 0),
       coverage_complete: coverage.enabled === false ? null : tierGaps.length === 0,
       remaining_gaps: tierGaps,
+      pending_obligations: pendingObligations,
     }];
   }));
   const attempts = next.attempts.map((attempt) => {
@@ -261,7 +325,10 @@ export function summarizeCatchUpRunManifest(manifest) {
     schema_version: next.schema_version,
     logical_run_id: next.logical_run_id,
     source_window: next.source_window,
-    attempt_count: next.attempts.length,
+    attempt_count: next.total_attempt_count,
+    retained_detailed_attempt_count: next.attempts.length,
+    omitted_attempt_detail_count: Math.max(0, next.total_attempt_count - next.attempts.length),
+    resumption_count: next.total_resumption_count,
     scope: 'cumulative_logical_run_across_attempts',
     attempts,
     cumulative_committed_ranges: committed,
@@ -283,6 +350,8 @@ export function summarizeCatchUpRunManifest(manifest) {
     cumulative_request_counters_available: allRequestCountersAvailable,
     cumulative_tier_coverage: tierCoverage,
     all_original_source_messages_covered: total === 0 ? true : gaps.length === 0,
+    full_cumulative_coverage_confirmed: (total === 0 ? true : gaps.length === 0)
+      && Object.values(tierCoverage).every((tier) => tier.enabled !== true || tier.coverage_complete === true),
     remaining_gaps: gaps,
     remaining_gap_count: gaps.reduce((sum, gap) => sum + gap.message_count, 0),
     terminal_status: next.terminal_status,

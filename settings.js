@@ -79,6 +79,8 @@ import {
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
+  getCatchUpTierRangeStatus,
+  isCatchUpTierRangeSafelyCovered,
 } from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
@@ -4735,6 +4737,25 @@ export function bindSettingsUI(ctrl) {
       // prompt overhead (instructions, existing memories) and the model response.
       const catchUpTokenBudget = Math.max(500, Math.floor(getMaxContextSize(0) * 0.35));
       let i = resumeOffset;
+      // Older checkpoints recorded only per-tier range coverage. Reconstruct
+      // their missing work as a bounded, numeric-only replay queue before
+      // accepting any finalization. New checkpoints normally have no queue
+      // because an incomplete range blocks the source boundary immediately.
+      const legacyTierReplayRanges = (() => {
+        const summary = summarizeCatchUpRunManifest(checkpoint.run_manifest);
+        const raw = Object.values(summary.cumulative_tier_coverage ?? {})
+          .filter((tier) => tier.enabled === true)
+          .flatMap((tier) => tier.remaining_gaps ?? [])
+          .sort((left, right) => left.start_offset - right.start_offset || left.end_offset - right.end_offset);
+        return raw.reduce((ranges, range) => {
+          const previous = ranges.at(-1);
+          if (previous && range.start_offset <= previous.end_offset + 1) previous.end_offset = Math.max(previous.end_offset, range.end_offset);
+          else ranges.push({ start_offset: range.start_offset, end_offset: range.end_offset });
+          return ranges;
+        }, []);
+      })();
+      let tierReplayCursor = 0;
+      if (legacyTierReplayRanges.length) i = legacyTierReplayRanges[0].start_offset;
       if (resumableCheckpoint) {
         setStatusMessage(`Resuming Memorize Chat from ${i}/${total} safely committed source messages...`);
       }
@@ -4750,9 +4771,11 @@ export function bindSettingsUI(ctrl) {
         // Build the chunk by accumulating messages until the token budget or
         // the message cap is reached. Always include at least one message so
         // a single very long message does not stall the loop forever.
+        const replayRange = legacyTierReplayRanges[tierReplayCursor] ?? null;
         const chunk = [];
         let chunkTokens = 0;
-        for (let j = i; j < total && chunk.length < CATCH_UP_CHUNK_SIZE; j++) {
+        const chunkLimit = replayRange ? Math.min(total, replayRange.end_offset + 1) : total;
+        for (let j = i; j < chunkLimit && chunk.length < CATCH_UP_CHUNK_SIZE; j++) {
           const msg = allMessages[j];
           const msgTokens = estimateTokens(`${msg.name}: ${msg.mes}`);
           if (chunk.length > 0 && chunkTokens + msgTokens > catchUpTokenBudget) break;
@@ -4766,7 +4789,24 @@ export function bindSettingsUI(ctrl) {
           `Catching up... (${i}/${total} messages, ${Math.round((i / total) * 100)}%)`,
         );
 
-        if (settings.longterm_enabled && !isFreshStart()) {
+        const currentRange = {
+          start_offset: i, end_offset: processed - 1,
+          source_start_index: chunk[0]?.__sme_original_index ?? null,
+          source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
+        };
+        const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
+        const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
+        const priorLongtermObligation = getCatchUpTierRangeStatus(checkpoint.run_manifest, 'longterm', currentRange);
+        const priorSessionObligation = getCatchUpTierRangeStatus(checkpoint.run_manifest, 'session', currentRange);
+        // A resumed incomplete range may have committed one tier before a
+        // crash or a bounded provider failure.  Replay only its pending tier;
+        // re-running a safely committed tier would duplicate durable records.
+        const replayLongterm = longtermEnabledForRun && priorLongtermObligation?.safely_committed !== true
+          && !isCatchUpTierRangeSafelyCovered(checkpoint.run_manifest, 'longterm', currentRange);
+        const replaySession = sessionEnabledForRun && priorSessionObligation?.safely_committed !== true
+          && !isCatchUpTierRangeSafelyCovered(checkpoint.run_manifest, 'session', currentRange);
+
+        if (replayLongterm) {
           for (const name of catchUpCharacterNames) {
             // Historical group rebuilds intentionally give every current card
             // the full chunk. Older chats may predate the group split or carry
@@ -4799,7 +4839,7 @@ export function bindSettingsUI(ctrl) {
           rollbackCatchUpTransaction(chunkTransaction);
           break;
         }
-        if (settings.session_enabled && !isFreshStart()) {
+        if (replaySession) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
           await extractSessionMemories(chunk, null, {
             sessionDiagnostics: runResult.sessionExtraction,
@@ -4869,7 +4909,6 @@ export function bindSettingsUI(ctrl) {
         let chunkCommitted = false;
         const checkpointForCommit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
         if (checkpointForCommit) {
-          checkpointForCommit.next_source_offset = processed;
           checkpointForCommit.committed_chunks = Number(checkpointForCommit.committed_chunks ?? 0) + 1;
           checkpointForCommit.last_committed_source_start_index = chunk[0]?.__sme_original_index ?? null;
           checkpointForCommit.last_committed_source_end_index = chunk.at(-1)?.__sme_original_index ?? null;
@@ -4878,28 +4917,25 @@ export function bindSettingsUI(ctrl) {
           const rangeMatchesCurrentChunk = (record) => record?.original_range?.start === chunkStartIndex
             && record?.original_range?.end === chunkEndIndex
             && record?.coverage_terminal_state === 'completed';
-          const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
-          const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
           const completedLongtermOwners = runResult.extractionCoverage.longterm.records
             .filter(rangeMatchesCurrentChunk).length;
           const completedSessionRanges = runResult.extractionCoverage.session.records
             .filter(rangeMatchesCurrentChunk).length;
           checkpointForCommit.run_manifest = recordCommittedCatchUpRange(
             checkpointForCommit.run_manifest,
-            {
-              start_offset: i,
-              end_offset: processed - 1,
-              source_start_index: chunkStartIndex,
-              source_end_index: chunkEndIndex,
-            },
+            currentRange,
             {
               attemptMetrics: {
                 retry_count: runResult.retriedRequests,
                 provider_failure_count: runResult.providerFailures.length,
               },
               tierOutcomes: {
-                longterm: { enabled: longtermEnabledForRun, complete: longtermEnabledForRun && completedLongtermOwners >= catchUpCharacterNames.length },
-                session: { enabled: sessionEnabledForRun, complete: sessionEnabledForRun && completedSessionRanges >= 1 },
+                longterm: longtermEnabledForRun
+                  ? { enabled: true, complete: priorLongtermObligation?.safely_committed === true || isCatchUpTierRangeSafelyCovered(checkpointForCommit.run_manifest, 'longterm', currentRange) || completedLongtermOwners >= catchUpCharacterNames.length, reason_code: priorLongtermObligation?.safely_committed === true || isCatchUpTierRangeSafelyCovered(checkpointForCommit.run_manifest, 'longterm', currentRange) || completedLongtermOwners >= catchUpCharacterNames.length ? null : 'longterm_range_not_safely_committed' }
+                  : { enabled: false, not_applicable: true, reason_code: 'longterm_disabled_for_run' },
+                session: sessionEnabledForRun
+                  ? { enabled: true, complete: priorSessionObligation?.safely_committed === true || isCatchUpTierRangeSafelyCovered(checkpointForCommit.run_manifest, 'session', currentRange) || completedSessionRanges >= 1, reason_code: priorSessionObligation?.safely_committed === true || isCatchUpTierRangeSafelyCovered(checkpointForCommit.run_manifest, 'session', currentRange) || completedSessionRanges >= 1 ? null : 'session_range_not_safely_committed' }
+                  : { enabled: false, not_applicable: true, reason_code: 'session_disabled_for_run' },
               },
             },
           );
@@ -4940,10 +4976,57 @@ export function bindSettingsUI(ctrl) {
           });
           if (currentChunkFailed) runResult.failedChunks++;
           else runResult.completedChunks++;
-          i += chunk.length;
+          const committedManifest = checkpointForCommit?.run_manifest;
+          const committedSummary = summarizeCatchUpRunManifest(committedManifest);
+          const rangeBlocked = Object.values(committedSummary.cumulative_tier_coverage ?? {}).some((tier) => tier.enabled === true && tier.pending_obligations?.some((obligation) => obligation.start_offset === i && obligation.end_offset === processed - 1));
+          if (rangeBlocked) {
+            // Preserve the committed tier plus its durable pending obligation,
+            // then stop at this boundary. Finalization must never transform
+            // partial tier coverage into a completed rebuild.
+            checkpointForCommit.status = 'awaiting_manual_resume';
+            checkpointForCommit.run_manifest = finalizeCatchUpRunManifest(checkpointForCommit.run_manifest, {
+              status: 'awaiting_manual_resume', reasonCode: 'tier_coverage_incomplete',
+              attemptMetrics: { retry_count: runResult.retriedRequests, provider_failure_count: runResult.providerFailures.length },
+            });
+            checkpointForCommit.updated_at = Date.now();
+            await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
+            ctrl.catchUpCancelled = true;
+            setStatusMessage(`Source ingestion paused: Long-Term or Session coverage is incomplete for ${i}-${processed - 1}. Resume will replay only the pending tier work.`);
+          } else {
+            checkpointForCommit.next_source_offset = processed;
+            if (replayRange) {
+              if (processed <= replayRange.end_offset) i = processed;
+              else {
+                tierReplayCursor += 1;
+                i = legacyTierReplayRanges[tierReplayCursor]?.start_offset ?? total;
+              }
+            } else i += chunk.length;
+          }
         }
       }
 
+      const extractionCoverageBeforeFinalization = summarizeCatchUpRunManifest(checkpoint.run_manifest);
+      const unresolvedTierCoverage = Object.entries(extractionCoverageBeforeFinalization.cumulative_tier_coverage ?? {})
+        .filter(([, tier]) => tier.enabled === true && tier.coverage_complete !== true)
+        .map(([tier, coverage]) => ({ tier, pending_ranges: coverage.remaining_gaps?.length ?? 0, pending_messages: coverage.remaining_gaps?.reduce((total, range) => total + Number(range.message_count ?? 0), 0) ?? 0 }));
+      if (!ctrl.catchUpCancelled && unresolvedTierCoverage.length) {
+        checkpoint.status = 'awaiting_manual_resume';
+        checkpoint.run_manifest = finalizeCatchUpRunManifest(checkpoint.run_manifest, {
+          status: 'awaiting_manual_resume', reasonCode: 'tier_coverage_incomplete',
+          attemptMetrics: { retry_count: runResult.retriedRequests, provider_failure_count: runResult.providerFailures.length },
+        });
+        checkpoint.updated_at = Date.now();
+        await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
+        ctrl.catchUpCancelled = true;
+        setStatusMessage(`Source ingestion complete, but memory-tier coverage remains incomplete: ${unresolvedTierCoverage.map((entry) => `${entry.pending_messages} ${entry.tier === 'longterm' ? 'Long-Term' : 'Session'} messages pending recovery`).join('; ')}.`);
+      }
+      // Tier coverage is a prerequisite, not a diagnostic afterthought. A
+      // source range is eligible for finalization only after every enabled
+      // applicable tier has reached a durable terminal outcome.
+      if (ctrl.catchUpCancelled) {
+        // The normal cancellation/final checkpoint path below retains the
+        // resumable ledger; skip all finalization work for an incomplete tier.
+      }
       // Each expensive finalization phase receives its own durable commit.
       // This keeps the existing extraction checkpoint semantics while allowing
       // a crash during a later phase to resume without repeating already safe
@@ -4951,9 +5034,15 @@ export function bindSettingsUI(ctrl) {
       finalTransaction = beginCatchUpTransaction(catchUpContext);
       const completedFinalizationPhases = checkpoint.finalization?.completed_phases ?? {};
       const hasCompletedFinalizationPhase = (key) => Boolean(completedFinalizationPhases[key]?.completed_at);
-      const commitFinalizationPhase = async (key) => {
+      const commitFinalizationPhase = async (key, phaseSummary = {}) => {
         checkpoint.finalization ??= { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
-        checkpoint.finalization.completed_phases[key] = { completed_at: Date.now() };
+        checkpoint.finalization.completed_phases[key] = {
+          completed_at: Date.now(), attempt_number: checkpoint.run_manifest?.total_attempt_count ?? null,
+          // Compact terminal metadata survives recovery without retaining
+          // provider output or chat text. It restores export/UI observability
+          // without rerunning an already committed phase.
+          ...phaseSummary,
+        };
         checkpoint.finalization.active_phase = null;
         checkpoint.finalization.updated_at = Date.now();
         checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
@@ -5644,7 +5733,14 @@ export function bindSettingsUI(ctrl) {
           ctrl.sceneBufferLastIndex = -1;
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
           updateFinalizationEta('scene detection and summaries', { completed: true });
-          if (!ctrl.catchUpCancelled) await commitFinalizationPhase('scene_detection');
+          if (!ctrl.catchUpCancelled) await commitFinalizationPhase('scene_detection', {
+            terminal_outcome: 'completed', summary: {
+              candidates: runResult.sceneDetection?.candidates ?? 0,
+              generated: runResult.sceneDetection?.generated ?? 0,
+              duplicates: runResult.sceneDetection?.duplicates ?? 0,
+              failed: runResult.sceneDetection?.failed ?? 0,
+            },
+          });
         } else if (!ctrl.catchUpCancelled && settings.scene_enabled) {
           skipFinalizationPhase('scene detection and summaries');
         }
@@ -5667,10 +5763,15 @@ export function bindSettingsUI(ctrl) {
           });
           if (!ctrl.catchUpCancelled) {
             updateFinalizationEta('story-arc extraction', { completed: true });
-            await commitFinalizationPhase('arc_extraction');
+            await commitFinalizationPhase('arc_extraction', { terminal_outcome: runResult.arcExtraction?.terminal_outcome ?? 'completed' });
           }
         } else if (!ctrl.catchUpCancelled && settings.arcs_enabled && !isFreshStart()) {
           skipFinalizationPhase('story-arc extraction');
+        } else if (!ctrl.catchUpCancelled && settings.arcs_enabled && isFreshStart()) {
+          checkpoint.finalization.completed_phases.arc_extraction ??= {
+            completed_at: Date.now(), attempt_number: checkpoint.run_manifest?.total_attempt_count ?? null,
+            terminal_outcome: 'skipped_not_applicable_for_fresh_start', reason_code: 'fresh_start',
+          };
         }
 
         // Short-term compaction runs once at the end - it uses the real token
@@ -6082,12 +6183,17 @@ export function bindSettingsUI(ctrl) {
       for (const tier of ['longterm', 'session']) {
         const coverage = runResult.extractionCoverage[tier];
         coverage.summary = summarizeExtractionCoverage(coverage.records);
-        if (!coverage.summary.coverage_complete) {
+        // A resumed attempt can legitimately process zero source chunks: its
+        // cumulative durable tier ledger, rather than this attempt's local
+        // extraction records, is authoritative for completion quality.
+        const cumulativeTier = summarizeCatchUpRunManifest(checkpoint.run_manifest).cumulative_tier_coverage?.[tier];
+        const cumulativeIncomplete = cumulativeTier?.enabled === true && cumulativeTier.coverage_complete !== true;
+        if (cumulativeIncomplete) {
           qualityReasons.push({
             code: `${tier}_extraction_coverage_incomplete`,
             tier: tier === 'longterm' ? 'long-term' : 'session',
-            message: `${coverage.summary.unresolved_ranges} ${tier === 'longterm' ? 'long-term' : 'session'} source window${coverage.summary.unresolved_ranges === 1 ? '' : 's'} could not be covered within the provider context limit.`,
-            unresolved_range_ids: coverage.summary.unresolved_range_ids,
+            message: `${cumulativeTier.remaining_gaps?.length ?? 0} ${tier === 'longterm' ? 'long-term' : 'session'} source range${(cumulativeTier.remaining_gaps?.length ?? 0) === 1 ? '' : 's'} remain pending durable recovery.`,
+            unresolved_range_ids: cumulativeTier.remaining_gaps?.map((range) => `${range.start_offset}-${range.end_offset}`) ?? [],
           });
         }
       }
@@ -6220,7 +6326,7 @@ export function bindSettingsUI(ctrl) {
         ['identity_terminal_totals_reconcile', runResult.identityResolution.terminal_reconciled, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
-        ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
+        ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || isFreshStart() || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['profile_terminal_accounting_reconciles', !settings.profiles_enabled || Boolean(runResult.profiles?.terminal_accounting?.terminal_reconciled), 'Profile terminal accounting did not reconcile.'],
         ['profile_coverage_complete', !settings.profiles_enabled || (runResult.profiles?.terminal_accounting?.unresolved_profiles ?? 0) === 0, 'A profile attempt has neither usable nor safe pending coverage.'],
         ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
@@ -6308,6 +6414,21 @@ export function bindSettingsUI(ctrl) {
       // Compact exportable diagnostics deliberately exclude chat text and raw provider output while retaining run-level failure information.
       const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest(catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint?.run_manifest ?? null);
       const currentAttemptAtDiagnosticBuild = logicalRunAtDiagnosticBuild.attempts.at(-1) ?? null;
+      const recoveredPhaseResults = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint?.finalization?.completed_phases ?? {};
+      const restoredSceneDetection = runResult.sceneDetection ?? (recoveredPhaseResults.scene_detection ? {
+        restored_from_recovery_checkpoint: true,
+        terminal_outcome: recoveredPhaseResults.scene_detection.terminal_outcome ?? 'completed',
+        ...(recoveredPhaseResults.scene_detection.summary ?? {}),
+      } : null);
+      const restoredArcExtraction = runResult.arcExtraction?.request_completed > 0
+        ? runResult.arcExtraction
+        : (recoveredPhaseResults.arc_extraction ? {
+          ...runResult.arcExtraction,
+          restored_from_recovery_checkpoint: true,
+          terminal_outcome: recoveredPhaseResults.arc_extraction.terminal_outcome ?? null,
+          terminalOutcome: recoveredPhaseResults.arc_extraction.terminal_outcome ?? null,
+          reason_code: recoveredPhaseResults.arc_extraction.reason_code ?? null,
+        } : runResult.arcExtraction);
       const diagnostics = {
         version: 2,
         created_at: Date.now(),
@@ -6337,7 +6458,7 @@ export function bindSettingsUI(ctrl) {
           },
         },
         logical_run: logicalRunAtDiagnosticBuild,
-        sceneDetection: runResult.sceneDetection ?? null,
+        sceneDetection: restoredSceneDetection,
         tiers: runResult.extractionFailuresByTier,
         identityResolution: runResult.identityResolution ?? null,
         identityResolutionDetails: runResult.identityResolutionDetails ?? null,
@@ -6370,7 +6491,7 @@ export function bindSettingsUI(ctrl) {
         arcResolution: summarizeArcStatusResolution(loadArcs(), runResult.arcResolution),
         arc_record_accounting: summarizeArcRecordAccounting(loadArcs(), runResult.arcExtraction),
         arc_status_traces: summarizeArcStatusTraces(loadArcs()),
-        arcExtraction: runResult.arcExtraction,
+        arcExtraction: restoredArcExtraction,
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
         extraction_coverage: runResult.extractionCoverage,
@@ -6540,8 +6661,11 @@ export function bindSettingsUI(ctrl) {
       if (ctrl.catchUpCancelled) {
         if (terminalCheckpoint) {
           terminalCheckpoint.status = 'awaiting_manual_resume';
+          const terminalReasonCode = terminalCheckpoint.run_manifest?.terminal_reason_code === 'tier_coverage_incomplete'
+            ? 'tier_coverage_incomplete'
+            : 'manual_cancel';
           terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
-            status: 'awaiting_manual_resume', reasonCode: 'manual_cancel',
+            status: 'awaiting_manual_resume', reasonCode: terminalReasonCode,
             attemptMetrics: {
               retry_count: runResult.retriedRequests,
               provider_failure_count: runResult.providerFailures.length,
@@ -6586,7 +6710,7 @@ export function bindSettingsUI(ctrl) {
           cumulative_chunk_count: diagnostics.logical_run.cumulative_chunk_count,
           cumulative_chunk_count_available: diagnostics.logical_run.cumulative_chunk_count_available,
           remaining_gap_count: diagnostics.logical_run.remaining_gap_count,
-          full_cumulative_coverage_confirmed: diagnostics.logical_run.all_original_source_messages_covered,
+            full_cumulative_coverage_confirmed: diagnostics.logical_run.full_cumulative_coverage_confirmed,
         };
         // Retain only a compact bounded manifest history after completion. The
         // live checkpoint is removed so an already-completed run cannot resume.

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.40] - 2026-09-08
+
+### Fixed
+
+- Memorize Chat recovery now treats source progress as safe only after every
+  enabled applicable Long-Term and Session tier has reached a durable terminal
+  outcome for that source range. A failed or interrupted tier leaves a
+  privacy-safe pending obligation, blocks finalization, and resumes by
+  replaying only the missing tier rather than duplicating a committed one.
+- Recovery accounting now distinguishes exact logical-run attempt and resume
+  totals from bounded retained attempt details. Completed finalization phases
+  retain compact terminal summaries, so resumed diagnostics can restore scene
+  outcomes and correctly report Fresh Start arc extraction as intentionally
+  skipped rather than missing.
+
 ## [0.9.39] - 2026-09-08
 
 ### Added

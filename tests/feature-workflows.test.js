@@ -1533,6 +1533,10 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /checkpointForCommit\.next_source_offset = processed/);
   assert.match(settings, /if \(chunkCommitted\) \{[\s\S]*i \+= chunk\.length/);
   assert.match(settings, /recordCommittedCatchUpRange/);
+  assert.match(settings, /getCatchUpTierRangeStatus/);
+  assert.match(settings, /tier_coverage_incomplete/);
+  assert.match(settings, /Resume will replay only the pending tier work/);
+  assert.match(settings, /Source ingestion complete, but memory-tier coverage remains incomplete/);
   assert.match(settings, /const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest/);
   assert.match(settings, /chunks_scope: 'current_attempt'/);
   assert.match(settings, /scope: 'cumulative_logical_run_across_attempts'/);
@@ -1565,6 +1569,8 @@ test('finalization phases commit independently and resume their saved settings s
   assert.match(settings, /hasCompletedFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /commitFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /completed_phase_count/);
+  assert.match(settings, /restored_from_recovery_checkpoint/);
+  assert.match(settings, /skipped_not_applicable_for_fresh_start/);
   assert.match(settings, /commitShortTermPass/);
   assert.match(settings, /shortterm_compaction_progress/);
   assert.match(settings, /checkpointEachPass: true/);
