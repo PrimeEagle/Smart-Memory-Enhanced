@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.39] - 2026-09-08
+
+### Added
+
+- OpenAI Compatible configuration now offers an explicit opt-in for direct
+  streaming from a trusted LAN or DNS endpoint. This enables live ETA telemetry
+  for a remotely accessed LM Studio server when its CORS policy permits the
+  browser request; unavailable direct access safely falls back to SillyTavern's
+  proxy without interrupting memory generation.
+
 ## [0.9.38] - 2026-09-08
 
 ### Fixed
