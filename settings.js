@@ -2010,6 +2010,7 @@ export function bindSettingsUI(ctrl) {
       'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
       'active_catchup_run_id', 'catch_up_checkpoint', 'catch_up_run_manifests', 'parser_debris_cleanup',
       'fresh_start_postcondition_audit', 'live_memory_health',
+      'shortterm_compaction_checkpoint',
     ]) delete metadata[key];
     return {
       identity_reviews_removed: reviewQueue.length - remainingReviewQueue.length,
@@ -5668,7 +5669,27 @@ export function bindSettingsUI(ctrl) {
           await startFinalizationPhase('shortterm_extraction');
           updateFinalizationEta('short-term memory extraction');
           setStatusMessage('Extracting short-term memories...');
-          await runCompaction({ includeLastMessage: true })
+          const commitShortTermPass = async (progress) => {
+            checkpoint.finalization.shortterm_compaction_progress = {
+              schema_version: 1,
+              completed_passes: progress.completed_passes,
+              source_end: progress.source_end,
+              summary_end: progress.summary_end,
+              updated_at: progress.updated_at,
+            };
+            checkpoint.finalization.updated_at = Date.now();
+            checkpoint.updated_at = Date.now();
+            checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
+            checkpoint.run_settings_snapshot_updated_at = Date.now();
+            // A rolling-summary pass has already written its durable summary
+            // and summaryEnd. Commit that boundary before asking the provider
+            // for the next pass so a crash resumes from the saved tail.
+            await saveChatMetadata(catchUpContext);
+            await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+            finalTransaction = beginCatchUpTransaction(catchUpContext);
+            setStatusMessage(`Extracting short-term memories... ${progress.completed_passes} compaction pass${progress.completed_passes === 1 ? '' : 'es'} safely committed.`);
+          };
+          await runCompaction({ includeLastMessage: true, checkpointEachPass: true, onPassCommitted: commitShortTermPass })
             .then((summary) => {
               if (summary) {
                 injectSummary(summary);

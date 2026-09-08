@@ -24,7 +24,7 @@ test('compaction uses the context-window guard for both first and incremental su
   assert.match(compaction, /estimateTokens\(candidatePrompt\) > inputBudget/);
   assert.match(compaction, /Preserve an exceptionally long message by splitting it/);
   assert.match(compaction, /let low = 1/);
-  assert.match(compaction, /pending\.unshift\(\{ \.\.\.message, mes: remainder \}\)/);
+  assert.match(compaction, /pending\.unshift\(\{ \.\.\.message, mes: remainder/);
   assert.match(compaction, /export function capSummaryToBudget/);
   assert.match(compaction, /const summary = capSummaryToBudget\(/);
   const incremental = compaction.slice(
@@ -1538,6 +1538,7 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
 
 test('finalization phases commit independently and resume their saved settings snapshot', () => {
   const settings = read('settings.js');
+  const compaction = read('compaction.js');
   assert.match(settings, /function snapshotMemorizeRunSettings/);
   assert.match(settings, /CATCH_UP_SETTINGS_SIDECAR_KEY/);
   assert.match(settings, /CATCH_UP_SETTINGS_STORAGE_PREFIX/);
@@ -1552,6 +1553,12 @@ test('finalization phases commit independently and resume their saved settings s
   assert.match(settings, /hasCompletedFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /commitFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /completed_phase_count/);
+  assert.match(settings, /commitShortTermPass/);
+  assert.match(settings, /shortterm_compaction_progress/);
+  assert.match(settings, /checkpointEachPass: true/);
+  assert.match(compaction, /checkpointEachPass = false/);
+  assert.match(compaction, /shortterm_compaction_checkpoint/);
+  assert.match(compaction, /await onPassCommitted/);
 });
 
 test('expanded memory sections retain a clear header-to-content hierarchy', () => {

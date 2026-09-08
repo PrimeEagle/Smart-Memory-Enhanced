@@ -74,7 +74,7 @@ async function getChatTokenCount(chat) {
  * plus an unusually long unsummarized tail must not bypass the connection
  * profile's context-window guard.
  */
-async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength) {
+async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength, { onPassCommitted = null, shouldCancel = null } = {}) {
   const inputBudget = getMemoryInputBudget(responseLength);
   let rollingSummary = initialSummary || 'No earlier events have been summarized yet.';
   let chunk = [];
@@ -90,6 +90,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
 
   const summarizeChunk = async () => {
     if (!chunk.length) return;
+    const completedChunk = chunk;
     const prompt = buildPromptFor(chunk);
     // The caller only appends a message after testing this exact prompt. This
     // check protects against a custom prompt override changing between passes.
@@ -100,10 +101,18 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     if (!response?.trim()) throw new Error('Compaction provider returned an empty response.');
     rollingSummary = formatSummary(response);
     chunk = [];
+    // A normal pass contains complete source messages. An exceptionally long
+    // message can be split across multiple provider calls; defer its durable
+    // checkpoint until its final fragment is included so resume never repeats
+    // text already folded into the rolling summary.
+    if (!completedChunk.some((message) => message.__sme_compaction_partial === true)) {
+      await onPassCommitted?.(rollingSummary, completedChunk);
+    }
   };
 
   const pending = [...messages];
   while (pending.length) {
+    if (shouldCancel?.()) return rollingSummary;
     const message = pending.shift();
     const candidate = [...chunk, message];
     const candidatePrompt = buildPromptFor(candidate);
@@ -133,10 +142,10 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       if (!safeLength) {
         throw new Error(`Compaction instructions exceed the ${inputBudget}-token input budget.`);
       }
-      const head = { ...message, mes: text.slice(0, safeLength) };
       const remainder = text.slice(safeLength);
+      const head = { ...message, mes: text.slice(0, safeLength), __sme_compaction_partial: Boolean(remainder) };
       chunk.push(head);
-      if (remainder) pending.unshift({ ...message, mes: remainder });
+      if (remainder) pending.unshift({ ...message, mes: remainder, __sme_compaction_partial: false });
       await summarizeChunk();
       continue;
     }
@@ -211,12 +220,14 @@ export async function shouldCompact() {
  * rather than rewriting it from scratch.
  * @returns {Promise<string|null>} The formatted summary, or null on failure.
  */
-export async function runCompaction({ includeLastMessage = false } = {}) {
+export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const context = getContext();
 
   try {
-    const meta = context.chatMetadata?.[META_KEY];
+    if (!context.chatMetadata) context.chatMetadata = {};
+    if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
+    const meta = context.chatMetadata[META_KEY];
     const existingSummary = meta?.summary;
     // summaryEnd is the chat array index of the last message already included
     // in the existing summary. Messages after this index are "new" for the update.
@@ -268,6 +279,27 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
       }
     }
     const storedMemories = storedDigestParts.join('\n\n');
+    const makeSourceMessages = (items) => items.map((message) => ({
+      ...message,
+      __sme_compaction_source_index: context.chat.indexOf(message),
+    }));
+    const persistBoundedPass = checkpointEachPass ? async (rollingSummary, completedChunk) => {
+      const sourceEnd = Math.max(...completedChunk.map((message) => Number(message.__sme_compaction_source_index)).filter(Number.isInteger));
+      if (!Number.isInteger(sourceEnd) || sourceEnd < 0) return;
+      const summary = capSummaryToBudget(formatSummary(rollingSummary), settings.compaction_response_length ?? 2000);
+      meta.summary = summary;
+      meta.summaryEnd = sourceEnd + 1;
+      meta.summaryUpdated = Date.now();
+      meta.shortterm_compaction_checkpoint = {
+        schema_version: 1,
+        completed_passes: Number(meta.shortterm_compaction_checkpoint?.completed_passes ?? 0) + 1,
+        source_end: sourceEnd,
+        summary_end: meta.summaryEnd,
+        updated_at: meta.summaryUpdated,
+      };
+      await saveChatMetadata(context);
+      await onPassCommitted?.(meta.shortterm_compaction_checkpoint);
+    } : null;
 
     let raw;
 
@@ -286,7 +318,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         !includeLastMessage && lastNew && !lastNew.is_user && !lastNew.is_system
           ? rawNewMessages.slice(0, -1)
           : rawNewMessages;
-      const usableMessages = newMessages.filter((m) => m.mes && !m.is_system);
+      const usableMessages = makeSourceMessages(newMessages.filter((m) => m.mes && !m.is_system));
       if (!usableMessages.length) return existingSummary;
 
       raw = await summarizeInBoundedPasses(
@@ -294,15 +326,16 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
         existingSummary,
         storedMemories,
         settings.compaction_response_length || 2000,
+        { onPassCommitted: persistBoundedPass, shouldCancel },
       );
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
       const responseLength = settings.compaction_response_length || 2000;
-      const messages = context.chat.filter((message) => message.mes && !message.is_system);
+      const messages = makeSourceMessages(context.chat.filter((message) => message.mes && !message.is_system));
       const inputBudget = getMemoryInputBudget(responseLength);
       const totalTokens = estimateTokens(messages.map((message) => message.mes).join('\n'));
 
-      if (getMemorySource() === memory_sources.connection_profile && totalTokens > inputBudget) {
+      if (checkpointEachPass || (getMemorySource() === memory_sources.connection_profile && totalTokens > inputBudget)) {
         // A connection profile must respect the loaded model's context window.
         // Build the initial summary incrementally so every chat message is
         // covered rather than truncating older history to fit one request.
@@ -311,6 +344,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
           'No earlier events have been summarized yet.',
           storedMemories,
           responseLength,
+          { onPassCommitted: persistBoundedPass, shouldCancel },
         );
       } else {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {
@@ -331,8 +365,6 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
       settings.compaction_response_length ?? 2000,
     );
 
-    if (!context.chatMetadata) context.chatMetadata = {};
-    if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
     context.chatMetadata[META_KEY].summary = summary;
     context.chatMetadata[META_KEY].summaryUpdated = Date.now();
     // Record how far into the chat this summary covers so the next compaction
@@ -345,6 +377,7 @@ export async function runCompaction({ includeLastMessage = false } = {}) {
       !includeLastMessage && lastChatMsg && !lastChatMsg.is_user && !lastChatMsg.is_system
         ? context.chat.length - 1
         : context.chat.length;
+    delete context.chatMetadata[META_KEY].shortterm_compaction_checkpoint;
     await saveChatMetadata(context);
 
     return summary;
