@@ -1810,6 +1810,15 @@
                 placeholder="model-name (optional)"
               />
             </label>
+            <label class="checkbox_label">
+              <input id="sme_openai_compat_direct_streaming" type="checkbox" />
+              Use direct streaming for this trusted endpoint
+              <span
+                class="sm-info"
+                data-tooltip="Use this for a trusted LAN or DNS address such as an LM Studio server you access from another device. It lets the browser receive live generation progress for the ETA. The endpoint must allow browser CORS requests. If direct access is blocked, Smart Memory safely falls back to SillyTavern's proxy without live token progress."
+                >ⓘ</span
+              >
+            </label>
           </div>
 
           <!-- ST Connection Profile settings (shown when source = connection_profile) -->

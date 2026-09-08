@@ -1185,6 +1185,18 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /aiRequestedBreak: settings\.scene_ai_detect \? aiRequestedBreak : heuristicBreak/);
 });
 
+test('trusted OpenAI-compatible DNS endpoints may stream directly with a proxy fallback', () => {
+  const generate = read('generate.js');
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  assert.match(settings, /openai_compat_direct_streaming: false/);
+  assert.match(settings, /sme_openai_compat_direct_streaming/);
+  assert.match(html, /Use direct streaming for this trusted endpoint/);
+  assert.match(generate, /openai_compat_direct_streaming === true/);
+  assert.match(generate, /Direct streaming endpoint unavailable; falling back to SillyTavern proxy/);
+  assert.match(generate, /responseStreams = false/);
+});
+
 test('Memorize Chat feeds active Long-Term and Session extraction health into the live health card', () => {
   const settings = read('settings.js');
   const ui = read('ui.js');

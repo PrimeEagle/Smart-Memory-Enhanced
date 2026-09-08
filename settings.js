@@ -1200,6 +1200,9 @@ export const defaultSettings = {
   openai_compat_url: '',
   openai_compat_key: '',
   openai_compat_model: '',
+  // Explicit opt-in for trusted DNS/LAN endpoints. Direct browser requests
+  // enable streaming progress but require the provider to permit CORS.
+  openai_compat_direct_streaming: false,
 
   // ST connection profile source: ID of the saved profile to use for extraction
   connection_profile_id: null,
@@ -2718,6 +2721,13 @@ export function bindSettingsUI(ctrl) {
     .val(s.openai_compat_model ?? '')
     .on('input', function () {
       extension_settings[MODULE_NAME].openai_compat_model = $(this).val().trim();
+      saveSettingsDebounced();
+    });
+
+  $('#sme_openai_compat_direct_streaming')
+    .prop('checked', s.openai_compat_direct_streaming ?? false)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].openai_compat_direct_streaming = $(this).prop('checked');
       saveSettingsDebounced();
     });
 

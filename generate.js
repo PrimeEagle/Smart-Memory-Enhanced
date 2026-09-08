@@ -649,25 +649,39 @@ async function generateOpenAICompat(
     const thisController = new AbortController();
     memoryAbortController = thisController;
     const progress = createMemoryRequestProgress(memory_sources.openai_compatible, responseLength, task);
-    const stream = requestProgressListeners.size > 0 && isLocalUrl(baseUrl);
+    // A hostname is normally routed through SillyTavern's proxy for CORS
+    // safety. Users may explicitly trust a LAN/DNS endpoint instead, allowing
+    // its browser-visible SSE stream to drive the live ETA. Direct failure
+    // falls back to the proxy below, so this option never makes extraction
+    // unavailable merely because CORS is not configured.
+    const useTrustedDirectEndpoint = isLocalUrl(baseUrl) || settings?.openai_compat_direct_streaming === true;
+    const stream = requestProgressListeners.size > 0 && useTrustedDirectEndpoint;
     try {
       let response;
-      if (isLocalUrl(baseUrl)) {
+      let responseStreams = stream;
+      if (useTrustedDirectEndpoint) {
         // Direct fetch for local servers - no CORS issue on private network addresses.
         const headers = { 'Content-Type': 'application/json' };
         if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-        response = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: model || undefined,
-            messages,
-            max_tokens: responseLength > 0 ? responseLength : undefined,
-            stream,
-          }),
-          signal: thisController.signal,
-        });
-      } else {
+        try {
+          response = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              model: model || undefined,
+              messages,
+              max_tokens: responseLength > 0 ? responseLength : undefined,
+              stream,
+            }),
+            signal: thisController.signal,
+          });
+        } catch (directError) {
+          if (isLocalUrl(baseUrl) || directError?.name === 'AbortError') throw directError;
+          console.warn(`[${MODULE_NAME}] Direct streaming endpoint unavailable; falling back to SillyTavern proxy.`, directError);
+        }
+      }
+      if (!response) {
+        responseStreams = false;
         // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
         // ST's CUSTOM source appends /chat/completions to custom_url, so pass baseUrl/v1.
         const proxyBody = {
@@ -692,9 +706,9 @@ async function generateOpenAICompat(
       }
 
       if (response.ok) {
-        const data = stream ? null : await response.json();
+        const data = responseStreams ? null : await response.json();
         if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
-        const output = stream ? await readOpenAiStream(response, progress) : data.choices?.[0]?.message?.content ?? '';
+        const output = responseStreams ? await readOpenAiStream(response, progress) : data.choices?.[0]?.message?.content ?? '';
         progress.complete(output);
         return output;
       }
