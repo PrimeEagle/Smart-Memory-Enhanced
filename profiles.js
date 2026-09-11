@@ -1128,7 +1128,16 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      if (String(observation.local_target_label ?? '').toLowerCase() === String(observation.local_subject_label ?? '').toLowerCase()) failures.push('coreference_self_relationship_candidate');
      if (observation.rejection_reason) failures.push(`coreference_observation_rejected:${observation.rejection_reason}`);
    }
-   return { ...trace, trace_validation: { passed: failures.length === 0, failures } };
+   const evidenceMissing = !trace.parent_role_source_audit?.source_sufficient_for_role;
+   const roleWithheld = !trace.selected_role && evidenceMissing;
+   const priorRolePreserved = Boolean(trace.typed_role_fact_persisted && trace.typed_role_fact_reload_verified);
+   return {
+     ...trace,
+     role_resolution_status: priorRolePreserved ? 'preserved_and_verified' : roleWithheld ? 'withheld_missing_grounded_evidence' : trace.selected_role ? 'resolved' : 'unresolved',
+     evidence_missing: evidenceMissing,
+     action_needed: failures.length ? 'inspect_trace_consistency' : roleWithheld ? 'none_unless_grounded_relationship_evidence_is_available' : 'none',
+     trace_validation: { passed: failures.length === 0, failures },
+   };
  });
  return { profiles: { ...profiles, relationship_matrix_structured, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace }, rejected, rejection_details: rejectionDetails, descriptor_traces: descriptorTraces, descriptor_terminal_outcomes: descriptorTerminalOutcomes, role_resolution_trace, family_role_pipeline_trace: role_resolution_trace, family_role_evidence_deduplication: familyEvidence.diagnostics, relationship_history_counts, field_terminal_outcomes: fieldTerminalOutcomes.map((outcome) => {
  const target = String(outcome.relationship_target ?? '').toLowerCase();

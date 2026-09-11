@@ -577,9 +577,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     smLog('[Smart Memory Enhanced] Session extraction response:', response);
 
-    if (!response || response.trim().toUpperCase() === 'NONE') {
+    healthUpdate({ response_received: true, parser_outcome: 'not_started' });
+    if (!response || !response.trim()) {
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
-      healthFinish({ provider_outcome: 'none_response', terminal_health: 'empty', persistence: 'not_needed', candidates: { emitted: 0 } });
+      healthFinish({ provider_outcome: 'provider_response_empty', response_received: true, parser_outcome: 'not_applicable_empty_response', terminal_health: 'provider_response_empty', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['provider_response_empty'] });
+      return 0;
+    }
+    if (response.trim().toUpperCase() === 'NONE') {
+      if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
+      healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
     }
 
@@ -608,7 +614,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       };
     }
     const parsedCandidates = parseSessionOutput(response);
-    healthUpdate({ provider_outcome: 'completed', candidates: { emitted: parsedCandidates.length } });
+    healthUpdate({ provider_outcome: 'completed', parser_outcome: parsedCandidates.length ? 'parsed' : 'no_parseable_records', candidates: { emitted: parsedCandidates.length } });
     // Stable within-request IDs make citation repair an association task rather
     // than a best-effort text match. They are transient and never persisted in
     // a memory record or exported with memory text.
@@ -637,6 +643,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (initiallyParsedCount === 0) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
       smLog('[Smart Memory Enhanced] Session extraction returned no parseable structured records.');
+      healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'no_parseable_records', terminal_health: 'provider_response_malformed', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['unparseable_provider_response'] });
       return 0;
     }
     if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;

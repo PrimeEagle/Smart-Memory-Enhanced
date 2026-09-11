@@ -704,6 +704,7 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 [EntityName]: [directional one-line state] [confidence: 0.X]
 (one line per entity from the KNOWN ENTITIES list; omit this section entirely if no entities are known)
 For each relationship line, use at least one exact descriptor from RELATIONSHIP HISTORY for that same pair. Do not upgrade, reinterpret, or substitute a status (for example, do not turn "trust" into "romantic" or "family"). If that pair has no listed descriptor, omit the line.
+Copy relationship descriptors character-for-character from the authoritative evidence for that exact directional pair. Do not invent synonyms, combine descriptors into a new label, add prose as a descriptor, or emit placeholders such as "unknown", "complicated", or an entity type. Put any supported current-state explanation after an exact descriptor, separated by a semicolon; the descriptor itself must remain unchanged.
 An entity type (such as "character", "person", "NPC", "persona", or "entity") is never a relationship status. Do not use one as the relationship label or state. When the authoritative evidence explicitly establishes a current legal or relationship fact, state that fact plainly and never describe that same fact as unresolved, uncertain, pending, or speculative elsewhere in the profile.
 </relationship_matrix>`
   );

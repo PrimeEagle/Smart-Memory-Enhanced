@@ -69,6 +69,8 @@ import {
   beginLiveExtractionEvent,
   updateLiveExtractionEvent,
   finishLiveExtractionEvent,
+  reconcileInterruptedExtractionEvents,
+  interruptRunningExtractionEvents,
 } from './live-memory-health.js';
 import {
   normalizeCatchUpCheckpoint,
@@ -355,7 +357,7 @@ function makeSceneStabilitySnapshot(audit = {}) {
     format_repair_count: audit.format_repair_requests ?? 0,
     adaptive_batch_summary: audit.adaptive_batch_summary ?? null,
     heuristic_fallback_candidates: audit.heuristic_fallback_candidates ?? 0,
-    pipeline_status: audit.pipeline_status ?? ((audit.malformed_batches ?? 0) || (audit.fallback_boundaries ?? 0) ? 'degraded' : 'clean'),
+    pipeline_status: audit.pipeline_status ?? ((audit.fallback_boundaries ?? 0) ? 'completed_with_deterministic_fallbacks' : (audit.malformed_batches ?? 0) ? 'degraded' : 'clean'),
     completed_at: createdAt,
   };
 }
@@ -1062,11 +1064,44 @@ function refreshDirectRangeInputs() {
 // chat checkpoint at the next safe transaction boundary.
 const CATCH_UP_SETTINGS_SIDECAR_KEY = 'catch_up_run_settings_snapshot';
 const CATCH_UP_SETTINGS_STORAGE_PREFIX = 'smart-memory-enhanced:catch-up-settings:';
+const BUDGET_SETTINGS_STORAGE_KEY = 'smart-memory-enhanced:budget-settings-safety-v1';
+
+function isMemorizeBudgetSetting(key, value) {
+  return ['string', 'number', 'boolean'].includes(typeof value)
+    && (/_inject_budget$|_response_length$|^compaction_response_length$|^generation_budget$|^scene_inject_count$|^scene_min_messages$|^scene_ai_detect$|^consolidation_enabled$/.test(key));
+}
 
 function snapshotMemorizeRunSettings(settings) {
   return Object.fromEntries(Object.entries(settings ?? {})
-    .filter(([key, value]) => (/_inject_budget$|_response_length$|^compaction_response_length$|^scene_inject_count$|^scene_min_messages$|^scene_ai_detect$|^consolidation_enabled$/.test(key))
-      && ['string', 'number', 'boolean'].includes(typeof value)));
+    .filter(([key, value]) => isMemorizeBudgetSetting(key, value)));
+}
+
+// SillyTavern normally persists extension settings through a debounce.  Keep a
+// small synchronous browser-side copy as well: it covers budget edits made
+// before a run exists and a hard browser/client restart immediately afterward.
+function persistBudgetSettingsSafetySnapshot(settings) {
+  try {
+    localStorage.setItem(BUDGET_SETTINGS_STORAGE_KEY, JSON.stringify({
+      schema_version: 1,
+      updated_at: Date.now(),
+      settings: snapshotMemorizeRunSettings(settings),
+    }));
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] Could not persist budget safety snapshot:`, error);
+  }
+}
+
+function restoreBudgetSettingsSafetySnapshot(settings) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BUDGET_SETTINGS_STORAGE_KEY) ?? 'null');
+    if (!saved?.settings || typeof saved.settings !== 'object') return false;
+    for (const [key, value] of Object.entries(saved.settings)) {
+      if (isMemorizeBudgetSetting(key, value)) settings[key] = value;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function matchingCatchUpSettingsSidecar(settings, checkpoint, context) {
@@ -1473,6 +1508,8 @@ function applyTotalBudget(total, s) {
     $(`#${display}`).text(fmt(s[setting]));
   }
   refreshDirectRangeInputs();
+  persistBudgetSettingsSafetySnapshot(s);
+  persistSettingsImmediately();
 }
 
 /**
@@ -1633,7 +1670,8 @@ function allocateBudgetsFromCurrentUsage(characterName) {
   $('#sme_total_budget').val(total);
   $('#sme_total_budget_value').text(total);
   refreshDirectRangeInputs();
-  saveSettingsDebounced();
+  persistBudgetSettingsSafetySnapshot(settings);
+  persistSettingsImmediately();
   reinjectAfterBudgetChange(characterName);
   toastr.success(`Allocated ${updatedTiers} budget${updatedTiers === 1 ? '' : 's'} from current usage + 10%.`, 'Smart Memory Enhanced');
 }
@@ -1746,6 +1784,9 @@ export function loadSettings() {
       extension_settings[MODULE_NAME][key] = value;
     }
   }
+  // Apply this after defaults but before UI binding, so an immediate browser
+  // restart cannot briefly render or re-save stale token budgets.
+  const restoredBudgetSafetySnapshot = restoreBudgetSettingsSafetySnapshot(extension_settings[MODULE_NAME]);
 
   // Scene history used to use one setting as both a storage cap and injection
   // limit. Preserve the old value as the visible injection count while giving
@@ -1805,6 +1846,7 @@ export function loadSettings() {
     extension_settings[MODULE_NAME].consolidation_enabled =
       extension_settings[MODULE_NAME].longterm_consolidate;
   }
+  if (restoredBudgetSafetySnapshot) persistSettingsImmediately();
 }
 
 // ---- Settings UI binding ------------------------------------------------
@@ -1837,6 +1879,7 @@ function showError(operation, err) {
 export function bindSettingsUI(ctrl) {
   const s = extension_settings[MODULE_NAME];
   const autoResumeAttemptedRunIds = new Set();
+  const healthRestartReconciledRunIds = new Set();
 
   const getResumableCatchUpCheckpoint = (context = getContext()) => {
     const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
@@ -1866,6 +1909,7 @@ export function bindSettingsUI(ctrl) {
     // localStorage writes synchronously, unlike SillyTavern's debounced
     // settings save. This is the crash-safe authoritative newest edit.
     writeCatchUpSettingsStorage(sidecar, context);
+    persistBudgetSettingsSafetySnapshot(extension_settings[MODULE_NAME]);
     persistSettingsImmediately();
   };
   const queueActiveCatchUpSettingsSnapshot = () => {
@@ -1877,7 +1921,15 @@ export function bindSettingsUI(ctrl) {
   };
   $(document)
     .off('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input')
-    .on('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input', queueActiveCatchUpSettingsSnapshot);
+    .on('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input', () => {
+      // This is intentionally independent of an active checkpoint. It covers
+      // edits made before Memorize Chat begins as well as in-run edits.
+      queueMicrotask(() => {
+        persistBudgetSettingsSafetySnapshot(extension_settings[MODULE_NAME]);
+        persistSettingsImmediately();
+      });
+      queueActiveCatchUpSettingsSnapshot();
+    });
 
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
     const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
@@ -1908,6 +1960,14 @@ export function bindSettingsUI(ctrl) {
       ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${finalization.active_phase.replaceAll('_', ' ')}` : ''}.`
       : '';
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
+    if (!running && checkpoint.status === 'in_progress' && !healthRestartReconciledRunIds.has(checkpoint.run_id)) {
+      reconcileInterruptedExtractionEvents(getContext().chatMetadata?.[META_KEY], checkpoint, { reason: 'interrupted_by_restart' });
+      healthRestartReconciledRunIds.add(checkpoint.run_id);
+      // Persist the classification before auto-resume creates linked replay
+      // events. This save contains no provider or chat content.
+      saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist restart health reconciliation:`, error));
+      updateLiveMemoryHealthUI();
+    }
     $resume.prop('disabled', running);
     setResumeLabel(
       running ? 'Resumed Automatically' : 'Resume Incomplete Run',
@@ -2165,7 +2225,8 @@ export function bindSettingsUI(ctrl) {
     $('#sme_total_budget').val(total);
     $('#sme_total_budget_value').text(total);
     refreshDirectRangeInputs();
-    saveSettingsDebounced();
+    persistBudgetSettingsSafetySnapshot(cur);
+    persistSettingsImmediately();
     reinjectAfterBudgetChange(ctrl.getSelectedCharacterName());
   });
 
@@ -2755,7 +2816,8 @@ export function bindSettingsUI(ctrl) {
         unlimited ? 'Unlimited' : val.toLocaleString() + ' tokens',
       );
       extension_settings[MODULE_NAME].generation_budget = val;
-      saveSettingsDebounced();
+      persistBudgetSettingsSafetySnapshot(extension_settings[MODULE_NAME]);
+      persistSettingsImmediately();
     });
   $('#sme_generation_budget_value').text(
     isUnlimited ? 'Unlimited' : genBudget.toLocaleString() + ' tokens',
@@ -5879,6 +5941,9 @@ export function bindSettingsUI(ctrl) {
               profile_lookup_verified: Boolean(trace.typed_role_fact_found_by_profile_lookup),
               terminal_outcome: trace.terminal_outcome,
               unresolved_reason: trace.parent_role_source_audit?.unresolved_reason ?? null,
+              role_resolution_status: trace.role_resolution_status ?? null,
+              evidence_missing: Boolean(trace.evidence_missing),
+              action_needed: trace.action_needed ?? 'none',
             })));
             runResult.profiles.family_role_trace_validation_failures.push(...(profiles.family_role_pipeline_trace ?? [])
               .filter((trace) => !trace.trace_validation?.passed)
@@ -6231,6 +6296,7 @@ export function bindSettingsUI(ctrl) {
       if ((runResult.sceneDetection?.heuristic_fallback_candidates ?? 0) > 0) qualityReasons.push({
         code: 'scene_detection_candidate_fallbacks',
         tier: 'scenes',
+        severity: 'notice',
         message: `${runResult.sceneDetection.heuristic_fallback_candidates} scene-boundary candidate${runResult.sceneDetection.heuristic_fallback_candidates === 1 ? '' : 's'} required deterministic heuristic fallback${runResult.sceneDetection.malformed_batches ? ` after ${runResult.sceneDetection.malformed_batches} malformed batch${runResult.sceneDetection.malformed_batches === 1 ? '' : 'es'}` : ''}.`,
       });
       if (runResult.sceneDetection?.request_counters_reconciled === false) qualityReasons.push({
@@ -6903,6 +6969,7 @@ export function bindSettingsUI(ctrl) {
 
   $('#sme_cancel_catch_up').on('click', function () {
     ctrl.catchUpCancelled = true;
+    interruptRunningExtractionEvents(getContext().chatMetadata?.[META_KEY], 'interrupted_by_manual_cancel');
     $(this).prop('disabled', true);
     abortCurrentMemoryGeneration();
     // Direct-fetch sources are aborted immediately. Connection-manager

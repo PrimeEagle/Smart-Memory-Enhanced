@@ -6,7 +6,7 @@
  * provider responses, credentials, or unapproved identity labels.
  */
 
-export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 1;
+export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 2;
 export const LIVE_MEMORY_HEALTH_MAX_EVENTS = 75;
 export const CONTINUITY_HEALTH_MAX_EVENTS = 75;
 
@@ -14,6 +14,10 @@ const extractionTerminalStates = new Set([
   'completed', 'completed_with_repairs', 'completed_repartitioned', 'empty',
   'prevented', 'provider_failure', 'malformed_response', 'persistence_failure',
   'unresolved', 'skipped',
+  'provider_response_malformed', 'provider_response_empty',
+  'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel',
+  'completion_uncertain_after_restart', 'replayed_after_recovery',
+  'replay_completed', 'replay_failed', 'recovered_completed', 'legacy_outcome_unknown',
 ]);
 
 function number(value, fallback = 0) {
@@ -36,6 +40,72 @@ function trimEvents(health) {
 
 function increment(object, key, amount = 1) {
   object[key] = number(object[key]) + amount;
+}
+
+function sameLogicalRange(left, right) {
+  return left?.tier === right?.tier
+    && left?.source_range?.start === right?.source_range?.start
+    && left?.source_range?.end === right?.source_range?.end;
+}
+
+function sourceRangeSafelyCommitted(checkpoint, event) {
+  const start = event?.source_range?.start;
+  const end = event?.source_range?.end;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return false;
+  const ranges = checkpoint?.run_manifest?.tier_coverage?.[event?.tier]?.committed_ranges ?? [];
+  return ranges.some((range) => Number.isInteger(Number(range.source_start_index))
+    && Number.isInteger(Number(range.source_end_index))
+    && Number(range.source_start_index) <= start
+    && Number(range.source_end_index) >= end);
+}
+
+/**
+ * Closes extraction events abandoned by a prior renderer/process lifetime.
+ * The durable tier ledger is authoritative; health events never advance it.
+ */
+export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { reason = 'interrupted_by_restart', now = Date.now() } = {}) {
+  const health = ensureLiveMemoryHealth(metadata);
+  if (!health) return { reconciled: 0, recovered: 0, uncertain: 0 };
+  let reconciled = 0;
+  let recovered = 0;
+  let uncertain = 0;
+  for (const event of health.recent_extraction_events) {
+    if (event.terminal_health !== 'running') continue;
+    const committed = sourceRangeSafelyCommitted(checkpoint, event);
+    event.terminal_health = committed ? 'recovered_completed' : 'completion_uncertain_after_restart';
+    event.lifecycle_outcome = committed ? 'recovered_from_durable_tier_commit' : reason;
+    event.interruption_reason = committed ? null : reason;
+    event.checkpoint_state = committed ? 'tier_range_safely_committed' : 'tier_range_pending_or_unknown';
+    event.response_received = event.response_received ?? null;
+    event.parser_outcome = event.parser_outcome ?? 'not_classified_before_restart';
+    event.duration_ms = Math.max(0, now - number(event.timestamp, now));
+    event.attention_reason_codes = committed ? [] : boundedReasonCodes([...event.attention_reason_codes, event.terminal_health]);
+    increment(health.aggregate.extraction, event.terminal_health);
+    reconciled++;
+    if (committed) recovered++; else uncertain++;
+  }
+  const last = health.recent_extraction_events.at(-1);
+  if (last) health.last_extraction = { event_id: last.event_id, timestamp: last.timestamp, tier: last.tier, terminal_health: last.terminal_health, attention_reason_codes: last.attention_reason_codes };
+  return { reconciled, recovered, uncertain };
+}
+
+export function interruptRunningExtractionEvents(metadata, reason = 'interrupted_by_manual_cancel', now = Date.now()) {
+  const health = ensureLiveMemoryHealth(metadata);
+  if (!health) return 0;
+  let count = 0;
+  for (const event of health.recent_extraction_events) {
+    if (event.terminal_health !== 'running') continue;
+    event.terminal_health = reason;
+    event.lifecycle_outcome = reason;
+    event.interruption_reason = reason;
+    event.response_received = event.response_received ?? null;
+    event.parser_outcome = event.parser_outcome ?? 'not_classified_before_interruption';
+    event.duration_ms = Math.max(0, now - number(event.timestamp, now));
+    event.attention_reason_codes = boundedReasonCodes([...event.attention_reason_codes, reason]);
+    increment(health.aggregate.extraction, reason);
+    count++;
+  }
+  return count;
 }
 
 export function ensureLiveMemoryHealth(metadata) {
@@ -116,6 +186,9 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
   const health = ensureLiveMemoryHealth(metadata);
   if (!health) return null;
   const now = Date.now();
+  const probe = { tier: input.tier ?? 'unknown', source_range: { start: Number.isInteger(input.source_start) ? input.source_start : null, end: Number.isInteger(input.source_end) ? input.source_end : null } };
+  const replayedEvent = [...health.recent_extraction_events].reverse().find((prior) => sameLogicalRange(prior, probe)
+    && ['completion_uncertain_after_restart', 'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel', 'replay_failed'].includes(prior.terminal_health));
   const event = {
     event_id: nextId(health, 'extract'),
     timestamp: now,
@@ -130,6 +203,10 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
     window_selection_reason: input.window_selection_reason ?? 'stable_window',
     preflight: null,
     provider_outcome: 'not_started',
+    response_received: false,
+    parser_outcome: 'not_started',
+    lifecycle_outcome: replayedEvent ? 'replayed_after_recovery' : 'started',
+    replay_of_event_id: replayedEvent?.event_id ?? null,
     candidates: { emitted: 0, accepted: 0, accepted_after_citation_repair: 0, rejected_duplicate: 0, rejected_missing_provenance: 0, rejected_validation: 0, unresolved: 0 },
     citation_mapping_valid: null,
     persistence: 'not_attempted',
@@ -169,6 +246,9 @@ export function updateLiveExtractionEvent(event, patch = {}) {
     };
   }
   if (patch.provider_outcome) event.provider_outcome = patch.provider_outcome;
+  if ('response_received' in patch) event.response_received = patch.response_received === null ? null : Boolean(patch.response_received);
+  if (patch.parser_outcome) event.parser_outcome = patch.parser_outcome;
+  if (patch.lifecycle_outcome) event.lifecycle_outcome = patch.lifecycle_outcome;
   if (patch.candidates) Object.assign(event.candidates, Object.fromEntries(Object.entries(patch.candidates).map(([key, value]) => [key, number(value)])));
   if ('citation_mapping_valid' in patch) event.citation_mapping_valid = Boolean(patch.citation_mapping_valid);
   if (patch.persistence) event.persistence = patch.persistence;
@@ -181,9 +261,12 @@ export function updateLiveExtractionEvent(event, patch = {}) {
 
 export function finishLiveExtractionEvent(metadata, event, patch = {}) {
   if (!event) return null;
+  if (/^interrupted_by_/.test(event.terminal_health)) return event;
   updateLiveExtractionEvent(event, patch);
   const health = ensureLiveMemoryHealth(metadata);
   event.terminal_health = extractionTerminalStates.has(patch.terminal_health) ? patch.terminal_health : 'unresolved';
+  if (event.replay_of_event_id) event.lifecycle_outcome = event.terminal_health === 'completed' || event.terminal_health === 'completed_with_repairs' || event.terminal_health === 'completed_repartitioned'
+    ? 'replay_completed' : 'replay_failed';
   event.duration_ms = Math.max(0, Date.now() - number(event.timestamp, Date.now()));
   let totalTerminal = event.candidates.accepted + event.candidates.rejected_duplicate + event.candidates.rejected_missing_provenance + event.candidates.rejected_validation + event.candidates.unresolved;
   // Every emitted candidate needs one terminal account. A cap, safe abort, or
@@ -266,10 +349,41 @@ export function exportLiveMemoryHealth(metadata) {
   if (!health) return null;
   // Events are already privacy-safe. Clone them so diagnostics rendering/export
   // is strictly read-only and cannot mutate chat metadata.
+  const rawOutcomes = {};
+  const logicalRequests = new Map();
+  const rootFor = (event) => {
+    let current = event;
+    const seen = new Set();
+    while (current?.replay_of_event_id && !seen.has(current.replay_of_event_id)) {
+      seen.add(current.replay_of_event_id);
+      const parent = health.recent_extraction_events.find((candidate) => candidate.event_id === current.replay_of_event_id);
+      if (!parent) return current.replay_of_event_id;
+      current = parent;
+    }
+    return current?.event_id ?? event.event_id;
+  };
+  for (const event of health.recent_extraction_events) {
+    increment(rawOutcomes, event.terminal_health ?? 'legacy_outcome_unknown');
+    const logicalId = rootFor(event);
+    logicalRequests.set(logicalId, event);
+  }
+  const logicalOutcomes = {};
+  for (const event of logicalRequests.values()) increment(logicalOutcomes, event.lifecycle_outcome ?? (event.terminal_health === 'running' ? 'running' : 'legacy_outcome_unknown'));
+  const outcomeSummary = {
+    raw_event_counts: rawOutcomes,
+    deduplicated_logical_request_counts: logicalOutcomes,
+    provider_quality: {
+      malformed_responses: health.recent_extraction_events.filter((event) => event.terminal_health === 'provider_response_malformed' && event.response_received === true).length,
+      empty_responses: health.recent_extraction_events.filter((event) => event.terminal_health === 'provider_response_empty' && event.response_received === true).length,
+    },
+    interruptions: health.recent_extraction_events.filter((event) => /^interrupted_|completion_uncertain/.test(event.terminal_health)).length,
+    successful_replays: health.recent_extraction_events.filter((event) => event.lifecycle_outcome === 'replay_completed').length,
+  };
   return JSON.parse(JSON.stringify({
     schema_version: health.schema_version,
     retention_limit: LIVE_MEMORY_HEALTH_MAX_EVENTS,
     aggregate: health.aggregate,
+    extraction_outcome_summary: outcomeSummary,
     last_extraction: health.last_extraction ?? null,
     last_injection: health.last_injection ?? null,
     recent_extraction_events: health.recent_extraction_events,

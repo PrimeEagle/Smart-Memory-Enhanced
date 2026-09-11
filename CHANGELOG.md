@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.41] - 2026-09-11
+
+### Fixed
+
+- Token-budget changes now have a synchronous browser-side safety copy even
+  before Memorize Chat begins, and the recovery snapshot now includes the
+  Generation Budget. This prevents a hard client restart from reverting token
+  budget edits made either before or during a rebuild.
+- Live extraction diagnostics now distinguish provider-empty and malformed
+  responses from requests interrupted by restart or manual cancellation. A
+  restart reconciles abandoned requests against durable tier coverage, and
+  resumed attempts retain privacy-safe replay lineage plus raw and deduplicated
+  outcome totals.
+- Session extraction now closes its live-health event when a nonempty response
+  contains no parseable records instead of leaving a false running/crash state.
+- Short-Term Memory compaction retries a genuine empty provider response once
+  before reporting a failure.
+- Scene batch diagnostics now state whether a response was present and why
+  parsing failed. Fully contained deterministic fallbacks are reported as a
+  reduced-confidence notice rather than degrading otherwise valid generated
+  memory data.
+- Profile generation now explicitly requires exact authoritative relationship
+  descriptors, while family-role traces distinguish resolved, preserved, and
+  safely withheld roles and state whether operator action is needed.
+
 ## [0.9.40] - 2026-09-08
 
 ### Fixed

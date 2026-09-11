@@ -932,18 +932,23 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
 
-    if (!response || response.trim().toUpperCase() === 'NONE') {
-      healthFinish({ provider_outcome: 'none_response', terminal_health: 'empty', persistence: 'not_needed', candidates: { emitted: 0 } });
+    healthUpdate({ response_received: true, parser_outcome: 'not_started' });
+    if (!response || !response.trim()) {
+      healthFinish({ provider_outcome: 'provider_response_empty', response_received: true, parser_outcome: 'not_applicable_empty_response', terminal_health: 'provider_response_empty', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['provider_response_empty'] });
+      return 0;
+    }
+    if (response.trim().toUpperCase() === 'NONE') {
+      healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
     }
 
     const parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
       smLog('[Smart Memory Enhanced] Extraction response produced no parseable lines. Check format above.');
-      healthFinish({ provider_outcome: 'malformed_response', terminal_health: 'malformed_response', attention_reason_codes: ['unparseable_provider_response'] });
+      healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'no_parseable_records', terminal_health: 'provider_response_malformed', attention_reason_codes: ['unparseable_provider_response'] });
       return 0;
     }
-    healthUpdate({ provider_outcome: 'completed', candidates: { emitted: parsed.length } });
+    healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
 
     // Source citations belong to the numbered extraction window.  Translate
     // and validate them before candidate verification so every later pipeline

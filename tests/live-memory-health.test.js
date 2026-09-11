@@ -5,12 +5,62 @@ import {
   beginLiveExtractionEvent,
   updateLiveExtractionEvent,
   finishLiveExtractionEvent,
+  reconcileInterruptedExtractionEvents,
+  interruptRunningExtractionEvents,
   recordLiveInjectionEvent,
   CONTINUITY_HEALTH_MAX_EVENTS,
   beginContinuityEvent,
   finishContinuityEvent,
   exportLiveMemoryHealth,
 } from '../live-memory-health.js';
+
+test('restart reconciliation distinguishes committed work from uncertain interrupted work', () => {
+  const metadata = {};
+  const committed = beginLiveExtractionEvent(metadata, { tier: 'longterm', source_start: 0, source_end: 9, message_count: 10 });
+  const pending = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 0, source_end: 9, message_count: 10 });
+  updateLiveExtractionEvent(committed, { response_received: true, parser_outcome: 'parsed' });
+  const checkpoint = { run_manifest: { tier_coverage: { longterm: { committed_ranges: [{ source_start_index: 0, source_end_index: 9 }] } } } };
+  const result = reconcileInterruptedExtractionEvents(metadata, checkpoint, { now: committed.timestamp + 1000 });
+  assert.deepEqual(result, { reconciled: 2, recovered: 1, uncertain: 1 });
+  assert.equal(committed.terminal_health, 'recovered_completed');
+  assert.equal(pending.terminal_health, 'completion_uncertain_after_restart');
+
+  const replay = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 0, source_end: 9, message_count: 10 });
+  assert.equal(replay.replay_of_event_id, pending.event_id);
+  finishLiveExtractionEvent(metadata, replay, { terminal_health: 'completed' });
+  const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
+  assert.equal(summary.interruptions, 1);
+  assert.equal(summary.successful_replays, 1);
+  assert.equal(summary.provider_quality.malformed_responses, 0);
+  assert.equal(summary.provider_quality.empty_responses, 0);
+});
+
+test('manual cancellation remains an interruption even if an empty provider result arrives afterward', () => {
+  const metadata = {};
+  const event = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 20, source_end: 29 });
+  assert.equal(interruptRunningExtractionEvents(metadata, 'interrupted_by_manual_cancel'), 1);
+  finishLiveExtractionEvent(metadata, event, { terminal_health: 'provider_response_empty', response_received: true });
+  assert.equal(event.terminal_health, 'interrupted_by_manual_cancel');
+  assert.equal(exportLiveMemoryHealth(metadata).extraction_outcome_summary.provider_quality.empty_responses, 0);
+});
+
+test('genuine provider empty and malformed responses remain quality outcomes', () => {
+  const metadata = {};
+  const empty = beginLiveExtractionEvent(metadata, { tier: 'longterm', source_start: 30, source_end: 39 });
+  finishLiveExtractionEvent(metadata, empty, { terminal_health: 'provider_response_empty', response_received: true, parser_outcome: 'not_applicable_empty_response' });
+  const malformed = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 30, source_end: 39 });
+  finishLiveExtractionEvent(metadata, malformed, { terminal_health: 'provider_response_malformed', response_received: true, parser_outcome: 'parsed_no_records' });
+  const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
+  assert.equal(summary.provider_quality.empty_responses, 1);
+  assert.equal(summary.provider_quality.malformed_responses, 1);
+});
+
+test('legacy events without lifecycle evidence are reported as unknown, not provider defects', () => {
+  const metadata = { live_memory_health: { recent_extraction_events: [{ event_id: 'old', tier: 'session', terminal_health: 'malformed_response' }], recent_injection_events: [], aggregate: { extraction: {}, injection: {} } } };
+  const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
+  assert.equal(summary.deduplicated_logical_request_counts.legacy_outcome_unknown, 1);
+  assert.equal(summary.provider_quality.malformed_responses, 0);
+});
 
 test('live extraction health records preflight, repairs, and one reconciled terminal outcome', () => {
   const metadata = {};

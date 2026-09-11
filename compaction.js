@@ -97,8 +97,14 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     if (estimateTokens(prompt) > inputBudget) {
       throw new Error(`Compaction prompt exceeds its ${inputBudget}-token input budget.`);
     }
-    const response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: 'shortterm_compaction' });
-    if (!response?.trim()) throw new Error('Compaction provider returned an empty response.');
+    let response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: 'shortterm_compaction' });
+    // Some OpenAI-compatible local providers occasionally complete a request
+    // without returning content. Retry that specific response defect once;
+    // transport failures retain the connection layer's existing policy.
+    if (!response?.trim() && !shouldCancel?.()) {
+      response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: 'shortterm_compaction_empty_retry' });
+    }
+    if (!response?.trim()) throw new Error('Compaction provider returned an empty response after one bounded retry.');
     rollingSummary = formatSummary(response);
     chunk = [];
     // A normal pass contains complete source messages. An exceptionally long

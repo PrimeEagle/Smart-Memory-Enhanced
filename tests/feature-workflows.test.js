@@ -1185,6 +1185,32 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
   assert.match(settings, /aiRequestedBreak: settings\.scene_ai_detect \? aiRequestedBreak : heuristicBreak/);
 });
 
+test('profile prompt requires exact authoritative descriptors and family traces explain withheld roles', () => {
+  const prompts = read('prompts.js');
+  const profiles = read('profiles.js');
+  assert.match(prompts, /Copy relationship descriptors character-for-character/);
+  assert.match(prompts, /Do not invent synonyms/);
+  assert.match(profiles, /withheld_missing_grounded_evidence/);
+  assert.match(profiles, /action_needed/);
+  assert.match(read('settings.js'), /role_resolution_status: trace\.role_resolution_status/);
+});
+
+test('scene recovery diagnostics distinguish response presence from parser failure', () => {
+  const scenes = read('scenes.js');
+  const settings = read('settings.js');
+  assert.match(scenes, /response_present/);
+  assert.match(scenes, /parser_failure_reason/);
+  assert.match(scenes, /empty_provider_response/);
+  assert.match(settings, /completed_with_deterministic_fallbacks/);
+  assert.match(settings, /code: 'scene_detection_candidate_fallbacks',[\s\S]*severity: 'notice'/);
+});
+
+test('short-term compaction retries a genuine empty response once', () => {
+  const compaction = read('compaction.js');
+  assert.match(compaction, /shortterm_compaction_empty_retry/);
+  assert.match(compaction, /after one bounded retry/);
+});
+
 test('trusted OpenAI-compatible DNS endpoints may stream directly with a proxy fallback', () => {
   const generate = read('generate.js');
   const settings = read('settings.js');
@@ -1577,6 +1603,16 @@ test('finalization phases commit independently and resume their saved settings s
   assert.match(compaction, /checkpointEachPass = false/);
   assert.match(compaction, /shortterm_compaction_checkpoint/);
   assert.match(compaction, /await onPassCommitted/);
+});
+
+test('token budgets have a synchronous safety copy both before and during Memorize Chat', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /BUDGET_SETTINGS_STORAGE_KEY/);
+  assert.match(settings, /persistBudgetSettingsSafetySnapshot/);
+  assert.match(settings, /restoreBudgetSettingsSafetySnapshot/);
+  assert.match(settings, /\^generation_budget\$/);
+  assert.match(settings, /Apply this after defaults but before UI binding/);
+  assert.match(settings, /This is intentionally independent of an active checkpoint/);
 });
 
 test('expanded memory sections retain a clear header-to-content hierarchy', () => {
