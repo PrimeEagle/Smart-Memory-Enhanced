@@ -74,10 +74,11 @@ async function getChatTokenCount(chat) {
  * plus an unusually long unsummarized tail must not bypass the connection
  * profile's context-window guard.
  */
-async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength, { onPassCommitted = null, shouldCancel = null } = {}) {
+async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength, { onPassCommitted = null, shouldCancel = null, onRequestState = null } = {}) {
   const inputBudget = getMemoryInputBudget(responseLength);
   let rollingSummary = initialSummary || 'No earlier events have been summarized yet.';
   let chunk = [];
+  let passNumber = 0;
   const buildPromptFor = (items) => {
     const events = items.map((message) => `${message.name}: ${message.mes}`).join('\n\n');
     return applyPromptOverride(
@@ -97,12 +98,25 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     if (estimateTokens(prompt) > inputBudget) {
       throw new Error(`Compaction prompt exceeds its ${inputBudget}-token input budget.`);
     }
-    let response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: 'shortterm_compaction' });
+    passNumber++;
+    const request = async (attempt) => {
+      onRequestState?.({ pass_number: passNumber, attempt, state: 'in_flight', response_present: null });
+      try {
+        const result = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: attempt === 1 ? 'shortterm_compaction' : 'shortterm_compaction_empty_retry' });
+        onRequestState?.({ pass_number: passNumber, attempt, state: 'response_observed', response_present: Boolean(result?.trim()) });
+        return result;
+      } catch (error) {
+        onRequestState?.({ pass_number: passNumber, attempt, state: 'request_error', response_present: false });
+        throw error;
+      }
+    };
+    let response = await request(1);
     // Some OpenAI-compatible local providers occasionally complete a request
     // without returning content. Retry that specific response defect once;
     // transport failures retain the connection layer's existing policy.
-    if (!response?.trim() && !shouldCancel?.()) {
-      response = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: 'shortterm_compaction_empty_retry' });
+    if (!response?.trim()) {
+      if (shouldCancel?.()) throw new Error('Compaction interrupted before empty-response retry.');
+      response = await request(2);
     }
     if (!response?.trim()) throw new Error('Compaction provider returned an empty response after one bounded retry.');
     rollingSummary = formatSummary(response);
@@ -226,7 +240,7 @@ export async function shouldCompact() {
  * rather than rewriting it from scratch.
  * @returns {Promise<string|null>} The formatted summary, or null on failure.
  */
-export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null } = {}) {
+export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const context = getContext();
 
@@ -332,7 +346,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         existingSummary,
         storedMemories,
         settings.compaction_response_length || 2000,
-        { onPassCommitted: persistBoundedPass, shouldCancel },
+        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState },
       );
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
@@ -350,7 +364,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
           'No earlier events have been summarized yet.',
           storedMemories,
           responseLength,
-          { onPassCommitted: persistBoundedPass, shouldCancel },
+          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState },
         );
       } else {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {

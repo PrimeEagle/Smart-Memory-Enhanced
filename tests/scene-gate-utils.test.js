@@ -486,3 +486,17 @@ test('state-delta diagnostics distinguish observed change from grounded reset', 
   assert.equal(reset.grounded.location_reset_evidence, true);
   assert.equal(reset.grounded.new_setting_opening, true);
 });
+
+test('a brief shared pause before answering is continuity, not a new room setting', () => {
+  for (const opening of [
+    '*The room was quiet for a moment as everyone considered the question. She spoke first.*',
+    '*The group fell silent for a moment. Then he answered.*',
+  ]) {
+    const continuity = deriveSceneContinuitySignals('“How should we handle that?”', opening);
+    const gate = evaluateDeterministicSceneGate({ aiRequestedBreak: true, heuristicBreak: false,
+      sceneLength: 8, minimumSceneLength: 3, messageIndex: 100, previousBoundaryIndex: 80, continuity });
+    assert.equal(continuity.strongly_implied_transition, false);
+    assert.equal(gate.accepted, false);
+  }
+  assert.equal(deriveSceneContinuitySignals('They ended the call.', 'The apartment was silent and empty.').strongly_implied_transition, true);
+});

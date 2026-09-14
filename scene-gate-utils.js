@@ -84,7 +84,9 @@ export function deriveSceneContinuitySignals(previousMessage = '', currentMessag
   // literal "later" marker. It must be anchored at the current message and
   // name a concrete environment, so ordinary topic/action changes never
   // become transition support by themselves.
-  const narrativeContextOpening = /^\s*(?:\*\s*)?(?:(?:inside|outside|back at|across town|at|in)\s+(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)\b|(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)(?:\s+\w+){0,2}\s+(?:was|is|felt|looked|lay|stood)\b)/i.test(narrativeCurrent);
+  const briefSharedPause = /^\s*\*?\s*(?:the|a)\s+(?:room|group|table)\s+(?:was|went|fell|grew)\s+(?:quiet|silent|still)\b/i.test(narrativeCurrent)
+    && /\b(?:for a moment|as everyone|as (?:they|we)|before (?:someone|one of them))\b/i.test(narrativeCurrent);
+  const narrativeContextOpening = !briefSharedPause && /^\s*(?:\*\s*)?(?:(?:inside|outside|back at|across town|at|in)\s+(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)\b|(?:the|a|an)\s+(?:house|home|apartment|room|bedroom|office|bar|restaurant|cafe|street|park|hospital|hotel|car|kitchen|garden|porch|driveway|store|supermarket|library|school|gym|lobby|hallway|beach)(?:\s+\w+){0,2}\s+(?:was|is|felt|looked|lay|stood)\b)/i.test(narrativeCurrent);
   const completedPriorInteraction = /\b(?:said goodbye|said goodnight|ended (?:the )?(?:call|conversation|text exchange)|hung up|parted ways)\b/i.test(narrativePrevious);
   const settingNoun = '(?:coffee\\s+shop|cafe|restaurant|bar|lobby|room|bedroom|office|apartment|house|home|place|kitchen|living\\s+room|hospital|table|couch|sofa|bed|park|store|library|school|gym|hotel|car)';
   // A named destination must use an actual possessive ("Taylor's room"),

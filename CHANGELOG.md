@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.42] - 2026-09-14
+
+### Added
+
+- Memorize Chat now records a privacy-safe page-instance marker and cumulative
+  page-interruption ledger across source extraction and finalization. A new page
+  encountering an unfinished run reports an unclassified interruption with
+  phase, safe checkpoint, and request-state context; diagnostics do not guess
+  whether the browser discarded the tab, reloaded it, or restarted the service.
+- Extraction diagnostics now label retained versus cumulative counts, including
+  provider-quality totals that remain available after older detailed events
+  are trimmed. Short-Term Memory compaction reports response presence for both
+  bounded attempts without retaining response text.
+
+### Fixed
+
+- The profile-generation template now asks for exact approved relationship
+  descriptors only, matching the validator's accepted format instead of
+  inviting free-form relationship prose that is then rejected.
+- A brief shared pause in an ongoing conversation no longer masquerades as a
+  new scene merely because narration starts with the room being quiet; genuine
+  new-setting openings remain eligible.
+
 ## [0.9.41] - 2026-09-11
 
 ### Fixed

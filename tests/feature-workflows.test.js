@@ -288,7 +288,7 @@ test('profile relationship descriptors are independently validated against estab
   assert.match(profiles, /never an\s+\/\/ authority for durable relationship labels/);
   assert.doesNotMatch(profiles, /groundedRelationshipRecords = \[\s*\.\.\.longtermMemories,\s*\.\.\.sessionMemories,\s*\.\.\.loadSceneHistory/);
   assert.match(prompts, /RELATIONSHIP HISTORY \(authoritative current descriptors\)/);
-  assert.match(prompts, /use at least one exact descriptor from RELATIONSHIP HISTORY/);
+  assert.match(prompts, /one or more comma-separated descriptors copied character-for-character/);
   assert.match(prompts, /entity type .* never a relationship status/i);
   assert.match(profiles, /contradictory_state_lines/);
 });
@@ -1115,7 +1115,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(read('arcs.js'), /Direct evidence means messages actually supplied to this provider call/);
   assert.match(read('arcs.js'), /inherited_source_ranges/);
   assert.match(read('profiles.js'), /dropped_invalid_label/);
-  assert.match(read('prompts.js'), /\[EntityName\]: \[directional one-line state\]/);
+  assert.match(read('prompts.js'), /\[EntityName\]: \[exact descriptor from authoritative evidence/);
   assert.match(read('prompts.js'), /CHARACTER CARD RELATIONSHIP FACTS \(highest priority\)/);
   assert.match(read('profiles.js'), /extractCardRelationshipFacts\(roster\)/);
   assert.match(read('canonical-entities.js'), /relationshipFactExcerpt/);
@@ -1188,11 +1188,30 @@ test('operational workflow: Memorize Chat has a no-save workload preview and exp
 test('profile prompt requires exact authoritative descriptors and family traces explain withheld roles', () => {
   const prompts = read('prompts.js');
   const profiles = read('profiles.js');
-  assert.match(prompts, /Copy relationship descriptors character-for-character/);
+  assert.match(prompts, /comma-separated descriptors copied character-for-character/);
   assert.match(prompts, /Do not invent synonyms/);
   assert.match(profiles, /withheld_missing_grounded_evidence/);
   assert.match(profiles, /action_needed/);
   assert.match(read('settings.js'), /role_resolution_status: trace\.role_resolution_status/);
+});
+
+test('page-instance accounting spans source work, finalization, export, and completed-run cleanup', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /reconcilePageRunInstance\(metadata, checkpoint, priorMarker, pageInstanceId\)/);
+  assert.match(settings, /updateActivePageMarker\(checkpoint, 'source_extraction', 'in_flight'\)/);
+  assert.match(settings, /updateActivePageMarker\(checkpoint, key, 'in_flight'\)/);
+  assert.match(settings, /page_run_lifecycle: summarizePageRunLifecycle/);
+  assert.match(settings, /clearPageRunMarker\(localStorage, pageRunScope\(catchUpContext\), catchUpRunId\)/);
+  assert.match(read('idempotence-utils.js'), /'page_run_lifecycle', 'live_memory_health'/);
+});
+
+test('compaction records observed responses separately from interrupted requests', () => {
+  const compaction = read('compaction.js');
+  const settings = read('settings.js');
+  assert.match(compaction, /state: 'in_flight', response_present: null/);
+  assert.match(compaction, /state: 'response_observed', response_present: Boolean\(result\?\.trim\(\)\)/);
+  assert.match(settings, /observed_empty_response_after_bounded_retry/);
+  assert.match(settings, /compaction_request_audit: runResult\.compactionRequestAudit/);
 });
 
 test('scene recovery diagnostics distinguish response presence from parser failure', () => {

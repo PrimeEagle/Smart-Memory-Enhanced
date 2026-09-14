@@ -24,6 +24,7 @@ export const DURABLE_SEMANTIC_PROJECTION_VERSION = 1;
 
 const VOLATILE_KEYS = new Set([
   'lastActive', 'catch_up_diagnostics', 'developer_idempotence_check',
+  'page_run_lifecycle', 'live_memory_health',
   'repair_history', 'request_efficiency_history', 'last_catchup_run_id',
   'scene_stability_history', 'scene_stability_analysis', 'run_id',
   // Captured identity context is an input contract for later local checks,

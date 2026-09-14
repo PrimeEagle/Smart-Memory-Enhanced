@@ -22,6 +22,14 @@ const stableSecondPass = {
   unresolved_integrity_failures_after_second_pass: 0,
 };
 
+test('page lifecycle diagnostics cannot alter the durable reconciliation hash', () => {
+  const state = { sceneHistory: [{ id: 'scene-1', summary: 'A verified scene.' }] };
+  const before = durableStateHash(state);
+  const after = durableStateHash({ ...state, page_run_lifecycle: { page_interruption_count: 4, current_page_instance_id: 'page-5' },
+    live_memory_health: { aggregate: { extraction: { completed: 500 } } } });
+  assert.equal(after, before);
+});
+
 test('metadata-only hash differences remain idempotent', () => {
   const result = deriveIdempotenceResult({ ...stableSecondPass, diagnostic_metadata_changed: true, revision_metadata_changed: true });
   assert.equal(result.idempotent, true);

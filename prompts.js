@@ -622,7 +622,7 @@ If all new entries are duplicates and nothing needs to be added, output exactly:
  * Asks the model to produce three sections from stored memories:
  *   character_state  - current goals, emotional posture, fears, loyalties
  *   world_state      - current location, threats, unresolved events, time context
- *   relationship_matrix - one line per named entity with directional state + confidence
+ *   relationship_matrix - exact authoritative pair descriptors only
  *
  * All three sections are requested in one call to avoid extra model round-trips
  * on local hardware. Output uses XML-style tags so the parser can locate each
@@ -701,10 +701,10 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 </world_state>
 
 <relationship_matrix>
-[EntityName]: [directional one-line state] [confidence: 0.X]
-(one line per entity from the KNOWN ENTITIES list; omit this section entirely if no entities are known)
-For each relationship line, use at least one exact descriptor from RELATIONSHIP HISTORY for that same pair. Do not upgrade, reinterpret, or substitute a status (for example, do not turn "trust" into "romantic" or "family"). If that pair has no listed descriptor, omit the line.
-Copy relationship descriptors character-for-character from the authoritative evidence for that exact directional pair. Do not invent synonyms, combine descriptors into a new label, add prose as a descriptor, or emit placeholders such as "unknown", "complicated", or an entity type. Put any supported current-state explanation after an exact descriptor, separated by a semicolon; the descriptor itself must remain unchanged.
+[EntityName]: [exact descriptor from authoritative evidence for this directional pair] [confidence: 0.X]
+(one line per supported pair; leave the section empty if no pair has an exact approved descriptor)
+The text after the colon must contain only one or more comma-separated descriptors copied character-for-character from CHARACTER CARD RELATIONSHIP FACTS or RELATIONSHIP HISTORY for this same directional pair. Prefer the card when the two conflict. Do not describe the relationship in prose here; put separately grounded current-state prose in <character_state>. If neither source lists a descriptor for this pair, omit the line.
+Do not invent synonyms, combine descriptors into a new label, add unsupported family roles, or emit placeholders such as "unknown" or "complicated". Do not upgrade or reinterpret a descriptor (for example, "trust" is not "romantic" or "family").
 An entity type (such as "character", "person", "NPC", "persona", or "entity") is never a relationship status. Do not use one as the relationship label or state. When the authoritative evidence explicitly establishes a current legal or relationship fact, state that fact plainly and never describe that same fact as unresolved, uncertain, pending, or speculative elsewhere in the profile.
 </relationship_matrix>`
   );

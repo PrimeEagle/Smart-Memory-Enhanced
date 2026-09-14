@@ -73,6 +73,10 @@ import {
   interruptRunningExtractionEvents,
 } from './live-memory-health.js';
 import {
+  readPageRunMarker, writePageRunMarker, clearPageRunMarker,
+  reconcilePageRunInstance, summarizePageRunLifecycle,
+} from './page-run-lifecycle.js';
+import {
   normalizeCatchUpCheckpoint,
   validateCatchUpResumeSource,
   ensureCatchUpRunManifest,
@@ -1880,6 +1884,20 @@ export function bindSettingsUI(ctrl) {
   const s = extension_settings[MODULE_NAME];
   const autoResumeAttemptedRunIds = new Set();
   const healthRestartReconciledRunIds = new Set();
+  const pageInstanceId = globalThis.crypto?.randomUUID?.() ?? `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const pageRunScope = (context = getContext()) => context?.chatId
+    ? `${context?.groupId ?? 'single'}:${context.chatId}` : context?.groupId ?? context?.characterId ?? null;
+  const updateActivePageMarker = (checkpoint, phase = null, requestState = 'idle', requestEvidence = {}) => {
+    const scope = pageRunScope();
+    if (!scope || !checkpoint?.run_id) return null;
+    return writePageRunMarker(localStorage, scope, {
+      run_id: checkpoint.run_id, page_instance_id: pageInstanceId,
+      phase: phase ?? checkpoint.finalization?.active_phase ?? 'source_extraction',
+      checkpoint_offset: checkpoint.next_source_offset, request_state: requestState,
+      request_attempt: requestEvidence.request_attempt,
+      observed_empty_response_count: requestEvidence.observed_empty_response_count,
+    });
+  };
 
   const getResumableCatchUpCheckpoint = (context = getContext()) => {
     const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
@@ -1960,8 +1978,17 @@ export function bindSettingsUI(ctrl) {
       ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${finalization.active_phase.replaceAll('_', ' ')}` : ''}.`
       : '';
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
+    if (!running && checkpoint.status === 'in_progress' && pageRunScope()) {
+      const metadata = getContext().chatMetadata?.[META_KEY];
+      const priorMarker = readPageRunMarker(localStorage, pageRunScope());
+      const transition = reconcilePageRunInstance(metadata, checkpoint, priorMarker, pageInstanceId);
+      if (transition.reason !== 'same_page_instance') {
+        updateActivePageMarker(checkpoint, null, 'recovery_pending');
+        saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist page-run lifecycle:`, error));
+      }
+    }
     if (!running && checkpoint.status === 'in_progress' && !healthRestartReconciledRunIds.has(checkpoint.run_id)) {
-      reconcileInterruptedExtractionEvents(getContext().chatMetadata?.[META_KEY], checkpoint, { reason: 'interrupted_by_restart' });
+      reconcileInterruptedExtractionEvents(getContext().chatMetadata?.[META_KEY], checkpoint, { reason: 'unclassified_page_interruption' });
       healthRestartReconciledRunIds.add(checkpoint.run_id);
       // Persist the classification before auto-resume creates linked replay
       // events. This save contains no provider or chat content.
@@ -2053,6 +2080,7 @@ export function bindSettingsUI(ctrl) {
   const clearFreshStartRunMetadata = (context, characterNames = []) => {
     const metadata = context.chatMetadata?.[META_KEY];
     if (!metadata) return { identity_reviews_removed: 0, current_chat_identity_reviews_remaining: 0 };
+    if (metadata.catch_up_checkpoint?.run_id) clearPageRunMarker(localStorage, pageRunScope(context), metadata.catch_up_checkpoint.run_id);
     const recordIds = collectFreshStartRecordIds(metadata);
     for (const name of characterNames) collectFreshStartRecordIds(extension_settings[MODULE_NAME]?.characters?.[name], recordIds);
     const reviewQueue = extension_settings[MODULE_NAME]?.identity_review_queue ?? [];
@@ -2075,6 +2103,7 @@ export function bindSettingsUI(ctrl) {
       'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
       'active_catchup_run_id', 'catch_up_checkpoint', 'catch_up_run_manifests', 'parser_debris_cleanup',
       'fresh_start_postcondition_audit', 'live_memory_health',
+      'page_run_lifecycle',
       'shortterm_compaction_checkpoint',
     ]) delete metadata[key];
     return {
@@ -2447,7 +2476,8 @@ export function bindSettingsUI(ctrl) {
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
-      return { ...completedRun, live_memory_health: liveMemoryHealth, catch_up_recovery: recovery };
+      return { ...completedRun, live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
+        page_run_lifecycle: summarizePageRunLifecycle(metadata, completedRun.logical_run?.attempt_count ?? null) };
     }
     // Fresh Start is itself a consequential, persisted operation. Its
     // postcondition needs to be inspectable before a long historical rebuild,
@@ -2467,6 +2497,7 @@ export function bindSettingsUI(ctrl) {
       provider_calls_during_audit: 0,
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
+      page_run_lifecycle: summarizePageRunLifecycle(metadata, metadata.catch_up_checkpoint?.run_manifest?.total_attempt_count ?? null),
     };
   };
   const exportCatchUpDiagnostics = () => {
@@ -4530,9 +4561,10 @@ export function bindSettingsUI(ctrl) {
         })),
       };
       checkpoint.run_manifest = ensureCatchUpRunManifest(checkpoint, sourceWindow);
+      const resumeWasManual = resumableCheckpoint?.status === 'awaiting_manual_resume';
       checkpoint.run_manifest = beginCatchUpAttempt(checkpoint.run_manifest, {
         type: resumableCheckpoint
-          ? (resumableCheckpoint.status === 'awaiting_manual_resume' ? 'resumed_after_manual_cancel' : 'resumed_after_crash')
+          ? (resumeWasManual ? 'resumed_after_manual_cancel' : 'resumed_after_crash')
           : 'initial',
         resumeOffset,
       });
@@ -4542,6 +4574,13 @@ export function bindSettingsUI(ctrl) {
       checkpoint.source_message_count = total;
       checkpoint.source_last_original_index = allMessages.at(-1)?.__sme_original_index ?? null;
       catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint = checkpoint;
+      const existingPageMarker = pageRunScope(catchUpContext)
+        ? readPageRunMarker(localStorage, pageRunScope(catchUpContext)) : null;
+      reconcilePageRunInstance(catchUpContext.chatMetadata[META_KEY], checkpoint, existingPageMarker, pageInstanceId, Date.now(), {
+        freshRun: !resumableCheckpoint,
+        expectedManualResume: resumeWasManual,
+      });
+      updateActivePageMarker(checkpoint, checkpoint.finalization?.active_phase, 'idle');
       // Persist before any provider work. If the process exits during the
       // first request, a restart can still resume from the known zero offset.
       await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
@@ -4867,6 +4906,7 @@ export function bindSettingsUI(ctrl) {
           && !isCatchUpTierRangeSafelyCovered(checkpoint.run_manifest, 'longterm', currentRange);
         const replaySession = sessionEnabledForRun && priorSessionObligation?.safely_committed !== true
           && !isCatchUpTierRangeSafelyCovered(checkpoint.run_manifest, 'session', currentRange);
+        updateActivePageMarker(checkpoint, 'source_extraction', 'in_flight');
 
         if (replayLongterm) {
           for (const name of catchUpCharacterNames) {
@@ -5011,6 +5051,7 @@ export function bindSettingsUI(ctrl) {
           // be ahead of this value, but the checkpoint always reflects what a
           // crash can safely resume without duplication.
           refreshCatchUpRecoveryUI();
+          updateActivePageMarker(checkpointForCommit, 'source_extraction', 'idle');
         } catch (err) {
           // The transaction restores both chat metadata and extension state.
           // Do not advance past an uncommitted chunk: the persisted checkpoint
@@ -5115,6 +5156,7 @@ export function bindSettingsUI(ctrl) {
         await saveChatMetadata(catchUpContext);
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
         finalTransaction = beginCatchUpTransaction(catchUpContext);
+        updateActivePageMarker(checkpoint, key, 'idle');
       };
       const startFinalizationPhase = async (key) => {
         checkpoint.finalization.active_phase = key;
@@ -5122,6 +5164,7 @@ export function bindSettingsUI(ctrl) {
         checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
         checkpoint.run_settings_snapshot_updated_at = Date.now();
         checkpoint.updated_at = Date.now();
+        updateActivePageMarker(checkpoint, key, 'in_flight');
         await saveChatMetadata(catchUpContext);
         // Persist the active marker before entering a provider request. A
         // crash now has an explicit safe boundary: completed earlier phases
@@ -5860,16 +5903,40 @@ export function bindSettingsUI(ctrl) {
             await saveChatMetadata(catchUpContext);
             await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
             finalTransaction = beginCatchUpTransaction(catchUpContext);
+            updateActivePageMarker(checkpoint, 'shortterm_extraction', 'idle');
             setStatusMessage(`Extracting short-term memories... ${progress.completed_passes} compaction pass${progress.completed_passes === 1 ? '' : 'es'} safely committed.`);
           };
-          await runCompaction({ includeLastMessage: true, checkpointEachPass: true, onPassCommitted: commitShortTermPass })
+          const compactionRequestAudit = {
+            scope: 'current_page_attempt', observed_requests: 0, observed_empty_responses: 0,
+            request_errors: 0, retained_events: [], retained_event_limit: 24,
+            last_response_presence: null, terminal_outcome: 'running',
+          };
+          runResult.compactionRequestAudit = compactionRequestAudit;
+          const onCompactionRequestState = (event) => {
+            if (event.state === 'in_flight') compactionRequestAudit.observed_requests++;
+            if (event.state === 'response_observed') {
+              compactionRequestAudit.last_response_presence = event.response_present;
+              if (!event.response_present) compactionRequestAudit.observed_empty_responses++;
+            }
+            if (event.state === 'request_error') compactionRequestAudit.request_errors++;
+            compactionRequestAudit.retained_events = [...compactionRequestAudit.retained_events, event].slice(-24);
+            updateActivePageMarker(checkpoint, 'shortterm_extraction', event.state === 'in_flight' ? 'in_flight' : event.state, {
+              request_attempt: event.attempt,
+              observed_empty_response_count: compactionRequestAudit.observed_empty_responses,
+            });
+          };
+          await runCompaction({ includeLastMessage: true, checkpointEachPass: true, onPassCommitted: commitShortTermPass,
+            onRequestState: onCompactionRequestState, shouldCancel: () => ctrl.catchUpCancelled })
             .then((summary) => {
+              compactionRequestAudit.terminal_outcome = summary ? 'completed' : 'no_summary';
               if (summary) {
                 injectSummary(summary);
                 updateShortTermUI(summary);
               }
             })
             .catch((err) => {
+              compactionRequestAudit.terminal_outcome = compactionRequestAudit.observed_empty_responses >= 2
+                ? 'observed_empty_response_after_bounded_retry' : 'request_or_compaction_failure';
               recordCatchUpError('compaction error', err);
           });
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
@@ -6524,6 +6591,8 @@ export function bindSettingsUI(ctrl) {
           },
         },
         logical_run: logicalRunAtDiagnosticBuild,
+        page_run_lifecycle: summarizePageRunLifecycle(catchUpContext.chatMetadata?.[META_KEY], logicalRunAtDiagnosticBuild.attempt_count),
+        compaction_request_audit: runResult.compactionRequestAudit ?? null,
         sceneDetection: restoredSceneDetection,
         tiers: runResult.extractionFailuresByTier,
         identityResolution: runResult.identityResolution ?? null,
@@ -6851,6 +6920,7 @@ export function bindSettingsUI(ctrl) {
       latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+        if (!ctrl.catchUpCancelled) clearPageRunMarker(localStorage, pageRunScope(catchUpContext), catchUpRunId);
       } catch (err) {
         recordCatchUpError('final persistence error', err, null, true);
         diagnostics.status = 'partial';

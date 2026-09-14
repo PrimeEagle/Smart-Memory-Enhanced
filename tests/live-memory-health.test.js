@@ -23,7 +23,7 @@ test('restart reconciliation distinguishes committed work from uncertain interru
   const result = reconcileInterruptedExtractionEvents(metadata, checkpoint, { now: committed.timestamp + 1000 });
   assert.deepEqual(result, { reconciled: 2, recovered: 1, uncertain: 1 });
   assert.equal(committed.terminal_health, 'recovered_completed');
-  assert.equal(pending.terminal_health, 'completion_uncertain_after_restart');
+  assert.equal(pending.terminal_health, 'completion_uncertain_after_page_interruption');
 
   const replay = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 0, source_end: 9, message_count: 10 });
   assert.equal(replay.replay_of_event_id, pending.event_id);
@@ -99,6 +99,23 @@ test('live health retains only bounded events while aggregate counters remain ac
   const health = exportLiveMemoryHealth(metadata);
   assert.equal(health.recent_extraction_events.length, LIVE_MEMORY_HEALTH_MAX_EVENTS);
   assert.equal(health.aggregate.extraction.completed, LIVE_MEMORY_HEALTH_MAX_EVENTS + 5);
+  assert.equal(health.extraction_outcome_summary.retained_event_count, LIVE_MEMORY_HEALTH_MAX_EVENTS);
+  assert.equal(health.extraction_outcome_summary.cumulative_chat_event_counts.completed, LIVE_MEMORY_HEALTH_MAX_EVENTS + 5);
+  assert.equal(health.extraction_outcome_summary.retained_history_complete, false);
+});
+
+test('current-run provider quality totals survive retained event truncation', () => {
+  const metadata = { active_catchup_run_id: 'run-a' };
+  const bad = beginLiveExtractionEvent(metadata, { tier: 'session' });
+  finishLiveExtractionEvent(metadata, bad, { terminal_health: 'provider_response_malformed', response_received: true });
+  for (let index = 0; index < LIVE_MEMORY_HEALTH_MAX_EVENTS + 1; index++) {
+    const event = beginLiveExtractionEvent(metadata, { tier: 'session' });
+    finishLiveExtractionEvent(metadata, event, { terminal_health: 'completed' });
+  }
+  const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
+  assert.equal(summary.provider_quality.malformed_responses, 0);
+  assert.equal(summary.cumulative_current_run_counts.provider_quality.malformed_responses, 1);
+  assert.equal(summary.cumulative_current_run_counts.attempted, LIVE_MEMORY_HEALTH_MAX_EVENTS + 2);
 });
 
 test('injection health distinguishes empty, failed attention, and unified stale-slot cleanup', () => {

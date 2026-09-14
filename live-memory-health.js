@@ -16,7 +16,7 @@ const extractionTerminalStates = new Set([
   'unresolved', 'skipped',
   'provider_response_malformed', 'provider_response_empty',
   'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel',
-  'completion_uncertain_after_restart', 'replayed_after_recovery',
+  'completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'replayed_after_recovery',
   'replay_completed', 'replay_failed', 'recovered_completed', 'legacy_outcome_unknown',
 ]);
 
@@ -42,6 +42,25 @@ function increment(object, key, amount = 1) {
   object[key] = number(object[key]) + amount;
 }
 
+function runCounters(health, runId) {
+  if (!runId) return null;
+  if (health.current_run_outcomes?.run_id !== runId) health.current_run_outcomes = {
+    run_id: runId, attempted: 0, terminal_counts: {}, provider_quality: { malformed_responses: 0, empty_responses: 0 },
+    interruption_count: 0,
+  };
+  return health.current_run_outcomes;
+}
+
+function recordTerminal(health, event) {
+  increment(health.aggregate.extraction, event.terminal_health);
+  const run = runCounters(health, event.run_id);
+  if (!run) return;
+  increment(run.terminal_counts, event.terminal_health);
+  if (event.terminal_health === 'provider_response_malformed' && event.response_received === true) increment(run.provider_quality, 'malformed_responses');
+  if (event.terminal_health === 'provider_response_empty' && event.response_received === true) increment(run.provider_quality, 'empty_responses');
+  if (/^interrupted_|completion_uncertain/.test(event.terminal_health)) increment(run, 'interruption_count');
+}
+
 function sameLogicalRange(left, right) {
   return left?.tier === right?.tier
     && left?.source_range?.start === right?.source_range?.start
@@ -63,7 +82,7 @@ function sourceRangeSafelyCommitted(checkpoint, event) {
  * Closes extraction events abandoned by a prior renderer/process lifetime.
  * The durable tier ledger is authoritative; health events never advance it.
  */
-export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { reason = 'interrupted_by_restart', now = Date.now() } = {}) {
+export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { reason = 'unclassified_page_interruption', now = Date.now() } = {}) {
   const health = ensureLiveMemoryHealth(metadata);
   if (!health) return { reconciled: 0, recovered: 0, uncertain: 0 };
   let reconciled = 0;
@@ -72,15 +91,15 @@ export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { rea
   for (const event of health.recent_extraction_events) {
     if (event.terminal_health !== 'running') continue;
     const committed = sourceRangeSafelyCommitted(checkpoint, event);
-    event.terminal_health = committed ? 'recovered_completed' : 'completion_uncertain_after_restart';
+    event.terminal_health = committed ? 'recovered_completed' : 'completion_uncertain_after_page_interruption';
     event.lifecycle_outcome = committed ? 'recovered_from_durable_tier_commit' : reason;
     event.interruption_reason = committed ? null : reason;
     event.checkpoint_state = committed ? 'tier_range_safely_committed' : 'tier_range_pending_or_unknown';
     event.response_received = event.response_received ?? null;
-    event.parser_outcome = event.parser_outcome ?? 'not_classified_before_restart';
+    event.parser_outcome = event.parser_outcome ?? 'not_classified_before_page_interruption';
     event.duration_ms = Math.max(0, now - number(event.timestamp, now));
     event.attention_reason_codes = committed ? [] : boundedReasonCodes([...event.attention_reason_codes, event.terminal_health]);
-    increment(health.aggregate.extraction, event.terminal_health);
+    recordTerminal(health, event);
     reconciled++;
     if (committed) recovered++; else uncertain++;
   }
@@ -102,7 +121,7 @@ export function interruptRunningExtractionEvents(metadata, reason = 'interrupted
     event.parser_outcome = event.parser_outcome ?? 'not_classified_before_interruption';
     event.duration_ms = Math.max(0, now - number(event.timestamp, now));
     event.attention_reason_codes = boundedReasonCodes([...event.attention_reason_codes, reason]);
-    increment(health.aggregate.extraction, reason);
+    recordTerminal(health, event);
     count++;
   }
   return count;
@@ -188,11 +207,12 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
   const now = Date.now();
   const probe = { tier: input.tier ?? 'unknown', source_range: { start: Number.isInteger(input.source_start) ? input.source_start : null, end: Number.isInteger(input.source_end) ? input.source_end : null } };
   const replayedEvent = [...health.recent_extraction_events].reverse().find((prior) => sameLogicalRange(prior, probe)
-    && ['completion_uncertain_after_restart', 'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel', 'replay_failed'].includes(prior.terminal_health));
+    && ['completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel', 'replay_failed'].includes(prior.terminal_health));
   const event = {
     event_id: nextId(health, 'extract'),
     timestamp: now,
     chat_turn_id: input.chat_turn_id ?? null,
+    run_id: input.run_id ?? metadata?.active_catchup_run_id ?? null,
     tier: input.tier ?? 'unknown',
     trigger_reason: input.trigger_reason ?? 'periodic_cadence',
     source_range: {
@@ -226,6 +246,8 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
     attention_reason_codes: event.attention_reason_codes,
   };
   increment(health.aggregate.extraction, 'attempted');
+  const run = runCounters(health, event.run_id);
+  if (run) increment(run, 'attempted');
   trimEvents(health);
   return event;
 }
@@ -277,7 +299,7 @@ export function finishLiveExtractionEvent(metadata, event, patch = {}) {
     event.attention_reason_codes = boundedReasonCodes([...event.attention_reason_codes, 'candidate_terminal_outcome_unresolved']);
   }
   event.candidate_totals_reconciled = event.candidates.emitted === 0 || totalTerminal === event.candidates.emitted;
-  increment(health.aggregate.extraction, event.terminal_health);
+  recordTerminal(health, event);
   increment(health.aggregate.extraction, 'accepted', event.candidates.accepted);
   if (event.attention_reason_codes.length || ['prevented', 'provider_failure', 'persistence_failure', 'unresolved'].includes(event.terminal_health)) {
     increment(health.aggregate, 'attention_count');
@@ -370,6 +392,11 @@ export function exportLiveMemoryHealth(metadata) {
   const logicalOutcomes = {};
   for (const event of logicalRequests.values()) increment(logicalOutcomes, event.lifecycle_outcome ?? (event.terminal_health === 'running' ? 'running' : 'legacy_outcome_unknown'));
   const outcomeSummary = {
+    retained_event_scope: 'last_bounded_extraction_events',
+    retained_event_count: health.recent_extraction_events.length,
+    cumulative_chat_event_counts: health.aggregate.extraction,
+    cumulative_current_run_counts: health.current_run_outcomes ?? null,
+    retained_history_complete: number(health.aggregate.extraction?.attempted) <= health.recent_extraction_events.length,
     raw_event_counts: rawOutcomes,
     deduplicated_logical_request_counts: logicalOutcomes,
     provider_quality: {
