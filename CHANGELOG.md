@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.43] - 2026-09-15
+
+### Fixed
+
+- Valid values typed beside token-budget and other settings sliders are now
+  applied and saved immediately. Previously the field could display the new
+  number while the underlying setting remained unchanged until Enter or blur,
+  allowing a reboot with the field still focused to restore the old value.
+- Manually changing an injection budget now disables automatic budget tuning
+  and reports that change. This prevents later injection activity from silently
+  recalculating and persisting a different value over the user's manual choice.
+
 ## [0.9.42] - 2026-09-14
 
 ### Added

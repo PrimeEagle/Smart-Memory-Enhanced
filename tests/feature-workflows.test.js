@@ -1528,6 +1528,8 @@ test('every memory settings slider has a validated direct numeric entry field', 
   assert.match(settings, /Number\.isFinite\(value\) \|\| value < min \|\| value > max/);
   assert.match(settings, /rawValue === '' \? Number\.NaN : Number\(rawValue\)/);
   assert.match(settings, /\$slider\.val\(normalized\)\.trigger\('input'\)\.trigger\('change'\)/);
+  assert.match(settings, /\$entry\.on\('input\.smeDirectRange'[\s\S]*applyEntryValue\(\)/);
+  assert.match(settings, /displayed-but-unsaved value/);
   assert.match(settings, /function refreshDirectRangeInputs\(\)/);
   assert.match(css, /\.sme_range_direct_input/);
 });
@@ -1632,6 +1634,10 @@ test('token budgets have a synchronous safety copy both before and during Memori
   assert.match(settings, /\^generation_budget\$/);
   assert.match(settings, /Apply this after defaults but before UI binding/);
   assert.match(settings, /This is intentionally independent of an active checkpoint/);
+  assert.match(settings, /preserveManualBudgetOverride/);
+  assert.match(settings, /event\?\.originalEvent/);
+  assert.match(settings, /\/_inject_budget\$\/\.test/);
+  assert.match(settings, /Auto-tune budgets was turned off to preserve your manual budget values/);
 });
 
 test('expanded memory sections retain a clear header-to-content hierarchy', () => {

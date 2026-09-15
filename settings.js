@@ -1027,26 +1027,38 @@ function installDirectRangeInputs() {
       $entry[0].setCustomValidity('');
     };
     $slider.on('input.smeDirectRange change.smeDirectRange', syncFromSlider);
-    $entry.on('input.smeDirectRange', function () {
+    const applyEntryValue = ({ reportInvalid = false } = {}) => {
       $entry.removeClass('sme_range_input_invalid').removeAttr('aria-invalid');
       $entry[0].setCustomValidity('');
-    });
-    $entry.on('change.smeDirectRange keydown.smeDirectRange', function (event) {
-      if (event.type === 'keydown' && event.key !== 'Enter') return;
-      if (event.type === 'keydown') event.preventDefault();
       const rawValue = String($entry.val() ?? '').trim();
       const value = rawValue === '' ? Number.NaN : Number(rawValue);
       const valid = isValidRangeValue(value, min, max, step);
       if (!valid) {
+        if (!reportInvalid) return false;
         const integerNote = decimals ? '' : ' Enter a whole number.';
         const message = `Use a value from ${min} to ${max}${step ? ` in increments of ${step}.` : '.'}${integerNote}`;
         $entry.addClass('sme_range_input_invalid').attr('aria-invalid', 'true');
         $entry[0].setCustomValidity(message);
         $entry[0].reportValidity();
-        return;
+        return false;
       }
       const normalized = decimals ? Number(value.toFixed(decimals)) : Math.round(value);
-      $slider.val(normalized).trigger('input').trigger('change');
+      // A valid typed number is a completed settings edit. Apply it on the
+      // input event rather than waiting for blur/Enter: an abrupt browser or
+      // computer shutdown while this field remains focused must not leave a
+      // displayed-but-unsaved value behind.
+      if (String($slider.val()) !== String(normalized)) {
+        $slider.val(normalized).trigger('input').trigger('change');
+      }
+      return true;
+    };
+    $entry.on('input.smeDirectRange', function () {
+      applyEntryValue();
+    });
+    $entry.on('change.smeDirectRange keydown.smeDirectRange', function (event) {
+      if (event.type === 'keydown' && event.key !== 'Enter') return;
+      if (event.type === 'keydown') event.preventDefault();
+      applyEntryValue({ reportInvalid: true });
     });
   });
 }
@@ -1905,6 +1917,23 @@ export function bindSettingsUI(ctrl) {
   };
 
   let catchUpSettingsSnapshotQueued = false;
+  let manualBudgetOverrideNoticeShown = false;
+  const preserveManualBudgetOverride = (event) => {
+    // Programmatic slider synchronization (including auto-tune itself) must
+    // not disable auto-tune. Only a native edit to an injection-budget slider
+    // or its paired numeric field represents an explicit manual override.
+    if (!event?.originalEvent || !extension_settings[MODULE_NAME]?.auto_tune_budgets) return;
+    const $target = $(event.target);
+    const $slider = $target.is('input[type="range"]')
+      ? $target : $target.closest('.sme_range_control').find('input[type="range"]').first();
+    if (!/_inject_budget$/.test($slider.attr('id') ?? '')) return;
+    extension_settings[MODULE_NAME].auto_tune_budgets = false;
+    $('#sme_auto_tune_budgets').prop('checked', false);
+    if (!manualBudgetOverrideNoticeShown) {
+      manualBudgetOverrideNoticeShown = true;
+      toastr.info('Auto-tune budgets was turned off to preserve your manual budget values.', 'Smart Memory Enhanced');
+    }
+  };
   const persistActiveCatchUpSettingsSnapshot = () => {
     catchUpSettingsSnapshotQueued = false;
     const context = getContext();
@@ -1939,9 +1968,10 @@ export function bindSettingsUI(ctrl) {
   };
   $(document)
     .off('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input')
-    .on('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input', () => {
+    .on('input.sme-catchup-settings-snapshot change.sme-catchup-settings-snapshot', '#smart_memory_enhanced_settings input[type="range"], #smart_memory_enhanced_settings .sme_range_direct_input', (event) => {
       // This is intentionally independent of an active checkpoint. It covers
       // edits made before Memorize Chat begins as well as in-run edits.
+      preserveManualBudgetOverride(event);
       queueMicrotask(() => {
         persistBudgetSettingsSafetySnapshot(extension_settings[MODULE_NAME]);
         persistSettingsImmediately();
