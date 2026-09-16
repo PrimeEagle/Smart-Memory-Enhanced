@@ -953,17 +953,21 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  if (!target || structuredByTarget.has(target)) continue;
  const evidence = evidenceForTarget(target);
  const relationshipType = outcome.canonical_relationship_type ?? relationshipTypeForProfileTarget(evidence, self, target) ?? null;
+ const sourceIds = [...new Set(evidence?.relationship_type_source_ids ?? [])].filter(Boolean);
+ const tracedRelationshipType = relationshipType && CANONICAL_RELATIONSHIP_ROLE_TOKENS.has(relationshipType) && !sourceIds.length
+   ? null
+   : relationshipType;
  const cleaned = normalizeRelationshipDescriptors(
  outcome.final_saved_descriptors?.length ? outcome.final_saved_descriptors : evidence?.descriptors ?? [],
- relationshipType,
+ tracedRelationshipType,
  );
  structuredByTarget.set(target, {
  target,
- canonical_relationship_type: relationshipType,
- relationship_type_source: relationshipType ? (evidence?.relationship_type_source ?? 'unresolved') : 'unresolved',
- relationship_type_source_id: relationshipType ? (evidence?.relationship_type_source_ids?.[0] ?? null) : null,
- relationship_type_direction: relationshipType ? (evidence?.subject === target ? 'target_to_profile' : 'profile_to_target_inverted') : null,
- relationship_type_confidence_class: relationshipType ? (evidence?.relationship_type_confidence_class ?? 'unresolved') : 'unresolved',
+ canonical_relationship_type: tracedRelationshipType,
+ relationship_type_source: tracedRelationshipType ? (evidence?.relationship_type_source ?? 'unresolved') : 'unresolved',
+ relationship_type_source_id: tracedRelationshipType ? sourceIds[0] : null,
+ relationship_type_direction: tracedRelationshipType ? (evidence?.subject === target ? 'target_to_profile' : 'profile_to_target_inverted') : null,
+ relationship_type_confidence_class: tracedRelationshipType ? (evidence?.relationship_type_confidence_class ?? 'unresolved') : 'unresolved',
  relationship_descriptors: cleaned.descriptors,
  role_tokens_removed_from_descriptors: cleaned.removed,
  });
@@ -995,8 +999,14 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const typedRolePersistence = deriveTypedRolePersistenceState(pairHistoryRecords);
    const typedRoleFactPresent = typedRolePersistence.typed_role_fact_present;
    const selectedRole = entry.canonical_relationship_type;
-   const parentEvidence = evidencePairs.filter((pair) =>
-     isTargetRelativePair(pair) && ['parent', 'mother', 'father'].includes(pair.relationship_type));
+   // Bind the trace to the exact directional evidence that authorizes the
+   // selected target-relative role. This also covers a safely inverted stored
+   // pair without claiming descriptor-only history supplied a family role.
+   const authorizingEvidence = evidencePairs.filter((pair) =>
+     ((pair.subject === target && pair.target === self) || (pair.subject === self && pair.target === target))
+       && relationshipTypeForProfileTarget(pair, self, target) === selectedRole
+       && (pair.relationship_type_source_ids ?? []).length > 0);
+   const parentEvidence = authorizingEvidence.filter(() => ['parent', 'mother', 'father'].includes(selectedRole));
    const coreferenceTrace = boundedCoreferenceFacts
      .map((fact) => {
        const subjectResolution = resolveCanonicalCharacterName(fact.subject, roster);
@@ -1060,8 +1070,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
      },
      candidate_roles: typedRoleEvidenceAvailable ? [relationshipTypeForProfileTarget(evidence, self, target)] : [],
        selected_role: selectedRole,
-     selected_source_class: entry.relationship_type_source,
-     selected_source_id: entry.relationship_type_source_id,
+     selected_source_class: authorizingEvidence[0]?.relationship_type_source ?? entry.relationship_type_source,
+     selected_source_id: authorizingEvidence[0]?.relationship_type_source_ids?.[0] ?? entry.relationship_type_source_id,
      relationship_record_present: pairHistoryRecords.length > 0,
      descriptor_only_record_present: descriptorOnlyRecordPresent,
      ...typedRolePersistence,

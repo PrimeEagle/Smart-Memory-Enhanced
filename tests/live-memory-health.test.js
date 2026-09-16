@@ -118,6 +118,21 @@ test('current-run provider quality totals survive retained event truncation', ()
   assert.equal(summary.cumulative_current_run_counts.attempted, LIVE_MEMORY_HEALTH_MAX_EVENTS + 2);
 });
 
+test('provider quality separates recovered and terminal unresolved logical failures', () => {
+  const metadata = { active_catchup_run_id: 'run-quality' };
+  const malformed = beginLiveExtractionEvent(metadata, { tier: 'longterm', source_start: 10, source_end: 19 });
+  finishLiveExtractionEvent(metadata, malformed, { terminal_health: 'provider_response_malformed', response_received: true });
+  const replay = beginLiveExtractionEvent(metadata, { tier: 'longterm', source_start: 10, source_end: 19 });
+  finishLiveExtractionEvent(metadata, replay, { terminal_health: 'replay_completed', lifecycle_outcome: 'replay_completed', response_received: true });
+  const empty = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 20, source_end: 29 });
+  finishLiveExtractionEvent(metadata, empty, { terminal_health: 'provider_response_empty', response_received: true });
+
+  const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
+  assert.equal(summary.provider_quality.recovered_failures, 1);
+  assert.equal(summary.provider_quality.terminal_unresolved_failures, 1);
+  assert.equal(summary.accounting_scopes.retained_events, 'bounded_recent_physical_attempt_history');
+});
+
 test('injection health distinguishes empty, failed attention, and unified stale-slot cleanup', () => {
   const metadata = {};
   const empty = recordLiveInjectionEvent(metadata, { terminal_health: 'empty', mode: 'individual', tiers: [] });

@@ -1128,7 +1128,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(ui, /card_identity_mismatches/);
   assert.match(ui, /authoritative_name: authoritative\.canonicalName/);
   assert.match(ui, /text_identity_mismatches/);
-  assert.match(ui, /Suppressed an entity link whose canonical name is absent/);
+  assert.match(ui, /Suppressed an entity link that lacked a finalized authoritative registry target/);
   assert.match(read('graph-migration.js'), /manual_identity_decision/);
   assert.match(ui, /userApproved: true/);
   assert.match(ui, /requiresIdentityConfirmation/);
@@ -1226,7 +1226,7 @@ test('scene recovery diagnostics distinguish response presence from parser failu
 
 test('short-term compaction retries a genuine empty response once', () => {
   const compaction = read('compaction.js');
-  assert.match(compaction, /shortterm_compaction_empty_retry/);
+  assert.match(compaction, /shortterm_compaction_adapted_empty_retry/);
   assert.match(compaction, /after one bounded retry/);
 });
 
@@ -1660,6 +1660,45 @@ test('pre-run diagnostics and automatic stabilization share the durable semantic
   assert.match(idempotence, /buildCanonicalDurableSemanticState/);
   assert.match(idempotence, /canonicalizeStoryArc/);
   assert.match(idempotence, /summarizeStoryArcChanges/);
+});
+
+test('ambiguous dangling memory entity links are withheld without identity guessing', () => {
+  const ui = read('ui.js');
+  const settings = read('settings.js');
+  assert.match(ui, /withheld_ambiguous_entity_reference/);
+  assert.match(ui, /withheld_entity_links/);
+  assert.match(ui, /withheld_without_guessing/);
+  assert.match(ui, /delete record\.entity_link_provenance\[entityId\]/);
+  assert.match(settings, /unresolved_signature/);
+  assert.match(settings, /reachedUnrepairableFixedPoint/);
+});
+
+test('compaction empty retries retain privacy-safe transport evidence and resume boundaries', () => {
+  const generate = read('generate.js');
+  const compaction = read('compaction.js');
+  const settings = read('settings.js');
+  assert.match(generate, /response_envelope_present/);
+  assert.match(generate, /content_field_present/);
+  assert.match(generate, /reported_output_tokens/);
+  assert.match(compaction, /shortterm_compaction_adapted_empty_retry/);
+  assert.match(compaction, /retry_reason: 'observed_empty_content'/);
+  assert.match(compaction, /retry_of_request_id/);
+  assert.match(settings, /page_instance_id: pageInstanceId/);
+  assert.match(settings, /pending_tail_start/);
+  assert.match(settings, /finalization_phase_resumable: true/);
+  assert.match(settings, /!resumableFinalizationFailure\) await commitFinalizationPhase\('shortterm_extraction'\)/);
+  assert.match(settings, /terminalReasonCode = resumableFinalizationFailure/);
+});
+
+test('relationship integrity diagnostics reconcile record and distinct-key debt counts', () => {
+  const ui = read('ui.js');
+  const profiles = read('profiles.js');
+  assert.match(ui, /relationship_pair_key_normalization/);
+  assert.match(ui, /distinct_noncanonical_key_count/);
+  assert.match(ui, /direction_preserved: true/);
+  assert.match(profiles, /const authorizingEvidence = evidencePairs\.filter/);
+  assert.match(profiles, /relationship_type_source_ids/);
+  assert.match(profiles, /tracedRelationshipType/);
 });
 
 test('catch-up keeps a rough finalization ETA after the chunk phase completes', () => {

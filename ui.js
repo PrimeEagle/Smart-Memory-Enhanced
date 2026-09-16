@@ -2170,6 +2170,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   }
   const staleEntityReferences = [];
   const repairedStaleEntityReferences = [];
+  const withheldEntityReferences = [];
   let referenceRewriteRevision = 0;
   let indexRebuildRevision = 0;
   const textIdentityMismatches = [];
@@ -2288,7 +2289,45 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
               entityLinkRepairs.invalid_links_repaired_final_stage++;
             }
           } else {
-            staleEntityReferences.push(stale);
+            // The memory text remains valid even when an old entity ID no
+            // longer has an authoritative registry record. Never leave that
+            // dangling ID in the finalized graph and never guess among the
+            // competing identities. Preserve only bounded, privacy-safe
+            // provenance so a future uniquely authoritative migration can
+            // reconsider the withheld link.
+            const linkProvenance = record?.entity_link_provenance?.[entityId] ?? {};
+            unsafeIds.push(entityId);
+            const withheld = {
+              ...stale,
+              terminal_outcome: 'withheld_ambiguous_entity_reference',
+              normalized_source_name: linkedName || null,
+              owner_context: String(record?.owner ?? record?.character_name ?? store ?? '').slice(0, 160) || null,
+              source_ranges: (record?.source_messages ?? record?.source_ranges ?? []).slice(0, 64),
+              creation_phase: linkProvenance.link_created_stage ?? record?.link_created_stage ?? null,
+              logical_request_id: linkProvenance.source_candidate_id ?? record?.source_candidate_id ?? null,
+              source_chunk_number: linkProvenance.source_chunk_number ?? record?.source_chunk ?? null,
+              run_id: linkProvenance.link_created_run_id ?? record?.link_created_run_id ?? null,
+              page_instance_id: linkProvenance.page_instance_id ?? record?.page_instance_id ?? null,
+              creation_method: linkProvenance.creation_method ?? record?.entity_creation_method ?? 'unknown_legacy',
+              replay_state: linkProvenance.replay_state ?? record?.replay_state ?? 'unknown',
+            };
+            record.withheld_entity_links = [
+              ...(record.withheld_entity_links ?? []).filter((entry) => String(entry?.actual_entity_id) !== String(entityId)),
+              withheld,
+            ].slice(-24);
+            if (record.entity_link_provenance) delete record.entity_link_provenance[entityId];
+            withheldEntityReferences.push(withheld);
+            repairedStaleEntityReferences.push({ ...stale, repair_attempted: true, repair_result: 'withheld_without_guessing' });
+            referenceRewriteRevision++;
+            const withholdingKey = `${record?.id ?? 'unknown'}::${field}[${entryIndex}]::${entityId}=>withheld`;
+            entityLinkRepairs.physical_store_mutations_this_run++;
+            entityLinkRepairs.actual_physical_store_mutations_this_run++;
+            if (!logicalRepairKeys.has(withholdingKey)) {
+              logicalRepairKeys.add(withholdingKey);
+              repairedRecordIds.add(record?.id ?? 'unknown');
+              entityLinkRepairs.actual_logical_mutations_this_run++;
+              entityLinkRepairs.invalid_links_repaired_final_stage++;
+            }
           }
         }
         const explicitlySupported = linkedName && new RegExp(`(^|[^a-z])${linkedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z])`, 'i').test(content);
@@ -2387,7 +2426,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
         textLinkRepairCounters.identity_links_removed_deterministically += unsafeIds.length;
         record.identity_integrity_status = 'repaired';
         textLinkRepairCounters.records_repaired_cleanly++;
-        record.identity_integrity_issues = [...new Set([...(record.identity_integrity_issues ?? []), 'Suppressed an entity link whose canonical name is absent from the record text.'])];
+        record.identity_integrity_issues = [...new Set([...(record.identity_integrity_issues ?? []), 'Suppressed an entity link that lacked a finalized authoritative registry target.'])];
       }
     }
   };
@@ -2675,6 +2714,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   const integrityAudit = {
     stale_entity_references: staleEntityReferences,
     repaired_stale_entity_references: repairedStaleEntityReferences,
+    withheld_entity_references: withheldEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
     text_link_repair_counters: textLinkRepairCounters,
     entity_link_repairs: entityLinkRepairs,
@@ -2713,6 +2753,19 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     synthetic_identity_remaining: syntheticIdentityRemaining,
     relationship_pair_key_issues: relationshipPairKeyIssues,
     unresolved_relationship_pair_key_records: unresolvedRelationshipPairKeyRecords,
+    relationship_pair_key_normalization: {
+      affected_record_count: relationshipPairKeyIssues.length + unresolvedRelationshipPairKeyRecords.length,
+      distinct_noncanonical_key_count: new Set([
+        ...relationshipPairKeyIssues.map((entry) => `${entry.store}:${entry.key}`),
+        ...unresolvedRelationshipPairKeyRecords.map((entry) => `${entry.store}:${entry.key}`),
+      ]).size,
+      deterministic_repairs_performed: localRelationshipPairsMerged + persistentRelationshipPairsMerged,
+      ambiguous_keys_retained: unresolvedRelationshipPairKeyRecords.length,
+      remaining_deterministic_key_mismatches: relationshipPairKeyIssues.length,
+      unresolved_reasons: Object.fromEntries([...new Set(unresolvedRelationshipPairKeyRecords.map((entry) => entry.reason))]
+        .map((reason) => [reason, unresolvedRelationshipPairKeyRecords.filter((entry) => entry.reason === reason).length])),
+      direction_preserved: true,
+    },
     relationship_integrity_errors: relationshipIntegrityErrors,
     duplicate_review_records: duplicateReviewRecords,
     blocked_unsafe_identity_merges,

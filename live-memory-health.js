@@ -207,7 +207,8 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
   const now = Date.now();
   const probe = { tier: input.tier ?? 'unknown', source_range: { start: Number.isInteger(input.source_start) ? input.source_start : null, end: Number.isInteger(input.source_end) ? input.source_end : null } };
   const replayedEvent = [...health.recent_extraction_events].reverse().find((prior) => sameLogicalRange(prior, probe)
-    && ['completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel', 'replay_failed'].includes(prior.terminal_health));
+    && ['completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel',
+      'replay_failed', 'provider_response_malformed', 'provider_response_empty', 'provider_failure', 'malformed_response'].includes(prior.terminal_health));
   const event = {
     event_id: nextId(health, 'extract'),
     timestamp: now,
@@ -391,6 +392,19 @@ export function exportLiveMemoryHealth(metadata) {
   }
   const logicalOutcomes = {};
   for (const event of logicalRequests.values()) increment(logicalOutcomes, event.lifecycle_outcome ?? (event.terminal_health === 'running' ? 'running' : 'legacy_outcome_unknown'));
+  const providerFailureStates = new Set(['provider_response_malformed', 'provider_response_empty', 'provider_failure', 'malformed_response']);
+  const completedStates = new Set(['completed', 'completed_with_repairs', 'completed_repartitioned', 'replay_completed', 'recovered_completed']);
+  const retainedChains = new Map();
+  for (const event of health.recent_extraction_events) {
+    const logicalId = rootFor(event);
+    const chain = retainedChains.get(logicalId) ?? [];
+    chain.push(event);
+    retainedChains.set(logicalId, chain);
+  }
+  const recoveredFailures = [...retainedChains.values()].filter((events) =>
+    events.some((event) => providerFailureStates.has(event.terminal_health))
+      && completedStates.has(events.at(-1)?.terminal_health)).length;
+  const terminalUnresolvedFailures = [...logicalRequests.values()].filter((event) => providerFailureStates.has(event.terminal_health)).length;
   const outcomeSummary = {
     retained_event_scope: 'last_bounded_extraction_events',
     retained_event_count: health.recent_extraction_events.length,
@@ -399,9 +413,20 @@ export function exportLiveMemoryHealth(metadata) {
     retained_history_complete: number(health.aggregate.extraction?.attempted) <= health.recent_extraction_events.length,
     raw_event_counts: rawOutcomes,
     deduplicated_logical_request_counts: logicalOutcomes,
+    accounting_scopes: {
+      cumulative_chat_events: 'all_recorded_physical_attempts_for_this_chat',
+      cumulative_current_run: 'all_physical_attempts_for_the_active_logical_run_across_page_instances',
+      retained_events: 'bounded_recent_physical_attempt_history',
+      deduplicated_logical_requests: 'latest_retained_terminal_event_per_retry_or_replay_lineage',
+      final_unresolved_quality_impact: 'deduplicated_logical_requests_whose_latest_retained_outcome_is_still_a_provider_failure',
+    },
     provider_quality: {
+      scope: 'bounded_retained_event_history',
       malformed_responses: health.recent_extraction_events.filter((event) => event.terminal_health === 'provider_response_malformed' && event.response_received === true).length,
       empty_responses: health.recent_extraction_events.filter((event) => event.terminal_health === 'provider_response_empty' && event.response_received === true).length,
+      recovered_failures: recoveredFailures,
+      terminal_unresolved_failures: terminalUnresolvedFailures,
+      recovery_scope_complete: number(health.aggregate.extraction?.attempted) <= health.recent_extraction_events.length,
     },
     interruptions: health.recent_extraction_events.filter((event) => /^interrupted_|completion_uncertain/.test(event.terminal_health)).length,
     successful_replays: health.recent_extraction_events.filter((event) => event.lifecycle_outcome === 'replay_completed').length,

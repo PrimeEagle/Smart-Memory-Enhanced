@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.44] - 2026-09-16
+
+### Fixed
+
+- Final reconciliation now removes entity IDs that have neither a finalized
+  registry record nor a valid redirect. Ambiguous links are withheld with
+  bounded provenance instead of guessing an identity or discarding the memory.
+- Automatic stabilization now stops at an unchanged, unrepairable integrity
+  fixed point and reports that status explicitly instead of exhausting generic
+  retry passes.
+- Short-Term Memory compaction now records content-free transport and response
+  envelope evidence for each attempt. Its one empty-response retry reserves
+  more output capacity when the context permits, and terminal failures report
+  the preserved summary boundary and resumable uncompacted tail without
+  incorrectly committing or deleting the failed phase checkpoint.
+- Extraction diagnostics now label cumulative, retained, physical-attempt,
+  logical-request, recovered-failure, and terminal-unresolved scopes. Family
+  roles retain the exact authorizing evidence locator, and Relationship History
+  reports record and distinct-key normalization debt separately.
+
 ## [0.9.43] - 2026-09-15
 
 ### Fixed

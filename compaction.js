@@ -99,14 +99,24 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       throw new Error(`Compaction prompt exceeds its ${inputBudget}-token input budget.`);
     }
     passNumber++;
-    const request = async (attempt) => {
-      onRequestState?.({ pass_number: passNumber, attempt, state: 'in_flight', response_present: null });
+    const firstRequestId = globalThis.crypto?.randomUUID?.() ?? `compact-${Date.now()}-${passNumber}`;
+    const request = async (attempt, attemptResponseLength = responseLength) => {
+      const requestId = attempt === 1 ? firstRequestId : `${firstRequestId}-retry-${attempt}`;
+      const base = { pass_number: passNumber, attempt, request_id: requestId,
+        retry_of_request_id: attempt === 1 ? null : firstRequestId, requested_output_tokens: attemptResponseLength };
+      onRequestState?.({ ...base, state: 'in_flight', response_present: null });
       try {
-        const result = await generateMemorySummarize(prompt, { responseLength, chatMessages: [], task: attempt === 1 ? 'shortterm_compaction' : 'shortterm_compaction_empty_retry' });
-        onRequestState?.({ pass_number: passNumber, attempt, state: 'response_observed', response_present: Boolean(result?.trim()) });
+        const result = await generateMemorySummarize(prompt, {
+          responseLength: attemptResponseLength, chatMessages: [],
+          task: attempt === 1 ? 'shortterm_compaction' : 'shortterm_compaction_adapted_empty_retry',
+          onRequestDiagnostic: (diagnostic) => onRequestState?.({ ...base, state: 'provider_diagnostic', ...diagnostic }),
+        });
+        onRequestState?.({ ...base, state: 'response_observed', response_present: Boolean(result?.trim()),
+          parsing_attempted: Boolean(result?.trim()) });
         return result;
       } catch (error) {
-        onRequestState?.({ pass_number: passNumber, attempt, state: 'request_error', response_present: false });
+        onRequestState?.({ ...base, state: 'request_error', response_present: false, parsing_attempted: false,
+          error_class: error?.name ?? 'Error', http_status: error?.sme_request_diagnostics?.http_status ?? null });
         throw error;
       }
     };
@@ -116,7 +126,18 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     // transport failures retain the connection layer's existing policy.
     if (!response?.trim()) {
       if (shouldCancel?.()) throw new Error('Compaction interrupted before empty-response retry.');
-      response = await request(2);
+      const promptTokens = estimateTokens(prompt);
+      const proposedRetryLength = Math.max(responseLength + 256, Math.ceil(responseLength * 1.25));
+      const adaptedResponseLength = getMemoryInputBudget(proposedRetryLength) >= promptTokens
+        ? proposedRetryLength : responseLength;
+      const retryDelayMs = 250;
+      onRequestState?.({ pass_number: passNumber, attempt: 2, state: 'retry_scheduled',
+        retry_reason: 'observed_empty_content', retry_delay_ms: retryDelayMs,
+        adaptation: adaptedResponseLength > responseLength ? 'increased_output_reserve' : 'same_output_context_limited',
+        requested_output_tokens: adaptedResponseLength });
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      if (shouldCancel?.()) throw new Error('Compaction interrupted before adapted empty-response retry.');
+      response = await request(2, adaptedResponseLength);
     }
     if (!response?.trim()) throw new Error('Compaction provider returned an empty response after one bounded retry.');
     rollingSummary = formatSummary(response);

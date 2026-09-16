@@ -568,6 +568,14 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       const comparison = compareDurableSemanticStates(input, output);
       const passRepairs = passResult.integrity_audit?.entity_link_repairs ?? {};
       const writes = passResult.integrity_audit?.automatic_stabilization_second_pass_writes?.records ?? [];
+      const unresolvedSignature = JSON.stringify((passResult.integrity_audit?.stale_entity_references ?? [])
+        .map((entry) => ({
+          store: entry?.store ?? null,
+          field: entry?.field ?? entry?.reference_field_path ?? null,
+          reason: entry?.stale_reason_code ?? entry?.failure_reason ?? null,
+          candidates: [...(entry?.candidate_canonical_ids ?? [])].map(String).sort(),
+        }))
+        .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))));
       return {
         pass_number: passNumber,
         input_semantic_hash: comparison.first_hash,
@@ -582,6 +590,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         changed_components: comparison.changed_components,
         changed_paths: comparison.paths,
         source_operations: [...new Set(writes.map((write) => write.source_operation).filter(Boolean))],
+        unresolved_signature: unresolvedSignature,
       };
     };
     stabilizationPasses.push(summarizeStabilizationPass(1, durableStateAfterPreparation, durableStateAfterFirstPass, reconciliation));
@@ -591,7 +600,10 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       && pass.stale_references === 0 && pass.recreated_links === 0
       && pass.unsafe_merge_candidates === 0 && pass.unresolved_integrity_failures === 0
       && pass.unaccounted_mutations === 0;
-    while (!forceIdempotenceCheck && !isStablePass(stabilizationPasses.at(-1)) && stabilizationPasses.length < maximumStabilizationPasses) {
+    const reachedUnrepairableFixedPoint = () => deriveAutomaticStabilizationResult(stabilizationPasses, maximumStabilizationPasses)
+      .fixed_point_with_unresolved_integrity_debt === true;
+    while (!forceIdempotenceCheck && !isStablePass(stabilizationPasses.at(-1))
+      && !reachedUnrepairableFixedPoint() && stabilizationPasses.length < maximumStabilizationPasses) {
       const passNumber = stabilizationPasses.length + 1;
       metadataBeforeSecondPass = getContext().chatMetadata?.[META_KEY] ?? {};
       durableStateBeforeSecondPass = snapshotIdempotenceDurableState(metadataBeforeSecondPass);
@@ -4449,6 +4461,10 @@ export function bindSettingsUI(ctrl) {
     };
     let currentChunkFailed = false;
     let finalTransaction = null;
+    // A provider failure in a resumable finalization phase is not a user
+    // cancellation and must not be committed as phase completion. Keep the
+    // checkpoint live so the next page instance can resume that exact phase.
+    let resumableFinalizationFailure = false;
     const recordCatchUpError = (label, err, tier = null, isSave = false) => {
       catchUpErrorCount++;
       setCatchUpErrorCount(catchUpErrorCount);
@@ -5937,7 +5953,10 @@ export function bindSettingsUI(ctrl) {
             setStatusMessage(`Extracting short-term memories... ${progress.completed_passes} compaction pass${progress.completed_passes === 1 ? '' : 'es'} safely committed.`);
           };
           const compactionRequestAudit = {
-            scope: 'current_page_attempt', observed_requests: 0, observed_empty_responses: 0,
+            scope: 'current_page_attempt', logical_run_id: catchUpRunId, page_instance_id: pageInstanceId,
+            logical_attempt_number: checkpoint.run_manifest?.total_attempt_count ?? null,
+            connection_profile_id: settings.connection_profile_id ?? null,
+            observed_requests: 0, observed_empty_responses: 0,
             request_errors: 0, retained_events: [], retained_event_limit: 24,
             last_response_presence: null, terminal_outcome: 'running',
           };
@@ -5965,13 +5984,22 @@ export function bindSettingsUI(ctrl) {
               }
             })
             .catch((err) => {
+              resumableFinalizationFailure = true;
               compactionRequestAudit.terminal_outcome = compactionRequestAudit.observed_empty_responses >= 2
                 ? 'observed_empty_response_after_bounded_retry' : 'request_or_compaction_failure';
+              const shorttermCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.shortterm_compaction_checkpoint;
+              compactionRequestAudit.resume_boundary = {
+                last_valid_summary_end: catchUpContext.chatMetadata?.[META_KEY]?.summaryEnd ?? null,
+                checkpoint_summary_end: shorttermCheckpoint?.summary_end ?? null,
+                // summary_end is already the exclusive source boundary.
+                pending_tail_start: Number.isInteger(shorttermCheckpoint?.summary_end) ? shorttermCheckpoint.summary_end : null,
+                finalization_phase_resumable: true,
+              };
               recordCatchUpError('compaction error', err);
           });
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
-          updateFinalizationEta('short-term memory extraction', { completed: true });
-          if (!ctrl.catchUpCancelled) await commitFinalizationPhase('shortterm_extraction');
+          updateFinalizationEta('short-term memory extraction', { completed: !resumableFinalizationFailure });
+          if (!ctrl.catchUpCancelled && !resumableFinalizationFailure) await commitFinalizationPhase('shortterm_extraction');
         } else if (!ctrl.catchUpCancelled && settings.compaction_enabled) {
           skipFinalizationPhase('short-term memory extraction');
         }
@@ -5979,7 +6007,7 @@ export function bindSettingsUI(ctrl) {
 
       // Generate character & world profiles once at the end of a completed run.
       // Skipped on cancel - partial data may produce low-quality profiles.
-      if (!ctrl.catchUpCancelled && settings.profiles_enabled && !hasCompletedFinalizationPhase('profile_generation')) {
+      if (!ctrl.catchUpCancelled && !resumableFinalizationFailure && settings.profiles_enabled && !hasCompletedFinalizationPhase('profile_generation')) {
         await startFinalizationPhase('profile_generation');
         for (const name of catchUpProfileCharacterNames) {
           if (ctrl.catchUpCancelled) break;
@@ -6111,7 +6139,7 @@ export function bindSettingsUI(ctrl) {
         }), { character_state: 0, world_state: 0, relationship_matrix: 0 });
         runResult.profiles.terminal_accounting = summarizeProfileCompletion(runResult.profiles.attempts, { enabledProfileCount: catchUpProfileCharacterNames.length });
         if (!ctrl.catchUpCancelled) await commitFinalizationPhase('profile_generation');
-      } else if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
+      } else if (!ctrl.catchUpCancelled && !resumableFinalizationFailure && settings.profiles_enabled) {
         for (const name of catchUpProfileCharacterNames) skipFinalizationPhase(`profile generation for ${name}`);
       }
 
@@ -6482,7 +6510,7 @@ export function bindSettingsUI(ctrl) {
         ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'active_persona_invalid'],
         ['deterministic_persona_aliases_resolved', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.integrity_audit?.persona_aliases?.persona_aliases_unresolved), 'A deterministic active-persona alias remains unresolved.'],
         ['unresolved_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
-        ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), 'Relationship History contains a non-canonical pair key.'],
+        ['relationship_pair_keys_canonical', !(reconciliation.integrity_audit?.relationship_pair_key_issues?.length), `${reconciliation.integrity_audit?.relationship_pair_key_issues?.length ?? 0} Relationship History record(s) contain non-canonical pair keys.`],
         ['relationship_history_integrity_completed', !(reconciliation.integrity_audit?.relationship_integrity_errors?.length), 'Relationship History integrity could not evaluate one or more pair keys.'],
         ['no_deterministic_synthetic_identities', !(reconciliation.integrity_audit?.synthetic_identity_remaining?.length), 'A deterministic synthetic parenthetical identity remains in durable storage.'],
         ['unsafe_identity_merge_blocked', !(reconciliation.integrity_audit?.blocked_unsafe_identity_merges?.length), 'An unsafe identity merge was blocked; the affected candidate remains separate for review.'],
@@ -6499,6 +6527,7 @@ export function bindSettingsUI(ctrl) {
       }
       const projectedOperationalStatus = ctrl.catchUpCancelled
         ? 'cancelled'
+        : resumableFinalizationFailure ? 'partial'
         : catchUpErrorCount > 0
           ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
           : 'completed';
@@ -6541,7 +6570,7 @@ export function bindSettingsUI(ctrl) {
       };
       await runNonfatalPresentationTask('Unified memory injection', () => maybeInjectUnified());
       await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
-      const completedTimingSample = !ctrl.catchUpCancelled
+      const completedTimingSample = !ctrl.catchUpCancelled && !resumableFinalizationFailure
         && finalizationTiming.started_at
         && finalizationTiming.completed_units >= finalizationTiming.planned_units
         ? {
@@ -6823,12 +6852,14 @@ export function bindSettingsUI(ctrl) {
       // checkpoint remains durable and resumable; a crash in late stages will
       // restart finalization from the last committed extraction chunk.
       const terminalCheckpoint = catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
-      if (ctrl.catchUpCancelled) {
+      if (ctrl.catchUpCancelled || resumableFinalizationFailure) {
         if (terminalCheckpoint) {
           terminalCheckpoint.status = 'awaiting_manual_resume';
-          const terminalReasonCode = terminalCheckpoint.run_manifest?.terminal_reason_code === 'tier_coverage_incomplete'
-            ? 'tier_coverage_incomplete'
-            : 'manual_cancel';
+          const terminalReasonCode = resumableFinalizationFailure
+            ? 'finalization_phase_failed'
+            : terminalCheckpoint.run_manifest?.terminal_reason_code === 'tier_coverage_incomplete'
+              ? 'tier_coverage_incomplete'
+              : 'manual_cancel';
           terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
             status: 'awaiting_manual_resume', reasonCode: terminalReasonCode,
             attemptMetrics: {
@@ -6950,7 +6981,7 @@ export function bindSettingsUI(ctrl) {
       latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-        if (!ctrl.catchUpCancelled) clearPageRunMarker(localStorage, pageRunScope(catchUpContext), catchUpRunId);
+        if (!ctrl.catchUpCancelled && !resumableFinalizationFailure) clearPageRunMarker(localStorage, pageRunScope(catchUpContext), catchUpRunId);
       } catch (err) {
         recordCatchUpError('final persistence error', err, null, true);
         diagnostics.status = 'partial';

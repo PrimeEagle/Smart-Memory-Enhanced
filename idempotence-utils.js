@@ -592,17 +592,27 @@ const numeric = (value) => Math.max(0, Number(value ?? 0) || 0);
 export function deriveAutomaticStabilizationResult(passes = [], maxPasses = 0) {
   const history = Array.isArray(passes) ? passes : [];
   const finalPass = history.at(-1) ?? null;
-  const stable = Boolean(finalPass)
+  const previousPass = history.at(-2) ?? null;
+  const mutationStable = Boolean(finalPass)
     && finalPass.input_semantic_hash === finalPass.output_semantic_hash
     && numeric(finalPass.logical_mutations) === 0
     && numeric(finalPass.physical_mutations) === 0
-    && numeric(finalPass.stale_references) === 0
     && numeric(finalPass.recreated_links) === 0
-    && numeric(finalPass.unsafe_merge_candidates) === 0
-    && numeric(finalPass.unresolved_integrity_failures) === 0
     && numeric(finalPass.unaccounted_mutations) === 0;
-  const maxPassesReached = Boolean(maxPasses && history.length >= maxPasses && !stable);
-  const attentionReasons = maxPassesReached ? ['max_passes_reached'] : stable ? [] : ['final_verification_not_stable'];
+  const unresolvedDebt = numeric(finalPass?.stale_references)
+    + numeric(finalPass?.unsafe_merge_candidates)
+    + numeric(finalPass?.unresolved_integrity_failures);
+  const fixedPointWithUnresolvedDebt = mutationStable && unresolvedDebt > 0 && Boolean(previousPass)
+    && previousPass.output_semantic_hash === finalPass.input_semantic_hash
+    && previousPass.unresolved_signature === finalPass.unresolved_signature;
+  const stable = Boolean(finalPass)
+    && mutationStable
+    && numeric(finalPass.stale_references) === 0
+    && numeric(finalPass.unsafe_merge_candidates) === 0
+    && numeric(finalPass.unresolved_integrity_failures) === 0;
+  const maxPassesReached = Boolean(maxPasses && history.length >= maxPasses && !stable && !fixedPointWithUnresolvedDebt);
+  const attentionReasons = fixedPointWithUnresolvedDebt ? ['fixed_point_with_unresolved_integrity_debt']
+    : maxPassesReached ? ['max_passes_reached'] : stable ? [] : ['final_verification_not_stable'];
   return {
     converged: stable,
     idempotent: stable,
@@ -610,6 +620,10 @@ export function deriveAutomaticStabilizationResult(passes = [], maxPasses = 0) {
     attention_reasons: attentionReasons,
     converged_on_pass: stable ? finalPass.pass_number : null,
     max_passes_reached: maxPassesReached,
+    fixed_point_with_unresolved_integrity_debt: fixedPointWithUnresolvedDebt,
+    stabilization_status: stable ? 'converged_clean'
+      : fixedPointWithUnresolvedDebt ? 'fixed_point_with_unresolved_integrity_debt'
+        : maxPassesReached ? 'max_passes_reached' : 'not_yet_stable',
     final_input_semantic_hash: finalPass?.input_semantic_hash ?? null,
     final_output_semantic_hash: finalPass?.output_semantic_hash ?? null,
     final_verification_pass: finalPass?.pass_number ?? null,

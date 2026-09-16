@@ -100,6 +100,18 @@ test('bounded stabilization requires a clean final integrity audit', () => {
   assert.deepEqual(result.attention_reasons, ['final_verification_not_stable']);
 });
 
+test('bounded stabilization recognizes an unchanged unrepairable integrity fixed point', () => {
+  const unresolved = JSON.stringify([{ store: 'session', reason: 'missing_registry_record', candidates: ['a', 'b'] }]);
+  const result = deriveAutomaticStabilizationResult([
+    { pass_number: 1, input_semantic_hash: 'same', output_semantic_hash: 'same', logical_mutations: 0, physical_mutations: 0, stale_references: 1, unresolved_signature: unresolved },
+    { pass_number: 2, input_semantic_hash: 'same', output_semantic_hash: 'same', logical_mutations: 0, physical_mutations: 0, stale_references: 1, unresolved_signature: unresolved },
+  ], 4);
+  assert.equal(result.converged, false);
+  assert.equal(result.max_passes_reached, false);
+  assert.equal(result.fixed_point_with_unresolved_integrity_debt, true);
+  assert.deepEqual(result.attention_reasons, ['fixed_point_with_unresolved_integrity_debt']);
+});
+
 test('unaccounted durable writes prevent automatic stabilization convergence', () => {
   const result = deriveAutomaticStabilizationResult([
     { pass_number: 1, input_semantic_hash: 'a', output_semantic_hash: 'a', logical_mutations: 0, physical_mutations: 0, stale_references: 0, recreated_links: 0, unsafe_merge_candidates: 0, unresolved_integrity_failures: 0, unaccounted_mutations: 1 },

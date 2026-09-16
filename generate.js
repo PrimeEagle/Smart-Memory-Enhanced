@@ -399,6 +399,16 @@ async function generateWithConnectionProfile(
     const result = await ConnectionManagerRequestService.sendRequest(profileId, messages, limit);
     // result is ExtractedData with a `.content` field containing the response text.
     const output = result?.content ?? '';
+    diagnosticContext.onRequestDiagnostic?.({
+      provider: 'connection_profile', profile_id: String(profileId), transport_completed: true,
+      http_status: null, response_envelope_present: Boolean(result),
+      content_field_present: typeof result?.content === 'string', content_length: String(output).length,
+      finish_reason: result?.finish_reason ?? result?.finishReason ?? null,
+      reported_input_tokens: Number(result?.usage?.prompt_tokens ?? result?.usage?.input_tokens) || null,
+      reported_output_tokens: Number(result?.usage?.completion_tokens ?? result?.usage?.output_tokens) || null,
+      streaming_observed: false, streaming_chunk_count: null,
+      timeout: false, cancelled: false, aborted: false, unload_observed: false, connection_reset: false,
+    });
     progress.complete(output);
     return output;
   } catch (error) {
@@ -440,6 +450,15 @@ async function generateWithConnectionProfile(
         : 'provider_rejected_request',
     };
     if (error && typeof error === 'object') error.sme_request_diagnostics = requestDiagnostics;
+    diagnosticContext.onRequestDiagnostic?.({
+      ...requestDiagnostics, transport_completed: false, response_envelope_present: false,
+      content_field_present: false, content_length: 0, finish_reason: null,
+      reported_input_tokens: null, reported_output_tokens: null,
+      streaming_observed: false, streaming_chunk_count: null,
+      timeout: /timeout/i.test(providerErrorText(error)), cancelled: false,
+      aborted: error?.name === 'AbortError', unload_observed: false,
+      connection_reset: /(?:connection reset|econnreset)/i.test(providerErrorText(error)),
+    });
     throw error;
   }
 }
@@ -826,7 +845,7 @@ function trimToBudget(messages, budget) {
  */
 export async function generateMemorySummarize(
   quietPrompt,
-  { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null, task = null } = {},
+  { responseLength = 1500, skipWIAN = true, includeLastMessage = false, chatMessages = null, task = null, onRequestDiagnostic = null } = {},
 ) {
   return queueMemoryRequest(() =>
     retryTransientMemoryOperation(async () => {
@@ -868,7 +887,7 @@ export async function generateMemorySummarize(
     if (source === memory_sources.ollama) {
       rawDirect = await generateOllama(quietPrompt, priorMessages, responseLength, { task });
     } else if (source === memory_sources.connection_profile) {
-      rawDirect = await generateWithConnectionProfile(quietPrompt, priorMessages, responseLength, { task });
+      rawDirect = await generateWithConnectionProfile(quietPrompt, priorMessages, responseLength, { task, onRequestDiagnostic });
     } else {
       rawDirect = await generateOpenAICompat(quietPrompt, priorMessages, responseLength, { task });
     }
