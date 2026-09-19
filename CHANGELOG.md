@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.45] - 2026-09-18
+
+### Fixed
+
+- Short-Term finalization now responds to a genuine content-empty result with
+  a bounded recovery ladder: it increases output capacity when possible and
+  otherwise partitions the input into smaller rolling-summary segments. Every
+  successful segment commits an exact summary hash, source fingerprint, and
+  pending-tail boundary for crash-safe Resume.
+- Repeated equivalent Short-Term failures now retain a failure signature and
+  eventually require an explicit provider or configuration change instead of
+  offering an unchanged infinite Resume loop. Phase-failure resumes are no
+  longer mislabeled as manual cancellations.
+- Resume exports now preserve cumulative source/tier coverage, compact terminal
+  summaries for completed finalization phases, explicit blocked-phase states,
+  restored persona audit evidence, and intermediate-versus-definitive
+  reconciliation ownership.
+
 ## [0.9.44] - 2026-09-16
 
 ### Fixed

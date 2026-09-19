@@ -2014,6 +2014,14 @@ export function bindSettingsUI(ctrl) {
     const total = Number(checkpoint.source_message_count) || 0;
     const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
     const finalization = summarizeCatchUpCheckpoint(checkpoint).finalization;
+    const recoveryConfigurationSignature = diagnosticFingerprint(JSON.stringify({
+      connection_profile_id: extension_settings[MODULE_NAME]?.connection_profile_id ?? null,
+      model: extension_settings[MODULE_NAME]?.openai_compat_model ?? extension_settings[MODULE_NAME]?.ollama_model ?? null,
+      response_length: extension_settings[MODULE_NAME]?.compaction_response_length ?? null,
+      context_length: extension_settings[MODULE_NAME]?.context_length ?? null,
+    }));
+    const operatorActionRequired = Boolean(finalization?.shortterm_recovery?.operator_action_required
+      && finalization.shortterm_recovery.configuration_signature === recoveryConfigurationSignature);
     const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
     const rangeText = `${manifest.cumulative_range_count ?? 0} coalesced committed range${manifest.cumulative_range_count === 1 ? '' : 's'}`;
     const finalizationText = finalization?.completed_phase_count
@@ -2037,17 +2045,21 @@ export function bindSettingsUI(ctrl) {
       saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist restart health reconciliation:`, error));
       updateLiveMemoryHealthUI();
     }
-    $resume.prop('disabled', running);
+    $resume.prop('disabled', running || operatorActionRequired);
     setResumeLabel(
-      running ? 'Resumed Automatically' : 'Resume Incomplete Run',
+      running ? 'Resumed Automatically' : operatorActionRequired ? 'Short-Term Action Required' : 'Resume Incomplete Run',
       running
         ? 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
+        : operatorActionRequired
+          ? 'The bounded Short-Term recovery ladder is exhausted. Change the provider/configuration or restart Short-Term finalization before retrying.'
         : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
     );
     $status.text(running
       ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}`
+      : operatorActionRequired
+        ? `Short-Term finalization needs operator action. Completed extraction and phase checkpoints remain preserved. Recommended action: ${(finalization.shortterm_recovery.recommended_operator_action ?? 'change provider or configuration').replaceAll('_', ' ')}.`
       : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.${finalizationText}`).show();
-    if (autoResume && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
+    if (autoResume && !operatorActionRequired && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
         if (!getResumableCatchUpCheckpoint() || ctrl.extractionRunning || ctrl.compactionRunning) return;
@@ -4332,6 +4344,22 @@ export function bindSettingsUI(ctrl) {
       refreshCatchUpRecoveryUI();
       return;
     }
+    const exhaustedShortTermRecovery = resumableCheckpoint?.finalization?.shortterm_failure_state;
+    const currentShortTermConfigurationSignature = diagnosticFingerprint(JSON.stringify({
+      connection_profile_id: extension_settings[MODULE_NAME]?.connection_profile_id ?? null,
+      model: extension_settings[MODULE_NAME]?.openai_compat_model ?? extension_settings[MODULE_NAME]?.ollama_model ?? null,
+      response_length: extension_settings[MODULE_NAME]?.compaction_response_length ?? null,
+      context_length: extension_settings[MODULE_NAME]?.context_length ?? null,
+    }));
+    if (resumeRequested && exhaustedShortTermRecovery?.operator_action_required
+      && exhaustedShortTermRecovery.configuration_signature === currentShortTermConfigurationSignature) {
+      const action = exhaustedShortTermRecovery.recommended_operator_action
+        ?? 'change_provider_or_configuration_or_skip_shortterm_finalization';
+      setStatusMessage(`Short-Term finalization needs operator action: ${action.replaceAll('_', ' ')}.`);
+      toastr.warning('Resume was not started because it would repeat an exhausted Short-Term request strategy. Change the provider/configuration or restart Short-Term finalization with a different setup.', 'Smart Memory Enhanced', { timeOut: 9000 });
+      refreshCatchUpRecoveryUI();
+      return;
+    }
     const canonicalRuntimeContext = resumableCheckpoint?.canonical_runtime_context
       ?? snapshotCanonicalRuntimeContext(getLivePersonaCaptureContext(catchUpContext));
     const catchUpGroup = catchUpContext.groupId
@@ -4596,6 +4624,17 @@ export function bindSettingsUI(ctrl) {
       checkpoint.finalization = checkpoint.finalization && typeof checkpoint.finalization === 'object'
         ? checkpoint.finalization
         : { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
+      checkpoint.finalization.phase_dispositions ??= {};
+      // v0.9.44 could commit this reconciliation after Short-Term had already
+      // failed. Preserve its audit as an intermediate checkpoint, but do not
+      // misrepresent it as the definitive post-generation reconciliation.
+      if (checkpoint.run_manifest?.terminal_reason_code === 'finalization_phase_failed'
+        && checkpoint.finalization.active_phase === 'shortterm_extraction'
+        && checkpoint.finalization.completed_phases?.final_reconciliation) {
+        checkpoint.finalization.completed_phases.post_extraction_reconciliation ??=
+          checkpoint.finalization.completed_phases.final_reconciliation;
+        delete checkpoint.finalization.completed_phases.final_reconciliation;
+      }
       const sourceWindow = {
         source_message_count: total,
         source_start_index: allMessages[0]?.__sme_original_index ?? null,
@@ -4608,10 +4647,15 @@ export function bindSettingsUI(ctrl) {
       };
       checkpoint.run_manifest = ensureCatchUpRunManifest(checkpoint, sourceWindow);
       const resumeWasManual = resumableCheckpoint?.status === 'awaiting_manual_resume';
+      const priorTerminalReason = resumableCheckpoint?.run_manifest?.terminal_reason_code ?? null;
+      const resumeAttemptType = !resumableCheckpoint ? 'initial'
+        : priorTerminalReason === 'manual_cancel' ? 'resumed_after_manual_cancel'
+          : priorTerminalReason === 'finalization_phase_failed' ? 'resumed_after_phase_failure'
+            : priorTerminalReason === 'unclassified_page_interruption' ? 'resumed_after_page_interruption'
+              : resumableCheckpoint.status === 'in_progress' ? 'resumed_after_application_restart'
+                : 'resumed_after_unknown_interruption';
       checkpoint.run_manifest = beginCatchUpAttempt(checkpoint.run_manifest, {
-        type: resumableCheckpoint
-          ? (resumeWasManual ? 'resumed_after_manual_cancel' : 'resumed_after_crash')
-          : 'initial',
+        type: resumeAttemptType,
         resumeOffset,
       });
       checkpoint.status = 'in_progress';
@@ -5192,6 +5236,12 @@ export function bindSettingsUI(ctrl) {
           // without rerunning an already committed phase.
           ...phaseSummary,
         };
+        checkpoint.finalization.phase_dispositions ??= {};
+        checkpoint.finalization.phase_dispositions[key] = {
+          disposition: 'completed', terminal_outcome: phaseSummary.terminal_outcome ?? 'completed',
+          resumable: false, completed_at: checkpoint.finalization.completed_phases[key].completed_at,
+        };
+        if (key === 'shortterm_extraction') delete checkpoint.finalization.shortterm_failure_state;
         checkpoint.finalization.active_phase = null;
         checkpoint.finalization.updated_at = Date.now();
         checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
@@ -5223,6 +5273,15 @@ export function bindSettingsUI(ctrl) {
         updateFinalizationEta(label, { completed: true });
       };
 
+      // Restore compact terminal evidence for phases which are intentionally
+      // skipped on Resume. A zero-work attempt must not erase the original
+      // phase's successful outcome.
+      if (completedFinalizationPhases.arc_extraction) {
+        runResult.arcExtraction.terminal_outcome = completedFinalizationPhases.arc_extraction.terminal_outcome
+          ?? (completedFinalizationPhases.arc_extraction.completed_at ? 'completed_terminal_summary_unavailable' : null);
+        runResult.arcExtraction.terminalOutcome = runResult.arcExtraction.terminal_outcome;
+      }
+
       if (!ctrl.catchUpCancelled) {
         // The first actual finalization task starts the ETA clock. Do not make
         // this transition label a fake phase, or every later phase is shifted.
@@ -5243,7 +5302,9 @@ export function bindSettingsUI(ctrl) {
               });
               updateFinalizationEta(`long-term consolidation for ${name}`, { completed: true });
             }
-            if (!ctrl.catchUpCancelled) await commitFinalizationPhase('longterm_consolidation');
+            if (!ctrl.catchUpCancelled) await commitFinalizationPhase('longterm_consolidation', {
+              terminal_outcome: 'completed', character_count: catchUpCharacterNames.length,
+            });
           }
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
@@ -5258,7 +5319,9 @@ export function bindSettingsUI(ctrl) {
               recordCatchUpError('final session consolidation error', err);
             });
             updateFinalizationEta('session-memory consolidation', { completed: true });
-            if (!ctrl.catchUpCancelled) await commitFinalizationPhase('session_consolidation');
+            if (!ctrl.catchUpCancelled) await commitFinalizationPhase('session_consolidation', {
+              terminal_outcome: 'completed', disposition: 'completed',
+            });
           }
           await runNonfatalPresentationTask('Token usage refresh', () => updateTokenDisplay());
         }
@@ -5961,6 +6024,12 @@ export function bindSettingsUI(ctrl) {
             last_response_presence: null, terminal_outcome: 'running',
           };
           runResult.compactionRequestAudit = compactionRequestAudit;
+          const priorShortTermFailures = Number(checkpoint.finalization?.shortterm_failure_state?.equivalent_failure_count ?? 0);
+          const historicalPhaseFailures = (checkpoint.run_manifest?.checkpoint_transitions ?? [])
+            .filter((entry) => entry?.reason_code === 'finalization_phase_failed').length;
+          const recoveryInputFraction = Math.max(0.2, 1 / (2 ** Math.min(2, Math.max(priorShortTermFailures, historicalPhaseFailures))));
+          compactionRequestAudit.recovery_strategy = recoveryInputFraction < 1 ? 'smaller_segment_rebuild' : 'normal_then_partition_on_empty';
+          compactionRequestAudit.recovery_input_fraction = recoveryInputFraction;
           const onCompactionRequestState = (event) => {
             if (event.state === 'in_flight') compactionRequestAudit.observed_requests++;
             if (event.state === 'response_observed') {
@@ -5975,7 +6044,7 @@ export function bindSettingsUI(ctrl) {
             });
           };
           await runCompaction({ includeLastMessage: true, checkpointEachPass: true, onPassCommitted: commitShortTermPass,
-            onRequestState: onCompactionRequestState, shouldCancel: () => ctrl.catchUpCancelled })
+            onRequestState: onCompactionRequestState, shouldCancel: () => ctrl.catchUpCancelled, recoveryInputFraction })
             .then((summary) => {
               compactionRequestAudit.terminal_outcome = summary ? 'completed' : 'no_summary';
               if (summary) {
@@ -5993,7 +6062,41 @@ export function bindSettingsUI(ctrl) {
                 checkpoint_summary_end: shorttermCheckpoint?.summary_end ?? null,
                 // summary_end is already the exclusive source boundary.
                 pending_tail_start: Number.isInteger(shorttermCheckpoint?.summary_end) ? shorttermCheckpoint.summary_end : null,
-                finalization_phase_resumable: true,
+                finalization_phase_resumable: Number.isInteger(shorttermCheckpoint?.summary_end),
+                boundary_status: Number.isInteger(shorttermCheckpoint?.summary_end)
+                  ? 'exact_committed_summary_boundary' : 'no_valid_summary_checkpoint_segmented_rebuild_required',
+              };
+              const signature = diagnosticFingerprint(JSON.stringify({
+                connection_profile_id: settings.connection_profile_id ?? null,
+                model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+                requested_output_tokens: settings.compaction_response_length ?? null,
+                recovery_input_fraction: recoveryInputFraction,
+                terminal_outcome: compactionRequestAudit.terminal_outcome,
+                terminal_adaptation: err?.sme_compaction_recovery?.adaptation ?? compactionRequestAudit.retained_events.at(-2)?.adaptation ?? null,
+              }));
+              const previousFailure = checkpoint.finalization.shortterm_failure_state;
+              const equivalentFailureCount = previousFailure?.failure_signature === signature
+                ? Number(previousFailure.equivalent_failure_count ?? 0) + 1 : 1;
+              checkpoint.finalization.shortterm_failure_state = {
+                failure_signature: signature,
+                equivalent_failure_count: equivalentFailureCount,
+                failed_at: Date.now(),
+                adaptation: err?.sme_compaction_recovery?.adaptation ?? 'segmented_recovery_exhausted',
+                next_resume_strategy: recoveryInputFraction > 0.2 ? 'retry_with_smaller_segments' : 'operator_action_required',
+                operator_action_required: recoveryInputFraction <= 0.2,
+                configuration_signature: diagnosticFingerprint(JSON.stringify({
+                  connection_profile_id: settings.connection_profile_id ?? null,
+                  model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+                  response_length: settings.compaction_response_length ?? null,
+                  context_length: settings.context_length ?? null,
+                })),
+                recommended_operator_action: recoveryInputFraction <= 0.2
+                  ? 'change_provider_or_configuration_or_skip_shortterm_finalization'
+                  : 'resume_with_smaller_segments',
+              };
+              checkpoint.finalization.phase_dispositions.shortterm_extraction = {
+                disposition: 'failed', terminal_outcome: compactionRequestAudit.terminal_outcome,
+                resumable: true, failure_signature: signature,
               };
               recordCatchUpError('compaction error', err);
           });
@@ -6007,7 +6110,7 @@ export function bindSettingsUI(ctrl) {
 
       // Generate character & world profiles once at the end of a completed run.
       // Skipped on cancel - partial data may produce low-quality profiles.
-      if (!ctrl.catchUpCancelled && !resumableFinalizationFailure && settings.profiles_enabled && !hasCompletedFinalizationPhase('profile_generation')) {
+      if (!ctrl.catchUpCancelled && settings.profiles_enabled && !hasCompletedFinalizationPhase('profile_generation')) {
         await startFinalizationPhase('profile_generation');
         for (const name of catchUpProfileCharacterNames) {
           if (ctrl.catchUpCancelled) break;
@@ -6138,8 +6241,13 @@ export function bindSettingsUI(ctrl) {
           relationship_matrix: totals.relationship_matrix + Number(Boolean(attempt.relationship_matrix_detected)),
         }), { character_state: 0, world_state: 0, relationship_matrix: 0 });
         runResult.profiles.terminal_accounting = summarizeProfileCompletion(runResult.profiles.attempts, { enabledProfileCount: catchUpProfileCharacterNames.length });
-        if (!ctrl.catchUpCancelled) await commitFinalizationPhase('profile_generation');
-      } else if (!ctrl.catchUpCancelled && !resumableFinalizationFailure && settings.profiles_enabled) {
+        if (!ctrl.catchUpCancelled) await commitFinalizationPhase('profile_generation', {
+          terminal_outcome: runResult.profiles.terminal_accounting?.terminal_reconciled ? 'completed' : 'failed',
+          attempted: runResult.profiles.profiles_attempted,
+          parsed: runResult.profiles.profiles_parsed,
+          saved: runResult.profiles.profiles_saved,
+        });
+      } else if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
         for (const name of catchUpProfileCharacterNames) skipFinalizationPhase(`profile generation for ${name}`);
       }
 
@@ -6172,12 +6280,24 @@ export function bindSettingsUI(ctrl) {
         settings: structuredClone(extension_settings[MODULE_NAME] ?? {}),
       };
       let reconciliation;
-      runResult.finalReconciliation.attempted = 1;
-      if (hasCompletedFinalizationPhase('final_reconciliation')) {
+      runResult.finalReconciliation.attempted = resumableFinalizationFailure ? 0 : 1;
+      if (resumableFinalizationFailure) {
         const priorAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.integrity_audit;
         reconciliation = {
           matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
-          persona_roster_size: 0, participant_lists_rewritten: 0, resolved_review_items_removed: 0,
+          persona_roster_size: catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.persona_roster_size ?? 0,
+          participant_lists_rewritten: 0, resolved_review_items_removed: 0, quarantined_arc_summaries: 0,
+          integrity_audit: priorAudit ?? { status: 'clean', stale_entity_references: [] },
+        };
+        checkpoint.finalization.phase_dispositions.final_reconciliation = {
+          disposition: 'blocked_by_upstream_phase', upstream_phase: 'shortterm_extraction', resumable: true,
+        };
+      } else if (hasCompletedFinalizationPhase('final_reconciliation')) {
+        const priorAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.integrity_audit;
+        reconciliation = {
+          matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
+          persona_roster_size: catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.persona_roster_size ?? 0,
+          participant_lists_rewritten: 0, resolved_review_items_removed: 0,
           quarantined_arc_summaries: 0, integrity_audit: priorAudit ?? { status: 'clean', stale_entity_references: [] },
         };
         runResult.finalReconciliation.completed = 1;
@@ -6880,8 +7000,11 @@ export function bindSettingsUI(ctrl) {
             cumulative_chunk_count_available: diagnostics.logical_run.cumulative_chunk_count_available,
             remaining_gap_count: diagnostics.logical_run.remaining_gap_count,
             safely_resumable_offset: terminalCheckpoint.next_source_offset,
-            full_cumulative_coverage_confirmed: false,
+            full_cumulative_coverage_confirmed: diagnostics.logical_run.full_cumulative_coverage_confirmed,
           };
+          const coverageAttention = !diagnostics.logical_run.full_cumulative_coverage_confirmed;
+          diagnostics.coverage_status = coverageAttention ? 'attention' : 'complete';
+          diagnostics.coverage_attention_reason = coverageAttention ? 'cumulative_source_or_tier_coverage_incomplete' : null;
         }
       } else if (terminalCheckpoint) {
         terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {

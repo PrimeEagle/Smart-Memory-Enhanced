@@ -188,3 +188,14 @@ test('checkpoint diagnostics retain completed finalization phases and the recove
   assert.equal(summary.run_settings_snapshot.available, true);
   assert.deepEqual(summary.run_settings_snapshot.setting_keys, ['compaction_response_length', 'longterm_inject_budget']);
 });
+
+test('legacy manual-cancel labels migrate when the durable predecessor was a phase failure', () => {
+  let manifest = ensureCatchUpRunManifest({}, { message_count: 1, source_start_index: 0, source_end_index: 0, fingerprint: 'x' });
+  manifest = beginCatchUpAttempt(manifest, { type: 'initial', now: 1 });
+  manifest = finalizeCatchUpRunManifest(manifest, { status: 'awaiting_manual_resume', reasonCode: 'finalization_phase_failed', now: 2 });
+  manifest = beginCatchUpAttempt(manifest, { type: 'resumed_after_manual_cancel', now: 3 });
+  const summary = summarizeCatchUpRunManifest(manifest);
+  assert.equal(summary.attempts[1].type, 'resumed_after_phase_failure');
+  assert.equal(summary.attempts[1].legacy_attempt_type, 'resumed_after_manual_cancel');
+  assert.equal(summary.attempts[1].attempt_type_migrated, true);
+});

@@ -381,7 +381,7 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(settings, /power_user\.personas/);
   assert.match(settings, /user_avatar/);
   assert.match(settings, /getLivePersonaCaptureContext\(catchUpContext\)/);
-  assert.match(settings, /finalReconciliation\.attempted = 1/);
+  assert.match(settings, /finalReconciliation\.attempted = resumableFinalizationFailure \? 0 : 1/);
   assert.match(settings, /finalReconciliation\.completed = 1/);
   assert.match(settings, /finalReconciliation\.rolled_back = true/);
   assert.match(settings, /active_persona_stable_id_present/);
@@ -1685,9 +1685,34 @@ test('compaction empty retries retain privacy-safe transport evidence and resume
   assert.match(compaction, /retry_of_request_id/);
   assert.match(settings, /page_instance_id: pageInstanceId/);
   assert.match(settings, /pending_tail_start/);
-  assert.match(settings, /finalization_phase_resumable: true/);
+  assert.match(settings, /finalization_phase_resumable: Number\.isInteger\(shorttermCheckpoint\?\.summary_end\)/);
   assert.match(settings, /!resumableFinalizationFailure\) await commitFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /terminalReasonCode = resumableFinalizationFailure/);
+});
+
+test('context-limited empty compaction partitions input and refuses exhausted equivalent resumes', () => {
+  const compaction = read('compaction.js');
+  const settings = read('settings.js');
+  assert.match(compaction, /adaptation = adaptedResponseLength > responseLength[\s\S]*'partitioned_input_scope'/);
+  assert.match(compaction, /const firstHalf = completedChunk\.slice\(0, midpoint\)/);
+  assert.match(compaction, /await summarizeChunk\(partitionDepth \+ 1\)/);
+  assert.match(compaction, /adaptation_unavailable/);
+  assert.match(compaction, /pending_tail_start: meta\.summaryEnd/);
+  assert.match(compaction, /summary_hash: summaryFingerprint\(summary\)/);
+  assert.match(settings, /resumed_after_phase_failure/);
+  assert.match(settings, /operator_action_required/);
+  assert.match(settings, /would repeat an exhausted Short-Term request strategy/);
+});
+
+test('resume preserves cumulative coverage and explicit blocked phase dispositions', () => {
+  const settings = read('settings.js');
+  const recovery = read('catchup-recovery-utils.js');
+  assert.match(settings, /full_cumulative_coverage_confirmed: diagnostics\.logical_run\.full_cumulative_coverage_confirmed/);
+  assert.match(settings, /blocked_by_upstream_phase/);
+  assert.match(settings, /post_extraction_reconciliation/);
+  assert.match(recovery, /completed_phase_summaries/);
+  assert.match(recovery, /phase_dispositions/);
+  assert.match(recovery, /shortterm_recovery/);
 });
 
 test('relationship integrity diagnostics reconcile record and distinct-key debt counts', () => {

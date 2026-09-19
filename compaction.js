@@ -74,8 +74,12 @@ async function getChatTokenCount(chat) {
  * plus an unusually long unsummarized tail must not bypass the connection
  * profile's context-window guard.
  */
-async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength, { onPassCommitted = null, shouldCancel = null, onRequestState = null } = {}) {
-  const inputBudget = getMemoryInputBudget(responseLength);
+async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength, {
+  onPassCommitted = null, shouldCancel = null, onRequestState = null,
+  recoveryInputFraction = 1,
+} = {}) {
+  const fullInputBudget = getMemoryInputBudget(responseLength);
+  const inputBudget = Math.max(256, Math.floor(fullInputBudget * Math.min(1, Math.max(0.2, Number(recoveryInputFraction) || 1))));
   let rollingSummary = initialSummary || 'No earlier events have been summarized yet.';
   let chunk = [];
   let passNumber = 0;
@@ -89,7 +93,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     );
   };
 
-  const summarizeChunk = async () => {
+  const summarizeChunk = async (partitionDepth = 0) => {
     if (!chunk.length) return;
     const completedChunk = chunk;
     const prompt = buildPromptFor(chunk);
@@ -103,7 +107,11 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     const request = async (attempt, attemptResponseLength = responseLength) => {
       const requestId = attempt === 1 ? firstRequestId : `${firstRequestId}-retry-${attempt}`;
       const base = { pass_number: passNumber, attempt, request_id: requestId,
-        retry_of_request_id: attempt === 1 ? null : firstRequestId, requested_output_tokens: attemptResponseLength };
+        retry_of_request_id: attempt === 1 ? null : firstRequestId, requested_output_tokens: attemptResponseLength,
+        estimated_input_tokens: estimateTokens(prompt),
+        configured_context_limit: getMaxContextSize(attemptResponseLength),
+        memory_source: getMemorySource(),
+        response_classification: null };
       onRequestState?.({ ...base, state: 'in_flight', response_present: null });
       try {
         const result = await generateMemorySummarize(prompt, {
@@ -112,7 +120,10 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
           onRequestDiagnostic: (diagnostic) => onRequestState?.({ ...base, state: 'provider_diagnostic', ...diagnostic }),
         });
         onRequestState?.({ ...base, state: 'response_observed', response_present: Boolean(result?.trim()),
-          parsing_attempted: Boolean(result?.trim()) });
+          parsing_attempted: Boolean(result?.trim()),
+          response_classification: typeof result !== 'string' ? 'adapter_non_string'
+            : result.length === 0 ? 'empty_string' : result.trim().length === 0 ? 'whitespace_only_string' : 'content_string',
+          content_type: typeof result, content_length: typeof result === 'string' ? result.length : null });
         return result;
       } catch (error) {
         onRequestState?.({ ...base, state: 'request_error', response_present: false, parsing_attempted: false,
@@ -121,6 +132,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       }
     };
     let response = await request(1);
+    let successfulAdaptation = recoveryInputFraction < 1 ? 'reduced_initial_input_scope' : 'normal_request';
     // Some OpenAI-compatible local providers occasionally complete a request
     // without returning content. Retry that specific response defect once;
     // transport failures retain the connection layer's existing policy.
@@ -131,13 +143,35 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       const adaptedResponseLength = getMemoryInputBudget(proposedRetryLength) >= promptTokens
         ? proposedRetryLength : responseLength;
       const retryDelayMs = 250;
-      onRequestState?.({ pass_number: passNumber, attempt: 2, state: 'retry_scheduled',
-        retry_reason: 'observed_empty_content', retry_delay_ms: retryDelayMs,
-        adaptation: adaptedResponseLength > responseLength ? 'increased_output_reserve' : 'same_output_context_limited',
-        requested_output_tokens: adaptedResponseLength });
+      const canPartition = completedChunk.length > 1 && partitionDepth < 8;
+      const adaptation = adaptedResponseLength > responseLength ? 'increased_output_reserve'
+        : canPartition ? 'partitioned_input_scope'
+          : 'adaptation_unavailable';
+      onRequestState?.({ pass_number: passNumber, attempt: 2, state: adaptedResponseLength > responseLength ? 'retry_scheduled' : 'recovery_scheduled',
+        retry_reason: 'observed_empty_content', retry_delay_ms: adaptedResponseLength > responseLength ? retryDelayMs : 0,
+        adaptation, requested_output_tokens: adaptedResponseLength,
+        original_segment_message_count: completedChunk.length,
+        next_segment_message_count: canPartition ? Math.ceil(completedChunk.length / 2) : completedChunk.length });
+      if (adaptedResponseLength === responseLength) {
+        if (!canPartition) {
+          const error = new Error('Compaction provider returned empty content and no bounded request adaptation remains.');
+          error.sme_compaction_recovery = { adaptation: 'adaptation_unavailable', partition_depth: partitionDepth,
+            segment_message_count: completedChunk.length, operator_action: 'change_provider_or_restart_shortterm_with_smaller_source_units' };
+          throw error;
+        }
+        const midpoint = Math.ceil(completedChunk.length / 2);
+        const firstHalf = completedChunk.slice(0, midpoint);
+        const secondHalf = completedChunk.slice(midpoint);
+        chunk = firstHalf;
+        await summarizeChunk(partitionDepth + 1);
+        chunk = secondHalf;
+        await summarizeChunk(partitionDepth + 1);
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       if (shouldCancel?.()) throw new Error('Compaction interrupted before adapted empty-response retry.');
       response = await request(2, adaptedResponseLength);
+      successfulAdaptation = 'increased_output_reserve';
     }
     if (!response?.trim()) throw new Error('Compaction provider returned an empty response after one bounded retry.');
     rollingSummary = formatSummary(response);
@@ -147,7 +181,11 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     // checkpoint until its final fragment is included so resume never repeats
     // text already folded into the rolling summary.
     if (!completedChunk.some((message) => message.__sme_compaction_partial === true)) {
-      await onPassCommitted?.(rollingSummary, completedChunk);
+      await onPassCommitted?.(rollingSummary, completedChunk, {
+        pass_number: passNumber, partition_depth: partitionDepth,
+        output_budget: responseLength, adaptation: successfulAdaptation,
+        input_budget: inputBudget, full_input_budget: fullInputBudget,
+      });
     }
   };
 
@@ -261,7 +299,7 @@ export async function shouldCompact() {
  * rather than rewriting it from scratch.
  * @returns {Promise<string|null>} The formatted summary, or null on failure.
  */
-export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null } = {}) {
+export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null, recoveryInputFraction = 1 } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const context = getContext();
 
@@ -324,7 +362,38 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
       ...message,
       __sme_compaction_source_index: context.chat.indexOf(message),
     }));
-    const persistBoundedPass = checkpointEachPass ? async (rollingSummary, completedChunk) => {
+    const sourceFingerprint = (() => {
+      let hash = 2166136261;
+      for (const message of context.chat) {
+        for (const char of `${message?.name ?? ''}\u0000${message?.mes ?? ''}\u0000`) {
+          hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619);
+        }
+      }
+      return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+    })();
+    const summaryFingerprint = (value) => {
+      let hash = 2166136261;
+      for (const char of String(value ?? '')) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+      return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+    };
+    const savedCompactionCheckpoint = meta.shortterm_compaction_checkpoint;
+    if (savedCompactionCheckpoint?.schema_version >= 2) {
+      const checkpointValid = savedCompactionCheckpoint.commit_status === 'committed'
+        && savedCompactionCheckpoint.source_fingerprint === sourceFingerprint
+        && savedCompactionCheckpoint.summary_hash === summaryFingerprint(existingSummary)
+        && Number(savedCompactionCheckpoint.summary_end) === summaryEnd;
+      if (!checkpointValid) {
+        const error = new Error('The saved Short-Term compaction boundary does not match the current source or summary.');
+        error.sme_compaction_recovery = {
+          adaptation: 'checkpoint_validation_failed', operator_action: 'restart_shortterm_finalization',
+          source_fingerprint_match: savedCompactionCheckpoint.source_fingerprint === sourceFingerprint,
+          summary_hash_match: savedCompactionCheckpoint.summary_hash === summaryFingerprint(existingSummary),
+          summary_boundary_match: Number(savedCompactionCheckpoint.summary_end) === summaryEnd,
+        };
+        throw error;
+      }
+    }
+    const persistBoundedPass = checkpointEachPass ? async (rollingSummary, completedChunk, passInfo = {}) => {
       const sourceEnd = Math.max(...completedChunk.map((message) => Number(message.__sme_compaction_source_index)).filter(Number.isInteger));
       if (!Number.isInteger(sourceEnd) || sourceEnd < 0) return;
       const summary = capSummaryToBudget(formatSummary(rollingSummary), settings.compaction_response_length ?? 2000);
@@ -332,10 +401,22 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
       meta.summaryEnd = sourceEnd + 1;
       meta.summaryUpdated = Date.now();
       meta.shortterm_compaction_checkpoint = {
-        schema_version: 1,
+        schema_version: 2,
         completed_passes: Number(meta.shortterm_compaction_checkpoint?.completed_passes ?? 0) + 1,
         source_end: sourceEnd,
         summary_end: meta.summaryEnd,
+        pending_tail_start: meta.summaryEnd,
+        pending_tail_end: meta.summaryEnd < context.chat.length ? context.chat.length - 1 : null,
+        summary_hash: summaryFingerprint(summary),
+        source_fingerprint: sourceFingerprint,
+        parent_summary_hash: meta.shortterm_compaction_checkpoint?.summary_hash ?? null,
+        commit_status: 'committed',
+        pass_number: passInfo.pass_number ?? null,
+        segment_number: Number(meta.shortterm_compaction_checkpoint?.completed_passes ?? 0) + 1,
+        partition_depth: passInfo.partition_depth ?? 0,
+        output_budget: passInfo.output_budget ?? (settings.compaction_response_length ?? 2000),
+        input_budget: passInfo.input_budget ?? null,
+        adaptation: passInfo.adaptation ?? 'normal_request',
         updated_at: meta.summaryUpdated,
       };
       await saveChatMetadata(context);
@@ -367,7 +448,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         existingSummary,
         storedMemories,
         settings.compaction_response_length || 2000,
-        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState },
+        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction },
       );
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
@@ -385,7 +466,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
           'No earlier events have been summarized yet.',
           storedMemories,
           responseLength,
-          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState },
+          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction },
         );
       } else {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {

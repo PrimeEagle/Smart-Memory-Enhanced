@@ -308,12 +308,21 @@ export function summarizeCatchUpRunManifest(manifest) {
       pending_obligations: pendingObligations,
     }];
   }));
-  const attempts = next.attempts.map((attempt) => {
+  const attemptStartTransitions = next.checkpoint_transitions.filter((entry) => entry?.state === 'in_progress');
+  const attempts = next.attempts.map((attempt, attemptIndex) => {
     const normalized = normalizeAttempt(attempt);
+    const matchingTransitionIndex = next.checkpoint_transitions.findIndex((entry) => entry === attemptStartTransitions[attemptIndex]);
+    const precedingReason = matchingTransitionIndex > 0 ? next.checkpoint_transitions[matchingTransitionIndex - 1]?.reason_code : null;
+    const legacyMisclassifiedPhaseResume = normalized.type === 'resumed_after_manual_cancel'
+      && precedingReason === 'finalization_phase_failed';
     const started = Number(normalized.started_at);
     const ended = Number(normalized.ended_at);
     return {
       ...normalized,
+      type: legacyMisclassifiedPhaseResume ? 'resumed_after_phase_failure' : normalized.type,
+      legacy_attempt_type: legacyMisclassifiedPhaseResume ? normalized.type : null,
+      attempt_type_migrated: legacyMisclassifiedPhaseResume,
+      preceding_terminal_reason: precedingReason,
       timing_scope: 'current_attempt',
       duration_ms: Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : null,
       request_counter_scope: 'current_attempt',
@@ -376,6 +385,15 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       active_phase: checkpoint.finalization?.active_phase ?? null,
       completed_phases: Object.keys(checkpoint.finalization?.completed_phases ?? {}),
       completed_phase_count: Object.keys(checkpoint.finalization?.completed_phases ?? {}).length,
+      completed_phase_summaries: Object.fromEntries(Object.entries(checkpoint.finalization?.completed_phases ?? {}).map(([key, value]) => [key, {
+        disposition: value?.disposition ?? 'completed',
+        terminal_outcome: value?.terminal_outcome ?? (value?.completed_at ? 'completed_terminal_summary_unavailable' : null),
+        completed_at: value?.completed_at ?? null,
+        attempt_number: value?.attempt_number ?? null,
+        summary_available: Boolean(value?.summary || value?.terminal_outcome),
+      }])),
+      phase_dispositions: checkpoint.finalization?.phase_dispositions ?? {},
+      shortterm_recovery: checkpoint.finalization?.shortterm_failure_state ?? null,
     },
     run_settings_snapshot: {
       available: Boolean(checkpoint.run_settings_snapshot && typeof checkpoint.run_settings_snapshot === 'object'),
