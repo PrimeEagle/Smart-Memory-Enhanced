@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readPageRunMarker, writePageRunMarker, clearPageRunMarker, reconcilePageRunInstance, summarizePageRunLifecycle, PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS } from '../page-run-lifecycle.js';
+import { readPageRunMarker, writePageRunMarker, clearPageRunMarker, reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS } from '../page-run-lifecycle.js';
 
 const storage = () => {
   const items = new Map();
@@ -95,4 +95,16 @@ test('marker excludes chat and provider content', () => {
   const marker = writePageRunMarker(storage(), 'chat-a', { run_id: 'run-a', page_instance_id: 'page-1',
     request_state: 'in_flight', raw_chat: 'SECRET CHAT', provider_response: 'SECRET RESPONSE' });
   assert.doesNotMatch(JSON.stringify(marker), /SECRET|raw_chat|provider_response/);
+});
+
+test('same-page runtime resets and safe exception fingerprints remain distinct from page replacement', () => {
+  const metadata = {};
+  recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'ui_remounted', page_instance_id: 'page-1', subsystem: 'settings_panel' });
+  recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'unhandled_rejection', page_instance_id: 'page-1', normalized_error_type: 'TypeError', stack_fingerprint: 'fnv1a-test' });
+  const summary = summarizePageRunLifecycle(metadata, 1);
+  assert.equal(summary.page_interruption_count, 0);
+  assert.equal(summary.runtime_event_count, 2);
+  assert.equal(summary.runtime_events[0].classification, 'ui_remounted');
+  assert.equal(summary.runtime_events[1].classification, 'unhandled_rejection');
+  assert.equal(summary.runtime_events[1].stack_fingerprint, 'fnv1a-test');
 });

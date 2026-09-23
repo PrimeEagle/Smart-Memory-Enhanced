@@ -103,6 +103,24 @@ export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { rea
     reconciled++;
     if (committed) recovered++; else uncertain++;
   }
+  // The retained event list is bounded. A page may be replaced after the
+  // corresponding running events have aged out, so reconcile the cumulative
+  // physical-attempt ledger as well. This never invents success: absent
+  // terminal evidence is explicitly classified as completion unknown.
+  const run = runCounters(health, checkpoint?.run_id);
+  if (run) {
+    const terminalTotal = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
+    const unclassified = Math.max(0, number(run.attempted) - terminalTotal);
+    if (unclassified) {
+      increment(run.terminal_counts, 'completion_uncertain_after_page_interruption', unclassified);
+      increment(run, 'interruption_count', unclassified);
+      run.unretained_interrupted_attempt_count = number(run.unretained_interrupted_attempt_count) + unclassified;
+      reconciled += unclassified;
+      uncertain += unclassified;
+    }
+    run.physical_terminal_total = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
+    run.physical_attempt_accounting_reconciled = run.physical_terminal_total === number(run.attempted);
+  }
   const last = health.recent_extraction_events.at(-1);
   if (last) health.last_extraction = { event_id: last.event_id, timestamp: last.timestamp, tier: last.tier, terminal_health: last.terminal_health, attention_reason_codes: last.attention_reason_codes };
   return { reconciled, recovered, uncertain };
@@ -430,6 +448,18 @@ export function exportLiveMemoryHealth(metadata) {
     },
     interruptions: health.recent_extraction_events.filter((event) => /^interrupted_|completion_uncertain/.test(event.terminal_health)).length,
     successful_replays: health.recent_extraction_events.filter((event) => event.lifecycle_outcome === 'replay_completed').length,
+    physical_attempt_accounting: (() => {
+      const run = health.current_run_outcomes;
+      if (!run) return null;
+      const terminalTotal = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
+      return {
+        attempted: number(run.attempted), terminal_outcomes: run.terminal_counts ?? {},
+        terminal_total: terminalTotal,
+        unclassified: Math.max(0, number(run.attempted) - terminalTotal),
+        reconciled: terminalTotal === number(run.attempted),
+        physical_and_logical_outcomes_are_separate: true,
+      };
+    })(),
   };
   return JSON.parse(JSON.stringify({
     schema_version: health.schema_version,

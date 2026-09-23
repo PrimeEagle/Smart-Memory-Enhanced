@@ -74,7 +74,7 @@ import {
 } from './live-memory-health.js';
 import {
   readPageRunMarker, writePageRunMarker, clearPageRunMarker,
-  reconcilePageRunInstance, summarizePageRunLifecycle,
+  reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent,
 } from './page-run-lifecycle.js';
 import {
   normalizeCatchUpCheckpoint,
@@ -1911,6 +1911,42 @@ export function bindSettingsUI(ctrl) {
   const pageInstanceId = globalThis.crypto?.randomUUID?.() ?? `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const pageRunScope = (context = getContext()) => context?.chatId
     ? `${context?.groupId ?? 'single'}:${context.chatId}` : context?.groupId ?? context?.characterId ?? null;
+  const recordRuntimeEvidence = (classification, detail = {}) => {
+    const metadata = getContext()?.chatMetadata?.[META_KEY];
+    const checkpoint = metadata?.catch_up_checkpoint;
+    if (!checkpoint?.run_id) return;
+    recordRuntimeLifecycleEvent(metadata, checkpoint.run_id, {
+      classification, page_instance_id: pageInstanceId,
+      phase: checkpoint.finalization?.active_phase ?? 'source_extraction',
+      last_durable_phase_transition: checkpoint.run_manifest?.checkpoint_transitions?.at(-1)?.state ?? null,
+      ...detail,
+    });
+  };
+  const priorLifecycleCleanup = globalThis.__smeRuntimeLifecycleCleanup;
+  if (typeof priorLifecycleCleanup === 'function') priorLifecycleCleanup();
+  const lifecycleListeners = [];
+  const listenLifecycle = (target, type, handler) => {
+    target?.addEventListener?.(type, handler);
+    lifecycleListeners.push(() => target?.removeEventListener?.(type, handler));
+  };
+  listenLifecycle(globalThis, 'pageshow', () => recordRuntimeEvidence('pageshow', { subsystem: 'document' }));
+  listenLifecycle(globalThis, 'pagehide', () => recordRuntimeEvidence('pagehide', { subsystem: 'document' }));
+  listenLifecycle(globalThis, 'beforeunload', () => recordRuntimeEvidence('beforeunload', { subsystem: 'document' }));
+  listenLifecycle(document, 'visibilitychange', () => recordRuntimeEvidence('visibility_changed', { subsystem: 'document', visibility_state: document.visibilityState }));
+  listenLifecycle(globalThis, 'online', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'online' }));
+  listenLifecycle(globalThis, 'offline', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'offline' }));
+  const safeErrorEvidence = (classification, value) => recordRuntimeEvidence(classification, {
+    subsystem: 'javascript_runtime', normalized_error_type: value?.name ?? typeof value,
+    stack_fingerprint: diagnosticFingerprint(String(value?.stack ?? value?.message ?? value ?? 'unknown').replace(/https?:\/\/\S+/g, '<url>')),
+  });
+  listenLifecycle(globalThis, 'error', (event) => safeErrorEvidence('unhandled_exception', event?.error ?? event));
+  listenLifecycle(globalThis, 'unhandledrejection', (event) => safeErrorEvidence('unhandled_rejection', event?.reason));
+  globalThis.__smeRuntimeLifecycleCleanup = () => lifecycleListeners.splice(0).forEach((remove) => remove());
+  queueMicrotask(() => {
+    recordRuntimeEvidence(priorLifecycleCleanup ? 'extension_runtime_reinitialized' : 'document_load', { subsystem: 'extension' });
+    recordRuntimeEvidence('run_controller_created', { subsystem: 'memorize_chat_controller' });
+    recordRuntimeEvidence('ui_remounted', { subsystem: 'settings_panel' });
+  });
   const updateActivePageMarker = (checkpoint, phase = null, requestState = 'idle', requestEvidence = {}) => {
     const scope = pageRunScope();
     if (!scope || !checkpoint?.run_id) return null;
@@ -4314,6 +4350,7 @@ export function bindSettingsUI(ctrl) {
       refreshCatchUpRecoveryUI();
       return;
     }
+    recordRuntimeEvidence('resume_handler_entered', { subsystem: 'memorize_chat_resume' });
     $('#sme_catch_up').data('smeResumeRequested', true).trigger('click');
   });
 
@@ -4625,6 +4662,24 @@ export function bindSettingsUI(ctrl) {
         ? checkpoint.finalization
         : { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
       checkpoint.finalization.phase_dispositions ??= {};
+      const activePersona = canonicalRuntimeContext?.active_persona;
+      if (activePersona?.canonical_name && activePersona?.stable_persona_id) {
+        checkpoint.persona_audit_proof = {
+          schema_version: 1,
+          finalized_roster_fingerprint: diagnosticFingerprint(JSON.stringify(canonicalRuntimeContext)),
+          active_persona_stable_id_fingerprint: diagnosticFingerprint(activePersona.stable_persona_id),
+          active_persona_canonical_name_fingerprint: diagnosticFingerprint(activePersona.canonical_name),
+          context_source: resumableCheckpoint ? 'restored_finalized_context_confirmed_by_live_snapshot' : 'initial_finalized_runtime_context',
+          roster_membership_result: true,
+          audited_at: Date.now(),
+        };
+      } else if (!checkpoint.persona_audit_proof) {
+        checkpoint.persona_audit_proof = {
+          schema_version: 1, finalized_roster_fingerprint: null,
+          active_persona_stable_id_fingerprint: null, active_persona_canonical_name_fingerprint: null,
+          context_source: 'live_persona_unavailable', roster_membership_result: null, audited_at: Date.now(),
+        };
+      }
       // v0.9.44 could commit this reconciliation after Short-Term had already
       // failed. Preserve its audit as an intermediate checkpoint, but do not
       // misrepresent it as the definitive post-generation reconciliation.
@@ -5241,7 +5296,10 @@ export function bindSettingsUI(ctrl) {
           disposition: 'completed', terminal_outcome: phaseSummary.terminal_outcome ?? 'completed',
           resumable: false, completed_at: checkpoint.finalization.completed_phases[key].completed_at,
         };
-        if (key === 'shortterm_extraction') delete checkpoint.finalization.shortterm_failure_state;
+        if (key === 'shortterm_extraction') {
+          delete checkpoint.finalization.shortterm_failure_state;
+          delete checkpoint.finalization.shortterm_recovery_plan;
+        }
         checkpoint.finalization.active_phase = null;
         checkpoint.finalization.updated_at = Date.now();
         checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
@@ -5953,6 +6011,19 @@ export function bindSettingsUI(ctrl) {
               generated: runResult.sceneDetection?.generated ?? 0,
               duplicates: runResult.sceneDetection?.duplicates ?? 0,
               failed: runResult.sceneDetection?.failed ?? 0,
+              candidates_evaluated: runResult.sceneDetection?.boundary_candidates_evaluated ?? null,
+              provider_requests: runResult.sceneDetection?.total_provider_requests ?? null,
+              valid_decisions: runResult.sceneDetection?.ai_decisions_valid ?? null,
+              invalid_decisions: runResult.sceneDetection?.ai_decisions_invalid ?? null,
+              missing_decisions: runResult.sceneDetection?.ai_decisions_missing ?? null,
+              malformed_batches: runResult.sceneDetection?.malformed_batches ?? null,
+              recovered_omissions: runResult.sceneDetection?.recovered_omissions ?? null,
+              deterministic_fallbacks: runResult.sceneDetection?.fallback_boundaries ?? null,
+              accepted_boundaries: runResult.sceneDetection?.boundary_count ?? null,
+              final_scene_count: runResult.sceneDetection?.scene_count ?? null,
+              failed_terminal_candidates: runResult.sceneDetection?.failed ?? null,
+              accounting_reconciled: runResult.sceneDetection?.terminal_break_accounting_reconciled ?? null,
+              final_boundary_fingerprint: diagnosticFingerprint(JSON.stringify(runResult.sceneDetection?.final_break_indices ?? [])),
             },
           });
         } else if (!ctrl.catchUpCancelled && settings.scene_enabled) {
@@ -6003,6 +6074,25 @@ export function bindSettingsUI(ctrl) {
               updated_at: progress.updated_at,
             };
             checkpoint.finalization.updated_at = Date.now();
+            const activeRecoveryPlan = checkpoint.finalization.shortterm_recovery_plan;
+            if (activeRecoveryPlan) {
+              const nextStart = Number(progress.summary_end);
+              const targetCount = Math.max(1, Number(activeRecoveryPlan.target_message_count ?? 1));
+              const sourceItems = catchUpContext.chat.map((item, index) => ({ item, index }))
+                .filter(({ item, index }) => index >= nextStart && item?.mes && !item?.is_system).slice(0, targetCount);
+              checkpoint.finalization.shortterm_recovery_plan = sourceItems.length ? {
+                ...activeRecoveryPlan,
+                next_segment_start: nextStart,
+                next_segment_end: sourceItems.at(-1).index,
+                message_count: sourceItems.length,
+                source_fingerprint: diagnosticFingerprint(sourceItems.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001')),
+                summary_parent_hash: progress.summary_hash,
+                compaction_pass: Number(progress.completed_passes ?? 0) + 1,
+                segment_number: Number(progress.segment_number ?? progress.completed_passes ?? 0) + 1,
+                expected_input_token_estimate: null,
+                updated_at: Date.now(),
+              } : null;
+            }
             checkpoint.updated_at = Date.now();
             checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
             checkpoint.run_settings_snapshot_updated_at = Date.now();
@@ -6030,6 +6120,8 @@ export function bindSettingsUI(ctrl) {
           const recoveryInputFraction = Math.max(0.2, 1 / (2 ** Math.min(2, Math.max(priorShortTermFailures, historicalPhaseFailures))));
           compactionRequestAudit.recovery_strategy = recoveryInputFraction < 1 ? 'smaller_segment_rebuild' : 'normal_then_partition_on_empty';
           compactionRequestAudit.recovery_input_fraction = recoveryInputFraction;
+          const persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
+          compactionRequestAudit.persisted_recovery_plan = persistedRecoveryPlan;
           const onCompactionRequestState = (event) => {
             if (event.state === 'in_flight') compactionRequestAudit.observed_requests++;
             if (event.state === 'response_observed') {
@@ -6044,7 +6136,8 @@ export function bindSettingsUI(ctrl) {
             });
           };
           await runCompaction({ includeLastMessage: true, checkpointEachPass: true, onPassCommitted: commitShortTermPass,
-            onRequestState: onCompactionRequestState, shouldCancel: () => ctrl.catchUpCancelled, recoveryInputFraction })
+            onRequestState: onCompactionRequestState, shouldCancel: () => ctrl.catchUpCancelled, recoveryInputFraction,
+            recoveryPlan: persistedRecoveryPlan })
             .then((summary) => {
               compactionRequestAudit.terminal_outcome = summary ? 'completed' : 'no_summary';
               if (summary) {
@@ -6066,7 +6159,9 @@ export function bindSettingsUI(ctrl) {
                 boundary_status: Number.isInteger(shorttermCheckpoint?.summary_end)
                   ? 'exact_committed_summary_boundary' : 'no_valid_summary_checkpoint_segmented_rebuild_required',
               };
-              const signature = diagnosticFingerprint(JSON.stringify({
+              const failedRequest = [...compactionRequestAudit.retained_events].reverse()
+                .find((event) => ['response_observed', 'request_error'].includes(event?.state));
+              const signature = failedRequest?.actual_request_signature ?? diagnosticFingerprint(JSON.stringify({
                 connection_profile_id: settings.connection_profile_id ?? null,
                 model: settings.openai_compat_model ?? settings.ollama_model ?? null,
                 requested_output_tokens: settings.compaction_response_length ?? null,
@@ -6077,20 +6172,51 @@ export function bindSettingsUI(ctrl) {
               const previousFailure = checkpoint.finalization.shortterm_failure_state;
               const equivalentFailureCount = previousFailure?.failure_signature === signature
                 ? Number(previousFailure.equivalent_failure_count ?? 0) + 1 : 1;
+              const originalCount = Math.max(1, Number(failedRequest?.prompt_visible_message_count
+                ?? compactionRequestAudit.retained_events.findLast((event) => Number.isInteger(event?.original_segment_message_count))?.original_segment_message_count
+                ?? 1));
+              const targetCount = Math.max(1, Math.floor(originalCount / 2));
+              const nextStart = Number(failedRequest?.requested_source_start);
+              const sourceItems = Number.isInteger(nextStart) ? catchUpContext.chat.map((item, index) => ({ item, index }))
+                .filter(({ item, index }) => index >= nextStart && item?.mes && !item?.is_system).slice(0, targetCount) : [];
+              const nextPlan = originalCount > 1 && sourceItems.length ? {
+                schema_version: 1,
+                strategy: 'smaller_segment_rebuild',
+                target_segment_fraction: targetCount / originalCount,
+                target_message_count: sourceItems.length,
+                next_segment_start: nextStart,
+                next_segment_end: sourceItems.at(-1).index,
+                message_count: sourceItems.length,
+                source_fingerprint: diagnosticFingerprint(sourceItems.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001')),
+                expected_input_token_estimate: estimateTokens(sourceItems.map(({ item }) => `${item?.name ?? ''}: ${item?.mes ?? ''}`).join('\n\n')),
+                summary_parent_hash: failedRequest?.parent_summary_hash ?? null,
+                compaction_pass: failedRequest?.pass_number ?? null,
+                segment_number: Number(shorttermCheckpoint?.segment_number ?? 0) + 1,
+                attempted_request_signature: signature,
+                prior_equivalent_failure_signatures: [
+                  ...(previousFailure?.prior_equivalent_failure_signatures ?? []),
+                  previousFailure?.failure_signature,
+                  signature,
+                ].filter(Boolean).slice(-8),
+                created_at: Date.now(),
+              } : null;
+              checkpoint.finalization.shortterm_recovery_plan = nextPlan;
               checkpoint.finalization.shortterm_failure_state = {
                 failure_signature: signature,
                 equivalent_failure_count: equivalentFailureCount,
                 failed_at: Date.now(),
                 adaptation: err?.sme_compaction_recovery?.adaptation ?? 'segmented_recovery_exhausted',
                 next_resume_strategy: recoveryInputFraction > 0.2 ? 'retry_with_smaller_segments' : 'operator_action_required',
-                operator_action_required: recoveryInputFraction <= 0.2,
+                operator_action_required: equivalentFailureCount >= 3 && !nextPlan,
+                effective_request_signature: signature,
+                prior_equivalent_failure_signatures: nextPlan?.prior_equivalent_failure_signatures ?? [],
                 configuration_signature: diagnosticFingerprint(JSON.stringify({
                   connection_profile_id: settings.connection_profile_id ?? null,
                   model: settings.openai_compat_model ?? settings.ollama_model ?? null,
                   response_length: settings.compaction_response_length ?? null,
                   context_length: settings.context_length ?? null,
                 })),
-                recommended_operator_action: recoveryInputFraction <= 0.2
+                recommended_operator_action: equivalentFailureCount >= 3 && !nextPlan
                   ? 'change_provider_or_configuration_or_skip_shortterm_finalization'
                   : 'resume_with_smaller_segments',
               };
@@ -6246,6 +6372,14 @@ export function bindSettingsUI(ctrl) {
           attempted: runResult.profiles.profiles_attempted,
           parsed: runResult.profiles.profiles_parsed,
           saved: runResult.profiles.profiles_saved,
+          malformed: runResult.profiles.malformed_output,
+          terminal_accounting: runResult.profiles.terminal_accounting,
+          descriptor_outcomes: runResult.profiles.descriptor_outcomes,
+          field_outcomes: runResult.profiles.field_outcomes,
+          family_role_trace_validation_total: runResult.profiles.family_role_pipeline_traces.length,
+          family_role_trace_validation_failure_count: runResult.profiles.family_role_trace_validation_failures.length,
+          detailed_records_retained: false,
+          compact_summary_only: true,
         });
       } else if (!ctrl.catchUpCancelled && settings.profiles_enabled) {
         for (const name of catchUpProfileCharacterNames) skipFinalizationPhase(`profile generation for ${name}`);
@@ -6626,7 +6760,11 @@ export function bindSettingsUI(ctrl) {
         // separate. A historical avatar filename is an opaque stable key and
         // must never make a populated Aaron-style runtime snapshot look absent.
         ['active_persona_snapshot_present', Boolean(runResult.runtimeContext?.active_persona?.canonical_name), 'active_persona_snapshot_missing'],
-        ['active_persona_roster_entry_present', !runResult.runtimeContext?.active_persona?.canonical_name || runResult.finalReconciliation.persona_roster_size > 0, 'active_persona_roster_entry_missing'],
+        ['active_persona_roster_entry_present', !runResult.runtimeContext?.active_persona?.canonical_name
+          || checkpoint.persona_audit_proof?.roster_membership_result === true
+          || runResult.finalReconciliation.persona_roster_size > 0,
+        checkpoint.persona_audit_proof?.roster_membership_result === false
+          ? 'active_persona_roster_entry_missing' : 'active_persona_roster_audit_proof_unavailable'],
         ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'active_persona_invalid'],
         ['deterministic_persona_aliases_resolved', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.integrity_audit?.persona_aliases?.persona_aliases_unresolved), 'A deterministic active-persona alias remains unresolved.'],
         ['unresolved_duplicate_canonical_entities', !(reconciliation.integrity_audit?.duplicate_canonical_entities?.length), 'Duplicate canonical entity records remain after reconciliation.'],
@@ -6741,6 +6879,26 @@ export function bindSettingsUI(ctrl) {
           terminalOutcome: recoveredPhaseResults.arc_extraction.terminal_outcome ?? null,
           reason_code: recoveredPhaseResults.arc_extraction.reason_code ?? null,
         } : runResult.arcExtraction);
+      const restoredProfiles = runResult.profiles.profiles_attempted > 0
+        ? runResult.profiles
+        : (recoveredPhaseResults.profile_generation ? {
+          ...runResult.profiles,
+          restored_from_recovery_checkpoint: true,
+          profiles_attempted: recoveredPhaseResults.profile_generation.attempted ?? null,
+          profiles_parsed: recoveredPhaseResults.profile_generation.parsed ?? null,
+          profiles_saved: recoveredPhaseResults.profile_generation.saved ?? null,
+          malformed_output: recoveredPhaseResults.profile_generation.malformed ?? null,
+          terminal_accounting: recoveredPhaseResults.profile_generation.terminal_accounting
+            ?? { terminal_reconciled: false, terminal_outcome: 'completed_terminal_summary_incomplete' },
+          descriptor_outcomes: recoveredPhaseResults.profile_generation.descriptor_outcomes ?? null,
+          field_outcomes: recoveredPhaseResults.profile_generation.field_outcomes ?? null,
+          family_role_trace_validation_total: recoveredPhaseResults.profile_generation.family_role_trace_validation_total ?? null,
+          family_role_trace_validation_failure_count: recoveredPhaseResults.profile_generation.family_role_trace_validation_failure_count ?? null,
+          detailed_records_retained: recoveredPhaseResults.profile_generation.detailed_records_retained ?? false,
+          compact_summary_only: recoveredPhaseResults.profile_generation.compact_summary_only ?? true,
+          terminal_outcome: recoveredPhaseResults.profile_generation.terminal_outcome
+            ?? 'completed_terminal_summary_incomplete',
+        } : runResult.profiles);
       const diagnostics = {
         version: 2,
         created_at: Date.now(),
@@ -6811,13 +6969,14 @@ export function bindSettingsUI(ctrl) {
         extraction_coverage: runResult.extractionCoverage,
         extraction_coverage_scope: 'current_attempt',
         sessionExtraction: runResult.sessionExtraction,
-        profiles: runResult.profiles,
+        profiles: restoredProfiles,
         finalReconciliation: runResult.finalReconciliation,
         // Keep the automatic post-catch-up stabilization result distinct from
         // any separately persisted, user-triggered Developer check.
         automatic_stabilization: runResult.finalReconciliation?.stabilization ?? null,
         manual_idempotence: catchUpContext.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? null,
         runtime_context: runResult.runtimeContext,
+        persona_audit_proof: checkpoint.persona_audit_proof ?? null,
         imported_persona_recovery: (() => {
           const recovery = runResult.runtimeContext?.active_persona?.imported_persona_recovery;
           if (!recovery) return null;
@@ -7183,6 +7342,7 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
+      if (resumeRequested) recordRuntimeEvidence('resume_handler_exited', { subsystem: 'memorize_chat_resume' });
       // Completion must become observable before optional runtime cleanup.
       // A cleanup helper can fail after a long successful run; it must never
       // strand the UI on Cancel or leave the local idempotence guard locked.

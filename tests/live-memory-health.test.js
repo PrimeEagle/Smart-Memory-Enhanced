@@ -155,6 +155,21 @@ test('live health export is a read-only privacy-safe clone', () => {
   assert.doesNotMatch(JSON.stringify(exported), /chat text|provider response|api key/i);
 });
 
+test('page interruption reconciles unretained physical attempts into one terminal category', () => {
+  const metadata = { live_memory_health: {
+    recent_extraction_events: [], recent_injection_events: [], recent_continuity_events: [], sequence: 0,
+    aggregate: { extraction: {}, injection: {}, continuity: {}, attention_count: 0 },
+    current_run_outcomes: { run_id: 'run-a', attempted: 4, terminal_counts: { completed: 2 }, provider_quality: {}, interruption_count: 0 },
+  } };
+  const result = reconcileInterruptedExtractionEvents(metadata, { run_id: 'run-a', run_manifest: {} });
+  assert.equal(result.uncertain, 2);
+  const accounting = exportLiveMemoryHealth(metadata).extraction_outcome_summary.physical_attempt_accounting;
+  assert.equal(accounting.attempted, 4);
+  assert.equal(accounting.terminal_total, 4);
+  assert.equal(accounting.unclassified, 0);
+  assert.equal(accounting.reconciled, true);
+});
+
 test('continuity diagnostics are bounded and exclude prompt, response, and repair prose', () => {
   const metadata = {};
   for (let index = 0; index < CONTINUITY_HEALTH_MAX_EVENTS + 2; index++) {

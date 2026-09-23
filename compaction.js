@@ -77,12 +77,43 @@ async function getChatTokenCount(chat) {
 async function summarizeInBoundedPasses(messages, initialSummary, storedMemories, responseLength, {
   onPassCommitted = null, shouldCancel = null, onRequestState = null,
   recoveryInputFraction = 1,
+  recoveryPlan = null,
 } = {}) {
   const fullInputBudget = getMemoryInputBudget(responseLength);
   const inputBudget = Math.max(256, Math.floor(fullInputBudget * Math.min(1, Math.max(0.2, Number(recoveryInputFraction) || 1))));
   let rollingSummary = initialSummary || 'No earlier events have been summarized yet.';
   let chunk = [];
   let passNumber = 0;
+  const plannedMaxMessages = Number.isInteger(Number(recoveryPlan?.target_message_count))
+    ? Math.max(1, Number(recoveryPlan.target_message_count)) : null;
+  let recoveryPlanPending = Boolean(recoveryPlan);
+  const compactFingerprint = (value) => {
+    let hash = 2166136261;
+    for (const char of String(value ?? '')) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+    return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  };
+  const sourceEvidence = (items, prompt, outputTokens) => {
+    const indices = items.map((item) => Number(item.__sme_compaction_source_index)).filter(Number.isInteger);
+    const sourceStart = indices.length ? Math.min(...indices) : null;
+    const sourceEnd = indices.length ? Math.max(...indices) : null;
+    const sourceFingerprint = compactFingerprint(items.map((item) => `${item.__sme_compaction_source_index}\u0000${item.name ?? ''}\u0000${item.mes ?? ''}`).join('\u0001'));
+    const parentSummaryHash = compactFingerprint(rollingSummary);
+    return {
+      requested_source_start: sourceStart,
+      requested_source_end: sourceEnd,
+      prompt_visible_message_count: items.length,
+      effective_source_fingerprint: sourceFingerprint,
+      parent_summary_hash: parentSummaryHash,
+      estimated_input_tokens: estimateTokens(prompt),
+      actual_request_signature: compactFingerprint(JSON.stringify({
+        connection_profile_id: extension_settings[MODULE_NAME]?.connection_profile_id ?? null,
+        model: extension_settings[MODULE_NAME]?.openai_compat_model ?? extension_settings[MODULE_NAME]?.ollama_model ?? null,
+        source_fingerprint: sourceFingerprint, parent_summary_hash: parentSummaryHash,
+        requested_output_tokens: outputTokens, response_format_mode: 'text',
+        transport_mode: getMemorySource(), prompt_shape_version: 'shortterm-compaction-v2',
+      })),
+    };
+  };
   const buildPromptFor = (items) => {
     const events = items.map((message) => `${message.name}: ${message.mes}`).join('\n\n');
     return applyPromptOverride(
@@ -97,6 +128,31 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     if (!chunk.length) return;
     const completedChunk = chunk;
     const prompt = buildPromptFor(chunk);
+    const initialEvidence = sourceEvidence(completedChunk, prompt, responseLength);
+    if (recoveryPlanPending) {
+      const expectedStart = Number(recoveryPlan?.next_segment_start);
+      const expectedEnd = Number(recoveryPlan?.next_segment_end);
+      const expectedFingerprint = recoveryPlan?.source_fingerprint ?? null;
+      const expectedParentHash = recoveryPlan?.summary_parent_hash ?? null;
+      const rangeMismatch = (Number.isInteger(expectedStart) && initialEvidence.requested_source_start !== expectedStart)
+        || (Number.isInteger(expectedEnd) && initialEvidence.requested_source_end !== expectedEnd);
+      const fingerprintMismatch = Boolean(expectedFingerprint && expectedFingerprint !== initialEvidence.effective_source_fingerprint);
+      const parentHashMismatch = Boolean(expectedParentHash && expectedParentHash !== initialEvidence.parent_summary_hash);
+      if (rangeMismatch || fingerprintMismatch || parentHashMismatch) {
+        const error = new Error('Persisted Short-Term recovery plan does not match the effective provider input.');
+        error.sme_compaction_recovery = {
+          adaptation: 'recovery_plan_invariant_failed', operator_action: 'inspect_or_restart_shortterm_finalization',
+          expected_source_start: Number.isInteger(expectedStart) ? expectedStart : null,
+          expected_source_end: Number.isInteger(expectedEnd) ? expectedEnd : null,
+          actual_source_start: initialEvidence.requested_source_start,
+          actual_source_end: initialEvidence.requested_source_end,
+          source_fingerprint_match: !fingerprintMismatch,
+          parent_summary_hash_match: !parentHashMismatch,
+        };
+        throw error;
+      }
+      recoveryPlanPending = false;
+    }
     // The caller only appends a message after testing this exact prompt. This
     // check protects against a custom prompt override changing between passes.
     if (estimateTokens(prompt) > inputBudget) {
@@ -106,11 +162,16 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     const firstRequestId = globalThis.crypto?.randomUUID?.() ?? `compact-${Date.now()}-${passNumber}`;
     const request = async (attempt, attemptResponseLength = responseLength) => {
       const requestId = attempt === 1 ? firstRequestId : `${firstRequestId}-retry-${attempt}`;
+      const evidence = sourceEvidence(completedChunk, prompt, attemptResponseLength);
       const base = { pass_number: passNumber, attempt, request_id: requestId,
         retry_of_request_id: attempt === 1 ? null : firstRequestId, requested_output_tokens: attemptResponseLength,
-        estimated_input_tokens: estimateTokens(prompt),
+        ...evidence,
         configured_context_limit: getMaxContextSize(attemptResponseLength),
         memory_source: getMemorySource(),
+        adaptation_applied_to_this_request: attempt === 1
+          ? (recoveryPlan ? 'persisted_segment_plan' : recoveryInputFraction < 1 ? 'reduced_input_budget' : 'normal_request')
+          : 'increased_output_reserve',
+        adaptation_planned_for_next_request: null,
         response_classification: null };
       onRequestState?.({ ...base, state: 'in_flight', response_present: null });
       try {
@@ -149,7 +210,9 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
           : 'adaptation_unavailable';
       onRequestState?.({ pass_number: passNumber, attempt: 2, state: adaptedResponseLength > responseLength ? 'retry_scheduled' : 'recovery_scheduled',
         retry_reason: 'observed_empty_content', retry_delay_ms: adaptedResponseLength > responseLength ? retryDelayMs : 0,
-        adaptation, requested_output_tokens: adaptedResponseLength,
+        adaptation, adaptation_applied_to_this_request: null,
+        adaptation_planned_for_next_request: canPartition ? 'partitioned_input_scope' : null,
+        requested_output_tokens: adaptedResponseLength,
         original_segment_message_count: completedChunk.length,
         next_segment_message_count: canPartition ? Math.ceil(completedChunk.length / 2) : completedChunk.length });
       if (adaptedResponseLength === responseLength) {
@@ -195,6 +258,11 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     const message = pending.shift();
     const candidate = [...chunk, message];
     const candidatePrompt = buildPromptFor(candidate);
+    if (chunk.length && plannedMaxMessages && candidate.length > plannedMaxMessages) {
+      await summarizeChunk();
+      pending.unshift(message);
+      continue;
+    }
     if (chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
       await summarizeChunk();
       pending.unshift(message);
@@ -299,7 +367,7 @@ export async function shouldCompact() {
  * rather than rewriting it from scratch.
  * @returns {Promise<string|null>} The formatted summary, or null on failure.
  */
-export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null, recoveryInputFraction = 1 } = {}) {
+export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null, recoveryInputFraction = 1, recoveryPlan = null } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const context = getContext();
 
@@ -448,7 +516,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         existingSummary,
         storedMemories,
         settings.compaction_response_length || 2000,
-        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction },
+        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction, recoveryPlan },
       );
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
@@ -466,7 +534,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
           'No earlier events have been summarized yet.',
           storedMemories,
           responseLength,
-          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction },
+          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction, recoveryPlan },
         );
       } else {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {

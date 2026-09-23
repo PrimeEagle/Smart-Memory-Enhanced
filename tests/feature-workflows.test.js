@@ -152,7 +152,7 @@ test('final catch-up reconciliation runs inside the staged transaction and quara
   assert.match(settings, /resolution_reclassified/);
   assert.match(settings, /await runFinalIntegrityReconciliation\(characterName\)/);
   assert.match(settings, /finalReconciliation: runResult\.finalReconciliation/);
-  assert.match(settings, /profiles: runResult\.profiles/);
+  assert.match(settings, /profiles: restoredProfiles/);
   assert.match(settings, /prior_fields_preserved/);
 });
 
@@ -1702,6 +1702,31 @@ test('context-limited empty compaction partitions input and refuses exhausted eq
   assert.match(settings, /resumed_after_phase_failure/);
   assert.match(settings, /operator_action_required/);
   assert.match(settings, /would repeat an exhausted Short-Term request strategy/);
+});
+
+test('persisted Short-Term recovery plans control effective provider input and export distinct adaptation evidence', () => {
+  const compaction = read('compaction.js');
+  const settings = read('settings.js');
+  assert.match(compaction, /plannedMaxMessages/);
+  assert.match(compaction, /candidate\.length > plannedMaxMessages/);
+  assert.match(compaction, /Persisted Short-Term recovery plan does not match the effective provider input/);
+  assert.match(compaction, /effective_source_fingerprint/);
+  assert.match(compaction, /actual_request_signature/);
+  assert.match(compaction, /adaptation_applied_to_this_request/);
+  assert.match(compaction, /adaptation_planned_for_next_request/);
+  assert.match(settings, /shortterm_recovery_plan/);
+  assert.match(settings, /recoveryPlan: persistedRecoveryPlan/);
+  assert.match(settings, /prior_equivalent_failure_signatures/);
+});
+
+test('resumed terminal summaries and persona proof remain explicit instead of becoming fabricated zeroes', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /completed_terminal_summary_incomplete/);
+  assert.match(settings, /restoredProfiles/);
+  assert.match(settings, /compact_summary_only/);
+  assert.match(settings, /final_boundary_fingerprint/);
+  assert.match(settings, /persona_audit_proof/);
+  assert.match(settings, /active_persona_roster_audit_proof_unavailable/);
 });
 
 test('resume preserves cumulative coverage and explicit blocked phase dispositions', () => {

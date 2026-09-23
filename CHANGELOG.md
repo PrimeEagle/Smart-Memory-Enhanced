@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.46] - 2026-09-23
+
+### Fixed
+
+- Short-Term recovery now persists and consumes an exact segmented rebuild
+  plan. Resume constrains the real provider prompt to the saved source range,
+  verifies its source and parent-summary fingerprints before sending, commits
+  each successful segment atomically, and stops safely rather than repeating
+  an unchanged minimum-size request.
+- Compaction diagnostics now distinguish adaptations applied to the current
+  request from those planned for a later request, recompute input estimates
+  from the effective prompt, and use provider/model/prompt/input/output-aware
+  signatures for cumulative equivalent-failure protection.
+- Memorize Chat now records bounded, privacy-safe same-page runtime lifecycle
+  evidence separately from page replacement, including controller/UI remounts,
+  connection transitions, and normalized unhandled error fingerprints.
+- Resumed exports now restore compact profile and scene terminal summaries,
+  retain persona-roster audit proof without treating unavailable proof as
+  confirmed absence, and reconcile every cumulative physical extraction
+  attempt to an explicit terminal category after page interruption.
+
 ## [0.9.45] - 2026-09-18
 
 ### Fixed
