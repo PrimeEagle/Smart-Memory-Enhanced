@@ -78,6 +78,7 @@ export function summarizeProfileCompletion(attempts = [], { enabledProfileCount 
   const terminalOutcomeCounts = {};
   let savedProfileCount = 0;
   let preservedPriorProfileCount = 0;
+  let preexistingProfileAvailableCount = 0;
   let skippedDueToCancellationCount = 0;
   let providerFailureCount = 0;
   let malformedOutputCount = 0;
@@ -85,7 +86,8 @@ export function summarizeProfileCompletion(attempts = [], { enabledProfileCount 
     const outcome = String(attempt?.profile_coverage_outcome ?? attempt?.terminal_outcome ?? 'unresolved');
     terminalOutcomeCounts[outcome] = (terminalOutcomeCounts[outcome] ?? 0) + 1;
     if (['saved_initial', 'saved_after_format_correction'].includes(outcome)) savedProfileCount++;
-    if (outcome === 'preserved_prior' || attempt?.prior_profile_preserved) preservedPriorProfileCount++;
+    if (outcome === 'preserved_prior') preservedPriorProfileCount++;
+    if (attempt?.prior_profile_preserved) preexistingProfileAvailableCount++;
     if (attempt?.terminal_outcome === 'skipped_due_to_cancellation' || attempt?.error_stage === 'cancelled') skippedDueToCancellationCount++;
     if (attempt?.error_stage === 'provider_or_persistence') providerFailureCount++;
     if (['format_correction', 'profile_grounding_validation'].includes(attempt?.error_stage)) malformedOutputCount++;
@@ -106,6 +108,7 @@ export function summarizeProfileCompletion(attempts = [], { enabledProfileCount 
     usable_profile_count: coverage.usable_profiles,
     saved_profile_count: savedProfileCount,
     preserved_prior_profile_count: preservedPriorProfileCount,
+    preexisting_profile_available_count: preexistingProfileAvailableCount,
     pending_profile_count: pendingProfileCount,
     unresolved_profile_count: unresolvedProfileCount,
     skipped_due_to_cancellation_count: skippedDueToCancellationCount,
@@ -115,5 +118,24 @@ export function summarizeProfileCompletion(attempts = [], { enabledProfileCount 
     quality_attention_reason_codes: attentionReasonCodes,
     attention_required: attentionReasonCodes.length > 0,
     user_action_available: pendingProfileCount > 0,
+  };
+}
+
+/** One accounting predicate shared by generation, restoration, quality and UI. */
+export function validateProfileCompletionAccounting(summary = null) {
+  if (!summary || typeof summary !== 'object') return { reconciled: false, reason_code: 'profile_terminal_summary_unavailable' };
+  const attempted = Number(summary.attempted_profile_count ?? summary.attempted ?? 0);
+  const terminalCount = Number(summary.terminal_count ?? 0);
+  const terminalOutcomes = summary.terminal_outcome_counts && typeof summary.terminal_outcome_counts === 'object'
+    ? Object.values(summary.terminal_outcome_counts).reduce((sum, value) => sum + Number(value ?? 0), 0)
+    : terminalCount;
+  const reconciled = summary.terminal_reconciled === true
+    && attempted === terminalCount && terminalCount === terminalOutcomes;
+  return {
+    reconciled,
+    reason_code: reconciled ? null : 'profile_terminal_counts_do_not_reconcile',
+    attempted, terminal_count: terminalCount, terminal_outcome_total: terminalOutcomes,
+    preservation_scope: 'terminal_outcome_only',
+    preexisting_profile_availability_is_not_a_terminal_outcome: true,
   };
 }

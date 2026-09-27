@@ -42,6 +42,25 @@ function increment(object, key, amount = 1) {
   object[key] = number(object[key]) + amount;
 }
 
+const physicalTerminalCategory = (state) => {
+  if (['completed', 'completed_with_repairs', 'completed_repartitioned', 'empty', 'replay_completed', 'recovered_completed'].includes(state)) return 'completed';
+  if (['provider_response_malformed', 'malformed_response'].includes(state)) return 'provider_malformed';
+  if (state === 'provider_response_empty') return 'provider_empty';
+  if (['provider_failure', 'replay_failed'].includes(state)) return 'transport_failure';
+  if (state === 'interrupted_by_manual_cancel') return 'cancelled';
+  if (/^interrupted_|^completion_uncertain|replayed_after_recovery/.test(state)) return 'interrupted_completion_unknown';
+  return 'internal_failure';
+};
+
+function canonicalPhysicalTerminalCounts(terminalCounts = {}) {
+  const result = {
+    completed: 0, provider_malformed: 0, provider_empty: 0, transport_failure: 0,
+    interrupted_completion_unknown: 0, cancelled: 0, internal_failure: 0,
+  };
+  for (const [state, count] of Object.entries(terminalCounts)) increment(result, physicalTerminalCategory(state), number(count));
+  return result;
+}
+
 function runCounters(health, runId) {
   if (!runId) return null;
   if (health.current_run_outcomes?.run_id !== runId) health.current_run_outcomes = {
@@ -56,9 +75,12 @@ function recordTerminal(health, event) {
   const run = runCounters(health, event.run_id);
   if (!run) return;
   increment(run.terminal_counts, event.terminal_health);
+  run.physical_terminal_counts = canonicalPhysicalTerminalCounts(run.terminal_counts);
   if (event.terminal_health === 'provider_response_malformed' && event.response_received === true) increment(run.provider_quality, 'malformed_responses');
   if (event.terminal_health === 'provider_response_empty' && event.response_received === true) increment(run.provider_quality, 'empty_responses');
   if (/^interrupted_|completion_uncertain/.test(event.terminal_health)) increment(run, 'interruption_count');
+  run.physical_terminal_total = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
+  run.physical_attempt_accounting_reconciled = run.physical_terminal_total === number(run.attempted);
 }
 
 function sameLogicalRange(left, right) {
@@ -119,6 +141,7 @@ export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { rea
       uncertain += unclassified;
     }
     run.physical_terminal_total = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
+    run.physical_terminal_counts = canonicalPhysicalTerminalCounts(run.terminal_counts);
     run.physical_attempt_accounting_reconciled = run.physical_terminal_total === number(run.attempted);
   }
   const last = health.recent_extraction_events.at(-1);
@@ -267,6 +290,10 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
   increment(health.aggregate.extraction, 'attempted');
   const run = runCounters(health, event.run_id);
   if (run) increment(run, 'attempted');
+  if (run) {
+    run.physical_terminal_total = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
+    run.physical_attempt_accounting_reconciled = false;
+  }
   trimEvents(health);
   return event;
 }
@@ -423,11 +450,21 @@ export function exportLiveMemoryHealth(metadata) {
     events.some((event) => providerFailureStates.has(event.terminal_health))
       && completedStates.has(events.at(-1)?.terminal_health)).length;
   const terminalUnresolvedFailures = [...logicalRequests.values()].filter((event) => providerFailureStates.has(event.terminal_health)).length;
+  const currentRun = health.current_run_outcomes;
+  const currentTerminalTotal = currentRun
+    ? Object.values(currentRun.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0) : null;
+  const authoritativeCurrentRun = currentRun ? {
+    ...currentRun,
+    physical_terminal_counts: canonicalPhysicalTerminalCounts(currentRun.terminal_counts),
+    physical_terminal_total: currentTerminalTotal,
+    physical_attempt_accounting_reconciled: currentTerminalTotal === number(currentRun.attempted),
+    unclassified_physical_attempts: Math.max(0, number(currentRun.attempted) - currentTerminalTotal),
+  } : null;
   const outcomeSummary = {
     retained_event_scope: 'last_bounded_extraction_events',
     retained_event_count: health.recent_extraction_events.length,
     cumulative_chat_event_counts: health.aggregate.extraction,
-    cumulative_current_run_counts: health.current_run_outcomes ?? null,
+    cumulative_current_run_counts: authoritativeCurrentRun,
     retained_history_complete: number(health.aggregate.extraction?.attempted) <= health.recent_extraction_events.length,
     raw_event_counts: rawOutcomes,
     deduplicated_logical_request_counts: logicalOutcomes,
@@ -446,14 +483,16 @@ export function exportLiveMemoryHealth(metadata) {
       terminal_unresolved_failures: terminalUnresolvedFailures,
       recovery_scope_complete: number(health.aggregate.extraction?.attempted) <= health.recent_extraction_events.length,
     },
-    interruptions: health.recent_extraction_events.filter((event) => /^interrupted_|completion_uncertain/.test(event.terminal_health)).length,
+    interruptions: authoritativeCurrentRun?.interruption_count
+      ?? health.recent_extraction_events.filter((event) => /^interrupted_|completion_uncertain/.test(event.terminal_health)).length,
     successful_replays: health.recent_extraction_events.filter((event) => event.lifecycle_outcome === 'replay_completed').length,
     physical_attempt_accounting: (() => {
-      const run = health.current_run_outcomes;
+      const run = authoritativeCurrentRun;
       if (!run) return null;
       const terminalTotal = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
       return {
-        attempted: number(run.attempted), terminal_outcomes: run.terminal_counts ?? {},
+        attempted: number(run.attempted), terminal_outcomes: run.physical_terminal_counts,
+        detailed_terminal_states: run.terminal_counts ?? {},
         terminal_total: terminalTotal,
         unclassified: Math.max(0, number(run.attempted) - terminalTotal),
         reconciled: terminalTotal === number(run.attempted),

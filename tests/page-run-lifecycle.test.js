@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readPageRunMarker, writePageRunMarker, clearPageRunMarker, reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS } from '../page-run-lifecycle.js';
+import { readPageRunMarker, writePageRunMarker, clearPageRunMarker, reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, captureBrowserStartupEvidence, PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS } from '../page-run-lifecycle.js';
 
 const storage = () => {
   const items = new Map();
@@ -17,11 +17,12 @@ test('four page replacements preserve unknown cause, requests, and source/finali
     cp.finalization.active_phase = phase === 'source_extraction' ? null : phase;
     if (phase !== 'source_extraction') cp.next_source_offset = 9434;
     const next = `page-${index + 2}`;
-    assert.equal(reconcilePageRunInstance(metadata, cp, marker, next, 200 + index).reason, 'unclassified_page_interruption');
+    assert.equal(reconcilePageRunInstance(metadata, cp, marker, next, 200 + index).reason, 'page_instance_replaced_unknown');
     marker = writePageRunMarker(local, scope, { run_id: cp.run_id, page_instance_id: next, phase, checkpoint_offset: cp.next_source_offset, request_state: 'in_flight' });
   }
   const result = summarizePageRunLifecycle(metadata, 5);
   assert.equal(result.page_interruption_count, 4);
+  assert.equal(result.unclassified_page_interruption_count, 4);
   assert.equal(result.page_instances_observed, 5);
   assert.equal(result.attempts_account_for_observed_page_transitions, true);
   assert.ok(result.retained_transitions.every((event) => event.cause === 'unknown'));
@@ -29,6 +30,38 @@ test('four page replacements preserve unknown cause, requests, and source/finali
   assert.equal(result.retained_transitions[1].checkpoint_offset_after, 9434);
   assert.equal(result.retained_transitions[2].request_outcome, 'completion_uncertain_after_page_interruption');
   assert.equal(readPageRunMarker(local, scope).page_instance_id, 'page-5');
+});
+
+test('browser discard classification requires direct document.wasDiscarded evidence', () => {
+  const metadata = {}, cp = checkpoint();
+  reconcilePageRunInstance(metadata, cp, null, 'page-1', 1, { freshRun: true });
+  const marker = { run_id: cp.run_id, page_instance_id: 'page-1', request_state: 'in_flight', checkpoint_offset: 260 };
+  const evidence = captureBrowserStartupEvidence(
+    { wasDiscarded: true, visibilityState: 'visible' },
+    { getEntriesByType: () => [{ type: 'reload' }] },
+    'page-2', marker,
+  );
+  const result = reconcilePageRunInstance(metadata, cp, marker, 'page-2', 2, { startupEvidence: evidence });
+  assert.equal(result.reason, 'confirmed_browser_tab_discard');
+  const summary = summarizePageRunLifecycle(metadata, 2);
+  assert.equal(summary.confirmed_browser_tab_discard_count, 1);
+  assert.equal(summary.unclassified_page_interruption_count, 0);
+  assert.equal(summary.retained_transitions[0].cause, 'document_was_discarded');
+  assert.equal(summary.retained_transitions[0].browser_startup_evidence.navigation_type, 'reload');
+});
+
+test('reload navigation without document.wasDiscarded remains unknown', () => {
+  const metadata = {}, cp = checkpoint();
+  reconcilePageRunInstance(metadata, cp, null, 'page-1', 1, { freshRun: true });
+  const marker = { run_id: cp.run_id, page_instance_id: 'page-1', request_state: 'in_flight' };
+  const evidence = captureBrowserStartupEvidence(
+    { wasDiscarded: false, visibilityState: 'visible' },
+    { getEntriesByType: () => [{ type: 'reload' }] },
+    'page-2', marker,
+  );
+  const result = reconcilePageRunInstance(metadata, cp, marker, 'page-2', 2, { startupEvidence: evidence });
+  assert.equal(result.reason, 'page_instance_replaced_unknown');
+  assert.equal(summarizePageRunLifecycle(metadata, 2).confirmed_browser_tab_discard_count ?? 0, 0);
 });
 
 test('completed run reopening does not count as interruption', () => {

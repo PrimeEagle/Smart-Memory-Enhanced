@@ -44,6 +44,7 @@ import {
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
 import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
+import { classifyOpenAiResponseEnvelope } from './provider-response-utils.js';
 import {
   isWebLlmSupported,
   generateWebLlmChatPrompt,
@@ -402,11 +403,25 @@ async function generateWithConnectionProfile(
     diagnosticContext.onRequestDiagnostic?.({
       provider: 'connection_profile', profile_id: String(profileId), transport_completed: true,
       http_status: null, response_envelope_present: Boolean(result),
-      content_field_present: typeof result?.content === 'string', content_length: String(output).length,
+      response_top_level_type: result === null ? 'null' : Array.isArray(result) ? 'array' : typeof result,
+      provider_error_envelope_present: Boolean(result?.error), normalized_provider_error_code: result?.error?.code ?? result?.error?.type ?? null,
+      choices_array_present: Array.isArray(result?.choices), choices_length: Array.isArray(result?.choices) ? result.choices.length : null,
+      message_object_present: Boolean(result?.choices?.[0]?.message),
+      content_field_present: Object.hasOwn(result ?? {}, 'content'),
+      content_field_type: Object.hasOwn(result ?? {}, 'content') ? (result.content === null ? 'null' : typeof result.content) : null,
+      content_length: String(output).length,
       finish_reason: result?.finish_reason ?? result?.finishReason ?? null,
       reported_input_tokens: Number(result?.usage?.prompt_tokens ?? result?.usage?.input_tokens) || null,
       reported_output_tokens: Number(result?.usage?.completion_tokens ?? result?.usage?.output_tokens) || null,
       streaming_observed: false, streaming_chunk_count: null,
+      content_delta_observed: null,
+      classification: !result ? 'no_response_body'
+        : result?.error ? 'provider_error_envelope'
+          : !Object.hasOwn(result, 'content') ? 'adapter_missing_content_field'
+            : result.content === null ? 'adapter_null_content'
+              : typeof result.content !== 'string' ? 'adapter_non_string_content'
+                : result.content.length === 0 ? 'adapter_empty_string_content'
+                  : result.content.trim().length === 0 ? 'adapter_whitespace_only_content' : 'adapter_content_string',
       timeout: false, cancelled: false, aborted: false, unload_observed: false, connection_reset: false,
     });
     progress.complete(output);
@@ -538,10 +553,14 @@ async function readOllamaStream(response, progress) {
 
 async function readOpenAiStream(response, progress) {
   const reader = response.body?.getReader();
-  if (!reader) return '';
+  if (!reader) return { output: '', eventCount: 0, contentDeltaCount: 0, finishReason: null, usage: null };
   const decoder = new TextDecoder();
   let buffer = '';
   let output = '';
+  let eventCount = 0;
+  let contentDeltaCount = 0;
+  let finishReason = null;
+  let usage = null;
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
@@ -552,12 +571,17 @@ async function readOpenAiStream(response, progress) {
       const payload = line.slice(5).trim();
       if (!payload || payload === '[DONE]') continue;
       const event = JSON.parse(payload);
-      output += event?.choices?.[0]?.delta?.content ?? '';
+      eventCount++;
+      const delta = event?.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string' && delta.length) contentDeltaCount++;
+      output += delta ?? '';
+      finishReason = event?.choices?.[0]?.finish_reason ?? finishReason;
+      usage = event?.usage ?? usage;
       progress.update(estimateTokens(output));
     }
     if (done) break;
   }
-  return output;
+  return { output, eventCount, contentDeltaCount, finishReason, usage };
 }
 
 /**
@@ -654,7 +678,7 @@ async function generateOpenAICompat(
   prompt,
   priorMessages = [],
   responseLength = getGenerationBudget(),
-  { task = null } = {},
+  { task = null, onRequestDiagnostic = null } = {},
 ) {
   const settings = extension_settings[MODULE_NAME];
   const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '').replace(/\/v1$/, '');
@@ -725,9 +749,56 @@ async function generateOpenAICompat(
       }
 
       if (response.ok) {
-        const data = responseStreams ? null : await response.json();
-        if (data?.error) throw new Error(data.error.message || 'OpenAI Compatible API error');
-        const output = responseStreams ? await readOpenAiStream(response, progress) : data.choices?.[0]?.message?.content ?? '';
+        let responseBody = null;
+        let data = null;
+        if (!responseStreams) {
+          responseBody = await response.text();
+          if (responseBody.trim()) {
+            try { data = JSON.parse(responseBody); }
+            catch (error) {
+              onRequestDiagnostic?.({
+                provider: 'openai_compatible', model_name: model || null,
+                endpoint_category: useTrustedDirectEndpoint ? 'direct-nonstream' : 'sillytavern-proxy',
+                http_status: response.status, transport_completed: true,
+                response_envelope_present: true, response_top_level_type: 'invalid_json_text',
+                provider_error_envelope_present: false, normalized_provider_error_code: null,
+                content_length: 0, streaming_observed: false, streaming_chunk_count: null,
+                content_delta_observed: null, parser_state: 'invalid_json', classification: 'response_json_parse_failure',
+              });
+              throw error;
+            }
+          }
+        }
+        if (data?.error) {
+          const envelope = classifyOpenAiResponseEnvelope({ bodyPresent: Boolean(responseBody?.length), data });
+          onRequestDiagnostic?.({
+            provider: 'openai_compatible', model_name: model || null,
+            endpoint_category: responseStreams ? 'direct-stream' : useTrustedDirectEndpoint ? 'direct-nonstream' : 'sillytavern-proxy',
+            http_status: response.status, transport_completed: true, ...envelope,
+            finish_reason: null, streaming_observed: responseStreams, streaming_chunk_count: 0,
+            content_delta_observed: false,
+          });
+          throw new Error(data.error.message || 'OpenAI Compatible API error');
+        }
+        const streamResult = responseStreams ? await readOpenAiStream(response, progress) : null;
+        const message = data?.choices?.[0]?.message;
+        const content = responseStreams ? streamResult.output : message?.content;
+        const output = typeof content === 'string' ? content : '';
+        const envelope = classifyOpenAiResponseEnvelope(responseStreams ? {
+          bodyPresent: true, streaming: true, streamEventCount: streamResult.eventCount,
+          contentDeltaCount: streamResult.contentDeltaCount, streamOutput: output,
+        } : { bodyPresent: Boolean(responseBody?.length), data });
+        onRequestDiagnostic?.({
+          provider: 'openai_compatible', model_name: model || null,
+          endpoint_category: responseStreams ? 'direct-stream' : useTrustedDirectEndpoint ? 'direct-nonstream' : 'sillytavern-proxy',
+          http_status: response.status, transport_completed: true, ...envelope,
+          finish_reason: responseStreams ? streamResult.finishReason : data?.choices?.[0]?.finish_reason ?? null,
+          reported_input_tokens: Number((responseStreams ? streamResult.usage : data?.usage)?.prompt_tokens) || null,
+          reported_output_tokens: Number((responseStreams ? streamResult.usage : data?.usage)?.completion_tokens) || null,
+          streaming_observed: responseStreams,
+          timeout: false, cancelled: false, aborted: false, connection_reset: false,
+          parser_state: 'parsed',
+        });
         progress.complete(output);
         return output;
       }
@@ -737,7 +808,13 @@ async function generateOpenAICompat(
       error.retryAfter = response.headers.get('Retry-After');
       throw error;
     } catch (err) {
-      if (err.name === 'AbortError') { progress.fail(); return ''; }
+      if (err.name === 'AbortError') {
+        onRequestDiagnostic?.({ provider: 'openai_compatible', model_name: model || null,
+          transport_completed: false, response_envelope_present: false, classification: 'request_aborted',
+          timeout: false, cancelled: true, aborted: true, connection_reset: false,
+          streaming_observed: stream, streaming_chunk_count: null, content_delta_observed: false });
+        progress.fail(); return '';
+      }
       progress.fail();
       throw err;
     } finally {
@@ -889,7 +966,7 @@ export async function generateMemorySummarize(
     } else if (source === memory_sources.connection_profile) {
       rawDirect = await generateWithConnectionProfile(quietPrompt, priorMessages, responseLength, { task, onRequestDiagnostic });
     } else {
-      rawDirect = await generateOpenAICompat(quietPrompt, priorMessages, responseLength, { task });
+      rawDirect = await generateOpenAICompat(quietPrompt, priorMessages, responseLength, { task, onRequestDiagnostic });
     }
     const strippedDirect = stripThinkingBlocks(rawDirect ?? '');
     const charLimitDirect =

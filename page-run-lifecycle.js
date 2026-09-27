@@ -3,6 +3,20 @@ export const PAGE_RUN_LIFECYCLE_SCHEMA_VERSION = 1;
 export const PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS = 24;
 export const RUNTIME_LIFECYCLE_MAX_EVENTS = 48;
 
+export function captureBrowserStartupEvidence(documentLike, performanceLike, pageInstanceId, priorMarker = null) {
+  let navigationType = null;
+  try { navigationType = performanceLike?.getEntriesByType?.('navigation')?.[0]?.type ?? null; } catch { /* unavailable */ }
+  return {
+    captured_at: Date.now(),
+    page_instance_id: pageInstanceId ?? null,
+    prior_page_instance_id: priorMarker?.page_instance_id ?? null,
+    document_was_discarded: documentLike?.wasDiscarded === true,
+    visibility_state: documentLike?.visibilityState ?? null,
+    navigation_type: navigationType,
+    classification: documentLike?.wasDiscarded === true ? 'confirmed_browser_tab_discard' : 'page_instance_replaced_unknown',
+  };
+}
+
 export function pageRunStorageKey(scope) {
   return `smart-memory-enhanced:page-run:${String(scope ?? 'unknown')}`;
 }
@@ -90,7 +104,7 @@ export function recordRuntimeLifecycleEvent(metadata, runId, input = {}) {
 }
 
 /** A new page is observable; its browser-level cause is not. Never guess one. */
-export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, pageInstanceId, now = Date.now(), { freshRun = false, expectedManualResume = false } = {}) {
+export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, pageInstanceId, now = Date.now(), { freshRun = false, expectedManualResume = false, startupEvidence = null } = {}) {
   if (!metadata || !checkpoint?.run_id) return { interrupted: false, reason: 'no_checkpoint' };
   const ledger = ensurePageRunLifecycle(metadata, checkpoint.run_id);
   const priorId = priorMarker?.run_id === checkpoint.run_id ? priorMarker.page_instance_id : null;
@@ -105,7 +119,8 @@ export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, page
   }
   if (interrupted) {
     ledger.page_interruption_count++;
-    ledger.unclassified_page_interruption_count++;
+    if (startupEvidence?.document_was_discarded !== true) ledger.unclassified_page_interruption_count++;
+    else ledger.confirmed_browser_tab_discard_count = Number(ledger.confirmed_browser_tab_discard_count ?? 0) + 1;
     const phaseBefore = priorMarker?.phase ?? checkpoint.finalization?.active_phase ?? 'source_extraction';
     const phaseCommitted = Boolean(checkpoint.finalization?.completed_phases?.[phaseBefore]?.completed_at);
     const sourceAdvanced = phaseBefore === 'source_extraction'
@@ -114,7 +129,9 @@ export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, page
       && checkpoint.next_source_offset > priorMarker.checkpoint_offset;
     const transition = {
       at: now, from_page_instance_id: previousPage, to_page_instance_id: pageInstanceId,
-      cause: 'unknown', outcome: 'unclassified_page_interruption',
+      cause: startupEvidence?.document_was_discarded === true ? 'document_was_discarded' : 'unknown',
+      outcome: startupEvidence?.document_was_discarded === true ? 'confirmed_browser_tab_discard' : 'page_instance_replaced_unknown',
+      browser_startup_evidence: startupEvidence,
       phase_before: phaseBefore,
       phase_after: checkpoint.finalization?.active_phase ?? 'source_extraction',
       checkpoint_offset_before: Number.isInteger(priorMarker?.checkpoint_offset) ? priorMarker.checkpoint_offset : null,
@@ -131,7 +148,9 @@ export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, page
     };
     ledger.retained_transitions = [...ledger.retained_transitions, transition].slice(-PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS);
   }
-  return { interrupted, reason: interrupted ? 'unclassified_page_interruption' : 'first_observed_page_instance' };
+  return { interrupted, reason: interrupted
+    ? (startupEvidence?.document_was_discarded === true ? 'confirmed_browser_tab_discard' : 'page_instance_replaced_unknown')
+    : 'first_observed_page_instance' };
 }
 
 export function summarizePageRunLifecycle(metadata, attemptCount = null) {

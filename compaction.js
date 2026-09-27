@@ -54,6 +54,24 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 
+export const SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION = 'shortterm-compaction-v3';
+
+export function compactionDiagnosticFingerprint(value) {
+  let hash = 2166136261;
+  for (const char of String(value ?? '')) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function buildCompactionRequestSignature({ connectionProfileId = null, model = null, sourceFingerprint = null,
+  parentSummaryHash = null, requestedOutputTokens = null, responseFormatMode = 'text', transportMode = null } = {}) {
+  return compactionDiagnosticFingerprint(JSON.stringify({
+    connection_profile_id: connectionProfileId, model,
+    source_fingerprint: sourceFingerprint, parent_summary_hash: parentSummaryHash,
+    requested_output_tokens: requestedOutputTokens, response_format_mode: responseFormatMode,
+    transport_mode: transportMode, prompt_shape_version: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
+  }));
+}
+
 /**
  * Counts tokens across all non-system chat messages.
  * Used to decide whether compaction is needed.
@@ -87,11 +105,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
   const plannedMaxMessages = Number.isInteger(Number(recoveryPlan?.target_message_count))
     ? Math.max(1, Number(recoveryPlan.target_message_count)) : null;
   let recoveryPlanPending = Boolean(recoveryPlan);
-  const compactFingerprint = (value) => {
-    let hash = 2166136261;
-    for (const char of String(value ?? '')) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
-    return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
-  };
+  const compactFingerprint = compactionDiagnosticFingerprint;
   const sourceEvidence = (items, prompt, outputTokens) => {
     const indices = items.map((item) => Number(item.__sme_compaction_source_index)).filter(Number.isInteger);
     const sourceStart = indices.length ? Math.min(...indices) : null;
@@ -105,13 +119,12 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       effective_source_fingerprint: sourceFingerprint,
       parent_summary_hash: parentSummaryHash,
       estimated_input_tokens: estimateTokens(prompt),
-      actual_request_signature: compactFingerprint(JSON.stringify({
-        connection_profile_id: extension_settings[MODULE_NAME]?.connection_profile_id ?? null,
+      actual_request_signature: buildCompactionRequestSignature({
+        connectionProfileId: extension_settings[MODULE_NAME]?.connection_profile_id ?? null,
         model: extension_settings[MODULE_NAME]?.openai_compat_model ?? extension_settings[MODULE_NAME]?.ollama_model ?? null,
-        source_fingerprint: sourceFingerprint, parent_summary_hash: parentSummaryHash,
-        requested_output_tokens: outputTokens, response_format_mode: 'text',
-        transport_mode: getMemorySource(), prompt_shape_version: 'shortterm-compaction-v2',
-      })),
+        sourceFingerprint, parentSummaryHash, requestedOutputTokens: outputTokens,
+        responseFormatMode: 'text', transportMode: getMemorySource(),
+      }),
     };
   };
   const buildPromptFor = (items) => {
@@ -134,11 +147,14 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       const expectedEnd = Number(recoveryPlan?.next_segment_end);
       const expectedFingerprint = recoveryPlan?.source_fingerprint ?? null;
       const expectedParentHash = recoveryPlan?.summary_parent_hash ?? null;
+      const expectedRequestSignature = recoveryPlan?.effective_request_signature ?? null;
       const rangeMismatch = (Number.isInteger(expectedStart) && initialEvidence.requested_source_start !== expectedStart)
         || (Number.isInteger(expectedEnd) && initialEvidence.requested_source_end !== expectedEnd);
       const fingerprintMismatch = Boolean(expectedFingerprint && expectedFingerprint !== initialEvidence.effective_source_fingerprint);
       const parentHashMismatch = Boolean(expectedParentHash && expectedParentHash !== initialEvidence.parent_summary_hash);
-      if (rangeMismatch || fingerprintMismatch || parentHashMismatch) {
+      const requestSignatureMismatch = Boolean(expectedRequestSignature
+        && expectedRequestSignature !== initialEvidence.actual_request_signature);
+      if (rangeMismatch || fingerprintMismatch || parentHashMismatch || requestSignatureMismatch) {
         const error = new Error('Persisted Short-Term recovery plan does not match the effective provider input.');
         error.sme_compaction_recovery = {
           adaptation: 'recovery_plan_invariant_failed', operator_action: 'inspect_or_restart_shortterm_finalization',
@@ -148,6 +164,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
           actual_source_end: initialEvidence.requested_source_end,
           source_fingerprint_match: !fingerprintMismatch,
           parent_summary_hash_match: !parentHashMismatch,
+          effective_request_signature_match: !requestSignatureMismatch,
         };
         throw error;
       }

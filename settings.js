@@ -74,7 +74,7 @@ import {
 } from './live-memory-health.js';
 import {
   readPageRunMarker, writePageRunMarker, clearPageRunMarker,
-  reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent,
+  reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, captureBrowserStartupEvidence,
 } from './page-run-lifecycle.js';
 import {
   normalizeCatchUpCheckpoint,
@@ -94,7 +94,7 @@ import {
   rollbackCatchUpTransaction,
   saveChatMetadata,
 } from './catchup-transaction.js';
-import { runCompaction, injectSummary, loadAndInjectSummary } from './compaction.js';
+import { runCompaction, injectSummary, loadAndInjectSummary, buildCompactionRequestSignature, SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION } from './compaction.js';
 import {
   extractAndStoreMemories,
   consolidateMemories,
@@ -189,6 +189,7 @@ import {
 } from './idempotence-utils.js';
 import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
+import { advanceShortTermRecoveryLadder, nextShortTermRecoverySegmentSize, shortTermRecoveryPlanRepeatsFailure } from './shortterm-recovery-utils.js';
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -934,7 +935,7 @@ import {
   runStateCardExtraction,
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
-import { summarizeProfileCompletion } from './profile-recovery-utils.js';
+import { summarizeProfileCompletion, validateProfileCompletionAccounting } from './profile-recovery-utils.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
 import { getTierHWStats, getTierTrimStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
@@ -1911,6 +1912,9 @@ export function bindSettingsUI(ctrl) {
   const pageInstanceId = globalThis.crypto?.randomUUID?.() ?? `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const pageRunScope = (context = getContext()) => context?.chatId
     ? `${context?.groupId ?? 'single'}:${context.chatId}` : context?.groupId ?? context?.characterId ?? null;
+  const startupScope = pageRunScope();
+  const startupPriorMarker = startupScope ? readPageRunMarker(localStorage, startupScope) : null;
+  const browserStartupEvidence = captureBrowserStartupEvidence(document, performance, pageInstanceId, startupPriorMarker);
   const recordRuntimeEvidence = (classification, detail = {}) => {
     const metadata = getContext()?.chatMetadata?.[META_KEY];
     const checkpoint = metadata?.catch_up_checkpoint;
@@ -1929,10 +1933,30 @@ export function bindSettingsUI(ctrl) {
     target?.addEventListener?.(type, handler);
     lifecycleListeners.push(() => target?.removeEventListener?.(type, handler));
   };
-  listenLifecycle(globalThis, 'pageshow', () => recordRuntimeEvidence('pageshow', { subsystem: 'document' }));
-  listenLifecycle(globalThis, 'pagehide', () => recordRuntimeEvidence('pagehide', { subsystem: 'document' }));
+  const persistLifecycleCheckpoint = (classification, detail = {}) => {
+    recordRuntimeEvidence(classification, detail);
+    const context = getContext();
+    const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+    if (!checkpoint?.run_id) return;
+    const scope = pageRunScope(context);
+    if (scope) writePageRunMarker(localStorage, scope, {
+      run_id: checkpoint.run_id, page_instance_id: pageInstanceId,
+      phase: checkpoint.finalization?.active_phase ?? 'source_extraction',
+      checkpoint_offset: checkpoint.next_source_offset,
+      request_state: 'lifecycle_checkpoint', updated_at: Date.now(),
+    });
+    saveChatMetadata(context).catch((error) => console.warn(`[${MODULE_NAME}] Lifecycle checkpoint warning:`, error));
+  };
+  listenLifecycle(globalThis, 'pageshow', (event) => recordRuntimeEvidence('pageshow', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_restored' : 'normal_show' }));
+  listenLifecycle(globalThis, 'pagehide', (event) => recordRuntimeEvidence('pagehide', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_stored' : 'normal_hide' }));
   listenLifecycle(globalThis, 'beforeunload', () => recordRuntimeEvidence('beforeunload', { subsystem: 'document' }));
-  listenLifecycle(document, 'visibilitychange', () => recordRuntimeEvidence('visibility_changed', { subsystem: 'document', visibility_state: document.visibilityState }));
+  listenLifecycle(document, 'visibilitychange', () => {
+    const detail = { subsystem: 'document', visibility_state: document.visibilityState };
+    if (document.visibilityState === 'hidden') persistLifecycleCheckpoint('visibility_changed', detail);
+    else recordRuntimeEvidence('visibility_changed', detail);
+  });
+  listenLifecycle(document, 'freeze', () => persistLifecycleCheckpoint('unknown_client_reset', { subsystem: 'document', request_state: 'freeze' }));
+  listenLifecycle(document, 'resume', () => recordRuntimeEvidence('extension_runtime_reinitialized', { subsystem: 'document', request_state: 'resume_from_freeze' }));
   listenLifecycle(globalThis, 'online', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'online' }));
   listenLifecycle(globalThis, 'offline', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'offline' }));
   const safeErrorEvidence = (classification, value) => recordRuntimeEvidence(classification, {
@@ -2067,7 +2091,7 @@ export function bindSettingsUI(ctrl) {
     if (!running && checkpoint.status === 'in_progress' && pageRunScope()) {
       const metadata = getContext().chatMetadata?.[META_KEY];
       const priorMarker = readPageRunMarker(localStorage, pageRunScope());
-      const transition = reconcilePageRunInstance(metadata, checkpoint, priorMarker, pageInstanceId);
+      const transition = reconcilePageRunInstance(metadata, checkpoint, priorMarker, pageInstanceId, Date.now(), { startupEvidence: browserStartupEvidence });
       if (transition.reason !== 'same_page_instance') {
         updateActivePageMarker(checkpoint, null, 'recovery_pending');
         saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist page-run lifecycle:`, error));
@@ -4724,6 +4748,7 @@ export function bindSettingsUI(ctrl) {
       reconcilePageRunInstance(catchUpContext.chatMetadata[META_KEY], checkpoint, existingPageMarker, pageInstanceId, Date.now(), {
         freshRun: !resumableCheckpoint,
         expectedManualResume: resumeWasManual,
+        startupEvidence: browserStartupEvidence,
       });
       updateActivePageMarker(checkpoint, checkpoint.finalization?.active_phase, 'idle');
       // Persist before any provider work. If the process exits during the
@@ -5222,6 +5247,7 @@ export function bindSettingsUI(ctrl) {
             token_estimate: chunkTokens,
             status: currentChunkFailed ? 'partial' : 'completed',
           });
+          runResult.chunks = runResult.chunks.slice(-512);
           if (currentChunkFailed) runResult.failedChunks++;
           else runResult.completedChunks++;
           const committedManifest = checkpointForCommit?.run_manifest;
@@ -5274,6 +5300,15 @@ export function bindSettingsUI(ctrl) {
       if (ctrl.catchUpCancelled) {
         // The normal cancellation/final checkpoint path below retains the
         // resumable ledger; skip all finalization work for an incomplete tier.
+      }
+      if (!ctrl.catchUpCancelled && Number(checkpoint.next_source_offset) >= total) {
+        // No source-tier provider request may remain "running" once source
+        // extraction has reached its durable end. This also reconciles
+        // bounded-away prior-page events into the authoritative physical
+        // attempt ledger before finalization diagnostics are built.
+        reconcileInterruptedExtractionEvents(catchUpContext.chatMetadata?.[META_KEY], checkpoint, {
+          reason: 'source_extraction_phase_completed',
+        });
       }
       // Each expensive finalization phase receives its own durable commit.
       // This keeps the existing extraction checkpoint semantics while allowing
@@ -6000,6 +6035,17 @@ export function bindSettingsUI(ctrl) {
           );
           delete sceneAudit.ai_decisions;
           delete sceneAudit.ai_disposition_by_id;
+          sceneAudit.retention = {
+            batch_attempt_limit: 256,
+            candidate_disposition_limit: 512,
+            candidate_context_hash_limit: 512,
+            batch_attempt_total: sceneAudit.batch_attempts?.length ?? 0,
+            candidate_disposition_total: sceneAudit.candidate_dispositions?.length ?? 0,
+            candidate_context_hash_total: sceneAudit.candidate_context_hashes?.length ?? 0,
+          };
+          sceneAudit.batch_attempts = (sceneAudit.batch_attempts ?? []).slice(-256);
+          sceneAudit.candidate_dispositions = (sceneAudit.candidate_dispositions ?? []).slice(-512);
+          sceneAudit.candidate_context_hashes = (sceneAudit.candidate_context_hashes ?? []).slice(-512);
           runResult.sceneDetection = { ...sceneAudit, retained: loadSceneHistory().length, injected: Math.min(loadSceneHistory().length, settings.scene_inject_count ?? 5) };
           ctrl.sceneMessageBuffer = [];
           ctrl.sceneBufferLastIndex = -1;
@@ -6013,6 +6059,8 @@ export function bindSettingsUI(ctrl) {
               failed: runResult.sceneDetection?.failed ?? 0,
               candidates_evaluated: runResult.sceneDetection?.boundary_candidates_evaluated ?? null,
               provider_requests: runResult.sceneDetection?.total_provider_requests ?? null,
+              initial_provider_requests: runResult.sceneDetection?.initial_batch_requests ?? null,
+              repaired_or_retried_batches: runResult.sceneDetection?.retried_batches ?? null,
               valid_decisions: runResult.sceneDetection?.ai_decisions_valid ?? null,
               invalid_decisions: runResult.sceneDetection?.ai_decisions_invalid ?? null,
               missing_decisions: runResult.sceneDetection?.ai_decisions_missing ?? null,
@@ -6023,7 +6071,10 @@ export function bindSettingsUI(ctrl) {
               final_scene_count: runResult.sceneDetection?.scene_count ?? null,
               failed_terminal_candidates: runResult.sceneDetection?.failed ?? null,
               accounting_reconciled: runResult.sceneDetection?.terminal_break_accounting_reconciled ?? null,
+              malformed_responses_recovered: Number(runResult.sceneDetection?.malformed_batches ?? 0) > 0
+                ? Number(runResult.sceneDetection?.failed ?? 0) === 0 : null,
               final_boundary_fingerprint: diagnosticFingerprint(JSON.stringify(runResult.sceneDetection?.final_break_indices ?? [])),
+              compact_summary_schema_version: 2,
             },
           });
         } else if (!ctrl.catchUpCancelled && settings.scene_enabled) {
@@ -6080,18 +6131,31 @@ export function bindSettingsUI(ctrl) {
               const targetCount = Math.max(1, Number(activeRecoveryPlan.target_message_count ?? 1));
               const sourceItems = catchUpContext.chat.map((item, index) => ({ item, index }))
                 .filter(({ item, index }) => index >= nextStart && item?.mes && !item?.is_system).slice(0, targetCount);
+              const nextFingerprint = sourceItems.length
+                ? diagnosticFingerprint(sourceItems.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001')) : null;
               checkpoint.finalization.shortterm_recovery_plan = sourceItems.length ? {
                 ...activeRecoveryPlan,
                 next_segment_start: nextStart,
                 next_segment_end: sourceItems.at(-1).index,
                 message_count: sourceItems.length,
-                source_fingerprint: diagnosticFingerprint(sourceItems.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001')),
+                source_fingerprint: nextFingerprint,
                 summary_parent_hash: progress.summary_hash,
+                prompt_shape_version: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
+                expected_input_token_estimate: estimateTokens(sourceItems.map(({ item }) => `${item?.name ?? ''}: ${item?.mes ?? ''}`).join('\n\n')),
+                requested_output_tokens: Number(settings.compaction_response_length ?? 2000),
+                effective_request_signature: buildCompactionRequestSignature({
+                  connectionProfileId: settings.connection_profile_id ?? null,
+                  model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+                  sourceFingerprint: nextFingerprint, parentSummaryHash: progress.summary_hash,
+                  requestedOutputTokens: Number(settings.compaction_response_length ?? 2000),
+                  responseFormatMode: 'text', transportMode: settings.source ?? 'main',
+                }),
                 compaction_pass: Number(progress.completed_passes ?? 0) + 1,
                 segment_number: Number(progress.segment_number ?? progress.completed_passes ?? 0) + 1,
-                expected_input_token_estimate: null,
                 updated_at: Date.now(),
               } : null;
+              const ladder = checkpoint.finalization.shortterm_failure_state?.recovery_ladder;
+              if (ladder) ladder.any_segment_committed = true;
             }
             checkpoint.updated_at = Date.now();
             checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
@@ -6120,7 +6184,94 @@ export function bindSettingsUI(ctrl) {
           const recoveryInputFraction = Math.max(0.2, 1 / (2 ** Math.min(2, Math.max(priorShortTermFailures, historicalPhaseFailures))));
           compactionRequestAudit.recovery_strategy = recoveryInputFraction < 1 ? 'smaller_segment_rebuild' : 'normal_then_partition_on_empty';
           compactionRequestAudit.recovery_input_fraction = recoveryInputFraction;
-          const persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
+          const buildRecoverySourceItems = (start, count) => Number.isInteger(Number(start))
+            ? catchUpContext.chat.map((item, index) => ({ item, index }))
+              .filter(({ item, index }) => index >= Number(start) && item?.mes && !item?.is_system)
+              .slice(0, Math.max(1, Number(count) || 1)) : [];
+          const buildRecoveryPlan = ({ start, count, parentSummaryHash, predecessorPlan = null,
+            predecessorSignature = null, reductionReason = 'empty_response_after_bounded_retry' }) => {
+            const sourceItems = buildRecoverySourceItems(start, count);
+            if (!sourceItems.length) return null;
+            const sourceFingerprint = diagnosticFingerprint(sourceItems.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001'));
+            const requestedOutputTokens = Number(settings.compaction_response_length ?? 2000);
+            const effectiveRequestSignature = buildCompactionRequestSignature({
+              connectionProfileId: settings.connection_profile_id ?? null,
+              model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+              sourceFingerprint, parentSummaryHash, requestedOutputTokens,
+              responseFormatMode: 'text', transportMode: settings.source ?? 'main',
+            });
+            return {
+              schema_version: 2, strategy: 'smaller_segment_rebuild',
+              compaction_pass: Number(predecessorPlan?.compaction_pass ?? 0) + 1,
+              segment_number: Number(predecessorPlan?.segment_number ?? 0) + 1,
+              target_segment_fraction: predecessorPlan?.message_count
+                ? sourceItems.length / Number(predecessorPlan.message_count) : null,
+              target_message_count: sourceItems.length,
+              next_segment_start: sourceItems[0].index,
+              next_segment_end: sourceItems.at(-1).index,
+              message_count: sourceItems.length,
+              source_fingerprint: sourceFingerprint,
+              prompt_shape_version: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
+              summary_parent_hash: parentSummaryHash,
+              expected_input_token_estimate: estimateTokens(sourceItems.map(({ item }) => `${item?.name ?? ''}: ${item?.mes ?? ''}`).join('\n\n')),
+              requested_output_tokens: requestedOutputTokens,
+              effective_request_signature: effectiveRequestSignature,
+              predecessor_plan_signature: predecessorPlan?.effective_request_signature ?? predecessorPlan?.attempted_request_signature ?? null,
+              predecessor_failed_request_signature: predecessorSignature,
+              reduction_reason: reductionReason,
+              minimum_segment_floor: 4,
+              created_at: Date.now(), verified_at: null,
+            };
+          };
+          const persistAndVerifyRecoveryPlan = async (plan) => {
+            if (!plan) throw new Error('Short-Term recovery could not construct a valid successor segment.');
+            checkpoint.finalization.shortterm_recovery_plan = plan;
+            checkpoint.updated_at = Date.now();
+            await saveChatMetadata(catchUpContext);
+            await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+            finalTransaction = beginCatchUpTransaction(catchUpContext);
+            const restored = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint?.finalization?.shortterm_recovery_plan;
+            const verified = restored?.effective_request_signature === plan.effective_request_signature
+              && restored?.source_fingerprint === plan.source_fingerprint
+              && restored?.next_segment_start === plan.next_segment_start
+              && restored?.next_segment_end === plan.next_segment_end
+              && restored?.summary_parent_hash === plan.summary_parent_hash;
+            if (!verified) {
+              const error = new Error('Short-Term successor recovery plan failed durable reload verification.');
+              error.sme_reason_code = 'recovery_plan_persistence_verification_failed';
+              throw error;
+            }
+            restored.verified_at = Date.now();
+            restored.persistence_verification = 'committed_and_reloaded';
+            await saveChatMetadata(catchUpContext);
+            await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+            finalTransaction = beginCatchUpTransaction(catchUpContext);
+            return restored;
+          };
+          let persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
+          const priorCompactionAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.compaction_request_audit;
+          const priorFailedRequest = [...(priorCompactionAudit?.retained_events ?? [])].reverse()
+            .find((event) => event?.state === 'response_observed' && event?.response_present === false);
+          const priorFailureState = checkpoint.finalization?.shortterm_failure_state;
+          const stalePersistedPlan = persistedRecoveryPlan && priorFailedRequest
+            && persistedRecoveryPlan.next_segment_start === priorFailedRequest.requested_source_start
+            && persistedRecoveryPlan.next_segment_end === priorFailedRequest.requested_source_end
+            && persistedRecoveryPlan.source_fingerprint === priorFailedRequest.effective_source_fingerprint;
+          if (stalePersistedPlan) {
+            const predecessorCount = Number(priorFailedRequest.prompt_visible_message_count ?? persistedRecoveryPlan.message_count ?? 1);
+            const successorCount = nextShortTermRecoverySegmentSize(predecessorCount, 4);
+            if (successorCount === null) throw new Error('Short-Term recovery ladder reached its minimum segment; change provider or configuration.');
+            persistedRecoveryPlan = await persistAndVerifyRecoveryPlan(buildRecoveryPlan({
+              start: priorFailedRequest.requested_source_start, count: successorCount,
+              parentSummaryHash: priorFailedRequest.parent_summary_hash,
+              predecessorPlan: persistedRecoveryPlan,
+              predecessorSignature: priorFailedRequest.actual_request_signature,
+              reductionReason: 'stale_failed_plan_replaced_before_resume',
+            }));
+          }
+          if (shortTermRecoveryPlanRepeatsFailure(persistedRecoveryPlan, priorFailureState)) {
+            throw new Error('Resume refused because the persisted Short-Term plan would repeat an exhausted effective request.');
+          }
           compactionRequestAudit.persisted_recovery_plan = persistedRecoveryPlan;
           const onCompactionRequestState = (event) => {
             if (event.state === 'in_flight') compactionRequestAudit.observed_requests++;
@@ -6145,7 +6296,7 @@ export function bindSettingsUI(ctrl) {
                 updateShortTermUI(summary);
               }
             })
-            .catch((err) => {
+            .catch(async (err) => {
               resumableFinalizationFailure = true;
               compactionRequestAudit.terminal_outcome = compactionRequestAudit.observed_empty_responses >= 2
                 ? 'observed_empty_response_after_bounded_retry' : 'request_or_compaction_failure';
@@ -6175,54 +6326,58 @@ export function bindSettingsUI(ctrl) {
               const originalCount = Math.max(1, Number(failedRequest?.prompt_visible_message_count
                 ?? compactionRequestAudit.retained_events.findLast((event) => Number.isInteger(event?.original_segment_message_count))?.original_segment_message_count
                 ?? 1));
-              const targetCount = Math.max(1, Math.floor(originalCount / 2));
+              const minimumSegmentFloor = 4;
+              const targetCount = nextShortTermRecoverySegmentSize(originalCount, minimumSegmentFloor);
               const nextStart = Number(failedRequest?.requested_source_start);
-              const sourceItems = Number.isInteger(nextStart) ? catchUpContext.chat.map((item, index) => ({ item, index }))
-                .filter(({ item, index }) => index >= nextStart && item?.mes && !item?.is_system).slice(0, targetCount) : [];
-              const nextPlan = originalCount > 1 && sourceItems.length ? {
-                schema_version: 1,
-                strategy: 'smaller_segment_rebuild',
-                target_segment_fraction: targetCount / originalCount,
-                target_message_count: sourceItems.length,
-                next_segment_start: nextStart,
-                next_segment_end: sourceItems.at(-1).index,
-                message_count: sourceItems.length,
-                source_fingerprint: diagnosticFingerprint(sourceItems.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001')),
-                expected_input_token_estimate: estimateTokens(sourceItems.map(({ item }) => `${item?.name ?? ''}: ${item?.mes ?? ''}`).join('\n\n')),
-                summary_parent_hash: failedRequest?.parent_summary_hash ?? null,
-                compaction_pass: failedRequest?.pass_number ?? null,
-                segment_number: Number(shorttermCheckpoint?.segment_number ?? 0) + 1,
-                attempted_request_signature: signature,
-                prior_equivalent_failure_signatures: [
-                  ...(previousFailure?.prior_equivalent_failure_signatures ?? []),
-                  previousFailure?.failure_signature,
-                  signature,
-                ].filter(Boolean).slice(-8),
-                created_at: Date.now(),
-              } : null;
-              checkpoint.finalization.shortterm_recovery_plan = nextPlan;
+              const nextPlan = targetCount !== null ? buildRecoveryPlan({
+                start: nextStart, count: targetCount,
+                parentSummaryHash: failedRequest?.parent_summary_hash ?? null,
+                predecessorPlan: persistedRecoveryPlan,
+                predecessorSignature: signature,
+              }) : null;
+              const recoveryLadder = advanceShortTermRecoveryLadder(
+                previousFailure?.recovery_ladder ?? {}, originalCount, minimumSegmentFloor,
+              );
               checkpoint.finalization.shortterm_failure_state = {
                 failure_signature: signature,
                 equivalent_failure_count: equivalentFailureCount,
                 failed_at: Date.now(),
-                adaptation: err?.sme_compaction_recovery?.adaptation ?? 'segmented_recovery_exhausted',
-                next_resume_strategy: recoveryInputFraction > 0.2 ? 'retry_with_smaller_segments' : 'operator_action_required',
-                operator_action_required: equivalentFailureCount >= 3 && !nextPlan,
+                adaptation: err?.sme_compaction_recovery?.adaptation
+                  ?? (nextPlan ? 'smaller_segment_successor_persisted' : 'segmented_recovery_exhausted'),
+                next_resume_strategy: nextPlan ? 'retry_with_smaller_segments' : 'operator_action_required',
+                operator_action_required: !nextPlan,
                 effective_request_signature: signature,
-                prior_equivalent_failure_signatures: nextPlan?.prior_equivalent_failure_signatures ?? [],
+                prior_equivalent_failure_signatures: [...new Set([
+                  ...(previousFailure?.prior_equivalent_failure_signatures ?? []),
+                  previousFailure?.failure_signature,
+                  signature,
+                ].filter(Boolean))].slice(-8),
+                last_failed_request: {
+                  source_start: failedRequest?.requested_source_start ?? null,
+                  source_end: failedRequest?.requested_source_end ?? null,
+                  message_count: originalCount,
+                  source_fingerprint: failedRequest?.effective_source_fingerprint ?? null,
+                  parent_summary_hash: failedRequest?.parent_summary_hash ?? null,
+                  effective_request_signature: signature,
+                },
+                recovery_ladder: recoveryLadder,
                 configuration_signature: diagnosticFingerprint(JSON.stringify({
                   connection_profile_id: settings.connection_profile_id ?? null,
                   model: settings.openai_compat_model ?? settings.ollama_model ?? null,
                   response_length: settings.compaction_response_length ?? null,
                   context_length: settings.context_length ?? null,
                 })),
-                recommended_operator_action: equivalentFailureCount >= 3 && !nextPlan
+                recommended_operator_action: !nextPlan
                   ? 'change_provider_or_configuration_or_skip_shortterm_finalization'
                   : 'resume_with_smaller_segments',
               };
+              if (nextPlan) {
+                const verifiedPlan = await persistAndVerifyRecoveryPlan(nextPlan);
+                checkpoint.finalization.shortterm_recovery_plan = verifiedPlan;
+              }
               checkpoint.finalization.phase_dispositions.shortterm_extraction = {
                 disposition: 'failed', terminal_outcome: compactionRequestAudit.terminal_outcome,
-                resumable: true, failure_signature: signature,
+                resumable: Boolean(nextPlan), failure_signature: signature,
               };
               recordCatchUpError('compaction error', err);
           });
@@ -6755,6 +6910,17 @@ export function bindSettingsUI(ctrl) {
           ? `${citationPipeline.unaccounted_candidate_ids?.length ?? 0} citation-repair candidates lack a terminal disposition.`
           : `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
       });
+      const committedProfilePhase = checkpoint.finalization?.completed_phases?.profile_generation;
+      if (settings.profiles_enabled && runResult.profiles.profiles_attempted === 0 && committedProfilePhase) {
+        runResult.profiles.profiles_attempted = committedProfilePhase.attempted ?? null;
+        runResult.profiles.profiles_parsed = committedProfilePhase.parsed ?? null;
+        runResult.profiles.profiles_saved = committedProfilePhase.saved ?? null;
+        runResult.profiles.malformed_output = committedProfilePhase.malformed ?? null;
+        runResult.profiles.terminal_accounting = committedProfilePhase.terminal_accounting
+          ?? { terminal_reconciled: false, terminal_outcome: 'completed_terminal_summary_incomplete' };
+        runResult.profiles.restored_from_recovery_checkpoint = true;
+      }
+      const profileAccountingValidation = validateProfileCompletionAccounting(runResult.profiles?.terminal_accounting);
       const requiredIdentityInvariants = [
         // Keep snapshot capture, roster construction, and identity validity
         // separate. A historical avatar filename is an opaque stable key and
@@ -6776,7 +6942,7 @@ export function bindSettingsUI(ctrl) {
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
         ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || isFreshStart() || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
-        ['profile_terminal_accounting_reconciles', !settings.profiles_enabled || Boolean(runResult.profiles?.terminal_accounting?.terminal_reconciled), 'Profile terminal accounting did not reconcile.'],
+        ['profile_terminal_accounting_reconciles', !settings.profiles_enabled || profileAccountingValidation.reconciled, 'Profile terminal accounting did not reconcile.'],
         ['profile_coverage_complete', !settings.profiles_enabled || (runResult.profiles?.terminal_accounting?.unresolved_profiles ?? 0) === 0, 'A profile attempt has neither usable nor safe pending coverage.'],
         ['integrity_audit_consistent', ['clean', 'repaired', 'degraded', 'unsafe', 'failed'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
@@ -6869,6 +7035,14 @@ export function bindSettingsUI(ctrl) {
         restored_from_recovery_checkpoint: true,
         terminal_outcome: recoveredPhaseResults.scene_detection.terminal_outcome ?? 'completed',
         ...(recoveredPhaseResults.scene_detection.summary ?? {}),
+        compact_summary_availability: Object.fromEntries([
+          'candidates_evaluated', 'provider_requests', 'initial_provider_requests', 'repaired_or_retried_batches',
+          'valid_decisions', 'invalid_decisions', 'missing_decisions', 'malformed_batches', 'recovered_omissions',
+          'deterministic_fallbacks', 'accepted_boundaries', 'final_scene_count', 'failed_terminal_candidates',
+          'accounting_reconciled', 'final_boundary_fingerprint', 'malformed_responses_recovered',
+        ].map((field) => [field, recoveredPhaseResults.scene_detection.summary?.[field] == null
+          ? { available: false, reason_code: 'legacy_compact_scene_summary_field_unavailable' }
+          : { available: true, reason_code: null }])),
       } : null);
       const restoredArcExtraction = runResult.arcExtraction?.request_completed > 0
         ? runResult.arcExtraction
@@ -6899,6 +7073,7 @@ export function bindSettingsUI(ctrl) {
           terminal_outcome: recoveredPhaseResults.profile_generation.terminal_outcome
             ?? 'completed_terminal_summary_incomplete',
         } : runResult.profiles);
+      restoredProfiles.accounting_validation = validateProfileCompletionAccounting(restoredProfiles.terminal_accounting);
       const diagnostics = {
         version: 2,
         created_at: Date.now(),

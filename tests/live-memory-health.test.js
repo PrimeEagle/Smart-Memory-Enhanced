@@ -170,6 +170,33 @@ test('page interruption reconciles unretained physical attempts into one termina
   assert.equal(accounting.reconciled, true);
 });
 
+test('export recomputes physical attempt accounting instead of trusting stale cached totals', () => {
+  const metadata = { live_memory_health: {
+    recent_extraction_events: [], recent_injection_events: [], recent_continuity_events: [], sequence: 0,
+    aggregate: { extraction: {}, injection: {}, continuity: {}, attention_count: 0 },
+    current_run_outcomes: {
+      run_id: 'run-a', attempted: 8,
+      terminal_counts: { completed: 4, provider_response_empty: 2, interrupted_by_page_replacement: 2 },
+      physical_terminal_total: 3, physical_attempt_accounting_reconciled: true,
+      provider_quality: {}, interruption_count: 0,
+    },
+  } };
+  const accounting = exportLiveMemoryHealth(metadata).extraction_outcome_summary.physical_attempt_accounting;
+  assert.equal(accounting.attempted, 8);
+  assert.equal(accounting.terminal_total, 8);
+  assert.equal(accounting.unclassified, 0);
+  assert.equal(accounting.reconciled, true);
+  assert.deepEqual(accounting.terminal_outcomes, {
+    completed: 4,
+    provider_malformed: 0,
+    provider_empty: 2,
+    transport_failure: 0,
+    interrupted_completion_unknown: 2,
+    cancelled: 0,
+    internal_failure: 0,
+  });
+});
+
 test('continuity diagnostics are bounded and exclude prompt, response, and repair prose', () => {
   const metadata = {};
   for (let index = 0; index < CONTINUITY_HEALTH_MAX_EVENTS + 2; index++) {

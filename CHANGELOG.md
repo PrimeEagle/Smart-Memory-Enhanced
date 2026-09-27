@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.47] - 2026-09-26
+
+### Fixed
+
+- Short-Term finalization now commits and reload-verifies the next reduced
+  segment plan before offering Resume. Recovery plans include exact source,
+  parent-summary, prompt-shape, output-budget, and effective-request
+  fingerprints; stale or exhausted plans are refused before another provider
+  request, and the bounded reduction ladder retains progress across restarts.
+- OpenAI-compatible diagnostics now distinguish empty bodies, error envelopes,
+  missing or empty choices/messages/content, whitespace-only output, empty SSE
+  streams, aborts, usage, finish reasons, and proxy versus direct transport
+  without retaining response text.
+- Browser-run diagnostics now classify a discarded tab only from
+  `document.wasDiscarded`; other page replacements remain explicitly unknown.
+  Hidden and frozen documents save the latest safe checkpoint, while completed
+  chunk, scene, and request histories are bounded in memory during long runs.
+- Physical extraction accounting now derives every exported view from one
+  current-run ledger and maps each attempt to one canonical terminal category,
+  including formerly retained running attempts after page replacement.
+- Restored profile quality now uses the same terminal-accounting validator as
+  generation and export. A preexisting profile is no longer double-counted as
+  an additional preserved terminal outcome, and completed scene checkpoints
+  restore their compact request, decision, fallback, boundary, and accounting
+  fields with explicit availability for legacy records.
+
 ## [0.9.46] - 2026-09-23
 
 ### Fixed

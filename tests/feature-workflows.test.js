@@ -1197,7 +1197,7 @@ test('profile prompt requires exact authoritative descriptors and family traces 
 
 test('page-instance accounting spans source work, finalization, export, and completed-run cleanup', () => {
   const settings = read('settings.js');
-  assert.match(settings, /reconcilePageRunInstance\(metadata, checkpoint, priorMarker, pageInstanceId\)/);
+  assert.match(settings, /reconcilePageRunInstance\(metadata, checkpoint, priorMarker, pageInstanceId,[\s\S]*startupEvidence/);
   assert.match(settings, /updateActivePageMarker\(checkpoint, 'source_extraction', 'in_flight'\)/);
   assert.match(settings, /updateActivePageMarker\(checkpoint, key, 'in_flight'\)/);
   assert.match(settings, /page_run_lifecycle: summarizePageRunLifecycle/);
@@ -1717,6 +1717,29 @@ test('persisted Short-Term recovery plans control effective provider input and e
   assert.match(settings, /shortterm_recovery_plan/);
   assert.match(settings, /recoveryPlan: persistedRecoveryPlan/);
   assert.match(settings, /prior_equivalent_failure_signatures/);
+  assert.match(settings, /persistAndVerifyRecoveryPlan/);
+  assert.match(settings, /recovery_plan_persistence_verification_failed/);
+  assert.match(settings, /smaller_segment_successor_persisted/);
+  assert.match(settings, /last_failed_request/);
+  assert.match(settings, /recovery_ladder/);
+  assert.match(compaction, /SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION/);
+  assert.match(compaction, /buildCompactionRequestSignature/);
+});
+
+test('page lifecycle, provider envelopes, and long-run diagnostics stay evidence-based and bounded', () => {
+  const settings = read('settings.js');
+  const lifecycle = read('page-run-lifecycle.js');
+  const generate = read('generate.js');
+  assert.match(lifecycle, /document_was_discarded/);
+  assert.match(lifecycle, /page_instance_replaced_unknown/);
+  assert.match(settings, /visibilityState === 'hidden'/);
+  assert.match(settings, /listenLifecycle\(document, 'freeze'/);
+  assert.match(settings, /persistLifecycleCheckpoint/);
+  assert.match(generate, /classification:/);
+  assert.match(generate, /contentDeltaCount/);
+  assert.match(generate, /classification: 'request_aborted'/);
+  assert.match(settings, /runResult\.chunks = runResult\.chunks\.slice\(-512\)/);
+  assert.match(settings, /sceneAudit\.batch_attempts = \(sceneAudit\.batch_attempts \?\? \[\]\)\.slice\(-256\)/);
 });
 
 test('resumed terminal summaries and persona proof remain explicit instead of becoming fabricated zeroes', () => {

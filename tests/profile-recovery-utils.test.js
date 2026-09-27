@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveProfileCoverageOutcome, describeProfileFormatCorrection, summarizeProfileTerminalCoverage, summarizeProfileCompletion } from '../profile-recovery-utils.js';
+import { deriveProfileCoverageOutcome, describeProfileFormatCorrection, summarizeProfileTerminalCoverage, summarizeProfileCompletion, validateProfileCompletionAccounting } from '../profile-recovery-utils.js';
 
 test('profile format correction coverage distinguishes recovered, prior, and safe pending outcomes', () => {
   assert.equal(deriveProfileCoverageOutcome({ parsedInitial: true }), 'saved_initial');
@@ -65,6 +65,31 @@ test('preserved prior profile stays usable after a malformed refresh', () => {
   assert.equal(summary.attention_required, true);
   assert.equal(summary.usable_profile_count, 1);
   assert.equal(summary.preserved_prior_profile_count, 1);
+});
+
+test('preexisting profile availability does not fabricate a seventh terminal outcome', () => {
+  const attempts = Array.from({ length: 6 }, (_, index) => ({
+    profile_coverage_outcome: 'saved_initial',
+    terminal_outcome: 'saved_initial',
+    usable_profile_after_run: true,
+    prior_profile_preserved: index === 0,
+  }));
+  const summary = summarizeProfileCompletion(attempts, { enabledProfileCount: 6 });
+  assert.equal(summary.attempted_profile_count, 6);
+  assert.equal(summary.terminal_count, 6);
+  assert.equal(summary.saved_profile_count, 6);
+  assert.equal(summary.preserved_prior_profile_count, 0);
+  assert.equal(summary.preexisting_profile_available_count, 1);
+  assert.equal(summary.attention_required, false);
+  assert.deepEqual(validateProfileCompletionAccounting(summary), {
+    reconciled: true,
+    reason_code: null,
+    attempted: 6,
+    terminal_count: 6,
+    terminal_outcome_total: 6,
+    preservation_scope: 'terminal_outcome_only',
+    preexisting_profile_availability_is_not_a_terminal_outcome: true,
+  });
 });
 
 test('provider failure and cancellation remain distinct profile terminal states', () => {
