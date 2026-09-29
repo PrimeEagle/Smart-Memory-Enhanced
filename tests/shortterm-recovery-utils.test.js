@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { advanceShortTermRecoveryLadder, nextShortTermRecoverySegmentSize, shortTermRecoveryPlanRepeatsFailure } from '../shortterm-recovery-utils.js';
 
 test('Short-Term reduction ladder replaces 84 messages with 42 and stops at its floor', () => {
+  assert.equal(nextShortTermRecoverySegmentSize(169, 4), 85);
   assert.equal(nextShortTermRecoverySegmentSize(84, 4), 42);
   assert.equal(nextShortTermRecoverySegmentSize(5, 4), 4);
   assert.equal(nextShortTermRecoverySegmentSize(4, 4), null);

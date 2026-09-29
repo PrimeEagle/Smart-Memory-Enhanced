@@ -57,7 +57,7 @@ import { loadSessionMemories } from './session.js';
 import { loadSceneHistory } from './scenes.js';
 import { loadStateLedger } from './state-ledger.js';
 import { loadCharacterEntityRegistry } from './graph-migration.js';
-import { buildProfileFormatRepairPrompt, buildProfileGenerationPrompt } from './prompts.js';
+import { buildProfileFormatRepairPrompt, buildProfileGenerationPrompt, buildProfileRelationshipCorrectionPrompt } from './prompts.js';
 import { parseProfileOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
@@ -753,6 +753,11 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
   const descriptorTerminalOutcomes = [];
   const fieldTerminalOutcomes = [];
   let rejectedPlaceholder = 0;
+  const unsupportedReason = (token) => {
+    if (/\b(?:and|but|because|with|while)\b/i.test(token)) return 'unsupported_compound_value';
+    if (/\s/.test(token.trim())) return 'extra_prose';
+    return 'semantic_unsupported_value';
+  };
   profiles.relationship_matrix = String(profiles.relationship_matrix ?? '').split('\n').map((line) => {
     const match = line.match(/^\s*([^(:]+?)(?:\s*\([^)]+\))?\s*:\s*(.+)$/);
     if (!match) return line;
@@ -784,10 +789,11 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // Accept the complete valid confidence range, including 1.0. Leaving a
     // trailing annotation turns an otherwise exact descriptor (for example
     // "open [confidence: 1.0]") into a false mismatch.
-    const status = match[2]
+    const rawStatus = match[2]
       .replace(/\[confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]/ig, '')
       .replace(/\s*;\s*confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)(?=\s*(?:,|$))/ig, '')
-      .trim().toLowerCase();
+      .trim();
+    const status = rawStatus.toLowerCase();
     const cardPair = cardPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const historyPair = historyPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
     const groundedPair = groundedPairs.find((candidate) => (candidate.subject === self && candidate.target === entity) || (candidate.target === self && candidate.subject === entity));
@@ -811,10 +817,22 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
     // wording without permitting fuzzy semantic approval. Every replacement
     // must still be present in the authoritative pair vocabulary.
     const descriptorSynonyms = { appreciative: 'grateful', trusting: 'open', caring: 'affectionate', reassuring: 'supportive' };
-    const descriptorTokens = status.split(',').map((value) => value
+    let serializedDescriptorValues = null;
+    if (/^\s*\[.*\]\s*$/.test(rawStatus)) {
+      try {
+        const candidate = JSON.parse(rawStatus);
+        if (Array.isArray(candidate) && candidate.every((value) => typeof value === 'string')) serializedDescriptorValues = candidate;
+      } catch { /* Classified as serialization/prose rejection below. */ }
+    }
+    const descriptorSerializationError = /^\s*\[/.test(rawStatus) && serializedDescriptorValues === null;
+    const descriptorTokens = (serializedDescriptorValues ?? status.split(',')).map((value) => String(value).toLowerCase()
       // Local models often attach a confidence score to only the final
       // comma-separated descriptor. Normalize per token so the annotation
       // cannot survive a whole-line formatting variation.
+      .replace(/\s*;\s*confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\s*$/ig, '')
+      .replace(/\s*\[confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]\s*$/ig, '')
+      .trim()).filter(Boolean);
+    const rawDescriptorTokens = (serializedDescriptorValues ?? rawStatus.split(',')).map((value) => String(value)
       .replace(/\s*;\s*confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\s*$/ig, '')
       .replace(/\s*\[confidence\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\]\s*$/ig, '')
       .trim()).filter(Boolean);
@@ -834,17 +852,19 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
         const canonical = normalizedTokens[index];
         if (pair.descriptors.includes(canonical)) {
           if (!accepted.includes(canonical)) accepted.push(canonical);
-          const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: canonical !== token ? canonical : null, authoritative_descriptors: pair.descriptors, disposition: canonical === token ? 'accepted_exact' : 'accepted_normalized_synonym', reason_code: canonical === token ? 'authoritative_exact_match' : 'controlled_descriptor_synonym', normalization_rule: canonical === token ? null : 'controlled_descriptor_synonym' };
+          const caseOrSpacingNormalized = canonical === token && rawDescriptorTokens[index] !== token;
+          const outcome = { relationship_target: entity, generated_descriptor: rawDescriptorTokens[index] ?? token, normalized_descriptor: canonical !== (rawDescriptorTokens[index] ?? token) ? canonical : null, authoritative_descriptors: pair.descriptors, disposition: canonical !== token ? 'accepted_normalized_synonym' : caseOrSpacingNormalized ? 'accepted_normalized_case_spacing' : 'accepted_exact', reason_code: canonical !== token ? 'controlled_descriptor_synonym' : caseOrSpacingNormalized ? 'case_spacing_normalization' : 'authoritative_exact_match', normalization_rule: canonical !== token ? 'controlled_descriptor_synonym' : caseOrSpacingNormalized ? 'case_spacing_normalization' : null };
           descriptorTraces.push(outcome);
           descriptorTerminalOutcomes.push(outcome);
-          if (canonical !== token) {
+          if (canonical !== token || caseOrSpacingNormalized) {
             normalized++;
-            rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: token, normalized_descriptor: canonical, normalization_rule: 'controlled_descriptor_synonym', authoritative_descriptors: pair.descriptors, disposition: 'accepted_normalized_synonym', reason_code: 'controlled_descriptor_synonym' });
+            rejectionDetails.push({ section: 'relationship_matrix', field_path: entity, generated_value: rawDescriptorTokens[index] ?? token, normalized_descriptor: canonical, normalization_rule: canonical !== token ? 'controlled_descriptor_synonym' : 'case_spacing_normalization', authoritative_descriptors: pair.descriptors, disposition: canonical !== token ? 'accepted_normalized_synonym' : 'accepted_normalized_case_spacing', reason_code: canonical !== token ? 'controlled_descriptor_synonym' : 'case_spacing_normalization' });
           }
           return;
         }
         const placeholder = placeholderDescriptors.has(token);
-        const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair.descriptors, disposition: placeholder ? 'rejected_placeholder' : 'rejected_unsupported', reason_code: placeholder ? 'placeholder_relationship_descriptor' : 'unsupported_relationship_descriptor', normalization_rule: null };
+        const rejectionCategory = descriptorSerializationError ? 'serialization_error' : unsupportedReason(token);
+        const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair.descriptors, disposition: placeholder ? 'rejected_placeholder' : 'rejected_unsupported', reason_code: placeholder ? 'placeholder_relationship_descriptor' : rejectionCategory, rejection_category: placeholder ? 'semantic_unsupported_value' : rejectionCategory, normalization_rule: null };
         descriptorTraces.push(outcome);
         descriptorTerminalOutcomes.push(outcome);
         rejectedDescriptors.push(token);
@@ -884,7 +904,8 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       // A descriptor that merely lacks support is not a conflict.  Reserve
       // conflict outcomes for an explicit contradiction with authoritative
       // evidence, so diagnostics do not overstate ordinary parser rejection.
-      const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: placeholder ? 'rejected_placeholder' : 'rejected_unsupported', reason_code: placeholder ? 'placeholder_relationship_descriptor' : (pair ? 'unsupported_relationship_descriptor' : 'no_authoritative_relationship_pair'), normalization_rule: null };
+      const rejectionCategory = descriptorSerializationError ? 'serialization_error' : unsupportedReason(token);
+      const outcome = { relationship_target: entity, generated_descriptor: token, normalized_descriptor: null, authoritative_descriptors: pair?.descriptors ?? [], disposition: placeholder ? 'rejected_placeholder' : 'rejected_unsupported', reason_code: placeholder ? 'placeholder_relationship_descriptor' : (pair ? rejectionCategory : 'no_authoritative_relationship_pair'), rejection_category: placeholder ? 'semantic_unsupported_value' : (pair ? rejectionCategory : 'semantic_unsupported_value'), normalization_rule: null };
       descriptorTraces.push(outcome);
       descriptorTerminalOutcomes.push(outcome);
       if (placeholder) rejectedPlaceholder++;
@@ -1509,8 +1530,57 @@ export async function generateProfiles(characterName, abortCheck = null, options
       // the profile projection is saved.
       saveSettingsDebounced();
     }
-    const relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
+    let relationshipCheck = retainKnownProfileRelationships(parsed, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
     parsed = relationshipCheck.profiles;
+    const rejectedDescriptorCount = (check) => (check?.descriptor_terminal_outcomes ?? [])
+      .filter((entry) => String(entry?.disposition ?? '').startsWith('rejected_')).length;
+    const correctionFields = (relationshipCheck.field_terminal_outcomes ?? [])
+      .filter((entry) => (entry?.rejected_descriptors ?? []).length && (entry?.preserved_authoritative_descriptors ?? []).length)
+      .map((entry) => ({
+        field_path: entry.relationship_target,
+        authoritative_value: entry.preserved_authoritative_descriptors,
+      }));
+    const rejectedDescriptorsBeforeCorrection = rejectedDescriptorCount(relationshipCheck);
+    const relationshipFormatCorrection = {
+      attempted: false, succeeded: false, failed: false,
+      rejected_field_count_before: correctionFields.length,
+      rejected_field_count_after: correctionFields.length,
+      rejected_descriptor_count_before: rejectedDescriptorsBeforeCorrection,
+      rejected_descriptor_count_after: rejectedDescriptorsBeforeCorrection,
+      scope: 'rejected_relationship_fields_only',
+    };
+    if (correctionFields.length) {
+      relationshipFormatCorrection.attempted = true;
+      try {
+        const correction = await requestProfile(applyPromptOverride(
+          buildProfileRelationshipCorrectionPrompt(correctionFields),
+          PROMPT_TASKS.PROFILES,
+          characterName,
+        ), { responseLength: Math.min(Number(settings.profiles_response_length ?? 600), 600) });
+        const correctedPartial = parseProfileOutput(correction) ?? {};
+        const acceptedMatrix = String(parsed.relationship_matrix ?? '').trim();
+        const correctedMatrix = String(correctedPartial.relationship_matrix ?? '').trim();
+        const correctedCandidate = { ...parsed, relationship_matrix: [acceptedMatrix, correctedMatrix].filter(Boolean).join('\n') };
+        const correctedCheck = retainKnownProfileRelationships(correctedCandidate, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
+        const correctedRejectedDescriptors = rejectedDescriptorCount(correctedCheck);
+        relationshipFormatCorrection.rejected_descriptor_count_after = correctedRejectedDescriptors;
+        relationshipFormatCorrection.rejected_field_count_after = (correctedCheck.field_terminal_outcomes ?? [])
+          .filter((entry) => (entry?.rejected_descriptors ?? []).length).length;
+        if (correctedMatrix && correctedRejectedDescriptors < rejectedDescriptorsBeforeCorrection) {
+          relationshipCheck = correctedCheck;
+          parsed = correctedCheck.profiles;
+          relationshipFormatCorrection.succeeded = true;
+        } else {
+          relationshipFormatCorrection.failed = true;
+          relationshipFormatCorrection.failure_reason = correctedMatrix
+            ? 'correction_remained_unsupported' : 'correction_missing_relationship_matrix';
+        }
+      } catch (error) {
+        relationshipFormatCorrection.failed = true;
+        relationshipFormatCorrection.failure_reason = 'correction_request_failed';
+        relationshipFormatCorrection.normalized_error_type = error?.name ?? 'Error';
+      }
+    }
     if (relationshipCheck.rejected.length) {
       const priorRelationshipCheck = retainKnownProfileRelationships(priorProfiles ?? {}, characterName, relationshipHistory, relationshipRoster, groundedRelationshipRecords, rawChatMessages);
       const priorMatrix = String(priorRelationshipCheck.profiles.relationship_matrix ?? '').trim();
@@ -1588,6 +1658,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
         preserved_authoritative_value: profileFieldTerminalOutcomes.filter((entry) => entry.field_terminal_outcome === 'preserved_authoritative_value').length,
         dropped_no_supported_descriptors: rejectedRelationshipFields.length,
       },
+      relationship_format_correction: relationshipFormatCorrection,
       explicit_family_role_persistence: explicitFamilyPersistence,
       field_validation: {
         accepted_exact: Math.max(0, profileFields.length - fieldGrounding.rejected.length - temporalCheck.dropped.length - speculationCheck.dropped.length - rejectedRelationshipFields.length),

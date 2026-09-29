@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.48] - 2026-09-29
+
+### Fixed
+
+- OpenAI-compatible direct streaming now exports a bounded, content-free SSE
+  event audit that distinguishes completion sentinels, empty/invalid events,
+  embedded provider errors, missing or null deltas, reasoning-only events,
+  alternate content fields, usage records, and keepalives. A trusted endpoint
+  that returns HTTP 200 without content can retry the identical request once
+  through SillyTavern's authorized non-stream proxy, with linked transport
+  attempts and no duplicate summary persistence.
+- Short-Term recovery now rounds a failed 169-message segment to the intended
+  85-message successor, persists and reload-verifies the full plan before
+  Resume, exports that verified plan and the actual recovery ladder, and proves
+  the exact saved range and signature consumed by the resumed request.
+- Browser freeze/resume and visibility events are now neutral lifecycle facts,
+  not inferred resets or runtime reinitializations. Repeated facts coalesce,
+  every observed page instance has bounded lineage, and a prior page recovered
+  from the durable ledger carries explicit provenance.
+- Physical extraction accounting preserves manual stops, unknown interruption,
+  page replacement, confirmed discard, and runtime-reset causes as distinct
+  terminal outcomes while retaining exact attempted-versus-terminal totals.
+- Profile generation now presents relationship descriptors as closed enums,
+  rejects compound/prose values with distinct reason codes, and makes one
+  rejected-fields-only correction attempt before preserving authoritative prior
+  values. Unknown semantic descriptors remain rejected.
+
 ## [0.9.47] - 2026-09-26
 
 ### Fixed

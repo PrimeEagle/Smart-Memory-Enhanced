@@ -1819,6 +1819,11 @@
                 >ⓘ</span
               >
             </label>
+            <label class="checkbox_label">
+              <input id="sme_openai_compat_empty_stream_proxy_fallback" type="checkbox" />
+              Retry an empty direct stream through SillyTavern
+              <span class="sm-info" data-tooltip="If a trusted endpoint returns HTTP 200 but no usable content events, retry the identical request once through SillyTavern's non-stream proxy. No result is stored until a usable response is received.">ⓘ</span>
+            </label>
           </div>
 
           <!-- ST Connection Profile settings (shown when source = connection_profile) -->

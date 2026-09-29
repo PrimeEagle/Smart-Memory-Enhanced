@@ -701,13 +701,35 @@ Time: [time context - time of day, season, elapsed time since a key event, or "u
 </world_state>
 
 <relationship_matrix>
-[EntityName]: [exact descriptor from authoritative evidence for this directional pair] [confidence: 0.X]
+[EntityName]: ["exact descriptor", "second exact descriptor"] [confidence: 0.X]
 (one line per supported pair; leave the section empty if no pair has an exact approved descriptor)
 The text after the colon must contain only one or more comma-separated descriptors copied character-for-character from CHARACTER CARD RELATIONSHIP FACTS or RELATIONSHIP HISTORY for this same directional pair. Prefer the card when the two conflict. Do not describe the relationship in prose here; put separately grounded current-state prose in <character_state>. If neither source lists a descriptor for this pair, omit the line.
 Do not invent synonyms, combine descriptors into a new label, add unsupported family roles, or emit placeholders such as "unknown" or "complicated". Do not upgrade or reinterpret a descriptor (for example, "trust" is not "romantic" or "family").
+Treat the approved descriptors for each pair as a closed enum. The value must be a strict JSON string array. Valid: 'Alex: ["trusting", "affectionate"] [confidence: 0.9]' when both exact values appear above. Invalid: 'Alex: ["deeply trusting and very affectionate"]', 'Alex: ["trusting partner"]', or 'Alex: ["trusting because of recent events"]'.
 An entity type (such as "character", "person", "NPC", "persona", or "entity") is never a relationship status. Do not use one as the relationship label or state. When the authoritative evidence explicitly establishes a current legal or relationship fact, state that fact plainly and never describe that same fact as unresolved, uncertain, pending, or speculative elsewhere in the profile.
 </relationship_matrix>`
   );
+}
+
+/** One bounded repair request containing only rejected relationship fields. */
+export function buildProfileRelationshipCorrectionPrompt(rejectedFields = []) {
+  const fields = rejectedFields.slice(0, 24).map((field) => {
+    const target = String(field?.field_path ?? field?.relationship_target ?? '').trim();
+    const allowed = [...new Set((field?.authoritative_value ?? field?.authoritative_descriptors ?? []).map(String).map(value => value.trim()).filter(Boolean))];
+    return target && allowed.length ? `${target}: allowed enum = [${allowed.join(', ')}]` : '';
+  }).filter(Boolean).join('\n');
+  return NO_ACTION_PREAMBLE + `[RELATIONSHIP MATRIX FORMAT CORRECTION - Do NOT roleplay.]
+
+Re-emit only the rejected relationship fields listed below. Use the exact target name and a strict JSON string array containing one or more exact values from that target's allowed enum. Do not add prose, modifiers, explanations, synonyms, confidence text, or fields not listed. If no exact value is appropriate, omit that line.
+
+VALID: Alex: ["trusting", "affectionate"]
+INVALID: Alex: ["deeply trusting and affectionate because they are partners"]
+
+<relationship_matrix>
+${fields}
+</relationship_matrix>
+
+Output only one <relationship_matrix> section.`;
 }
 
 /** Repairs formatting only; it must never add or reinterpret profile evidence. */

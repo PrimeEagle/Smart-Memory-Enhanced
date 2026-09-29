@@ -141,3 +141,27 @@ test('same-page runtime resets and safe exception fingerprints remain distinct f
   assert.equal(summary.runtime_events[1].classification, 'unhandled_rejection');
   assert.equal(summary.runtime_events[1].stack_fingerprint, 'fnv1a-test');
 });
+
+test('freeze/resume lifecycle is neutral, coalesced, and does not create page interruptions', () => {
+  const metadata = {};
+  recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'document_frozen', page_instance_id: 'page-1', request_state: 'freeze', event_origin: 'native_document_event' });
+  recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'document_frozen', page_instance_id: 'page-1', request_state: 'freeze' });
+  recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'document_resumed', page_instance_id: 'page-1', request_state: 'resume_from_freeze' });
+  const summary = summarizePageRunLifecycle(metadata, 1);
+  assert.equal(summary.page_interruption_count, 0);
+  assert.equal(summary.runtime_event_count, 3);
+  assert.equal(summary.runtime_events.length, 2);
+  assert.equal(summary.runtime_events[0].repeat_count, 2);
+  assert.equal(summary.runtime_events[0].event_origin, 'native_document_event');
+});
+
+test('startup evidence fills prior page id from persisted lineage with provenance', () => {
+  const metadata = {}, cp = checkpoint();
+  reconcilePageRunInstance(metadata, cp, null, 'page-1', 1, { freshRun: true });
+  const evidence = captureBrowserStartupEvidence({ wasDiscarded: false }, { getEntriesByType: () => [{ type: 'navigate' }] }, 'page-2', null);
+  reconcilePageRunInstance(metadata, cp, null, 'page-2', 2, { startupEvidence: evidence });
+  const summary = summarizePageRunLifecycle(metadata, 2);
+  assert.equal(summary.page_instance_lineage.length, 2);
+  assert.equal(summary.retained_transitions[0].browser_startup_evidence.prior_page_instance_id, 'page-1');
+  assert.equal(summary.retained_transitions[0].browser_startup_evidence.prior_page_instance_id_source, 'persisted_page_run_ledger');
+});

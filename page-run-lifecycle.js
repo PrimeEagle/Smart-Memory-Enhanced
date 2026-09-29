@@ -2,6 +2,7 @@
 export const PAGE_RUN_LIFECYCLE_SCHEMA_VERSION = 1;
 export const PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS = 24;
 export const RUNTIME_LIFECYCLE_MAX_EVENTS = 48;
+export const PAGE_INSTANCE_LINEAGE_LIMIT = 24;
 
 export function captureBrowserStartupEvidence(documentLike, performanceLike, pageInstanceId, priorMarker = null) {
   let navigationType = null;
@@ -10,6 +11,7 @@ export function captureBrowserStartupEvidence(documentLike, performanceLike, pag
     captured_at: Date.now(),
     page_instance_id: pageInstanceId ?? null,
     prior_page_instance_id: priorMarker?.page_instance_id ?? null,
+    prior_page_instance_id_source: priorMarker?.page_instance_id ? 'local_storage_marker' : 'unavailable_at_capture',
     document_was_discarded: documentLike?.wasDiscarded === true,
     visibility_state: documentLike?.visibilityState ?? null,
     navigation_type: navigationType,
@@ -57,6 +59,7 @@ export function ensurePageRunLifecycle(metadata, runId) {
   if (prior?.run_id === runId) {
     prior.runtime_events ??= [];
     prior.runtime_event_count ??= prior.runtime_events.length;
+    prior.page_instance_lineage ??= [];
     return prior;
   }
   const ledger = {
@@ -70,6 +73,7 @@ export function ensurePageRunLifecycle(metadata, runId) {
     lineage_complete: true,
     runtime_events: [],
     runtime_event_count: 0,
+    page_instance_lineage: [],
   };
   if (metadata) metadata.page_run_lifecycle = ledger;
   return ledger;
@@ -85,6 +89,7 @@ export function recordRuntimeLifecycleEvent(metadata, runId, input = {}) {
     'run_controller_destroyed', 'ui_remounted', 'service_connection_restarted',
     'route_or_chat_reloaded', 'settings_or_extension_reloaded', 'resume_handler_entered',
     'resume_handler_exited', 'unhandled_exception', 'unhandled_rejection', 'unknown_ui_reset',
+    'document_frozen', 'document_resumed', 'page_hidden', 'page_visible',
   ]);
   const event = {
     at: Number(input.at ?? Date.now()),
@@ -97,9 +102,19 @@ export function recordRuntimeLifecycleEvent(metadata, runId, input = {}) {
     stack_fingerprint: input.stack_fingerprint ?? null,
     visibility_state: input.visibility_state ?? null,
     last_durable_phase_transition: input.last_durable_phase_transition ?? null,
+    event_origin: input.event_origin ?? 'extension_observer',
   };
   ledger.runtime_event_count++;
-  ledger.runtime_events = [...ledger.runtime_events, event].slice(-RUNTIME_LIFECYCLE_MAX_EVENTS);
+  const prior = ledger.runtime_events.at(-1);
+  if (prior?.classification === event.classification
+    && prior?.request_state === event.request_state
+    && prior?.page_instance_id === event.page_instance_id) {
+    prior.repeat_count = Number(prior.repeat_count ?? 1) + 1;
+    prior.last_at = event.at;
+  } else {
+    event.repeat_count = 1;
+    ledger.runtime_events = [...ledger.runtime_events, event].slice(-RUNTIME_LIFECYCLE_MAX_EVENTS);
+  }
   return event;
 }
 
@@ -113,6 +128,15 @@ export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, page
   const interrupted = checkpoint.status === 'in_progress' && !expectedManualResume && Boolean(previousPage && previousPage !== pageInstanceId);
   ledger.page_instances_observed++;
   ledger.current_page_instance_id = pageInstanceId;
+  ledger.page_instance_lineage = [...(ledger.page_instance_lineage ?? []), {
+    page_instance_id: pageInstanceId, observed_at: now, prior_page_instance_id: previousPage,
+    prior_page_instance_id_source: priorId ? 'local_storage_marker'
+      : previousPage ? 'persisted_page_run_ledger' : 'unavailable',
+  }].slice(-PAGE_INSTANCE_LINEAGE_LIMIT);
+  const reconciledStartupEvidence = startupEvidence && !startupEvidence.prior_page_instance_id && previousPage
+    ? { ...startupEvidence, prior_page_instance_id: previousPage,
+      prior_page_instance_id_source: 'persisted_page_run_ledger' }
+    : startupEvidence;
   if (!previousPage && checkpoint.status === 'in_progress' && !freshRun) {
     ledger.lineage_complete = false;
     ledger.lineage_gap_reason = 'prior_page_marker_unavailable';
@@ -131,7 +155,7 @@ export function reconcilePageRunInstance(metadata, checkpoint, priorMarker, page
       at: now, from_page_instance_id: previousPage, to_page_instance_id: pageInstanceId,
       cause: startupEvidence?.document_was_discarded === true ? 'document_was_discarded' : 'unknown',
       outcome: startupEvidence?.document_was_discarded === true ? 'confirmed_browser_tab_discard' : 'page_instance_replaced_unknown',
-      browser_startup_evidence: startupEvidence,
+      browser_startup_evidence: reconciledStartupEvidence,
       phase_before: phaseBefore,
       phase_after: checkpoint.finalization?.active_phase ?? 'source_extraction',
       checkpoint_offset_before: Number.isInteger(priorMarker?.checkpoint_offset) ? priorMarker.checkpoint_offset : null,

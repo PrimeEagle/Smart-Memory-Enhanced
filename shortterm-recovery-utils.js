@@ -2,7 +2,9 @@ export function nextShortTermRecoverySegmentSize(currentCount, minimumSegmentFlo
   const current = Math.max(1, Math.floor(Number(currentCount) || 1));
   const floor = Math.max(1, Math.floor(Number(minimumSegmentFloor) || 1));
   if (current <= floor) return null;
-  const next = Math.max(floor, Math.floor(current / 2));
+  // Keep the successor deterministic while ensuring odd ranges retain the
+  // midpoint message (169 -> 85, rather than prematurely dropping to 84).
+  const next = Math.max(floor, Math.ceil(current / 2));
   return next < current ? next : null;
 }
 

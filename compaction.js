@@ -105,6 +105,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
   const plannedMaxMessages = Number.isInteger(Number(recoveryPlan?.target_message_count))
     ? Math.max(1, Number(recoveryPlan.target_message_count)) : null;
   let recoveryPlanPending = Boolean(recoveryPlan);
+  let consumedRecoveryPlan = null;
   const compactFingerprint = compactionDiagnosticFingerprint;
   const sourceEvidence = (items, prompt, outputTokens) => {
     const indices = items.map((item) => Number(item.__sme_compaction_source_index)).filter(Number.isInteger);
@@ -168,6 +169,16 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         };
         throw error;
       }
+      consumedRecoveryPlan = {
+        effective_request_signature: recoveryPlan.effective_request_signature,
+        source_fingerprint: recoveryPlan.source_fingerprint,
+        source_start: recoveryPlan.next_segment_start,
+        source_end: recoveryPlan.next_segment_end,
+        message_count: recoveryPlan.message_count,
+        persisted_at: recoveryPlan.persisted_at ?? null,
+        reload_verified_at: recoveryPlan.verified_at ?? recoveryPlan.reloaded_at ?? null,
+        reload_result: recoveryPlan.reload_result ?? null,
+      };
       recoveryPlanPending = false;
     }
     // The caller only appends a message after testing this exact prompt. This
@@ -190,6 +201,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
           : 'increased_output_reserve',
         adaptation_planned_for_next_request: null,
         response_classification: null };
+      if (consumedRecoveryPlan) base.consumed_recovery_plan = consumedRecoveryPlan;
       onRequestState?.({ ...base, state: 'in_flight', response_present: null });
       try {
         const result = await generateMemorySummarize(prompt, {

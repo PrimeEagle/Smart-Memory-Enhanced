@@ -1269,6 +1269,9 @@ export const defaultSettings = {
   // Explicit opt-in for trusted DNS/LAN endpoints. Direct browser requests
   // enable streaming progress but require the provider to permit CORS.
   openai_compat_direct_streaming: false,
+  // Same configured provider and request, routed once through ST if an HTTP
+  // 200 direct stream contains no usable content events.
+  openai_compat_empty_stream_proxy_fallback: true,
 
   // ST connection profile source: ID of the saved profile to use for extraction
   connection_profile_id: null,
@@ -1948,15 +1951,15 @@ export function bindSettingsUI(ctrl) {
     saveChatMetadata(context).catch((error) => console.warn(`[${MODULE_NAME}] Lifecycle checkpoint warning:`, error));
   };
   listenLifecycle(globalThis, 'pageshow', (event) => recordRuntimeEvidence('pageshow', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_restored' : 'normal_show' }));
-  listenLifecycle(globalThis, 'pagehide', (event) => recordRuntimeEvidence('pagehide', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_stored' : 'normal_hide' }));
+  listenLifecycle(globalThis, 'pagehide', (event) => recordRuntimeEvidence('page_hidden', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_stored' : 'normal_hide' }));
   listenLifecycle(globalThis, 'beforeunload', () => recordRuntimeEvidence('beforeunload', { subsystem: 'document' }));
   listenLifecycle(document, 'visibilitychange', () => {
     const detail = { subsystem: 'document', visibility_state: document.visibilityState };
-    if (document.visibilityState === 'hidden') persistLifecycleCheckpoint('visibility_changed', detail);
-    else recordRuntimeEvidence('visibility_changed', detail);
+    if (document.visibilityState === 'hidden') persistLifecycleCheckpoint('page_hidden', detail);
+    else recordRuntimeEvidence('page_visible', detail);
   });
-  listenLifecycle(document, 'freeze', () => persistLifecycleCheckpoint('unknown_client_reset', { subsystem: 'document', request_state: 'freeze' }));
-  listenLifecycle(document, 'resume', () => recordRuntimeEvidence('extension_runtime_reinitialized', { subsystem: 'document', request_state: 'resume_from_freeze' }));
+  listenLifecycle(document, 'freeze', () => persistLifecycleCheckpoint('document_frozen', { subsystem: 'document', request_state: 'freeze', event_origin: 'native_document_event' }));
+  listenLifecycle(document, 'resume', () => recordRuntimeEvidence('document_resumed', { subsystem: 'document', request_state: 'resume_from_freeze', event_origin: 'native_document_event' }));
   listenLifecycle(globalThis, 'online', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'online' }));
   listenLifecycle(globalThis, 'offline', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'offline' }));
   const safeErrorEvidence = (classification, value) => recordRuntimeEvidence(classification, {
@@ -2098,7 +2101,11 @@ export function bindSettingsUI(ctrl) {
       }
     }
     if (!running && checkpoint.status === 'in_progress' && !healthRestartReconciledRunIds.has(checkpoint.run_id)) {
-      reconcileInterruptedExtractionEvents(getContext().chatMetadata?.[META_KEY], checkpoint, { reason: 'unclassified_page_interruption' });
+      const lifecycle = getContext().chatMetadata?.[META_KEY]?.page_run_lifecycle;
+      const latestTransition = lifecycle?.retained_transitions?.at(-1);
+      const interruptionReason = latestTransition?.to_page_instance_id === pageInstanceId
+        ? latestTransition.outcome : 'unclassified_page_interruption';
+      reconcileInterruptedExtractionEvents(getContext().chatMetadata?.[META_KEY], checkpoint, { reason: interruptionReason });
       healthRestartReconciledRunIds.add(checkpoint.run_id);
       // Persist the classification before auto-resume creates linked replay
       // events. This save contains no provider or chat content.
@@ -2936,6 +2943,12 @@ export function bindSettingsUI(ctrl) {
     .prop('checked', s.openai_compat_direct_streaming ?? false)
     .on('change', function () {
       extension_settings[MODULE_NAME].openai_compat_direct_streaming = $(this).prop('checked');
+      saveSettingsDebounced();
+    });
+  $('#sme_openai_compat_empty_stream_proxy_fallback')
+    .prop('checked', s.openai_compat_empty_stream_proxy_fallback ?? true)
+    .on('change', function () {
+      extension_settings[MODULE_NAME].openai_compat_empty_stream_proxy_fallback = $(this).prop('checked');
       saveSettingsDebounced();
     });
 
@@ -6117,6 +6130,7 @@ export function bindSettingsUI(ctrl) {
           updateFinalizationEta('short-term memory extraction');
           setStatusMessage('Extracting short-term memories...');
           const commitShortTermPass = async (progress) => {
+            compactionRequestAudit.successful_segment_commits = Number(compactionRequestAudit.successful_segment_commits ?? 0) + 1;
             checkpoint.finalization.shortterm_compaction_progress = {
               schema_version: 1,
               completed_passes: progress.completed_passes,
@@ -6153,6 +6167,11 @@ export function bindSettingsUI(ctrl) {
                 compaction_pass: Number(progress.completed_passes ?? 0) + 1,
                 segment_number: Number(progress.segment_number ?? progress.completed_passes ?? 0) + 1,
                 updated_at: Date.now(),
+                persisted_at: Date.now(),
+                reloaded_at: null,
+                verified_at: null,
+                persistence_result: 'committed_with_pass',
+                reload_result: 'pending_verification',
               } : null;
               const ladder = checkpoint.finalization.shortterm_failure_state?.recovery_ladder;
               if (ladder) ladder.any_segment_committed = true;
@@ -6174,6 +6193,9 @@ export function bindSettingsUI(ctrl) {
             logical_attempt_number: checkpoint.run_manifest?.total_attempt_count ?? null,
             connection_profile_id: settings.connection_profile_id ?? null,
             observed_requests: 0, observed_empty_responses: 0,
+            physical_provider_attempts: 0, same_signature_retries: 0,
+            segment_reductions: 0, transport_fallbacks: 0, successful_segment_commits: 0,
+            transports_attempted: [], segment_sizes_attempted: [], output_reserves_attempted: [],
             request_errors: 0, retained_events: [], retained_event_limit: 24,
             last_response_presence: null, terminal_outcome: 'running',
           };
@@ -6201,7 +6223,9 @@ export function bindSettingsUI(ctrl) {
               responseFormatMode: 'text', transportMode: settings.source ?? 'main',
             });
             return {
-              schema_version: 2, strategy: 'smaller_segment_rebuild',
+              schema_version: 3, strategy: 'smaller_segment_rebuild',
+              logical_run_id: checkpoint.run_id,
+              phase: 'shortterm_extraction',
               compaction_pass: Number(predecessorPlan?.compaction_pass ?? 0) + 1,
               segment_number: Number(predecessorPlan?.segment_number ?? 0) + 1,
               target_segment_fraction: predecessorPlan?.message_count
@@ -6220,17 +6244,52 @@ export function bindSettingsUI(ctrl) {
               predecessor_failed_request_signature: predecessorSignature,
               reduction_reason: reductionReason,
               minimum_segment_floor: 4,
-              created_at: Date.now(), verified_at: null,
+              created_at: Date.now(), persisted_at: null, reloaded_at: null,
+              verified_at: null, persistence_result: 'not_attempted', reload_result: 'not_attempted',
             };
+          };
+          const validateRecoveryPlan = (plan) => {
+            if (!plan) return { valid: true, reason: 'no_plan' };
+            const items = buildRecoverySourceItems(plan.next_segment_start, plan.message_count);
+            const fingerprint = diagnosticFingerprint(items.map(({ item, index }) => `${index}\u0000${item?.name ?? ''}\u0000${item?.mes ?? ''}`).join('\u0001'));
+            const inputEstimate = estimateTokens(items.map(({ item }) => `${item?.name ?? ''}: ${item?.mes ?? ''}`).join('\n\n'));
+            const expectedSignature = buildCompactionRequestSignature({
+              connectionProfileId: settings.connection_profile_id ?? null,
+              model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+              sourceFingerprint: fingerprint,
+              parentSummaryHash: plan.summary_parent_hash,
+              requestedOutputTokens: Number(plan.requested_output_tokens),
+              responseFormatMode: 'text', transportMode: settings.source ?? 'main',
+            });
+            const valid = plan.logical_run_id === checkpoint.run_id
+              && plan.phase === 'shortterm_extraction'
+              && items.length === plan.message_count
+              && items[0]?.index === plan.next_segment_start
+              && items.at(-1)?.index === plan.next_segment_end
+              && fingerprint === plan.source_fingerprint
+              && inputEstimate === plan.expected_input_token_estimate
+              && plan.effective_request_signature === expectedSignature;
+            return { valid, reason: valid ? 'validated_against_current_chat' : 'recovery_plan_input_mismatch',
+              observed_source_fingerprint: fingerprint, observed_input_token_estimate: inputEstimate,
+              observed_effective_request_signature: expectedSignature };
           };
           const persistAndVerifyRecoveryPlan = async (plan) => {
             if (!plan) throw new Error('Short-Term recovery could not construct a valid successor segment.');
+            const preflight = validateRecoveryPlan(plan);
+            if (!preflight.valid) {
+              const error = new Error('Short-Term successor recovery plan no longer matches the current chat.');
+              error.sme_reason_code = preflight.reason;
+              throw error;
+            }
+            plan.persisted_at = Date.now();
+            plan.persistence_result = 'save_requested';
             checkpoint.finalization.shortterm_recovery_plan = plan;
             checkpoint.updated_at = Date.now();
             await saveChatMetadata(catchUpContext);
             await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
             finalTransaction = beginCatchUpTransaction(catchUpContext);
             const restored = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint?.finalization?.shortterm_recovery_plan;
+            if (restored) restored.reloaded_at = Date.now();
             const verified = restored?.effective_request_signature === plan.effective_request_signature
               && restored?.source_fingerprint === plan.source_fingerprint
               && restored?.next_segment_start === plan.next_segment_start
@@ -6243,12 +6302,49 @@ export function bindSettingsUI(ctrl) {
             }
             restored.verified_at = Date.now();
             restored.persistence_verification = 'committed_and_reloaded';
+            restored.persistence_result = 'committed';
+            restored.reload_result = 'verified';
             await saveChatMetadata(catchUpContext);
             await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
             finalTransaction = beginCatchUpTransaction(catchUpContext);
             return restored;
           };
           let persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
+          if (persistedRecoveryPlan) {
+            if (Number(persistedRecoveryPlan.schema_version ?? 0) < 3) {
+              const legacySchemaVersion = Number(persistedRecoveryPlan.schema_version ?? 2);
+              persistedRecoveryPlan.schema_version = 3;
+              persistedRecoveryPlan.logical_run_id = checkpoint.run_id;
+              persistedRecoveryPlan.phase = 'shortterm_extraction';
+              persistedRecoveryPlan.migrated_from_schema_version = legacySchemaVersion;
+            }
+            const validation = validateRecoveryPlan(persistedRecoveryPlan);
+            persistedRecoveryPlan.resume_validation = validation.reason;
+            if (!validation.valid) {
+              const error = new Error('Resume refused because the persisted Short-Term plan does not match the current chat range.');
+              error.sme_reason_code = validation.reason;
+              throw error;
+            }
+            if (persistedRecoveryPlan.reload_result !== 'verified') {
+              try {
+                persistedRecoveryPlan = await persistAndVerifyRecoveryPlan(persistedRecoveryPlan);
+              } catch (planError) {
+                checkpoint.finalization.shortterm_recovery_plan = null;
+                checkpoint.finalization.shortterm_failure_state = {
+                  ...(checkpoint.finalization.shortterm_failure_state ?? {}),
+                  adaptation: 'recovery_plan_persistence_verification_failed',
+                  next_resume_strategy: 'operator_action_required',
+                  operator_action_required: true,
+                  recommended_operator_action: 'inspect_storage_or_restart_shortterm_finalization',
+                };
+                compactionRequestAudit.recovery_plan_persistence_failure = {
+                  reason_code: planError?.sme_reason_code ?? 'recovery_plan_persistence_verification_failed',
+                  normalized_error_type: planError?.name ?? 'Error',
+                };
+                throw planError;
+              }
+            }
+          }
           const priorCompactionAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.compaction_request_audit;
           const priorFailedRequest = [...(priorCompactionAudit?.retained_events ?? [])].reverse()
             .find((event) => event?.state === 'response_observed' && event?.response_present === false);
@@ -6274,12 +6370,38 @@ export function bindSettingsUI(ctrl) {
           }
           compactionRequestAudit.persisted_recovery_plan = persistedRecoveryPlan;
           const onCompactionRequestState = (event) => {
-            if (event.state === 'in_flight') compactionRequestAudit.observed_requests++;
+            if (event.state === 'in_flight') {
+              compactionRequestAudit.observed_requests++;
+              if (Number(event.attempt ?? 1) > 1) compactionRequestAudit.same_signature_retries++;
+              if (Number.isInteger(event.prompt_visible_message_count)) compactionRequestAudit.segment_sizes_attempted = [...new Set([
+                ...compactionRequestAudit.segment_sizes_attempted, event.prompt_visible_message_count,
+              ])];
+              if (Number.isFinite(Number(event.requested_output_tokens))) compactionRequestAudit.output_reserves_attempted = [...new Set([
+                ...compactionRequestAudit.output_reserves_attempted, Number(event.requested_output_tokens),
+              ])];
+            }
+            if (event.state === 'provider_diagnostic') {
+              const transportKey = `${event.request_link_id ?? event.request_id ?? 'request'}:${event.endpoint_category ?? event.provider ?? 'unknown'}`;
+              compactionRequestAudit._physical_transport_keys ??= [];
+              if (!compactionRequestAudit._physical_transport_keys.includes(transportKey)) {
+                compactionRequestAudit._physical_transport_keys.push(transportKey);
+                compactionRequestAudit.physical_provider_attempts++;
+              }
+              compactionRequestAudit.transports_attempted = [...new Set([
+                ...compactionRequestAudit.transports_attempted, event.endpoint_category ?? event.provider ?? 'unknown',
+              ])];
+              if (event.terminal_adaptation === 'same_provider_proxy_nonstream_retry') compactionRequestAudit.transport_fallbacks = 1;
+            }
+            if (event.state === 'recovery_scheduled' && event.adaptation === 'partitioned_input_scope') compactionRequestAudit.segment_reductions++;
             if (event.state === 'response_observed') {
               compactionRequestAudit.last_response_presence = event.response_present;
               if (!event.response_present) compactionRequestAudit.observed_empty_responses++;
             }
             if (event.state === 'request_error') compactionRequestAudit.request_errors++;
+            compactionRequestAudit.physical_provider_attempts = Math.max(
+              compactionRequestAudit.physical_provider_attempts,
+              compactionRequestAudit.observed_requests,
+            );
             compactionRequestAudit.retained_events = [...compactionRequestAudit.retained_events, event].slice(-24);
             updateActivePageMarker(checkpoint, 'shortterm_extraction', event.state === 'in_flight' ? 'in_flight' : event.state, {
               request_attempt: event.attempt,
@@ -6291,6 +6413,7 @@ export function bindSettingsUI(ctrl) {
             recoveryPlan: persistedRecoveryPlan })
             .then((summary) => {
               compactionRequestAudit.terminal_outcome = summary ? 'completed' : 'no_summary';
+              delete compactionRequestAudit._physical_transport_keys;
               if (summary) {
                 injectSummary(summary);
                 updateShortTermUI(summary);
@@ -6329,7 +6452,7 @@ export function bindSettingsUI(ctrl) {
               const minimumSegmentFloor = 4;
               const targetCount = nextShortTermRecoverySegmentSize(originalCount, minimumSegmentFloor);
               const nextStart = Number(failedRequest?.requested_source_start);
-              const nextPlan = targetCount !== null ? buildRecoveryPlan({
+              let nextPlan = targetCount !== null ? buildRecoveryPlan({
                 start: nextStart, count: targetCount,
                 parentSummaryHash: failedRequest?.parent_summary_hash ?? null,
                 predecessorPlan: persistedRecoveryPlan,
@@ -6343,8 +6466,8 @@ export function bindSettingsUI(ctrl) {
                 equivalent_failure_count: equivalentFailureCount,
                 failed_at: Date.now(),
                 adaptation: err?.sme_compaction_recovery?.adaptation
-                  ?? (nextPlan ? 'smaller_segment_successor_persisted' : 'segmented_recovery_exhausted'),
-                next_resume_strategy: nextPlan ? 'retry_with_smaller_segments' : 'operator_action_required',
+                  ?? (nextPlan ? 'smaller_segment_successor_pending_persistence' : 'segmented_recovery_exhausted'),
+                next_resume_strategy: nextPlan ? 'persist_successor_before_retry' : 'operator_action_required',
                 operator_action_required: !nextPlan,
                 effective_request_signature: signature,
                 prior_equivalent_failure_signatures: [...new Set([
@@ -6372,9 +6495,50 @@ export function bindSettingsUI(ctrl) {
                   : 'resume_with_smaller_segments',
               };
               if (nextPlan) {
-                const verifiedPlan = await persistAndVerifyRecoveryPlan(nextPlan);
-                checkpoint.finalization.shortterm_recovery_plan = verifiedPlan;
+                try {
+                  const verifiedPlan = await persistAndVerifyRecoveryPlan(nextPlan);
+                  checkpoint.finalization.shortterm_recovery_plan = verifiedPlan;
+                  compactionRequestAudit.persisted_recovery_plan = verifiedPlan;
+                  checkpoint.finalization.shortterm_failure_state.adaptation = 'smaller_segment_successor_persisted';
+                  checkpoint.finalization.shortterm_failure_state.next_resume_strategy = 'retry_with_smaller_segments';
+                } catch (planError) {
+                  nextPlan = null;
+                  checkpoint.finalization.shortterm_recovery_plan = null;
+                  checkpoint.finalization.shortterm_failure_state.adaptation = 'recovery_plan_persistence_verification_failed';
+                  checkpoint.finalization.shortterm_failure_state.next_resume_strategy = 'operator_action_required';
+                  checkpoint.finalization.shortterm_failure_state.operator_action_required = true;
+                  checkpoint.finalization.shortterm_failure_state.recommended_operator_action = 'inspect_storage_or_restart_shortterm_finalization';
+                  compactionRequestAudit.recovery_plan_persistence_failure = {
+                    reason_code: planError?.sme_reason_code ?? 'recovery_plan_persistence_verification_failed',
+                    normalized_error_type: planError?.name ?? 'Error',
+                  };
+                }
               }
+              compactionRequestAudit.recovery_ladder = {
+                ...recoveryLadder,
+                failed_segment_size: originalCount,
+                next_segment_size: nextPlan?.message_count ?? null,
+                terminal_reason: compactionRequestAudit.terminal_outcome,
+                operator_action_required: !nextPlan,
+              };
+              compactionRequestAudit.physical_provider_attempts = Math.max(
+                compactionRequestAudit.physical_provider_attempts,
+                compactionRequestAudit.observed_requests,
+              );
+              compactionRequestAudit.terminal_explanation = {
+                requests_attempted: compactionRequestAudit.physical_provider_attempts,
+                transports_attempted: compactionRequestAudit.transports_attempted,
+                segment_sizes_attempted: compactionRequestAudit.segment_sizes_attempted,
+                output_reserve_adaptations: compactionRequestAudit.output_reserves_attempted,
+                smallest_segment_attempted: compactionRequestAudit.segment_sizes_attempted.some(Number.isFinite)
+                  ? Math.min(...compactionRequestAudit.segment_sizes_attempted.filter(Number.isFinite)) : null,
+                successful_segment_commits: compactionRequestAudit.successful_segment_commits,
+                verified_next_plan: compactionRequestAudit.persisted_recovery_plan ?? null,
+                ordinary_resume_safe: Boolean(compactionRequestAudit.persisted_recovery_plan && nextPlan),
+                operator_action_required: !nextPlan,
+              };
+              delete compactionRequestAudit._physical_transport_keys;
+              err.message = `Short-Term recovery exhausted ${compactionRequestAudit.physical_provider_attempts} physical provider attempt(s) across segment size(s) ${compactionRequestAudit.segment_sizes_attempted.join(', ') || 'unknown'}; ${nextPlan ? `a verified ${nextPlan.message_count}-message successor is ready for Resume` : 'the minimum segment floor requires provider or configuration action'}.`;
               checkpoint.finalization.phase_dispositions.shortterm_extraction = {
                 disposition: 'failed', terminal_outcome: compactionRequestAudit.terminal_outcome,
                 resumable: Boolean(nextPlan), failure_signature: signature,
@@ -7558,7 +7722,7 @@ export function bindSettingsUI(ctrl) {
 
   $('#sme_cancel_catch_up').on('click', function () {
     ctrl.catchUpCancelled = true;
-    interruptRunningExtractionEvents(getContext().chatMetadata?.[META_KEY], 'interrupted_by_manual_cancel');
+    interruptRunningExtractionEvents(getContext().chatMetadata?.[META_KEY], 'cancelled_by_manual_stop');
     $(this).prop('disabled', true);
     abortCurrentMemoryGeneration();
     // Direct-fetch sources are aborted immediately. Connection-manager

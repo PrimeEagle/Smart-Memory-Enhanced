@@ -23,7 +23,7 @@ test('restart reconciliation distinguishes committed work from uncertain interru
   const result = reconcileInterruptedExtractionEvents(metadata, checkpoint, { now: committed.timestamp + 1000 });
   assert.deepEqual(result, { reconciled: 2, recovered: 1, uncertain: 1 });
   assert.equal(committed.terminal_health, 'recovered_completed');
-  assert.equal(pending.terminal_health, 'completion_uncertain_after_page_interruption');
+  assert.equal(pending.terminal_health, 'interrupted_unknown');
 
   const replay = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 0, source_end: 9, message_count: 10 });
   assert.equal(replay.replay_of_event_id, pending.event_id);
@@ -38,9 +38,9 @@ test('restart reconciliation distinguishes committed work from uncertain interru
 test('manual cancellation remains an interruption even if an empty provider result arrives afterward', () => {
   const metadata = {};
   const event = beginLiveExtractionEvent(metadata, { tier: 'session', source_start: 20, source_end: 29 });
-  assert.equal(interruptRunningExtractionEvents(metadata, 'interrupted_by_manual_cancel'), 1);
+  assert.equal(interruptRunningExtractionEvents(metadata, 'cancelled_by_manual_stop'), 1);
   finishLiveExtractionEvent(metadata, event, { terminal_health: 'provider_response_empty', response_received: true });
-  assert.equal(event.terminal_health, 'interrupted_by_manual_cancel');
+  assert.equal(event.terminal_health, 'cancelled_by_manual_stop');
   assert.equal(exportLiveMemoryHealth(metadata).extraction_outcome_summary.provider_quality.empty_responses, 0);
 });
 
@@ -168,6 +168,20 @@ test('page interruption reconciles unretained physical attempts into one termina
   assert.equal(accounting.terminal_total, 4);
   assert.equal(accounting.unclassified, 0);
   assert.equal(accounting.reconciled, true);
+});
+
+test('page replacement and manual cancellation remain distinct physical terminal causes', () => {
+  const replacedMetadata = { active_catchup_run_id: 'run-a' };
+  beginLiveExtractionEvent(replacedMetadata, { tier: 'session' });
+  reconcileInterruptedExtractionEvents(replacedMetadata, { run_id: 'run-a', run_manifest: {} }, { reason: 'page_instance_replaced_unknown' });
+  assert.equal(replacedMetadata.live_memory_health.current_run_outcomes.terminal_counts.completion_uncertain_after_page_replacement, 1);
+
+  const cancelledMetadata = { active_catchup_run_id: 'run-b' };
+  beginLiveExtractionEvent(cancelledMetadata, { tier: 'session' });
+  interruptRunningExtractionEvents(cancelledMetadata, 'cancelled_by_manual_stop');
+  const accounting = exportLiveMemoryHealth(cancelledMetadata).extraction_outcome_summary.physical_attempt_accounting;
+  assert.equal(accounting.terminal_outcomes.cancelled, 1);
+  assert.equal(accounting.terminal_outcomes.interrupted_completion_unknown, 0);
 });
 
 test('export recomputes physical attempt accounting instead of trusting stale cached totals', () => {

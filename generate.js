@@ -46,6 +46,12 @@ import { reasoning_templates, parseReasoningFromString } from '../../../../scrip
 import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
 import { classifyOpenAiResponseEnvelope } from './provider-response-utils.js';
 import {
+  inspectOpenAiSsePayload,
+  summarizeOpenAiStreamEvents,
+  OPENAI_STREAM_EVENT_SAMPLE_LIMIT,
+  runAuthorizedEmptyStreamFallback,
+} from './provider-stream-utils.js';
+import {
   isWebLlmSupported,
   generateWebLlmChatPrompt,
   ConnectionManagerRequestService,
@@ -553,7 +559,8 @@ async function readOllamaStream(response, progress) {
 
 async function readOpenAiStream(response, progress) {
   const reader = response.body?.getReader();
-  if (!reader) return { output: '', eventCount: 0, contentDeltaCount: 0, finishReason: null, usage: null };
+  if (!reader) return { output: '', eventCount: 0, contentDeltaCount: 0, finishReason: null, usage: null,
+    eventAudit: summarizeOpenAiStreamEvents([], 0, {}), providerError: null };
   const decoder = new TextDecoder();
   let buffer = '';
   let output = '';
@@ -561,27 +568,39 @@ async function readOpenAiStream(response, progress) {
   let contentDeltaCount = 0;
   let finishReason = null;
   let usage = null;
+  let eventName = 'message';
+  let providerError = null;
+  const retainedEvents = [];
+  const typeCounts = {};
+  const inspect = (payload) => {
+    const inspected = inspectOpenAiSsePayload(payload, eventCount + 1, eventName);
+    eventCount++;
+    const kind = inspected.summary.classification;
+    typeCounts[kind] = Number(typeCounts[kind] ?? 0) + 1;
+    if (retainedEvents.length < OPENAI_STREAM_EVENT_SAMPLE_LIMIT) retainedEvents.push(inspected.summary);
+    if (inspected.content || inspected.alternate) contentDeltaCount++;
+    output += inspected.content || inspected.alternate || '';
+    finishReason = inspected.finishReason ?? finishReason;
+    usage = inspected.usage ?? usage;
+    providerError = inspected.providerError ?? providerError;
+    progress.update(estimateTokens(output));
+    eventName = 'message';
+  };
   while (true) {
     const { value, done } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() ?? '';
     for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      const event = JSON.parse(payload);
-      eventCount++;
-      const delta = event?.choices?.[0]?.delta?.content;
-      if (typeof delta === 'string' && delta.length) contentDeltaCount++;
-      output += delta ?? '';
-      finishReason = event?.choices?.[0]?.finish_reason ?? finishReason;
-      usage = event?.usage ?? usage;
-      progress.update(estimateTokens(output));
+      if (line.startsWith('event:')) { eventName = line.slice(6).trim() || 'message'; continue; }
+      if (line.startsWith(':')) { eventName = 'keepalive_comment'; inspect(''); continue; }
+      if (line.startsWith('data:')) inspect(line.slice(5).trim());
     }
+    if (done && buffer.trim().startsWith('data:')) inspect(buffer.trim().slice(5).trim());
     if (done) break;
   }
-  return { output, eventCount, contentDeltaCount, finishReason, usage };
+  return { output, eventCount, contentDeltaCount, finishReason, usage, providerError,
+    eventAudit: summarizeOpenAiStreamEvents(retainedEvents, eventCount, typeCounts) };
 }
 
 /**
@@ -699,6 +718,18 @@ async function generateOpenAICompat(
     // unavailable merely because CORS is not configured.
     const useTrustedDirectEndpoint = isLocalUrl(baseUrl) || settings?.openai_compat_direct_streaming === true;
     const stream = requestProgressListeners.size > 0 && useTrustedDirectEndpoint;
+    const requestLinkId = `openai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const fetchProxy = () => {
+      const proxyBody = {
+        chat_completion_source: 'custom', custom_url: `${baseUrl}/v1`, messages,
+        model: model || undefined, max_tokens: responseLength > 0 ? responseLength : undefined,
+        stream: false,
+      };
+      if (apiKey) proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
+      return fetch('/api/backends/chat-completions/generate', {
+        method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(proxyBody), signal: thisController.signal,
+      });
+    };
     try {
       let response;
       let responseStreams = stream;
@@ -725,27 +756,7 @@ async function generateOpenAICompat(
       }
       if (!response) {
         responseStreams = false;
-        // Route remote/cloud URLs through ST's proxy to avoid CORS restrictions.
-        // ST's CUSTOM source appends /chat/completions to custom_url, so pass baseUrl/v1.
-        const proxyBody = {
-          chat_completion_source: 'custom',
-          custom_url: `${baseUrl}/v1`,
-          messages,
-          model: model || undefined,
-          max_tokens: responseLength > 0 ? responseLength : undefined,
-          stream: false,
-        };
-        // Pass the API key via custom_include_headers (YAML key: value format) so it
-        // overrides the empty Authorization header ST builds from its stored CUSTOM secret.
-        if (apiKey) {
-          proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
-        }
-        response = await fetch('/api/backends/chat-completions/generate', {
-          method: 'POST',
-          headers: getRequestHeaders(),
-          body: JSON.stringify(proxyBody),
-          signal: thisController.signal,
-        });
+        response = await fetchProxy();
       }
 
       if (response.ok) {
@@ -781,6 +792,68 @@ async function generateOpenAICompat(
           throw new Error(data.error.message || 'OpenAI Compatible API error');
         }
         const streamResult = responseStreams ? await readOpenAiStream(response, progress) : null;
+        if (streamResult?.providerError) {
+          onRequestDiagnostic?.({
+            provider: 'openai_compatible', model_name: model || null, request_link_id: requestLinkId,
+            endpoint_category: 'direct-stream', http_status: response.status, transport_completed: true,
+            response_envelope_present: true, provider_error_envelope_present: true,
+            normalized_provider_error_code: streamResult.providerError.code == null ? null : String(streamResult.providerError.code),
+            content_length: streamResult.output.length, streaming_observed: true,
+            streaming_chunk_count: streamResult.eventCount, content_delta_observed: streamResult.contentDeltaCount > 0,
+            parser_state: 'parsed_provider_error_event', classification: 'stream_provider_error_envelope',
+            stream_event_audit: streamResult.eventAudit,
+          });
+          throw new Error(streamResult.providerError.message || 'OpenAI Compatible stream returned an error');
+        }
+        const fallback = await runAuthorizedEmptyStreamFallback({
+          directStream: responseStreams, httpStatus: response.status, output: streamResult?.output,
+          contentDeltaCount: streamResult?.contentDeltaCount,
+          permitted: settings?.openai_compat_empty_stream_proxy_fallback !== false,
+        }, fetchProxy);
+        if (fallback.used) {
+          onRequestDiagnostic?.({
+            provider: 'openai_compatible', model_name: model || null, request_link_id: requestLinkId,
+            endpoint_category: 'direct-stream', http_status: response.status, transport_completed: true,
+            response_envelope_present: streamResult.eventCount > 0, provider_error_envelope_present: false,
+            normalized_provider_error_code: null, content_length: 0, streaming_observed: true,
+            streaming_chunk_count: streamResult.eventCount, content_delta_observed: false,
+            parser_state: 'parsed_no_content_bearing_events', classification: 'direct_stream_empty_fallback_scheduled',
+            terminal_adaptation: 'same_provider_proxy_nonstream_retry', fallback_permitted: true,
+            stream_event_audit: streamResult.eventAudit,
+          });
+          const fallbackResponse = fallback.response;
+          if (!fallbackResponse.ok) {
+            const fallbackError = new Error(`OpenAI Compatible proxy fallback responded with ${fallbackResponse.status}`);
+            fallbackError.status = fallbackResponse.status;
+            throw fallbackError;
+          }
+          const fallbackBody = await fallbackResponse.text();
+          let fallbackData = null;
+          try { fallbackData = fallbackBody.trim() ? JSON.parse(fallbackBody) : null; }
+          catch {
+            onRequestDiagnostic?.({ provider: 'openai_compatible', model_name: model || null, request_link_id: requestLinkId,
+              predecessor_endpoint_category: 'direct-stream', endpoint_category: 'sillytavern-proxy-fallback',
+              http_status: fallbackResponse.status, transport_completed: true, response_envelope_present: Boolean(fallbackBody),
+              parser_state: 'invalid_json', classification: 'fallback_response_json_parse_failure' });
+            throw new Error('OpenAI Compatible proxy fallback returned invalid JSON');
+          }
+          const fallbackEnvelope = classifyOpenAiResponseEnvelope({ bodyPresent: Boolean(fallbackBody), data: fallbackData });
+          const fallbackContent = typeof fallbackData?.choices?.[0]?.message?.content === 'string'
+            ? fallbackData.choices[0].message.content : '';
+          onRequestDiagnostic?.({
+            provider: 'openai_compatible', model_name: model || null, request_link_id: requestLinkId,
+            predecessor_endpoint_category: 'direct-stream', endpoint_category: 'sillytavern-proxy-fallback',
+            http_status: fallbackResponse.status, transport_completed: true, ...fallbackEnvelope,
+            finish_reason: fallbackData?.choices?.[0]?.finish_reason ?? null,
+            reported_input_tokens: Number(fallbackData?.usage?.prompt_tokens) || null,
+            reported_output_tokens: Number(fallbackData?.usage?.completion_tokens) || null,
+            streaming_observed: false, timeout: false, cancelled: false, aborted: false,
+            connection_reset: false, parser_state: 'parsed', terminal_adaptation: 'same_provider_proxy_nonstream_retry',
+          });
+          if (fallbackData?.error) throw new Error(fallbackData.error.message || 'OpenAI Compatible proxy fallback error');
+          progress.complete(fallbackContent);
+          return fallbackContent;
+        }
         const message = data?.choices?.[0]?.message;
         const content = responseStreams ? streamResult.output : message?.content;
         const output = typeof content === 'string' ? content : '';
@@ -798,6 +871,11 @@ async function generateOpenAICompat(
           streaming_observed: responseStreams,
           timeout: false, cancelled: false, aborted: false, connection_reset: false,
           parser_state: 'parsed',
+          request_link_id: requestLinkId,
+          fallback_permitted: responseStreams ? settings?.openai_compat_empty_stream_proxy_fallback !== false : null,
+          fallback_unavailable_reason: responseStreams && !output && settings?.openai_compat_empty_stream_proxy_fallback === false
+            ? 'disabled_by_user_configuration' : null,
+          stream_event_audit: responseStreams ? streamResult.eventAudit : null,
         });
         progress.complete(output);
         return output;

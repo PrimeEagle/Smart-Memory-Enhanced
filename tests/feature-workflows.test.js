@@ -1115,7 +1115,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(read('arcs.js'), /Direct evidence means messages actually supplied to this provider call/);
   assert.match(read('arcs.js'), /inherited_source_ranges/);
   assert.match(read('profiles.js'), /dropped_invalid_label/);
-  assert.match(read('prompts.js'), /\[EntityName\]: \[exact descriptor from authoritative evidence/);
+  assert.match(read('prompts.js'), /\[EntityName\]: \["exact descriptor", "second exact descriptor"\]/);
   assert.match(read('prompts.js'), /CHARACTER CARD RELATIONSHIP FACTS \(highest priority\)/);
   assert.match(read('profiles.js'), /extractCardRelationshipFacts\(roster\)/);
   assert.match(read('canonical-entities.js'), /relationshipFactExcerpt/);

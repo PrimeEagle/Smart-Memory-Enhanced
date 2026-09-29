@@ -16,6 +16,7 @@ const extractionTerminalStates = new Set([
   'unresolved', 'skipped',
   'provider_response_malformed', 'provider_response_empty',
   'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel',
+  'cancelled_by_manual_stop', 'cancelled_by_run_replacement', 'interrupted_by_runtime_reset', 'interrupted_unknown',
   'completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'replayed_after_recovery',
   'replay_completed', 'replay_failed', 'recovered_completed', 'legacy_outcome_unknown',
 ]);
@@ -47,10 +48,17 @@ const physicalTerminalCategory = (state) => {
   if (['provider_response_malformed', 'malformed_response'].includes(state)) return 'provider_malformed';
   if (state === 'provider_response_empty') return 'provider_empty';
   if (['provider_failure', 'replay_failed'].includes(state)) return 'transport_failure';
-  if (state === 'interrupted_by_manual_cancel') return 'cancelled';
+  if (state === 'interrupted_by_manual_cancel' || /^cancelled_by_/.test(state)) return 'cancelled';
   if (/^interrupted_|^completion_uncertain|replayed_after_recovery/.test(state)) return 'interrupted_completion_unknown';
   return 'internal_failure';
 };
+
+function interruptionTerminalForReason(reason) {
+  if (reason === 'confirmed_browser_tab_discard') return 'completion_uncertain_after_confirmed_discard';
+  if (reason === 'page_instance_replaced_unknown') return 'completion_uncertain_after_page_replacement';
+  if (reason === 'runtime_reset') return 'interrupted_by_runtime_reset';
+  return 'interrupted_unknown';
+}
 
 function canonicalPhysicalTerminalCounts(terminalCounts = {}) {
   const result = {
@@ -78,7 +86,7 @@ function recordTerminal(health, event) {
   run.physical_terminal_counts = canonicalPhysicalTerminalCounts(run.terminal_counts);
   if (event.terminal_health === 'provider_response_malformed' && event.response_received === true) increment(run.provider_quality, 'malformed_responses');
   if (event.terminal_health === 'provider_response_empty' && event.response_received === true) increment(run.provider_quality, 'empty_responses');
-  if (/^interrupted_|completion_uncertain/.test(event.terminal_health)) increment(run, 'interruption_count');
+  if (/^interrupted_|^cancelled_by_|completion_uncertain/.test(event.terminal_health)) increment(run, 'interruption_count');
   run.physical_terminal_total = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
   run.physical_attempt_accounting_reconciled = run.physical_terminal_total === number(run.attempted);
 }
@@ -110,10 +118,11 @@ export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { rea
   let reconciled = 0;
   let recovered = 0;
   let uncertain = 0;
+  const interruptionTerminal = interruptionTerminalForReason(reason);
   for (const event of health.recent_extraction_events) {
     if (event.terminal_health !== 'running') continue;
     const committed = sourceRangeSafelyCommitted(checkpoint, event);
-    event.terminal_health = committed ? 'recovered_completed' : 'completion_uncertain_after_page_interruption';
+    event.terminal_health = committed ? 'recovered_completed' : interruptionTerminal;
     event.lifecycle_outcome = committed ? 'recovered_from_durable_tier_commit' : reason;
     event.interruption_reason = committed ? null : reason;
     event.checkpoint_state = committed ? 'tier_range_safely_committed' : 'tier_range_pending_or_unknown';
@@ -134,7 +143,7 @@ export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { rea
     const terminalTotal = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
     const unclassified = Math.max(0, number(run.attempted) - terminalTotal);
     if (unclassified) {
-      increment(run.terminal_counts, 'completion_uncertain_after_page_interruption', unclassified);
+      increment(run.terminal_counts, interruptionTerminal, unclassified);
       increment(run, 'interruption_count', unclassified);
       run.unretained_interrupted_attempt_count = number(run.unretained_interrupted_attempt_count) + unclassified;
       reconciled += unclassified;
@@ -149,7 +158,7 @@ export function reconcileInterruptedExtractionEvents(metadata, checkpoint, { rea
   return { reconciled, recovered, uncertain };
 }
 
-export function interruptRunningExtractionEvents(metadata, reason = 'interrupted_by_manual_cancel', now = Date.now()) {
+export function interruptRunningExtractionEvents(metadata, reason = 'cancelled_by_manual_stop', now = Date.now()) {
   const health = ensureLiveMemoryHealth(metadata);
   if (!health) return 0;
   let count = 0;
@@ -248,8 +257,8 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
   const now = Date.now();
   const probe = { tier: input.tier ?? 'unknown', source_range: { start: Number.isInteger(input.source_start) ? input.source_start : null, end: Number.isInteger(input.source_end) ? input.source_end : null } };
   const replayedEvent = [...health.recent_extraction_events].reverse().find((prior) => sameLogicalRange(prior, probe)
-    && ['completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel',
-      'replay_failed', 'provider_response_malformed', 'provider_response_empty', 'provider_failure', 'malformed_response'].includes(prior.terminal_health));
+    && (/^completion_uncertain_|^interrupted_|^cancelled_by_/.test(prior.terminal_health)
+      || ['replay_failed', 'provider_response_malformed', 'provider_response_empty', 'provider_failure', 'malformed_response'].includes(prior.terminal_health)));
   const event = {
     event_id: nextId(health, 'extract'),
     timestamp: now,
@@ -329,7 +338,10 @@ export function updateLiveExtractionEvent(event, patch = {}) {
 
 export function finishLiveExtractionEvent(metadata, event, patch = {}) {
   if (!event) return null;
-  if (/^interrupted_by_/.test(event.terminal_health)) return event;
+  // Once interruption reconciliation has supplied a terminal category, a
+  // late callback from the abandoned request must not overwrite or double
+  // count that physical attempt.
+  if (event.terminal_health !== 'running') return event;
   updateLiveExtractionEvent(event, patch);
   const health = ensureLiveMemoryHealth(metadata);
   event.terminal_health = extractionTerminalStates.has(patch.terminal_health) ? patch.terminal_health : 'unresolved';
