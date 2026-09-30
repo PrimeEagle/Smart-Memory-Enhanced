@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.49] - 2026-09-30
+
+### Fixed
+
+- Memorize Chat now recognizes structured provider context-overflow errors,
+  including LM Studio's `exceed_context_size_error`, through nested connection
+  wrappers instead of recording them as generic provider failures. Long-Term
+  and Session extraction immediately repartition only the failed obligation
+  and retry its ordered child ranges within the same attempt.
+- Each successfully recovered overflow child is saved as its own safe
+  transaction boundary. Resume restores matching child fingerprints instead
+  of duplicating them, and durable owner-level Long-Term obligations preserve
+  successful siblings completed before another owner overflowed.
+- Provider-reported runtime context ceilings are stored separately from the
+  user's preferred context size, scoped to the provider/model/profile/endpoint
+  transport signature, retained in crash-recovery state, and used by resumed
+  preflight planning. Runtime discoveries expire after seven days or cease to
+  apply when that signature changes.
+- Extraction preflight now reports configured and effective context ceilings,
+  output reserve, safety margin, protocol overhead, local prompt estimate, and
+  provider-reported prompt/context totals. Repartitioned root ranges count as
+  safely completed tier obligations and retain source fingerprints, citation
+  mapping, parent/child lineage, and physical overflow outcomes in diagnostics.
+
 ## [0.9.48] - 2026-09-29
 
 ### Fixed

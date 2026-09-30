@@ -40,10 +40,12 @@ import {
   generateQuietPrompt,
   getMaxContextSize,
   getRequestHeaders,
+  saveSettingsDebounced,
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
-import { estimateTokens, MEMORY_GENERATION_BUDGET, MODULE_NAME } from './constants.js';
+import { estimateTokens, MEMORY_GENERATION_BUDGET, META_KEY, MODULE_NAME } from './constants.js';
+import { classifyContextOverflow, resolveEffectiveContextLimit } from './extraction-window-utils.js';
 import { classifyOpenAiResponseEnvelope } from './provider-response-utils.js';
 import {
   inspectOpenAiSsePayload,
@@ -142,6 +144,20 @@ function providerErrorText(err) {
     .map((item) => `${item?.name ?? ''} ${item?.message ?? ''} ${item?.body ?? item?.response?.data ?? ''}`)
     .join(' ')
     .toLowerCase();
+}
+
+async function providerHttpError(response, label) {
+  let data = null;
+  try {
+    const text = await response.text();
+    if (text.trim()) data = JSON.parse(text);
+  } catch { /* status and headers remain sufficient for non-JSON failures */ }
+  const error = new Error(`${label} responded with ${response.status}`);
+  error.status = response.status;
+  error.retryAfter = response.headers.get('Retry-After');
+  error.response = { status: response.status, data };
+  error.data = data;
+  return error;
 }
 
 function isTransientProviderError(err) {
@@ -295,21 +311,95 @@ function getSource() {
   return extension_settings[MODULE_NAME]?.source ?? memory_sources.main;
 }
 
+const RUNTIME_CONTEXT_LIMIT_STORAGE_KEY = 'smart-memory-enhanced:runtime-context-limits:v1';
+const RUNTIME_CONTEXT_LIMIT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function memoryProviderIdentity() {
+  const settings = extension_settings[MODULE_NAME] ?? {};
+  const source = getSource();
+  const identity = {
+    provider: source,
+    model: source === memory_sources.openai_compatible ? settings.openai_compat_model ?? null
+      : source === memory_sources.ollama ? settings.ollama_model ?? null
+        : null,
+    profile: source === memory_sources.connection_profile ? getConnectionProfileId() : null,
+    endpoint: source === memory_sources.openai_compatible ? settings.openai_compat_url ?? null
+      : source === memory_sources.ollama ? settings.ollama_url ?? null
+        : source === memory_sources.connection_profile ? 'connection-manager' : 'sillytavern-main',
+    configured_preference: source === memory_sources.connection_profile
+      ? settings.connection_profile_context_sizes?.[getConnectionProfileId()] ?? null
+      : settings.context_length ?? null,
+    transport: source === memory_sources.connection_profile ? 'connection-manager-chat-completion'
+      : source === memory_sources.openai_compatible ? (settings.openai_compat_direct_streaming ? 'direct-or-proxy-stream' : 'server-proxy')
+        : source,
+  };
+  return { ...identity, signature: safePromptFingerprint(JSON.stringify(identity)) };
+}
+
+function readRuntimeContextLimits() {
+  const merged = { ...(extension_settings[MODULE_NAME]?.runtime_context_limits ?? {}) };
+  try { Object.assign(merged, JSON.parse(localStorage.getItem(RUNTIME_CONTEXT_LIMIT_STORAGE_KEY) ?? '{}')); } catch { /* optional crash-safe copy */ }
+  Object.assign(merged, getContext()?.chatMetadata?.[META_KEY]?.catch_up_checkpoint?.runtime_context_limits ?? {});
+  return merged;
+}
+
+/** Returns a privacy-safe copy for diagnostics and recovery UI. */
+export function getRuntimeContextLimitDiagnostics() {
+  return structuredClone(readRuntimeContextLimits());
+}
+
+function activeRuntimeContextLimit(identity = memoryProviderIdentity()) {
+  const record = readRuntimeContextLimits()[identity.signature];
+  if (!record || Date.now() - Number(record.learned_at ?? 0) > RUNTIME_CONTEXT_LIMIT_MAX_AGE_MS) return null;
+  const limit = Number(record.effective_context_limit);
+  return Number.isFinite(limit) && limit > 0 ? { ...record, effective_context_limit: limit } : null;
+}
+
+function persistRuntimeContextLimit(classification, identity = memoryProviderIdentity()) {
+  const reported = Number(classification?.reported_context_tokens);
+  if (!Number.isFinite(reported) || reported <= 0) return null;
+  const current = activeRuntimeContextLimit(identity)?.effective_context_limit;
+  const record = {
+    schema_version: 1,
+    provider_signature: identity.signature,
+    provider: identity.provider,
+    model: classification.model ?? identity.model,
+    profile: identity.profile ? String(identity.profile) : null,
+    endpoint_fingerprint: safePromptFingerprint(String(identity.endpoint ?? 'unknown')),
+    transport: identity.transport,
+    engine_session_fingerprint: classification.engine_session_fingerprint ?? null,
+    effective_context_limit: current ? Math.min(current, reported) : reported,
+    discovery_source: 'structured_provider_overflow',
+    learned_at: Date.now(),
+    confidence: 'provider_reported',
+    invalidation: 'provider_model_profile_endpoint_transport_change_or_seven_day_expiry',
+  };
+  const settings = extension_settings[MODULE_NAME] ??= {};
+  settings.runtime_context_limits ??= {};
+  settings.runtime_context_limits[identity.signature] = record;
+  try {
+    const stored = readRuntimeContextLimits();
+    stored[identity.signature] = record;
+    localStorage.setItem(RUNTIME_CONTEXT_LIMIT_STORAGE_KEY, JSON.stringify(stored));
+  } catch { /* ordinary settings and the run checkpoint remain available */ }
+  const checkpoint = getContext()?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+  if (checkpoint?.run_id) {
+    checkpoint.runtime_context_limits ??= {};
+    checkpoint.runtime_context_limits[identity.signature] = record;
+    checkpoint.updated_at = Date.now();
+  }
+  saveSettingsDebounced();
+  saveSettingsDebounced.flush?.();
+  return record;
+}
+
 export function getMemorySource() {
   return getSource();
 }
 
 /** Returns a safe input budget for the active memory provider. */
 export function getMemoryInputBudget(responseLength) {
-  const settings = extension_settings[MODULE_NAME] ?? {};
-  const profileId = getConnectionProfileId();
-  const profileLimit = settings.connection_profile_context_sizes?.[profileId];
-  const contextLimit =
-    getSource() === memory_sources.connection_profile && Number(profileLimit) > 0
-      ? Number(profileLimit)
-      : getMaxContextSize(responseLength);
-  const output = responseLength > 0 ? responseLength : getGenerationBudget();
-  return Math.max(500, contextLimit - Math.max(0, output) - 1000);
+  return getMemoryRequestBudget(responseLength).usableInputTokens;
 }
 
 /** Returns the exact context accounting contract used by extraction preflight. */
@@ -320,12 +410,26 @@ export function getMemoryRequestBudget(responseLength) {
   const configuredContextLimit = getSource() === memory_sources.connection_profile && Number(profileLimit) > 0
     ? Number(profileLimit)
     : getMaxContextSize(responseLength);
+  const identity = memoryProviderIdentity();
+  const runtime = activeRuntimeContextLimit(identity);
+  const effectiveContextLimit = resolveEffectiveContextLimit(
+    configuredContextLimit,
+    userConfiguredContextLimit: configuredContextLimit,
+    providerAdvertisedContextLimit: null,
+    connectionProfileContextLimit: Number(profileLimit) > 0 ? Number(profileLimit) : null,
+    runtime?.effective_context_limit,
+  ) ?? configuredContextLimit;
   const reservedOutputTokens = responseLength > 0 ? responseLength : getGenerationBudget();
   return {
     configuredContextLimit,
+    effectiveContextLimit,
+    runtimeContextLimit: runtime?.effective_context_limit ?? null,
+    runtimeContextLimitSource: runtime?.discovery_source ?? null,
+    providerSignature: identity.signature,
     reservedOutputTokens: Math.max(0, reservedOutputTokens),
     safetyMargin: 1000,
-    usableInputTokens: Math.max(500, configuredContextLimit - Math.max(0, reservedOutputTokens) - 1000),
+    protocolOverhead: 256,
+    usableInputTokens: Math.max(500, effectiveContextLimit - Math.max(0, reservedOutputTokens) - 1000 - 256),
   };
 }
 
@@ -637,7 +741,7 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
       }),
       signal: thisController.signal,
     });
-    if (!response.ok) throw new Error(`Ollama responded with ${response.status}`);
+    if (!response.ok) throw await providerHttpError(response, 'Ollama');
     const output = stream ? await readOllamaStream(response, progress) : (await response.json()).message?.content ?? '';
     progress.complete(output);
     return output;
@@ -789,7 +893,10 @@ async function generateOpenAICompat(
             finish_reason: null, streaming_observed: responseStreams, streaming_chunk_count: 0,
             content_delta_observed: false,
           });
-          throw new Error(data.error.message || 'OpenAI Compatible API error');
+          const providerError = new Error(data.error.message || 'OpenAI Compatible API error');
+          providerError.status = response.status;
+          providerError.data = data;
+          throw providerError;
         }
         const streamResult = responseStreams ? await readOpenAiStream(response, progress) : null;
         if (streamResult?.providerError) {
@@ -803,7 +910,10 @@ async function generateOpenAICompat(
             parser_state: 'parsed_provider_error_event', classification: 'stream_provider_error_envelope',
             stream_event_audit: streamResult.eventAudit,
           });
-          throw new Error(streamResult.providerError.message || 'OpenAI Compatible stream returned an error');
+          const streamError = new Error(streamResult.providerError.message || 'OpenAI Compatible stream returned an error');
+          streamError.status = response.status;
+          streamError.data = { error: streamResult.providerError };
+          throw streamError;
         }
         const fallback = await runAuthorizedEmptyStreamFallback({
           directStream: responseStreams, httpStatus: response.status, output: streamResult?.output,
@@ -823,9 +933,7 @@ async function generateOpenAICompat(
           });
           const fallbackResponse = fallback.response;
           if (!fallbackResponse.ok) {
-            const fallbackError = new Error(`OpenAI Compatible proxy fallback responded with ${fallbackResponse.status}`);
-            fallbackError.status = fallbackResponse.status;
-            throw fallbackError;
+            throw await providerHttpError(fallbackResponse, 'OpenAI Compatible proxy fallback');
           }
           const fallbackBody = await fallbackResponse.text();
           let fallbackData = null;
@@ -850,7 +958,12 @@ async function generateOpenAICompat(
             streaming_observed: false, timeout: false, cancelled: false, aborted: false,
             connection_reset: false, parser_state: 'parsed', terminal_adaptation: 'same_provider_proxy_nonstream_retry',
           });
-          if (fallbackData?.error) throw new Error(fallbackData.error.message || 'OpenAI Compatible proxy fallback error');
+          if (fallbackData?.error) {
+            const fallbackError = new Error(fallbackData.error.message || 'OpenAI Compatible proxy fallback error');
+            fallbackError.status = fallbackResponse.status;
+            fallbackError.data = fallbackData;
+            throw fallbackError;
+          }
           progress.complete(fallbackContent);
           return fallbackContent;
         }
@@ -881,10 +994,7 @@ async function generateOpenAICompat(
         return output;
       }
 
-      const error = new Error(`OpenAI Compatible API responded with ${response.status}`);
-      error.status = response.status;
-      error.retryAfter = response.headers.get('Retry-After');
-      throw error;
+      throw await providerHttpError(response, 'OpenAI Compatible API');
     } catch (err) {
       if (err.name === 'AbortError') {
         onRequestDiagnostic?.({ provider: 'openai_compatible', model_name: model || null,
@@ -914,8 +1024,9 @@ async function generateOpenAICompat(
  * @returns {Promise<string>} The raw model response
  */
 export async function generateMemoryExtract(prompt, { responseLength = 600, task = null } = {}) {
-  return queueMemoryRequest(() =>
-    retryTransientMemoryOperation(async () => {
+  try {
+    return await queueMemoryRequest(() =>
+      retryTransientMemoryOperation(async () => {
       const source = getSource();
       let raw;
 
@@ -961,8 +1072,32 @@ export async function generateMemoryExtract(prompt, { responseLength = 600, task
       ? Math.max(responseLength, getGenerationBudget()) * 4
       : Infinity;
       return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
-    }),
-  );
+      }),
+    );
+  } catch (error) {
+    const identity = memoryProviderIdentity();
+    const budgetBefore = getMemoryRequestBudget(responseLength);
+    const classification = classifyContextOverflow(error, {
+      provider: identity.provider,
+      model: identity.model,
+      transport: identity.transport,
+      configuredContextLimit: budgetBefore.configuredContextLimit,
+      effectiveContextLimitBefore: budgetBefore.effectiveContextLimit,
+    });
+    if (classification) {
+      const learned = persistRuntimeContextLimit(classification, identity);
+      error.sme_request_diagnostics = {
+        ...(error.sme_request_diagnostics ?? {}),
+        context_overflow: {
+          ...classification,
+          effective_context_limit_after: learned?.effective_context_limit
+            ?? classification.effective_context_limit_after,
+        },
+        likely_cause: 'provider_reported_context_overflow',
+      };
+    }
+    throw error;
+  }
 }
 
 /**

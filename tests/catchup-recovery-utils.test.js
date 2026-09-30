@@ -7,10 +7,28 @@ import {
   beginCatchUpAttempt,
   recordCommittedCatchUpRange,
   getCatchUpTierRangeStatus,
+  getCatchUpOwnerRangeStatus,
+  recordCatchUpOwnerRange,
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
 } from '../catchup-recovery-utils.js';
+
+test('completed Long-Term owners survive manifest normalization and skip sibling replay', () => {
+  const range = { start_offset: 2660, end_offset: 2679, source_start_index: 2660, source_end_index: 2679 };
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-owner', source_message_count: 9434 });
+  manifest = recordCatchUpOwnerRange(manifest, 'Alex Mercer', range, {
+    safelyCommitted: true,
+    sourceFingerprint: 'fnv1a-alex',
+    terminalOutcome: 'completed',
+    now: 10,
+  });
+  manifest = ensureCatchUpRunManifest({ run_manifest: manifest });
+  assert.equal(getCatchUpOwnerRangeStatus(manifest, 'Alex Mercer', range)?.safely_committed, true);
+  assert.equal(getCatchUpOwnerRangeStatus(manifest, 'Aster Graves', range), null);
+  assert.equal(getCatchUpOwnerRangeStatus(manifest, 'Alex Mercer', range)?.source_fingerprint, 'fnv1a-alex');
+  assert.equal(summarizeCatchUpRunManifest(manifest).longterm_owner_obligation_count, 1);
+});
 
 const checkpoint = {
   schema_version: 1,

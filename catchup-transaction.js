@@ -3,7 +3,7 @@
  * saveChatMetadata() as usual; while a transaction is active, it records that
  * metadata changed instead of saving intermediate, half-processed state.
  */
-import { getRequestHeaders, saveChat } from '../../../../script.js';
+import { getRequestHeaders, saveChat, saveSettingsDebounced } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY } from './constants.js';
 
@@ -86,6 +86,30 @@ export async function commitCatchUpTransaction(transaction) {
     activeTransaction = null;
   } catch (error) {
     rollbackCatchUpTransaction(transaction);
+    throw error;
+  }
+}
+
+/**
+ * Persists a safe recovery subrange while keeping the enclosing chunk
+ * transaction open. A later rollback returns to this newly committed boundary,
+ * so completed overflow children are neither lost nor duplicated.
+ */
+export async function checkpointCatchUpTransaction(transaction) {
+  if (!transaction || transaction !== activeTransaction) throw new Error('Cannot checkpoint an inactive catch-up transaction.');
+  try {
+    saveSettingsDebounced();
+    saveSettingsDebounced.flush?.();
+    if (transaction.metadataDirty) {
+      if (transaction.context.groupId) await saveGroupChatDirect(transaction.context);
+      else await saveChat();
+    }
+    transaction.metadataBefore = structuredClone(transaction.context.chatMetadata?.[META_KEY] ?? {});
+    transaction.settingsBefore = structuredClone(extension_settings[MODULE_NAME] ?? {});
+    transaction.metadataDirty = false;
+  } catch (error) {
+    rollbackCatchUpTransaction(transaction);
+    error.sme_context_overflow_checkpoint_failure = true;
     throw error;
   }
 }

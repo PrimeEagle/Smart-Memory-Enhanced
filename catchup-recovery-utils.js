@@ -35,6 +35,7 @@ const MAX_CATCH_UP_ATTEMPTS = 8;
 const MAX_COMMITTED_RANGES = 512;
 const MAX_COMMITTED_CHUNK_DETAILS = 512;
 const MAX_TIER_OBLIGATIONS = 1024;
+const MAX_OWNER_OBLIGATIONS = 4096;
 
 function number(value, fallback = 0) {
   const parsed = Number(value);
@@ -93,6 +94,45 @@ function terminalTierOutcome(outcome = {}) {
 
 function obligationKey(tier, range) {
   return `${tier}:${range.start_offset}-${range.end_offset}`;
+}
+
+function ownerObligationKey(owner, range) {
+  return `longterm:${String(owner ?? '').trim().toLowerCase()}:${range.start_offset}-${range.end_offset}`;
+}
+
+/** Returns one safely committed Long-Term owner/range obligation. */
+export function getCatchUpOwnerRangeStatus(manifest, owner, range) {
+  const normalized = normalizeRange(range);
+  if (!normalized || !String(owner ?? '').trim()) return null;
+  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
+  return next.owner_obligations.find((entry) => entry.key === ownerObligationKey(owner, normalized)) ?? null;
+}
+
+/** Records one owner result; callers persist it with the enclosing transaction. */
+export function recordCatchUpOwnerRange(manifest, owner, range, {
+  safelyCommitted = false,
+  sourceFingerprint = null,
+  terminalOutcome = safelyCommitted ? 'safely_committed' : 'pending',
+  now = Date.now(),
+} = {}) {
+  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
+  const normalized = normalizeRange(range);
+  if (!normalized || !String(owner ?? '').trim()) return next;
+  const key = ownerObligationKey(owner, normalized);
+  const prior = next.owner_obligations.find((entry) => entry.key === key);
+  const entry = {
+    key,
+    tier: 'longterm',
+    owner: String(owner),
+    ...normalized,
+    source_fingerprint: sourceFingerprint ?? prior?.source_fingerprint ?? null,
+    safely_committed: safelyCommitted || prior?.safely_committed === true,
+    terminal_outcome: safelyCommitted ? 'safely_committed' : terminalOutcome,
+    updated_at: now,
+  };
+  next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
+    .slice(-MAX_OWNER_OBLIGATIONS);
+  return next;
 }
 
 /** Returns the durable state of one tier/range without exposing source text. */
@@ -175,6 +215,18 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
           checkpoint_boundary: number(entry.checkpoint_boundary) || null,
         };
       }).filter(Boolean).slice(-MAX_TIER_OBLIGATIONS) : [],
+    owner_obligations: Array.isArray(prior.owner_obligations) ? prior.owner_obligations
+      .map((entry) => {
+        const range = normalizeRange(entry);
+        if (!range || entry?.tier !== 'longterm' || !String(entry?.owner ?? '').trim()) return null;
+        return {
+          key: ownerObligationKey(entry.owner, range), tier: 'longterm', owner: String(entry.owner), ...range,
+          source_fingerprint: entry.source_fingerprint ?? null,
+          safely_committed: entry.safely_committed === true,
+          terminal_outcome: entry.terminal_outcome ?? (entry.safely_committed ? 'safely_committed' : 'pending'),
+          updated_at: number(entry.updated_at) || null,
+        };
+      }).filter(Boolean).slice(-MAX_OWNER_OBLIGATIONS) : [],
     checkpoint_transitions: Array.isArray(prior.checkpoint_transitions) ? prior.checkpoint_transitions.slice(-24) : [],
     terminal_status: prior.terminal_status ?? 'in_progress',
     terminal_reason_code: prior.terminal_reason_code ?? null,
@@ -358,6 +410,8 @@ export function summarizeCatchUpRunManifest(manifest) {
     } : null,
     cumulative_request_counters_available: allRequestCountersAvailable,
     cumulative_tier_coverage: tierCoverage,
+    longterm_owner_obligations: next.owner_obligations,
+    longterm_owner_obligation_count: next.owner_obligations.length,
     all_original_source_messages_covered: total === 0 ? true : gaps.length === 0,
     full_cumulative_coverage_confirmed: (total === 0 ? true : gaps.length === 0)
       && Object.values(tierCoverage).every((tier) => tier.enabled !== true || tier.coverage_complete === true),
@@ -380,6 +434,11 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     reason_code: checkpoint.run_manifest?.terminal_reason_code ?? null,
     source_message_count: Number(checkpoint.source_message_count ?? 0),
     safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
+    context_overflow_recovery: {
+      schema_version: Number(checkpoint.context_overflow_recovery?.schema_version ?? 0) || null,
+      completed_child_count: checkpoint.context_overflow_recovery?.completed_children?.length ?? 0,
+      completed_children: (checkpoint.context_overflow_recovery?.completed_children ?? []).slice(-2048),
+    },
     finalization: {
       schema_version: Number(checkpoint.finalization?.schema_version ?? 0) || null,
       active_phase: checkpoint.finalization?.active_phase ?? null,

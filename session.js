@@ -92,10 +92,13 @@ import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import {
+  classifyContextOverflow,
+  extractionRecoveryChildKey,
   isEstimatedContextOverflow,
   makeExtractionPreflight,
   partitionSourceWindow,
   sourceRange,
+  sourceWindowFingerprint,
 } from './extraction-window-utils.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
@@ -455,8 +458,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       prompt,
       estimateTokens,
       configuredContextLimit: requestBudget.configuredContextLimit,
+      effectiveContextLimit: requestBudget.effectiveContextLimit,
       reservedOutputTokens: requestBudget.reservedOutputTokens,
       safetyMargin: requestBudget.safetyMargin,
+      protocolOverhead: requestBudget.protocolOverhead,
     });
     healthUpdate({ preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens } });
     const depth = Number(options._contextOverflowDepth ?? 0);
@@ -471,30 +476,41 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       original_range: { start: range.start, end: range.end, message_count: range.message_count },
       effective_range: { start: range.start, end: range.end, message_count: range.message_count },
       citation_mapping_valid: range.source_indices.every(Number.isInteger),
+      source_fingerprint: sourceWindowFingerprint(sourceMessages),
       preflight,
       request_sent: false,
     };
-    const splitWindow = async (reason) => {
+    const splitWindow = async (reason, splitBudget = requestBudget, overflow = null) => {
+      const providerRequestWasSent = reason === 'provider_reported_context_overflow';
+      const splitCoverageBase = {
+        ...coverageBase,
+        request_sent: providerRequestWasSent,
+        physical_provider_outcome: providerRequestWasSent ? 'context_overflow' : 'request_prevented',
+      };
       const split = partitionSourceWindow(
         sourceMessages,
         renderPrompt,
         (candidatePrompt) => makeExtractionPreflight({
           prompt: candidatePrompt,
           estimateTokens,
-          configuredContextLimit: requestBudget.configuredContextLimit,
-          reservedOutputTokens: requestBudget.reservedOutputTokens,
-          safetyMargin: requestBudget.safetyMargin,
+          configuredContextLimit: splitBudget.configuredContextLimit,
+          effectiveContextLimit: splitBudget.effectiveContextLimit,
+          reservedOutputTokens: splitBudget.reservedOutputTokens,
+          safetyMargin: splitBudget.safetyMargin,
+          protocolOverhead: splitBudget.protocolOverhead,
         }),
       );
       recordExtractionCoverage(coverageLedger, {
-        ...coverageBase,
+        ...splitCoverageBase,
         provider_outcome: reason,
+        context_overflow: overflow,
+        recovery_context_limit: splitBudget.effectiveContextLimit,
         coverage_terminal_state: split.partitions.length ? 'repartitioning' : 'unresolved_context_overflow',
         child_range_count: split.partitions.length + split.oversized.length,
       });
       if (depth >= MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH || !split.partitions.length) {
         recordExtractionCoverage(coverageLedger, {
-          ...coverageBase,
+          ...splitCoverageBase,
           provider_outcome: reason,
           coverage_terminal_state: 'unresolved_context_overflow',
           unresolved_reason: 'split_depth_or_partition_failure',
@@ -505,6 +521,19 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       try {
         for (const child of split.partitions) {
           const childRange = sourceRange(child);
+          const childKey = extractionRecoveryChildKey('session', null, child);
+          if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)) {
+            recordExtractionCoverage(coverageLedger, {
+              range_id: extractionRangeId('session', childRange, depth + 1),
+              parent_range_id: rangeId, tier: 'session',
+              original_range: { start: childRange.start, end: childRange.end, message_count: childRange.message_count },
+              effective_range: { start: childRange.start, end: childRange.end, message_count: childRange.message_count },
+              source_fingerprint: sourceWindowFingerprint(child), citation_mapping_valid: true,
+              request_sent: false, provider_outcome: 'restored_recovered_child_checkpoint',
+              coverage_terminal_state: 'completed', all_source_messages_covered: true,
+            });
+            continue;
+          }
           added += await extractSessionMemories(child, abortCheck, {
             ...options,
             // Preserve one bounded health event for the root live window.
@@ -513,10 +542,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             _contextOverflowParentRangeId: rangeId,
             _contextOverflowRangeId: extractionRangeId('session', childRange, depth + 1),
           });
+          await options._onContextOverflowChildCommitted?.({
+            key: childKey, tier: 'session', owner: null,
+            source_start_index: childRange.start, source_end_index: childRange.end,
+            message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
+          });
         }
       } catch (err) {
         recordExtractionCoverage(coverageLedger, {
-          ...coverageBase,
+          ...splitCoverageBase,
           provider_outcome: reason,
           coverage_terminal_state: 'unresolved_child_window_failure',
         });
@@ -524,7 +558,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }
       if (split.oversized.length) {
         recordExtractionCoverage(coverageLedger, {
-          ...coverageBase,
+          ...splitCoverageBase,
           provider_outcome: reason,
           coverage_terminal_state: 'unresolved_context_overflow',
           unresolved_reason: 'single_message_exceeds_context_budget',
@@ -533,7 +567,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         throw contextOverflowError(preflight, range);
       }
       recordExtractionCoverage(coverageLedger, {
-        ...coverageBase,
+        ...splitCoverageBase,
         provider_outcome: reason,
         coverage_terminal_state: 'repartitioned_completed',
         all_source_messages_covered: true,
@@ -559,9 +593,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         all_source_messages_covered: true,
       });
     } catch (err) {
-      if (isEstimatedContextOverflow(err)) {
+      const overflow = classifyContextOverflow(err);
+      if (overflow || isEstimatedContextOverflow(err)) {
         healthUpdate({ provider_outcome: 'classified_context_overflow', preflight: { ...preflight, resized_or_repartitioned: true } });
-        const added = await splitWindow('provider_estimated_context_overflow');
+        const added = await splitWindow('provider_reported_context_overflow', getMemoryRequestBudget(responseLength), overflow);
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
         return added;
       }

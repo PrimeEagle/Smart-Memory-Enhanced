@@ -1554,19 +1554,30 @@ test('long-chat extraction preflights final prompts and records bounded overflow
   const longterm = read('longterm.js');
   const session = read('session.js');
   const settings = read('settings.js');
+  const generate = read('generate.js');
   for (const source of [longterm, session]) {
     assert.match(source, /getMemoryRequestBudget/);
     assert.match(source, /makeExtractionPreflight/);
     assert.match(source, /partitionSourceWindow/);
     assert.match(source, /isEstimatedContextOverflow/);
     assert.match(source, /prevented_preflight_context_overflow/);
-    assert.match(source, /provider_estimated_context_overflow/);
+    assert.match(source, /provider_reported_context_overflow/);
     assert.match(source, /single_message_exceeds_context_budget/);
+    assert.match(source, /physical_provider_outcome: providerRequestWasSent \? 'context_overflow'/);
+    assert.match(source, /sourceWindowFingerprint/);
   }
+  assert.match(generate, /persistRuntimeContextLimit/);
+  assert.match(generate, /runtime_context_limits/);
+  assert.match(generate, /effectiveContextLimit/);
+  assert.match(generate, /protocolOverhead: 256/);
   assert.match(settings, /extractionCoverage/);
   assert.match(settings, /summarizeExtractionCoverage/);
   assert.match(settings, /extraction_coverage_incomplete/);
   assert.match(settings, /extraction_coverage: runResult\.extractionCoverage/);
+  assert.match(settings, /\['completed', 'repartitioned_completed'\]\.includes/);
+  assert.match(settings, /checkpointCatchUpTransaction\(chunkTransaction\)/);
+  assert.match(settings, /_contextOverflowCompletedChildren/);
+  assert.match(settings, /getCatchUpOwnerRangeStatus/);
 });
 
 test('Memorize Chat checkpoints only committed chunks and exposes guarded recovery', () => {

@@ -62,6 +62,7 @@ import {
   onMemoryRequestProgress,
   retryTransientMemoryOperation,
   abortCurrentMemoryGeneration,
+  getRuntimeContextLimitDiagnostics,
 } from './generate.js';
 import { summarizeExtractionCoverage } from './extraction-window-utils.js';
 import {
@@ -87,9 +88,12 @@ import {
   summarizeCatchUpCheckpoint,
   getCatchUpTierRangeStatus,
   isCatchUpTierRangeSafelyCovered,
+  getCatchUpOwnerRangeStatus,
+  recordCatchUpOwnerRange,
 } from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
+  checkpointCatchUpTransaction,
   commitCatchUpTransaction,
   rollbackCatchUpTransaction,
   saveChatMetadata,
@@ -2598,6 +2602,7 @@ export function bindSettingsUI(ctrl) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
       return { ...completedRun, live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
+        runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
         page_run_lifecycle: summarizePageRunLifecycle(metadata, completedRun.logical_run?.attempt_count ?? null) };
     }
     // Fresh Start is itself a consequential, persisted operation. Its
@@ -2618,6 +2623,7 @@ export function bindSettingsUI(ctrl) {
       provider_calls_during_audit: 0,
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
+      runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
       page_run_lifecycle: summarizePageRunLifecycle(metadata, metadata.catch_up_checkpoint?.run_manifest?.total_attempt_count ?? null),
     };
   };
@@ -5078,6 +5084,21 @@ export function bindSettingsUI(ctrl) {
           source_start_index: chunk[0]?.__sme_original_index ?? null,
           source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
         };
+        checkpoint.context_overflow_recovery ??= { schema_version: 1, completed_children: [] };
+        checkpoint.context_overflow_recovery.completed_children ??= [];
+        const completedOverflowChildren = checkpoint.context_overflow_recovery.completed_children
+          .map((entry) => entry?.key).filter(Boolean);
+        const commitOverflowChild = async (record) => {
+          if (!record?.key || completedOverflowChildren.includes(record.key)) return;
+          completedOverflowChildren.push(record.key);
+          checkpoint.context_overflow_recovery.completed_children = [
+            ...checkpoint.context_overflow_recovery.completed_children,
+            { ...record, committed_at: Date.now(), terminal_state: 'safely_committed' },
+          ].slice(-2048);
+          checkpoint.updated_at = Date.now();
+          await saveChatMetadata(catchUpContext);
+          await checkpointCatchUpTransaction(chunkTransaction);
+        };
         const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
         const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
         const priorLongtermObligation = getCatchUpTierRangeStatus(checkpoint.run_manifest, 'longterm', currentRange);
@@ -5092,7 +5113,25 @@ export function bindSettingsUI(ctrl) {
         updateActivePageMarker(checkpoint, 'source_extraction', 'in_flight');
 
         if (replayLongterm) {
+          // v0.9.48 and earlier exported owner-level coverage without retaining
+          // it in the recovery manifest. Migrate any safely completed sibling
+          // from the last attempt before deciding which owners need replay.
+          const priorOwnerCoverage = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics
+            ?.extraction_coverage?.longterm?.records ?? [];
+          for (const record of priorOwnerCoverage) {
+            if (record?.parent_range_id != null
+              || !['completed', 'repartitioned_completed'].includes(record?.coverage_terminal_state)
+              || record?.original_range?.start !== currentRange.source_start_index
+              || record?.original_range?.end !== currentRange.source_end_index
+              || !record?.owner) continue;
+            checkpoint.run_manifest = recordCatchUpOwnerRange(checkpoint.run_manifest, record.owner, currentRange, {
+              safelyCommitted: true,
+              sourceFingerprint: record.source_fingerprint ?? null,
+              terminalOutcome: record.coverage_terminal_state,
+            });
+          }
           for (const name of catchUpCharacterNames) {
+            if (getCatchUpOwnerRangeStatus(checkpoint.run_manifest, name, currentRange)?.safely_committed === true) continue;
             // Historical group rebuilds intentionally give every current card
             // the full chunk. Older chats may predate the group split or carry
             // incorrect speaker attribution, so author filtering would hide
@@ -5106,9 +5145,25 @@ export function bindSettingsUI(ctrl) {
             await extractAndStoreMemories(name, nameChunk, setStatusMessage, {
               extractionCoverage: runResult.extractionCoverage,
               liveHealth: createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'),
+              _contextOverflowCompletedChildren: completedOverflowChildren,
+              _onContextOverflowChildCommitted: commitOverflowChild,
             }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
+              if (err?.sme_context_overflow_checkpoint_failure) ctrl.catchUpCancelled = true;
             });
+            const completedOwnerRecord = runResult.extractionCoverage.longterm.records.findLast((record) =>
+              record?.parent_range_id == null
+              && record?.owner === name
+              && record?.original_range?.start === currentRange.source_start_index
+              && record?.original_range?.end === currentRange.source_end_index
+              && ['completed', 'repartitioned_completed'].includes(record?.coverage_terminal_state));
+            if (completedOwnerRecord) {
+              checkpoint.run_manifest = recordCatchUpOwnerRange(checkpoint.run_manifest, name, currentRange, {
+                safelyCommitted: true,
+                sourceFingerprint: completedOwnerRecord.source_fingerprint ?? null,
+                terminalOutcome: completedOwnerRecord.coverage_terminal_state,
+              });
+            }
             if (ctrl.catchUpCancelled) break;
             // Consolidate after each chunk so near-duplicates are collapsed before
             // the next chunk can add more similar entries.
@@ -5130,8 +5185,11 @@ export function bindSettingsUI(ctrl) {
             sessionDiagnostics: runResult.sessionExtraction,
             extractionCoverage: runResult.extractionCoverage,
             liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
+            _contextOverflowCompletedChildren: completedOverflowChildren,
+            _onContextOverflowChildCommitted: commitOverflowChild,
           }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
+            if (err?.sme_context_overflow_checkpoint_failure) ctrl.catchUpCancelled = true;
           });
           if (ctrl.catchUpCancelled) {
             rollbackCatchUpTransaction(chunkTransaction);
@@ -5201,9 +5259,9 @@ export function bindSettingsUI(ctrl) {
           const chunkEndIndex = chunk.at(-1)?.__sme_original_index ?? null;
           const rangeMatchesCurrentChunk = (record) => record?.original_range?.start === chunkStartIndex
             && record?.original_range?.end === chunkEndIndex
-            && record?.coverage_terminal_state === 'completed';
-          const completedLongtermOwners = runResult.extractionCoverage.longterm.records
-            .filter(rangeMatchesCurrentChunk).length;
+            && ['completed', 'repartitioned_completed'].includes(record?.coverage_terminal_state);
+          const completedLongtermOwners = catchUpCharacterNames.filter((name) =>
+            getCatchUpOwnerRangeStatus(checkpointForCommit.run_manifest, name, currentRange)?.safely_committed === true).length;
           const completedSessionRanges = runResult.extractionCoverage.session.records
             .filter(rangeMatchesCurrentChunk).length;
           checkpointForCommit.run_manifest = recordCommittedCatchUpRange(
@@ -7315,6 +7373,8 @@ export function bindSettingsUI(ctrl) {
         automatic_stabilization: runResult.finalReconciliation?.stabilization ?? null,
         manual_idempotence: catchUpContext.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? null,
         runtime_context: runResult.runtimeContext,
+        runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(checkpoint.runtime_context_limits ?? {}) },
+        context_overflow_recovery: checkpoint.context_overflow_recovery ?? null,
         persona_audit_proof: checkpoint.persona_audit_proof ?? null,
         imported_persona_recovery: (() => {
           const recovery = runResult.runtimeContext?.active_persona?.imported_persona_recovery;
