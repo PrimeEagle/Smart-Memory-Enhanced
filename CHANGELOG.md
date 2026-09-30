@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.50] - 2026-09-30
+
+### Fixed
+
+- Fixed a malformed context-limit helper call that caused `generate.js` to
+  fail parsing and prevented Smart Memory Enhanced from loading in
+  SillyTavern.
+- Added `generate.js` to both standard release test commands' syntax checks so
+  a load-blocking parser regression fails validation before another release.
+
 ## [0.9.49] - 2026-09-30
 
 ### Fixed

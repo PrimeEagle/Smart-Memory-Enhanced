@@ -414,9 +414,6 @@ export function getMemoryRequestBudget(responseLength) {
   const runtime = activeRuntimeContextLimit(identity);
   const effectiveContextLimit = resolveEffectiveContextLimit(
     configuredContextLimit,
-    userConfiguredContextLimit: configuredContextLimit,
-    providerAdvertisedContextLimit: null,
-    connectionProfileContextLimit: Number(profileLimit) > 0 ? Number(profileLimit) : null,
     runtime?.effective_context_limit,
   ) ?? configuredContextLimit;
   const reservedOutputTokens = responseLength > 0 ? responseLength : getGenerationBudget();
