@@ -119,6 +119,12 @@ import {
   sourceRange,
   sourceWindowFingerprint,
 } from './extraction-window-utils.js';
+import {
+  beginProviderAttempt,
+  classifyMalformedProviderOutput,
+  finishProviderAttempt,
+} from './provider-attempt-audit.js';
+import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 
@@ -445,6 +451,22 @@ export function getRelationshipHistoryPairDisplay(key, state = {}) {
   return { subject, target };
 }
 
+/** Deterministic propagation gate for relationship pairs; unresolved identities are never guessed. */
+export function classifyRelationshipPairSafety(key, state = {}, roster = buildCanonicalCharacterRoster(getContext())) {
+  const labels = getRelationshipHistoryPairDisplay(key, state);
+  const preliminary = classifyRelationshipPairIdentity({ subjectLabel: labels.subject, targetLabel: labels.target });
+  if (preliminary.safe === false) return { ...preliminary, labels };
+  const participants = canonicalizeRelationshipPair(labels.subject, labels.target, roster);
+  if (!participants) return { safe: false, reason: 'participant_not_safely_resolved', labels };
+  const pair = getRelationshipHistoryPair(participants[0], participants[1], roster);
+  const resolved = classifyRelationshipPairIdentity({
+    subjectLabel: labels.subject, targetLabel: labels.target, resolutionAttempted: true,
+    subjectCanonicalId: pair.subject.storageId, targetCanonicalId: pair.target.storageId,
+  });
+  if (!resolved.safe) return { ...resolved, labels, pair };
+  return { safe: true, reason: null, labels, participants, pair };
+}
+
 // Relationship updates can run for a long chat. Keep enough recent and
 // traceable provenance to audit a descriptor without letting every repeated
 // confirmation grow the pair forever. Descriptors and explicit manual edits
@@ -517,16 +539,39 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
   // recent grounded update wins deterministically during pair coalescence.
   for (const [key, state] of Object.entries(history).sort(([, left], [, right]) => (left?.updatedAt ?? 0) - (right?.updatedAt ?? 0))) {
     const { subject, target } = getRelationshipHistoryPairDisplay(key, state);
-    if (!subject || !target) { reconciled[key] = state; continue; }
-    // A relationship key is valid only when both directions resolve to a
-    // stable character/persona identity. Preserve an unresolvable legacy
-    // record for review rather than silently assigning it a name-based key.
-    const participants = canonicalizeRelationshipPair(subject, target, roster);
-    if (!participants) {
-      reconciled[key] = { ...state, validation_status: state.validation_status ?? 'needs_review', validation_issues: mergeList(state.validation_issues, ['Relationship participants could not be resolved to stable canonical identities.']) };
+    if (!subject || !target) {
+      const quarantined = {
+        ...state,
+        validation_status: 'needs_review',
+        propagation_status: 'quarantined_unresolved_identity',
+        excluded_from_injection: true,
+        quarantine_reason: 'missing_participant_label',
+        validation_issues: mergeList(state.validation_issues, ['Relationship record is missing a participant label.']),
+      };
+      reconciled[key] = quarantined;
+      changed ||= JSON.stringify(quarantined) !== JSON.stringify(state);
       unresolved++;
       continue;
     }
+    // A relationship key is valid only when both directions resolve to a
+    // stable character/persona identity. Preserve an unresolvable legacy
+    // record for review rather than silently assigning it a name-based key.
+    const safety = classifyRelationshipPairSafety(key, state, roster);
+    if (!safety.safe) {
+      const quarantined = {
+        ...state,
+        validation_status: 'needs_review',
+        propagation_status: 'quarantined_unresolved_identity',
+        excluded_from_injection: true,
+        quarantine_reason: safety.reason,
+        validation_issues: mergeList(state.validation_issues, ['Relationship participants could not be resolved to two distinct stable canonical identities.']),
+      };
+      reconciled[key] = quarantined;
+      changed ||= JSON.stringify(quarantined) !== JSON.stringify(state);
+      unresolved++;
+      continue;
+    }
+    const participants = safety.participants;
     const pair = getRelationshipHistoryPair(participants[0], participants[1], roster);
     const storedSubjectId = state.subject_canonical_card_id ?? state.subject_canonical_persona_id ?? null;
     const storedTargetId = state.target_canonical_card_id ?? state.target_canonical_persona_id ?? null;
@@ -534,11 +579,16 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
     const expectedTargetId = pair.target.cardId ?? pair.target.personaId ?? null;
     if ((storedSubjectId && expectedSubjectId && String(storedSubjectId) !== String(expectedSubjectId)) ||
         (storedTargetId && expectedTargetId && String(storedTargetId) !== String(expectedTargetId))) {
-      reconciled[key] = {
+      const quarantined = {
         ...state,
         validation_status: 'needs_review',
+        propagation_status: 'quarantined_unresolved_identity',
+        excluded_from_injection: true,
+        quarantine_reason: 'canonical_identity_id_conflict',
         validation_issues: mergeList(state.validation_issues, ['Relationship display labels conflict with their stored canonical identity IDs.']),
       };
+      reconciled[key] = quarantined;
+      changed ||= JSON.stringify(quarantined) !== JSON.stringify(state);
       unresolved++;
       continue;
     }
@@ -813,6 +863,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       safetyMargin: requestBudget.safetyMargin,
       protocolOverhead: requestBudget.protocolOverhead,
     });
+    preflight.runtime_context_lookup = requestBudget.runtimeContextLookup;
+    preflight.context_limit_source = requestBudget.runtimeContextLookup?.status === 'hit'
+      ? 'persisted_learned_limit' : 'configured_preference';
+    preflight.estimated_final_request_tokens = preflight.estimated_input_tokens
+      + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens;
     healthUpdate({
       preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens },
       citation_mapping_valid: sourceMessages.every((message) => Number.isInteger(message.__sme_original_index) || getContext().chat?.includes(message)),
@@ -834,7 +889,33 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       preflight,
       request_sent: false,
     };
-    const splitWindow = async (reason, splitBudget = requestBudget, overflow = null) => {
+    const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
+    const rootObligationId = options._providerRootObligationId
+      ?? `longterm:${String(characterName).toLowerCase()}:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const beginPhysicalAttempt = (requestKind = depth ? 'repartition_child' : 'original', changedDimensions = depth ? ['source_range', 'estimated_request_size'] : [], recovery = {}) => beginProviderAttempt(providerMetadata, {
+      tier: 'longterm', owner: characterName, logical_obligation_id: rootObligationId,
+      parent_attempt_id: options._providerParentAttemptId ?? null,
+      repartition_parent_id: options._contextOverflowParentRangeId ?? null,
+      request_kind: requestKind,
+      changed_recovery_dimensions: changedDimensions,
+      recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
+      repair_reason: recovery.repair_reason ?? null,
+      root_source_range: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
+      root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+      source_range: { start: range.start, end: range.end, message_count: range.message_count },
+      source_fingerprint: coverageBase.source_fingerprint,
+      configured_context_limit: preflight.configured_context_limit,
+      effective_context_limit: preflight.effective_context_limit,
+      context_limit_source: requestBudget.runtimeContextLookup?.status === 'hit' ? 'persisted_learned_limit' : 'configured_preference',
+      runtime_context_lookup_status: requestBudget.runtimeContextLookup?.status ?? null,
+      reserved_output_tokens: preflight.reserved_output_tokens,
+      safety_margin: preflight.safety_margin_tokens,
+      protocol_overhead: preflight.protocol_overhead_tokens,
+      estimated_input_tokens: preflight.estimated_input_tokens,
+      estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
+      schema_version: 'longterm-tagged-v1',
+    });
+    const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
       const splitCoverageBase = {
         ...coverageBase,
@@ -897,11 +978,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             _contextOverflowDepth: depth + 1,
             _contextOverflowParentRangeId: rangeId,
             _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + 1),
+            _providerRootObligationId: rootObligationId,
+            _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
+            _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+            _providerParentAttemptId: parentAttemptId ?? options._providerParentAttemptId ?? null,
           });
           await options._onContextOverflowChildCommitted?.({
             key: childKey, tier: 'longterm', owner: characterName,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
+            parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: depth + 1,
+            split_reason: reason, provider_parent_attempt_id: parentAttemptId,
           });
         }
       } catch (err) {
@@ -939,6 +1026,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     }
 
     let response;
+    const providerAttempt = beginPhysicalAttempt();
     try {
       response = await generateMemoryExtract(prompt, { responseLength });
       recordExtractionCoverage(coverageLedger, {
@@ -951,11 +1039,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     } catch (err) {
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
+        finishProviderAttempt(providerMetadata, providerAttempt, {
+          terminal_outcome: 'context_overflow_repartitioned', recoverable: true,
+          provider_reported_prompt_tokens: overflow?.reported_prompt_tokens ?? null,
+          provider_reported_context_tokens: overflow?.reported_context_tokens ?? null,
+        });
         healthUpdate({ provider_outcome: 'classified_context_overflow', preflight: { ...preflight, resized_or_repartitioned: true } });
-        const added = await splitWindow('provider_reported_context_overflow', getMemoryRequestBudget(responseLength), overflow);
+        const added = await splitWindow('provider_reported_context_overflow', getMemoryRequestBudget(responseLength), overflow, providerAttempt?.attempt_id ?? null);
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
         return added;
       }
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
       healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
@@ -970,19 +1064,55 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
     if (!response || !response.trim()) {
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_response_empty', malformed_reason: 'empty_or_whitespace_response', recoverable: true });
       healthFinish({ provider_outcome: 'provider_response_empty', response_received: true, parser_outcome: 'not_applicable_empty_response', terminal_health: 'provider_response_empty', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['provider_response_empty'] });
       return 0;
     }
     if (response.trim().toUpperCase() === 'NONE') {
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
     }
 
-    const parsed = parseExtractionOutput(response);
+    let parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
-      smLog('[Smart Memory Enhanced] Extraction response produced no parseable lines. Check format above.');
-      healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'no_parseable_records', terminal_health: 'provider_response_malformed', attention_reason_codes: ['unparseable_provider_response'] });
-      return 0;
+      const malformedReason = classifyMalformedProviderOutput(response, { expectedFormat: 'tagged_records' });
+      finishProviderAttempt(providerMetadata, providerAttempt, {
+        terminal_outcome: 'provider_response_malformed',
+        malformed_reason: malformedReason,
+        recoverable: true,
+      });
+      const repairAttempt = beginPhysicalAttempt('format_repair', ['prompt_schema'], {
+        recovery_of_attempt_id: providerAttempt?.attempt_id ?? null,
+        repair_reason: malformedReason,
+      });
+      try {
+        const repairedResponse = await generateMemoryExtract(`${prompt}\n\nFORMAT REPAIR: Return only valid tagged memory lines in the required schema, or exactly NONE. Do not include commentary or JSON.`, { responseLength });
+        parsed = parseExtractionOutput(repairedResponse);
+        if (parsed.length) {
+          finishProviderAttempt(providerMetadata, repairAttempt, { terminal_outcome: 'completed' });
+          healthUpdate({ provider_outcome: 'completed_after_format_repair', parser_outcome: 'parsed_after_format_repair' });
+        } else {
+          finishProviderAttempt(providerMetadata, repairAttempt, {
+            terminal_outcome: 'provider_response_malformed',
+            malformed_reason: classifyMalformedProviderOutput(repairedResponse, { expectedFormat: 'tagged_records' }),
+            recoverable: false,
+          });
+          smLog('[Smart Memory Enhanced] Extraction response remained unparseable after one bounded format repair.');
+          healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'format_repair_exhausted', terminal_health: 'provider_response_malformed', attention_reason_codes: ['unparseable_provider_response'] });
+          const malformedError = new Error('Long-term extraction remained unparseable after one bounded format repair.');
+          malformedError.code = 'SME_MALFORMED_PROVIDER_OUTPUT';
+          malformedError.sme_request_diagnostics = { tier: 'longterm', malformed_reason: malformedReason, format_repair_exhausted: true };
+          throw malformedError;
+        }
+      } catch (repairError) {
+        finishProviderAttempt(providerMetadata, repairAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
+        smLog('[Smart Memory Enhanced] Extraction format repair failed:', repairError?.message ?? repairError);
+        healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'format_repair_provider_failure', terminal_health: 'provider_response_malformed', attention_reason_codes: ['unparseable_provider_response'] });
+        throw repairError;
+      }
+    } else {
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed' });
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
 
@@ -1815,7 +1945,11 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
   if (!settings.relationships_enabled || !characterName || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) return clear();
 
   const history = loadRelationshipHistory(characterName);
-  const pairs = Object.entries(history).filter(([, state]) => isGeneratedRecordApproved(state));
+  const roster = buildCanonicalCharacterRoster(getContext());
+  const pairs = Object.entries(history).filter(([key, state]) =>
+    isGeneratedRecordApproved(state)
+    && state?.excluded_from_injection !== true
+    && classifyRelationshipPairSafety(key, state, roster).safe);
   if (pairs.length === 0) return clear();
 
   // Build a set of names mentioned in recent messages to filter relevant pairs.

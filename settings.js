@@ -940,6 +940,7 @@ import {
 } from './state-ledger.js';
 import { generateProfiles, injectProfiles, clearProfiles, loadProfiles } from './profiles.js';
 import { summarizeProfileCompletion, validateProfileCompletionAccounting } from './profile-recovery-utils.js';
+import { summarizeRelationshipQuality } from './relationship-quality-utils.js';
 import { clearUnifiedSlot, injectUnified, maybeInjectUnified } from './unified-inject.js';
 import { getTierHWStats, getTierTrimStats, clearTierStats } from './trim-stats.js';
 import { showMemoryGraph } from './graph.js';
@@ -1922,16 +1923,49 @@ export function bindSettingsUI(ctrl) {
   const startupScope = pageRunScope();
   const startupPriorMarker = startupScope ? readPageRunMarker(localStorage, startupScope) : null;
   const browserStartupEvidence = captureBrowserStartupEvidence(document, performance, pageInstanceId, startupPriorMarker);
+  const localLifecycleEvidence = [];
+  let lastRuntimeErrorEvidence = null;
+  const boundedLifecycleSnapshot = (metadata, checkpoint) => {
+    const health = metadata?.live_memory_health;
+    return {
+      captured_at: Date.now(),
+      phase: checkpoint?.finalization?.active_phase ?? 'source_extraction',
+      checkpoint_offset: Number.isInteger(checkpoint?.next_source_offset) ? checkpoint.next_source_offset : null,
+      request_state: localLifecycleEvidence.at(-1)?.request_state ?? null,
+      last_error: lastRuntimeErrorEvidence,
+      recent_events: localLifecycleEvidence.slice(-12),
+      retained_extraction_event_count: health?.recent_extraction_events?.length ?? 0,
+      running_extraction_event_count: health?.recent_extraction_events?.filter((event) => event?.terminal_health === 'running').length ?? 0,
+      retained_injection_event_count: health?.recent_injection_events?.length ?? 0,
+      queue_depths: {
+        provider: Number(health?.provider_attempt_audit?.running_count ?? 0),
+        extraction: health?.recent_extraction_events?.filter((event) => event?.terminal_health === 'running').length ?? 0,
+      },
+    };
+  };
   const recordRuntimeEvidence = (classification, detail = {}) => {
     const metadata = getContext()?.chatMetadata?.[META_KEY];
     const checkpoint = metadata?.catch_up_checkpoint;
     if (!checkpoint?.run_id) return;
-    recordRuntimeLifecycleEvent(metadata, checkpoint.run_id, {
+    const event = recordRuntimeLifecycleEvent(metadata, checkpoint.run_id, {
       classification, page_instance_id: pageInstanceId,
       phase: checkpoint.finalization?.active_phase ?? 'source_extraction',
       last_durable_phase_transition: checkpoint.run_manifest?.checkpoint_transitions?.at(-1)?.state ?? null,
       ...detail,
     });
+    if (event) {
+      localLifecycleEvidence.push({
+        at: event.at, classification: event.classification, request_state: event.request_state,
+        visibility_state: event.visibility_state, stack_fingerprint: event.stack_fingerprint,
+      });
+      if (localLifecycleEvidence.length > 12) localLifecycleEvidence.splice(0, localLifecycleEvidence.length - 12);
+      if (['unhandled_exception', 'unhandled_rejection'].includes(event.classification)) {
+        lastRuntimeErrorEvidence = {
+          at: event.at, normalized_error_type: event.normalized_error_type,
+          stack_fingerprint: event.stack_fingerprint,
+        };
+      }
+    }
   };
   const priorLifecycleCleanup = globalThis.__smeRuntimeLifecycleCleanup;
   if (typeof priorLifecycleCleanup === 'function') priorLifecycleCleanup();
@@ -1946,17 +1980,30 @@ export function bindSettingsUI(ctrl) {
     const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
     if (!checkpoint?.run_id) return;
     const scope = pageRunScope(context);
-    if (scope) writePageRunMarker(localStorage, scope, {
-      run_id: checkpoint.run_id, page_instance_id: pageInstanceId,
-      phase: checkpoint.finalization?.active_phase ?? 'source_extraction',
-      checkpoint_offset: checkpoint.next_source_offset,
-      request_state: 'lifecycle_checkpoint', updated_at: Date.now(),
-    });
+    if (scope) {
+      const activeMarker = readPageRunMarker(localStorage, scope);
+      const lifecycleSnapshot = boundedLifecycleSnapshot(context?.chatMetadata?.[META_KEY], checkpoint);
+      lifecycleSnapshot.current_request = {
+        state: activeMarker?.request_state ?? 'idle',
+        attempt: activeMarker?.request_attempt ?? null,
+        observed_empty_response_count: activeMarker?.observed_empty_response_count ?? 0,
+        in_flight: activeMarker?.request_state === 'in_flight',
+      };
+      writePageRunMarker(localStorage, scope, {
+        run_id: checkpoint.run_id, page_instance_id: pageInstanceId,
+        phase: activeMarker?.phase ?? checkpoint.finalization?.active_phase ?? 'source_extraction',
+        checkpoint_offset: checkpoint.next_source_offset,
+        request_state: activeMarker?.request_state ?? 'idle',
+        request_attempt: activeMarker?.request_attempt,
+        observed_empty_response_count: activeMarker?.observed_empty_response_count,
+        updated_at: Date.now(), lifecycle_snapshot: lifecycleSnapshot,
+      });
+    }
     saveChatMetadata(context).catch((error) => console.warn(`[${MODULE_NAME}] Lifecycle checkpoint warning:`, error));
   };
   listenLifecycle(globalThis, 'pageshow', (event) => recordRuntimeEvidence('pageshow', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_restored' : 'normal_show' }));
-  listenLifecycle(globalThis, 'pagehide', (event) => recordRuntimeEvidence('page_hidden', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_stored' : 'normal_hide' }));
-  listenLifecycle(globalThis, 'beforeunload', () => recordRuntimeEvidence('beforeunload', { subsystem: 'document' }));
+  listenLifecycle(globalThis, 'pagehide', (event) => persistLifecycleCheckpoint('pagehide', { subsystem: 'document', request_state: event?.persisted ? 'bfcache_stored' : 'normal_hide', pagehide_persisted: Boolean(event?.persisted) }));
+  listenLifecycle(globalThis, 'beforeunload', () => persistLifecycleCheckpoint('beforeunload', { subsystem: 'document', request_state: 'document_unloading' }));
   listenLifecycle(document, 'visibilitychange', () => {
     const detail = { subsystem: 'document', visibility_state: document.visibilityState };
     if (document.visibilityState === 'hidden') persistLifecycleCheckpoint('page_hidden', detail);
@@ -1972,7 +2019,10 @@ export function bindSettingsUI(ctrl) {
   });
   listenLifecycle(globalThis, 'error', (event) => safeErrorEvidence('unhandled_exception', event?.error ?? event));
   listenLifecycle(globalThis, 'unhandledrejection', (event) => safeErrorEvidence('unhandled_rejection', event?.reason));
-  globalThis.__smeRuntimeLifecycleCleanup = () => lifecycleListeners.splice(0).forEach((remove) => remove());
+  globalThis.__smeRuntimeLifecycleCleanup = () => {
+    recordRuntimeEvidence('extension_runtime_disposed', { subsystem: 'extension' });
+    lifecycleListeners.splice(0).forEach((remove) => remove());
+  };
   queueMicrotask(() => {
     recordRuntimeEvidence(priorLifecycleCleanup ? 'extension_runtime_reinitialized' : 'document_load', { subsystem: 'extension' });
     recordRuntimeEvidence('run_controller_created', { subsystem: 'memorize_chat_controller' });
@@ -1987,6 +2037,7 @@ export function bindSettingsUI(ctrl) {
       checkpoint_offset: checkpoint.next_source_offset, request_state: requestState,
       request_attempt: requestEvidence.request_attempt,
       observed_empty_response_count: requestEvidence.observed_empty_response_count,
+      lifecycle_snapshot: boundedLifecycleSnapshot(getContext()?.chatMetadata?.[META_KEY], checkpoint),
     });
   };
 
@@ -7427,11 +7478,20 @@ export function bindSettingsUI(ctrl) {
             .filter((entry) => String(entry?.terminal_outcome ?? '').startsWith('unresolved_')).length;
           const legacyPairKeyDebt = integrity.relationship_pair_key_issues?.length ?? 0;
           const integrityErrors = integrity.relationship_integrity_errors?.length ?? 0;
+          const summary = summarizeRelationshipQuality({
+            profileUnresolved: unresolvedSafe,
+            unresolvedPairs: integrity.unresolved_relationship_pair_key_records ?? [],
+            deterministicDebt: legacyPairKeyDebt,
+            integrityErrors,
+          });
           return {
             safe_model_output_rejections: { count: safeRejections.length, disposition: 'informational_preserved_or_dropped_safely' },
-            legacy_pair_key_normalization_debt: { count: legacyPairKeyDebt, disposition: legacyPairKeyDebt ? 'review_or_safe_rekey_if_deterministic' : 'none' },
-            unresolved_but_safe_records: { count: unresolvedSafe, disposition: 'retained_without_identity_guessing' },
-            actual_integrity_errors: { count: integrityErrors, disposition: integrityErrors ? 'attention_required' : 'none' },
+            ...summary,
+            accounting_invariant: {
+              ...summary.accounting_invariant,
+              reconciled: summary.accounting_invariant.summary_unresolved_pair_keys
+                === (integrity.relationship_pair_key_normalization?.ambiguous_keys_retained ?? 0),
+            },
           };
         })(),
         continuity_health_status: (() => {

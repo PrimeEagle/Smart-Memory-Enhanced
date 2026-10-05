@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.51] - 2026-10-04
+
+### Fixed
+
+- Memorize Chat now distinguishes root extraction health events from actual
+  Long-Term and Session provider requests. A bounded provider-attempt audit
+  accounts for original requests, context-overflow children, format repairs,
+  malformed-response reasons, changed recovery dimensions, and terminal
+  reconciliation without retaining prompts or responses.
+- Malformed Long-Term and Session extraction output receives at most one
+  schema-focused repair request. Equivalent retries are exposed, context-limit
+  lookup reports hit, expiry, invalidation, or signature mismatch, and every
+  repartition child retains its parent/root lineage and effective budget.
+- Page replacement diagnostics now report confirmed browser discard and
+  retained extension/host navigation intent separately. When browser evidence
+  cannot distinguish refresh, renderer failure, or host navigation, the result
+  is explicitly `cause_unavailable` rather than a guessed cause.
+- Ambiguous and apparent self-pair relationship-history records are quarantined
+  from injection and usable relationship propagation. The relationship-quality
+  summary now reconciles unresolved profile fields with final-audit pair debt.
+
 ## [0.9.50] - 2026-09-30
 
 ### Fixed

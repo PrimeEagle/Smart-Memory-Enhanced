@@ -5,6 +5,7 @@
  * estimates only. It never receives or serializes chat text, memory content,
  * provider responses, credentials, or unapproved identity labels.
  */
+import { summarizeProviderAttemptAudit } from './provider-attempt-audit.js';
 
 export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 2;
 export const LIVE_MEMORY_HEALTH_MAX_EVENTS = 75;
@@ -55,7 +56,8 @@ const physicalTerminalCategory = (state) => {
 
 function interruptionTerminalForReason(reason) {
   if (reason === 'confirmed_browser_tab_discard') return 'completion_uncertain_after_confirmed_discard';
-  if (reason === 'page_instance_replaced_unknown') return 'completion_uncertain_after_page_replacement';
+  if (['page_instance_replaced_unknown', 'page_instance_replaced_cause_unavailable'].includes(reason)) return 'completion_uncertain_after_page_replacement';
+  if (['extension_requested_navigation', 'sillytavern_requested_navigation'].includes(reason)) return 'interrupted_by_runtime_reset';
   if (reason === 'runtime_reset') return 'interrupted_by_runtime_reset';
   return 'interrupted_unknown';
 }
@@ -313,6 +315,7 @@ export function updateLiveExtractionEvent(event, patch = {}) {
     const preflight = patch.preflight;
     event.preflight = {
       configured_context_limit: number(preflight.configured_context_limit ?? preflight.configuredContextLimit),
+      effective_context_limit: number(preflight.effective_context_limit ?? preflight.effectiveContextLimit),
       estimated_input_tokens: number(preflight.estimated_input_tokens ?? preflight.estimatedInputTokens),
       reserved_output_tokens: number(preflight.reserved_output_tokens ?? preflight.reservedOutputTokens),
       safety_margin: number(preflight.safety_margin ?? preflight.safety_margin_tokens ?? preflight.safetyMargin),
@@ -320,6 +323,9 @@ export function updateLiveExtractionEvent(event, patch = {}) {
       fits: Boolean(preflight.fits),
       resized_or_repartitioned: Boolean(preflight.resized_or_repartitioned),
       prevented: Boolean(preflight.prevented),
+      estimated_final_request_tokens: number(preflight.estimated_final_request_tokens),
+      context_limit_source: preflight.context_limit_source ?? null,
+      runtime_context_lookup: preflight.runtime_context_lookup ?? null,
     };
   }
   if (patch.provider_outcome) event.provider_outcome = patch.provider_outcome;
@@ -481,11 +487,12 @@ export function exportLiveMemoryHealth(metadata) {
     raw_event_counts: rawOutcomes,
     deduplicated_logical_request_counts: logicalOutcomes,
     accounting_scopes: {
-      cumulative_chat_events: 'all_recorded_physical_attempts_for_this_chat',
-      cumulative_current_run: 'all_physical_attempts_for_the_active_logical_run_across_page_instances',
-      retained_events: 'bounded_recent_physical_attempt_history',
+      cumulative_chat_events: 'all_root_extraction_health_events_recorded_for_this_chat; not provider request count',
+      cumulative_current_run: 'all_root_extraction_obligation events for the active run across page instances; not provider request count',
+      retained_events: 'bounded recent root extraction health-event history',
       deduplicated_logical_requests: 'latest_retained_terminal_event_per_retry_or_replay_lineage',
       final_unresolved_quality_impact: 'deduplicated_logical_requests_whose_latest_retained_outcome_is_still_a_provider_failure',
+      actual_provider_requests: 'provider_attempt_audit counts each Long-Term/Session request sent to the provider, including repartition children and format repair',
     },
     provider_quality: {
       scope: 'bounded_retained_event_history',
@@ -503,6 +510,8 @@ export function exportLiveMemoryHealth(metadata) {
       if (!run) return null;
       const terminalTotal = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
       return {
+        legacy_field_name: true,
+        scope: 'root_extraction_obligation_health_events_not_provider_calls',
         attempted: number(run.attempted), terminal_outcomes: run.physical_terminal_counts,
         detailed_terminal_states: run.terminal_counts ?? {},
         terminal_total: terminalTotal,
@@ -517,6 +526,7 @@ export function exportLiveMemoryHealth(metadata) {
     retention_limit: LIVE_MEMORY_HEALTH_MAX_EVENTS,
     aggregate: health.aggregate,
     extraction_outcome_summary: outcomeSummary,
+    provider_attempt_audit: summarizeProviderAttemptAudit(metadata),
     last_extraction: health.last_extraction ?? null,
     last_injection: health.last_injection ?? null,
     recent_extraction_events: health.recent_extraction_events,

@@ -130,7 +130,8 @@ test('provider quality separates recovered and terminal unresolved logical failu
   const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
   assert.equal(summary.provider_quality.recovered_failures, 1);
   assert.equal(summary.provider_quality.terminal_unresolved_failures, 1);
-  assert.equal(summary.accounting_scopes.retained_events, 'bounded_recent_physical_attempt_history');
+  assert.equal(summary.accounting_scopes.retained_events, 'bounded recent root extraction health-event history');
+  assert.match(summary.accounting_scopes.actual_provider_requests, /provider_attempt_audit/);
 });
 
 test('injection health distinguishes empty, failed attention, and unified stale-slot cleanup', () => {

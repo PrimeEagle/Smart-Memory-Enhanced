@@ -45,7 +45,11 @@ import {
 import { getContext, extension_settings } from '../../../extensions.js';
 import { reasoning_templates, parseReasoningFromString } from '../../../../scripts/reasoning.js';
 import { estimateTokens, MEMORY_GENERATION_BUDGET, META_KEY, MODULE_NAME } from './constants.js';
-import { classifyContextOverflow, resolveEffectiveContextLimit } from './extraction-window-utils.js';
+import {
+  classifyContextOverflow,
+  classifyRuntimeContextLimitLookup,
+  resolveEffectiveContextLimit,
+} from './extraction-window-utils.js';
 import { classifyOpenAiResponseEnvelope } from './provider-response-utils.js';
 import {
   inspectOpenAiSsePayload,
@@ -348,11 +352,13 @@ export function getRuntimeContextLimitDiagnostics() {
   return structuredClone(readRuntimeContextLimits());
 }
 
+function runtimeContextLimitLookup(identity = memoryProviderIdentity(), now = Date.now()) {
+  const records = readRuntimeContextLimits();
+  return classifyRuntimeContextLimitLookup(records, identity.signature, now, RUNTIME_CONTEXT_LIMIT_MAX_AGE_MS);
+}
+
 function activeRuntimeContextLimit(identity = memoryProviderIdentity()) {
-  const record = readRuntimeContextLimits()[identity.signature];
-  if (!record || Date.now() - Number(record.learned_at ?? 0) > RUNTIME_CONTEXT_LIMIT_MAX_AGE_MS) return null;
-  const limit = Number(record.effective_context_limit);
-  return Number.isFinite(limit) && limit > 0 ? { ...record, effective_context_limit: limit } : null;
+  return runtimeContextLimitLookup(identity).record;
 }
 
 function persistRuntimeContextLimit(classification, identity = memoryProviderIdentity()) {
@@ -369,6 +375,8 @@ function persistRuntimeContextLimit(classification, identity = memoryProviderIde
     transport: identity.transport,
     engine_session_fingerprint: classification.engine_session_fingerprint ?? null,
     effective_context_limit: current ? Math.min(current, reported) : reported,
+    prior_effective_context_limit: current ?? null,
+    provider_limit_changed: Boolean(current && current !== reported),
     discovery_source: 'structured_provider_overflow',
     learned_at: Date.now(),
     confidence: 'provider_reported',
@@ -388,6 +396,22 @@ function persistRuntimeContextLimit(classification, identity = memoryProviderIde
     checkpoint.runtime_context_limits[identity.signature] = record;
     checkpoint.updated_at = Date.now();
   }
+  let localStorageVerified = false;
+  try {
+    const persisted = JSON.parse(localStorage.getItem(RUNTIME_CONTEXT_LIMIT_STORAGE_KEY) ?? '{}')?.[identity.signature];
+    localStorageVerified = Number(persisted?.effective_context_limit) === Number(record.effective_context_limit);
+  } catch { /* reported explicitly below */ }
+  record.persistence_verification = {
+    extension_settings: settings.runtime_context_limits?.[identity.signature] === record,
+    local_storage: localStorageVerified,
+    active_checkpoint: checkpoint?.run_id ? checkpoint.runtime_context_limits?.[identity.signature] === record : null,
+  };
+  // Refresh the crash-safe copy with the verification result included.
+  try {
+    const stored = JSON.parse(localStorage.getItem(RUNTIME_CONTEXT_LIMIT_STORAGE_KEY) ?? '{}');
+    stored[identity.signature] = record;
+    localStorage.setItem(RUNTIME_CONTEXT_LIMIT_STORAGE_KEY, JSON.stringify(stored));
+  } catch { /* diagnostics already report that the copy was not verified */ }
   saveSettingsDebounced();
   saveSettingsDebounced.flush?.();
   return record;
@@ -411,7 +435,8 @@ export function getMemoryRequestBudget(responseLength) {
     ? Number(profileLimit)
     : getMaxContextSize(responseLength);
   const identity = memoryProviderIdentity();
-  const runtime = activeRuntimeContextLimit(identity);
+  const runtimeLookup = runtimeContextLimitLookup(identity);
+  const runtime = runtimeLookup.record;
   const effectiveContextLimit = resolveEffectiveContextLimit(
     configuredContextLimit,
     runtime?.effective_context_limit,
@@ -422,6 +447,13 @@ export function getMemoryRequestBudget(responseLength) {
     effectiveContextLimit,
     runtimeContextLimit: runtime?.effective_context_limit ?? null,
     runtimeContextLimitSource: runtime?.discovery_source ?? null,
+    runtimeContextLookup: {
+      status: runtimeLookup.status,
+      miss_reason: runtimeLookup.miss_reason,
+      provider_signature: identity.signature,
+      learned_at: runtime?.learned_at ?? runtimeLookup.expired_record_learned_at ?? null,
+      applied_before_request: runtimeLookup.status === 'hit',
+    },
     providerSignature: identity.signature,
     reservedOutputTokens: Math.max(0, reservedOutputTokens),
     safetyMargin: 1000,

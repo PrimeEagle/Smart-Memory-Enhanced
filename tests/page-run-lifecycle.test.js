@@ -9,7 +9,7 @@ const storage = () => {
 const checkpoint = () => ({ run_id: 'run-a', status: 'in_progress', next_source_offset: 260,
   finalization: { active_phase: null, completed_phases: {} }, run_manifest: { total_attempt_count: 1 } });
 
-test('four page replacements preserve unknown cause, requests, and source/finalization checkpoints', () => {
+test('four unexplained page replacements preserve evidence-backed cause-unavailable results and checkpoints', () => {
   const local = storage(), metadata = {}, cp = checkpoint(), scope = 'chat-a';
   assert.equal(reconcilePageRunInstance(metadata, cp, null, 'page-1', 100, { freshRun: true }).interrupted, false);
   let marker = writePageRunMarker(local, scope, { run_id: cp.run_id, page_instance_id: 'page-1', phase: 'source_extraction', checkpoint_offset: 260, request_state: 'in_flight' });
@@ -17,7 +17,7 @@ test('four page replacements preserve unknown cause, requests, and source/finali
     cp.finalization.active_phase = phase === 'source_extraction' ? null : phase;
     if (phase !== 'source_extraction') cp.next_source_offset = 9434;
     const next = `page-${index + 2}`;
-    assert.equal(reconcilePageRunInstance(metadata, cp, marker, next, 200 + index).reason, 'page_instance_replaced_unknown');
+    assert.equal(reconcilePageRunInstance(metadata, cp, marker, next, 200 + index).reason, 'page_instance_replaced_cause_unavailable');
     marker = writePageRunMarker(local, scope, { run_id: cp.run_id, page_instance_id: next, phase, checkpoint_offset: cp.next_source_offset, request_state: 'in_flight' });
   }
   const result = summarizePageRunLifecycle(metadata, 5);
@@ -25,7 +25,8 @@ test('four page replacements preserve unknown cause, requests, and source/finali
   assert.equal(result.unclassified_page_interruption_count, 4);
   assert.equal(result.page_instances_observed, 5);
   assert.equal(result.attempts_account_for_observed_page_transitions, true);
-  assert.ok(result.retained_transitions.every((event) => event.cause === 'unknown'));
+  assert.ok(result.retained_transitions.every((event) => event.cause === 'cause_unavailable'));
+  assert.ok(result.retained_transitions.every((event) => event.cause_limitation));
   assert.equal(result.retained_transitions[0].checkpoint_offset_after, 260);
   assert.equal(result.retained_transitions[1].checkpoint_offset_after, 9434);
   assert.equal(result.retained_transitions[2].request_outcome, 'completion_uncertain_after_page_interruption');
@@ -46,11 +47,11 @@ test('browser discard classification requires direct document.wasDiscarded evide
   const summary = summarizePageRunLifecycle(metadata, 2);
   assert.equal(summary.confirmed_browser_tab_discard_count, 1);
   assert.equal(summary.unclassified_page_interruption_count, 0);
-  assert.equal(summary.retained_transitions[0].cause, 'document_was_discarded');
+  assert.equal(summary.retained_transitions[0].cause, 'browser_discard_restoration');
   assert.equal(summary.retained_transitions[0].browser_startup_evidence.navigation_type, 'reload');
 });
 
-test('reload navigation without document.wasDiscarded remains unknown', () => {
+test('reload navigation without direct initiator evidence reports cause unavailable', () => {
   const metadata = {}, cp = checkpoint();
   reconcilePageRunInstance(metadata, cp, null, 'page-1', 1, { freshRun: true });
   const marker = { run_id: cp.run_id, page_instance_id: 'page-1', request_state: 'in_flight' };
@@ -60,7 +61,26 @@ test('reload navigation without document.wasDiscarded remains unknown', () => {
     'page-2', marker,
   );
   const result = reconcilePageRunInstance(metadata, cp, marker, 'page-2', 2, { startupEvidence: evidence });
-  assert.equal(result.reason, 'page_instance_replaced_unknown');
+  assert.equal(result.reason, 'page_instance_replaced_cause_unavailable');
+  assert.equal(summarizePageRunLifecycle(metadata, 2).confirmed_browser_tab_discard_count ?? 0, 0);
+});
+
+test('extension-requested navigation is classified from a retained intent without guessing', () => {
+  const metadata = {}, cp = checkpoint();
+  reconcilePageRunInstance(metadata, cp, null, 'page-1', 1, { freshRun: true });
+  const marker = {
+    run_id: cp.run_id, page_instance_id: 'page-1', request_state: 'idle',
+    navigation_intent: { initiator: 'smart_memory_enhanced', action: 'reload', at: 1 },
+    lifecycle_snapshot: { recent_events: [{ classification: 'extension_navigation_requested' }] },
+  };
+  const result = reconcilePageRunInstance(metadata, cp, marker, 'page-2', 2, {
+    startupEvidence: captureBrowserStartupEvidence({ wasDiscarded: false }, { getEntriesByType: () => [{ type: 'reload' }] }, 'page-2', marker),
+  });
+  assert.equal(result.reason, 'extension_requested_navigation');
+  const transition = summarizePageRunLifecycle(metadata, 2).retained_transitions[0];
+  assert.equal(transition.cause_available, true);
+  assert.equal(transition.prior_lifecycle_snapshot.recent_events[0].classification, 'extension_navigation_requested');
+  assert.equal(summarizePageRunLifecycle(metadata, 2).extension_requested_navigation_count, 1);
   assert.equal(summarizePageRunLifecycle(metadata, 2).confirmed_browser_tab_discard_count ?? 0, 0);
 });
 
@@ -132,14 +152,16 @@ test('marker excludes chat and provider content', () => {
 
 test('same-page runtime resets and safe exception fingerprints remain distinct from page replacement', () => {
   const metadata = {};
+  recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'run_controller_created', page_instance_id: 'page-1' });
   recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'ui_remounted', page_instance_id: 'page-1', subsystem: 'settings_panel' });
   recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'unhandled_rejection', page_instance_id: 'page-1', normalized_error_type: 'TypeError', stack_fingerprint: 'fnv1a-test' });
   const summary = summarizePageRunLifecycle(metadata, 1);
   assert.equal(summary.page_interruption_count, 0);
-  assert.equal(summary.runtime_event_count, 2);
-  assert.equal(summary.runtime_events[0].classification, 'ui_remounted');
-  assert.equal(summary.runtime_events[1].classification, 'unhandled_rejection');
-  assert.equal(summary.runtime_events[1].stack_fingerprint, 'fnv1a-test');
+  assert.equal(summary.runtime_event_count, 3);
+  assert.equal(summary.controller_mount_count, 1);
+  assert.equal(summary.runtime_events[1].classification, 'ui_remounted');
+  assert.equal(summary.runtime_events[2].classification, 'unhandled_rejection');
+  assert.equal(summary.runtime_events[2].stack_fingerprint, 'fnv1a-test');
 });
 
 test('freeze/resume lifecycle is neutral, coalesced, and does not create page interruptions', () => {

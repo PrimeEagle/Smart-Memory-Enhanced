@@ -905,7 +905,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /blocked_unsafe_identity_merges/);
   assert.match(ui, /reserve an unsafe rollback for a corrupted card-backed record/);
   assert.match(ui, /getRelationshipHistoryPair,/);
-  assert.match(ui, /canonicalizeRelationshipPair\(labels\.subject, labels\.target, finalizedRoster\)/);
+  assert.match(ui, /classifyRelationshipPairSafety\(key, state, finalizedRoster\)/);
   assert.match(ui, /state-ledger/);
   assert.match(ui, /_canonical_card_id/);
   assert.match(ui, /resolvedReviewItemsRemoved/);
@@ -923,7 +923,7 @@ test('final reconciliation canonicalizes scene and arc participant lists while r
   assert.match(ui, /display_name_at_time/);
   assert.match(ui, /participant_lists_rewritten/);
   assert.match(ui, /unresolvedRelationshipPairKeyRecords/);
-  assert.match(ui, /participant_not_safely_resolved/);
+  assert.match(ui, /safety\.reason/);
   assert.match(ui, /historical_persona_alias_records_retained/);
   assert.match(ui, /Imported-chat author recovery deliberately retains its stable/);
   assert.match(settings, /participantListsRewritten/);
@@ -949,11 +949,12 @@ test('automatic reconciliation rebuilds the finalized roster before durable narr
 test('relationship reconciliation requires stable canonical participants and preserves combined legacy evidence', () => {
   const longterm = read('longterm.js');
   const ui = read('ui.js');
-  assert.match(longterm, /canonicalizeRelationshipPair\(subject, target, roster\)/);
+  assert.match(longterm, /classifyRelationshipPairSafety\(key, state, roster\)/);
   assert.match(longterm, /manual_approval_state/);
   assert.match(longterm, /descriptor_removals/);
   assert.match(ui, /persistentRelationshipPairsMerged/);
-  assert.match(longterm, /Relationship participants could not be resolved to stable canonical identities/);
+  assert.match(longterm, /quarantined_unresolved_identity/);
+  assert.match(longterm, /excluded_from_injection: true/);
   assert.match(longterm, /compactRelationshipProvenance/);
   for (const field of ['supporting_source_indices', 'supporting_source_ranges', 'latest_update_indices', 'latest_update_range', 'representative_support_indices', 'representative_support_ranges', 'historical_evidence_count', 'historical_evidence_digest', 'provenance_audit']) {
     assert.match(longterm, new RegExp(field));
@@ -974,7 +975,7 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /pretty-printed array/);
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
-  assert.match(session, /Session extraction returned no parseable structured records/);
+  assert.match(session, /Session extraction remained unparseable after one bounded format repair/);
   assert.match(settings, /sessionExtraction: \{/);
   assert.match(settings, /session_malformed_provider_output/);
   for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'missing_provenance', 'semantic_support_rejected', 'malformed_candidate', 'duplicate_same_pass', 'duplicate_existing']) {
@@ -1742,7 +1743,7 @@ test('page lifecycle, provider envelopes, and long-run diagnostics stay evidence
   const lifecycle = read('page-run-lifecycle.js');
   const generate = read('generate.js');
   assert.match(lifecycle, /document_was_discarded/);
-  assert.match(lifecycle, /page_instance_replaced_unknown/);
+  assert.match(lifecycle, /page_instance_replaced_cause_unavailable/);
   assert.match(settings, /visibilityState === 'hidden'/);
   assert.match(settings, /listenLifecycle\(document, 'freeze'/);
   assert.match(settings, /persistLifecycleCheckpoint/);

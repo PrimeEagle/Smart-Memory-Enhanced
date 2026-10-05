@@ -50,6 +50,24 @@ test('a valid incomplete checkpoint resumes at its committed source offset', () 
   });
 });
 
+test('a 9,434-message restart after source completion resumes finalization with zero source replay', () => {
+  const completedSourceCheckpoint = {
+    schema_version: 1,
+    status: 'in_progress',
+    run_id: 'run-long-finalization',
+    source_message_count: 9434,
+    source_last_original_index: 9433,
+    next_source_offset: 9434,
+    finalization: { active_phase: 'scene_detection', completed_phases: {} },
+  };
+  const source = Array.from({ length: 9434 }, (_, index) => ({ __sme_original_index: index }));
+  const validation = validateCatchUpResumeSource(completedSourceCheckpoint, source);
+  assert.equal(validation.valid, true);
+  assert.equal(validation.resume_offset, 9434);
+  assert.equal(source.slice(validation.resume_offset).length, 0);
+  assert.equal(normalizeCatchUpCheckpoint(completedSourceCheckpoint)?.finalization.active_phase, 'scene_detection');
+});
+
 test('completed, malformed, shortened, and changed source windows cannot resume', () => {
   assert.equal(normalizeCatchUpCheckpoint({ ...checkpoint, status: 'awaiting_manual_resume' })?.run_id, 'run-1');
   assert.equal(normalizeCatchUpCheckpoint({ ...checkpoint, status: 'completed' }), null);

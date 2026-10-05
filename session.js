@@ -100,6 +100,11 @@ import {
   sourceRange,
   sourceWindowFingerprint,
 } from './extraction-window-utils.js';
+import {
+  beginProviderAttempt,
+  classifyMalformedProviderOutput,
+  finishProviderAttempt,
+} from './provider-attempt-audit.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 
@@ -463,6 +468,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       safetyMargin: requestBudget.safetyMargin,
       protocolOverhead: requestBudget.protocolOverhead,
     });
+    preflight.runtime_context_lookup = requestBudget.runtimeContextLookup;
+    preflight.context_limit_source = requestBudget.runtimeContextLookup?.status === 'hit'
+      ? 'persisted_learned_limit' : 'configured_preference';
+    preflight.estimated_final_request_tokens = preflight.estimated_input_tokens
+      + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens;
     healthUpdate({ preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens } });
     const depth = Number(options._contextOverflowDepth ?? 0);
     const range = sourceRange(sourceMessages);
@@ -480,7 +490,33 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       preflight,
       request_sent: false,
     };
-    const splitWindow = async (reason, splitBudget = requestBudget, overflow = null) => {
+    const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
+    const rootObligationId = options._providerRootObligationId
+      ?? `session:chat:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const beginPhysicalAttempt = (requestKind = depth ? 'repartition_child' : 'original', changedDimensions = depth ? ['source_range', 'estimated_request_size'] : [], recovery = {}) => beginProviderAttempt(providerMetadata, {
+      tier: 'session', owner: null, logical_obligation_id: rootObligationId,
+      parent_attempt_id: options._providerParentAttemptId ?? null,
+      repartition_parent_id: options._contextOverflowParentRangeId ?? null,
+      request_kind: requestKind,
+      changed_recovery_dimensions: changedDimensions,
+      recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
+      repair_reason: recovery.repair_reason ?? null,
+      root_source_range: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
+      root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+      source_range: { start: range.start, end: range.end, message_count: range.message_count },
+      source_fingerprint: coverageBase.source_fingerprint,
+      configured_context_limit: preflight.configured_context_limit,
+      effective_context_limit: preflight.effective_context_limit,
+      context_limit_source: requestBudget.runtimeContextLookup?.status === 'hit' ? 'persisted_learned_limit' : 'configured_preference',
+      runtime_context_lookup_status: requestBudget.runtimeContextLookup?.status ?? null,
+      reserved_output_tokens: preflight.reserved_output_tokens,
+      safety_margin: preflight.safety_margin_tokens,
+      protocol_overhead: preflight.protocol_overhead_tokens,
+      estimated_input_tokens: preflight.estimated_input_tokens,
+      estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
+      schema_version: 'session-tagged-v1',
+    });
+    const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
       const splitCoverageBase = {
         ...coverageBase,
@@ -541,11 +577,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             _contextOverflowDepth: depth + 1,
             _contextOverflowParentRangeId: rangeId,
             _contextOverflowRangeId: extractionRangeId('session', childRange, depth + 1),
+            _providerRootObligationId: rootObligationId,
+            _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
+            _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+            _providerParentAttemptId: parentAttemptId ?? options._providerParentAttemptId ?? null,
           });
           await options._onContextOverflowChildCommitted?.({
             key: childKey, tier: 'session', owner: null,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
+            parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: depth + 1,
+            split_reason: reason, provider_parent_attempt_id: parentAttemptId,
           });
         }
       } catch (err) {
@@ -583,6 +625,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     }
 
     let response;
+    const providerAttempt = beginPhysicalAttempt();
     try {
       response = await generateMemoryExtract(prompt, { responseLength });
       recordExtractionCoverage(coverageLedger, {
@@ -595,11 +638,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     } catch (err) {
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
+        finishProviderAttempt(providerMetadata, providerAttempt, {
+          terminal_outcome: 'context_overflow_repartitioned', recoverable: true,
+          provider_reported_prompt_tokens: overflow?.reported_prompt_tokens ?? null,
+          provider_reported_context_tokens: overflow?.reported_context_tokens ?? null,
+        });
         healthUpdate({ provider_outcome: 'classified_context_overflow', preflight: { ...preflight, resized_or_repartitioned: true } });
-        const added = await splitWindow('provider_reported_context_overflow', getMemoryRequestBudget(responseLength), overflow);
+        const added = await splitWindow('provider_reported_context_overflow', getMemoryRequestBudget(responseLength), overflow, providerAttempt?.attempt_id ?? null);
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
         return added;
       }
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
       healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
@@ -614,11 +663,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
     if (!response || !response.trim()) {
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_response_empty', malformed_reason: 'empty_or_whitespace_response', recoverable: true });
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
       healthFinish({ provider_outcome: 'provider_response_empty', response_received: true, parser_outcome: 'not_applicable_empty_response', terminal_health: 'provider_response_empty', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['provider_response_empty'] });
       return 0;
     }
     if (response.trim().toUpperCase() === 'NONE') {
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
@@ -648,8 +699,46 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           : 'context_identity_or_window_fallback',
       };
     }
-    const parsedCandidates = parseSessionOutput(response);
-    healthUpdate({ provider_outcome: 'completed', parser_outcome: parsedCandidates.length ? 'parsed' : 'no_parseable_records', candidates: { emitted: parsedCandidates.length } });
+    let parsedCandidates = parseSessionOutput(response);
+    if (!parsedCandidates.length) {
+      const malformedReason = classifyMalformedProviderOutput(response, { expectedFormat: 'tagged_records' });
+      finishProviderAttempt(providerMetadata, providerAttempt, {
+        terminal_outcome: 'provider_response_malformed', malformed_reason: malformedReason, recoverable: true,
+      });
+      if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
+      const repairAttempt = beginPhysicalAttempt('format_repair', ['prompt_schema'], {
+        recovery_of_attempt_id: providerAttempt?.attempt_id ?? null,
+        repair_reason: malformedReason,
+      });
+      try {
+        const repairedResponse = await generateMemoryExtract(`${prompt}\n\nFORMAT REPAIR: Return only valid tagged session-memory lines in the required schema, or exactly NONE. Do not include commentary or JSON.`, { responseLength });
+        parsedCandidates = parseSessionOutput(repairedResponse);
+        if (parsedCandidates.length) {
+          finishProviderAttempt(providerMetadata, repairAttempt, { terminal_outcome: 'completed' });
+          healthUpdate({ provider_outcome: 'completed_after_format_repair', parser_outcome: 'parsed_after_format_repair' });
+        } else {
+          finishProviderAttempt(providerMetadata, repairAttempt, {
+            terminal_outcome: 'provider_response_malformed',
+            malformed_reason: classifyMalformedProviderOutput(repairedResponse, { expectedFormat: 'tagged_records' }),
+            recoverable: false,
+          });
+        }
+      } catch (repairError) {
+        finishProviderAttempt(providerMetadata, repairAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
+        smLog('[Smart Memory Enhanced] Session extraction format repair failed:', repairError?.message ?? repairError);
+      }
+      if (!parsedCandidates.length) {
+        smLog('[Smart Memory Enhanced] Session extraction remained unparseable after one bounded format repair.');
+        healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'format_repair_exhausted', terminal_health: 'provider_response_malformed', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['unparseable_provider_response'] });
+        const malformedError = new Error('Session extraction remained unparseable after one bounded format repair.');
+        malformedError.code = 'SME_MALFORMED_PROVIDER_OUTPUT';
+        malformedError.sme_request_diagnostics = { tier: 'session', malformed_reason: malformedReason, format_repair_exhausted: true };
+        throw malformedError;
+      }
+    } else {
+      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed' });
+    }
+    healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsedCandidates.length } });
     // Stable within-request IDs make citation repair an association task rather
     // than a best-effort text match. They are transient and never persisted in
     // a memory record or exported with memory text.
@@ -672,15 +761,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       return true;
     };
     parsedCandidateCount = initiallyParsedCount;
-    // A non-empty provider response that yields no structured records is not
-    // the same as an intentional NONE. Keep the catch-up running, but expose
-    // it as a parser-quality failure instead of reporting a clean empty pass.
-    if (initiallyParsedCount === 0) {
-      if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
-      smLog('[Smart Memory Enhanced] Session extraction returned no parseable structured records.');
-      healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'no_parseable_records', terminal_health: 'provider_response_malformed', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['unparseable_provider_response'] });
-      return 0;
-    }
     if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;
     // When the provider produced otherwise parseable session records but
     // omitted every citation, ask once for the *same records only* with their

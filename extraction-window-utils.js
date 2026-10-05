@@ -8,6 +8,26 @@ export function resolveEffectiveContextLimit(...limits) {
   return valid.length ? Math.min(...valid) : null;
 }
 
+/** Pure lookup used to prove whether a learned provider ceiling was reusable. */
+export function classifyRuntimeContextLimitLookup(records = {}, signature, now = Date.now(), maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
+  const record = records?.[signature];
+  if (!record) return {
+    record: null,
+    status: Object.keys(records ?? {}).length ? 'signature_mismatch' : 'not_learned_yet',
+    miss_reason: Object.keys(records ?? {}).length
+      ? 'provider_model_profile_endpoint_or_transport_signature_mismatch' : 'no_runtime_limit_record',
+  };
+  if (now - Number(record.learned_at ?? 0) > maxAgeMs) return {
+    record: null, status: 'expired', miss_reason: 'record_older_than_seven_days',
+    expired_record_learned_at: record.learned_at ?? null,
+  };
+  const limit = Number(record.effective_context_limit);
+  if (!Number.isFinite(limit) || limit <= 0) return {
+    record: null, status: 'invalidated', miss_reason: 'invalid_effective_context_limit',
+  };
+  return { record: { ...record, effective_context_limit: limit }, status: 'hit', miss_reason: null };
+}
+
 export function makeExtractionPreflight({
   prompt = '',
   estimateTokens,

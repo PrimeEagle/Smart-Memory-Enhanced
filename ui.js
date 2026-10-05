@@ -79,6 +79,7 @@ import {
   reconcileRelationshipHistoryMap,
   getRelationshipHistoryPair,
   getRelationshipHistoryPairDisplay,
+  classifyRelationshipPairSafety,
   remapRelationshipHistoryEntity,
 } from './longterm.js';
 import { loadSessionMemories, saveSessionMemories, injectSessionMemories } from './session.js';
@@ -2559,13 +2560,16 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
         // only pairs whose two participants are both safe stable identities;
         // report the remainder as informational maintenance, not a degraded
         // current-chat integrity failure.
-        const participants = canonicalizeRelationshipPair(labels.subject, labels.target, finalizedRoster);
-        if (!participants) {
+        const safety = classifyRelationshipPairSafety(key, state, finalizedRoster);
+        const participants = safety.participants;
+        if (!safety.safe) {
           unresolvedRelationshipPairKeyRecords.push({
             store: storeName,
             key,
-            reason: 'participant_not_safely_resolved',
+            reason: safety.reason,
             persisted_unchanged: true,
+            excluded_from_injection: state?.excluded_from_injection === true,
+            propagation_status: state?.propagation_status ?? 'legacy_unquarantined',
           });
           continue;
         }

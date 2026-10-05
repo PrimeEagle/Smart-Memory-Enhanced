@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyContextOverflow,
+  classifyRuntimeContextLimitLookup,
   extractionRecoveryChildKey,
   isEstimatedContextOverflow,
   makeExtractionPreflight,
@@ -14,6 +15,17 @@ import {
 
 const tokens = (text) => Math.ceil(String(text).length / 4);
 const promptFor = (messages) => `instruction framing\n${messages.map((message) => message.mes).join('\n')}`;
+
+test('learned runtime context ceilings report reusable hits and explicit miss reasons', () => {
+  const now = 10_000;
+  const records = { sig: { learned_at: 9_000, effective_context_limit: '10240' } };
+  const hit = classifyRuntimeContextLimitLookup(records, 'sig', now, 2_000);
+  assert.equal(hit.status, 'hit');
+  assert.equal(hit.record.effective_context_limit, 10_240);
+  assert.equal(classifyRuntimeContextLimitLookup(records, 'different', now, 2_000).status, 'signature_mismatch');
+  assert.equal(classifyRuntimeContextLimitLookup(records, 'sig', 12_000, 2_000).status, 'expired');
+  assert.equal(classifyRuntimeContextLimitLookup({}, 'sig', now, 2_000).status, 'not_learned_yet');
+});
 
 test('preflight uses final rendered input plus reserved output and safety margin', () => {
   const preflight = makeExtractionPreflight({
