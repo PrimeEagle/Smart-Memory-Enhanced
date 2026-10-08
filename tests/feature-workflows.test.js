@@ -1584,6 +1584,7 @@ test('long-chat extraction preflights final prompts and records bounded overflow
 
 test('Memorize Chat checkpoints only committed chunks and exposes guarded recovery', () => {
   const settings = read('settings.js');
+  const shortTermRecovery = read('shortterm-recovery-utils.js');
   const html = read('settings.html');
   const index = read('index.js');
   assert.match(html, /sme_resume_catch_up/);
@@ -1604,7 +1605,7 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /source_message_count: Math\.max\(0, total - resumeOffset\)/);
   assert.match(settings, /timing_scope: 'current_attempt_plus_finalization_only'/);
   assert.match(settings, /Incomplete Memorize Chat run available:/);
-  assert.match(settings, /Resumed Automatically/);
+  assert.match(shortTermRecovery, /Resumed Automatically/);
   assert.match(settings, /Resumed automatically — processing continues/);
   assert.match(settings, /after the same transaction succeeds/);
   assert.match(settings, /delete catchUpContext\.chatMetadata\[META_KEY\]\.catch_up_checkpoint/);

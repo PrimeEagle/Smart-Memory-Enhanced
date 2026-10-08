@@ -1,4 +1,4 @@
-export const SHORTTERM_RECOVERY_SCHEMA_VERSION = 5;
+export const SHORTTERM_RECOVERY_SCHEMA_VERSION = 6;
 
 const finiteInteger = (value) => Number.isInteger(Number(value)) ? Math.floor(Number(value)) : null;
 
@@ -121,6 +121,179 @@ export function migrateCommittedShortTermFailureState(failureState = {}, {
         migrated_at: migratedAt,
       },
     },
+  };
+}
+
+/**
+ * Proves the legacy state where a committed compaction pass survived, but the
+ * active recovery plan and its post-commit marker were cleared. This is a
+ * read-only derivation: callers may safely use it while rendering the panel.
+ */
+export function deriveMissingPlanCommittedCheckpoint({ activePlan = null, postCommitMarker = null,
+  compactionCheckpoint = null, summaryEnd = null, currentSummaryHash = null,
+  currentSourceFingerprint = null, failureState = null, logicalRunId = null,
+  phase = 'shortterm_extraction', configurationSignature = null,
+  promptShapeVersion = null, minimumSegmentFloor = 4, migratedAt = null } = {}) {
+  const conflicts = [];
+  const compare = (field, persisted, current, reason) => {
+    if (persisted !== current) conflicts.push({ field, persisted: persisted ?? null, current: current ?? null, reason });
+  };
+  if (activePlan) conflicts.push({ field: 'shortterm_recovery_plan', persisted: 'present', current: 'absent', reason: 'newer_active_plan_present' });
+  if (postCommitMarker) conflicts.push({ field: 'shortterm_post_commit_recovery_marker', persisted: 'present', current: 'absent', reason: 'post_commit_marker_already_present' });
+  if (!compactionCheckpoint) conflicts.push({ field: 'shortterm_compaction_checkpoint', persisted: null, current: 'committed checkpoint', reason: 'committed_checkpoint_missing' });
+
+  const boundary = finiteInteger(summaryEnd);
+  const checkpointBoundary = finiteInteger(compactionCheckpoint?.summary_end);
+  const sourceEnd = finiteInteger(compactionCheckpoint?.source_end);
+  const tailStart = finiteInteger(compactionCheckpoint?.pending_tail_start);
+  const tailEnd = finiteInteger(compactionCheckpoint?.pending_tail_end);
+  const failure = failureState?.last_failed_request ?? failureState?.recovery_ladder?.last_actual_dispatched_request ?? null;
+  const failureStart = finiteInteger(failure?.source_start);
+  const failureEnd = finiteInteger(failure?.source_end);
+  const failureSize = finiteInteger(failure?.message_count)
+    ?? (failureStart !== null && failureEnd !== null ? failureEnd - failureStart + 1 : null);
+
+  if (compactionCheckpoint?.commit_status !== 'committed') {
+    conflicts.push({ field: 'commit_status', persisted: compactionCheckpoint?.commit_status ?? null, current: 'committed', reason: 'checkpoint_not_committed' });
+  }
+  if (!currentSummaryHash || !compactionCheckpoint?.summary_hash) {
+    conflicts.push({ field: 'summary_hash', persisted: compactionCheckpoint?.summary_hash ?? null,
+      current: currentSummaryHash ?? null, reason: 'summary_hash_missing' });
+  }
+  compare('summary_end', checkpointBoundary, boundary, 'summary_boundary_mismatch');
+  compare('summary_hash', compactionCheckpoint?.summary_hash ?? null, currentSummaryHash ?? null, 'summary_hash_mismatch');
+  if (!currentSourceFingerprint || !compactionCheckpoint?.source_fingerprint) {
+    conflicts.push({ field: 'source_fingerprint', persisted: compactionCheckpoint?.source_fingerprint ?? null,
+      current: currentSourceFingerprint ?? null, reason: 'source_fingerprint_missing' });
+  }
+  compare('source_fingerprint', compactionCheckpoint?.source_fingerprint ?? null, currentSourceFingerprint ?? null, 'source_fingerprint_mismatch');
+  if (sourceEnd === null || boundary === null || sourceEnd >= boundary || sourceEnd + 1 !== boundary) {
+    conflicts.push({ field: 'source_end', persisted: sourceEnd, current: boundary === null ? null : boundary - 1, reason: 'committed_source_boundary_mismatch' });
+  }
+  compare('pending_tail_start', tailStart, boundary, 'pending_tail_boundary_mismatch');
+  if (tailEnd === null || boundary === null || tailEnd < boundary) {
+    conflicts.push({ field: 'pending_tail_end', persisted: tailEnd, current: boundary, reason: 'remaining_tail_missing' });
+  }
+  if (failureStart === null || failureEnd === null || failureEnd < failureStart || sourceEnd === null || failureEnd > sourceEnd) {
+    conflicts.push({ field: 'last_failed_request', persisted: failure ?? null,
+      current: sourceEnd === null ? null : { source_end_at_or_before: sourceEnd }, reason: 'stale_failure_range_mismatch' });
+  }
+  const evidenceRun = failure?.logical_run_id ?? failureState?.logical_run_id ?? compactionCheckpoint?.logical_run_id ?? null;
+  if (evidenceRun != null && logicalRunId != null && evidenceRun !== logicalRunId) {
+    conflicts.push({ field: 'logical_run_id', persisted: evidenceRun, current: logicalRunId, reason: 'logical_run_mismatch' });
+  }
+  const evidencePhase = failure?.phase ?? failureState?.phase ?? compactionCheckpoint?.phase ?? null;
+  if (evidencePhase != null && evidencePhase !== phase) {
+    conflicts.push({ field: 'phase', persisted: evidencePhase, current: phase, reason: 'phase_mismatch' });
+  }
+
+  const proven = conflicts.length === 0;
+  if (!proven) return { proven: false, eligible: false, reason: conflicts[0]?.reason ?? 'committed_checkpoint_unproven', conflicts };
+  const markerId = `missing-plan:${logicalRunId ?? 'legacy'}:${boundary}:${currentSummaryHash}`;
+  const committedPlan = {
+    schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
+    plan_id: failure?.plan_id ?? failure?.effective_request_signature ?? markerId,
+    effective_request_signature: failure?.effective_request_signature ?? failureState?.effective_request_signature ?? null,
+    logical_run_id: logicalRunId,
+    phase,
+    next_segment_start: failureStart,
+    next_segment_end: failureEnd,
+    message_count: failureSize,
+    target_message_count: failureSize,
+    source_fingerprint: failure?.source_fingerprint ?? null,
+    summary_parent_hash: failure?.parent_summary_hash ?? compactionCheckpoint?.parent_summary_hash ?? null,
+    configuration_signature: failureState?.configuration_signature ?? configurationSignature,
+    prompt_shape_version: promptShapeVersion,
+    lifecycle_state: 'consumed_successfully', terminal_state: 'committed',
+    provider_terminal_outcome: 'completed', segment_terminal_outcome: 'committed',
+    committed_boundary: boundary, committed_summary_hash: currentSummaryHash,
+    successor_start: boundary, successor_parent_hash: currentSummaryHash,
+    migrated_from_missing_active_plan: true, migrated_at: migratedAt,
+  };
+  return {
+    proven: true, eligible: true,
+    decision: 'reconstruct_successor_from_committed_boundary',
+    reason: 'committed_progress_without_active_successor', conflicts: [],
+    evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
+    committed_boundary: boundary, committed_summary_hash: currentSummaryHash,
+    successor_start: boundary, successor_parent_hash: currentSummaryHash,
+    committed_predecessor_range: { start: failureStart, end: failureEnd },
+    false_failure_size: failureSize, remaining_tail_end: tailEnd,
+    marker_id: markerId, committed_plan: committedPlan,
+    post_commit_marker: {
+      schema_version: 2, marker_id: markerId,
+      predecessor_plan_id: committedPlan.plan_id,
+      predecessor_terminal_state: 'committed',
+      predecessor_source_range: { start: failureStart, end: failureEnd },
+      committed_boundary: boundary, committed_summary_hash: currentSummaryHash,
+      remaining_tail_end: tailEnd,
+      configuration_signature: failureState?.configuration_signature ?? configurationSignature,
+      prompt_shape_version: promptShapeVersion,
+      recovery_strategy: 'smaller_segment_rebuild',
+      minimum_segment_floor: Math.max(1, finiteInteger(minimumSegmentFloor) ?? 4),
+      successor_state: 'reconstruction_required',
+      migration_provenance: 'legacy_missing_plan_committed_checkpoint',
+      evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
+      created_at: migratedAt,
+    },
+  };
+}
+
+/** Authoritative no-plan path used by the recovery panel and Resume preflight. */
+export function deriveShortTermMissingPlanResumeEligibility({ checkpointStatus = null,
+  phaseDisposition = null, postCommitMarker = null, compactionCheckpoint = null,
+  summaryEnd = null, currentSummaryHash = null, currentSourceFingerprint = null,
+  failureState = null, logicalRunId = null, phase = 'shortterm_extraction',
+  configurationSignature = null, promptShapeVersion = null, minimumSegmentFloor = 4 } = {}) {
+  if (!postCommitMarker && compactionCheckpoint) {
+    const proof = deriveMissingPlanCommittedCheckpoint({
+      activePlan: null, postCommitMarker: null, compactionCheckpoint, summaryEnd,
+      currentSummaryHash, currentSourceFingerprint, failureState, logicalRunId,
+      phase, configurationSignature, promptShapeVersion, minimumSegmentFloor,
+    });
+    if (proof.proven) return {
+      eligible: true, decision: proof.decision, reason: proof.reason,
+      inferred_post_commit_state: true, evidence_source: proof.evidence_source,
+      committed_boundary: proof.committed_boundary, conflicts: [],
+    };
+    return { eligible: false, decision: 'committed_checkpoint_revalidation_required',
+      reason: proof.reason, conflicts: proof.conflicts };
+  }
+  return deriveShortTermResumeEligibility({ checkpointStatus, phaseDisposition,
+    plan: null, validation: null, failureState, postCommitMarker });
+}
+
+export function deriveShortTermResumePresentation(eligibility = {}, running = false) {
+  const blocked = !eligibility?.eligible;
+  const reconstructing = eligibility?.decision === 'reconstruct_successor_from_committed_boundary';
+  return {
+    disabled: Boolean(running || blocked),
+    label: running ? 'Resumed Automatically' : blocked ? 'Short-Term Recovery Blocked'
+      : reconstructing ? 'Resume From Safe Boundary' : 'Resume Incomplete Run',
+    mode: running ? 'running' : blocked ? 'blocked' : reconstructing ? 'safe_boundary' : 'ordinary',
+  };
+}
+
+export function migrateMissingPlanCommittedCheckpoint(input = {}) {
+  const proof = deriveMissingPlanCommittedCheckpoint(input);
+  if (!proof.proven) return { applied: false, proof, reason: proof.reason, conflicts: proof.conflicts };
+  const migratedFailure = migrateCommittedShortTermFailureState(input.failureState ?? {}, {
+    committedBoundary: proof.committed_boundary,
+    committedPlan: proof.committed_plan,
+    committedSummaryHash: proof.committed_summary_hash,
+    migratedAt: input.migratedAt,
+  });
+  if (!migratedFailure.migrated && input.failureState?.operator_action_required) {
+    const conflict = { field: 'recovery_ladder', persisted: input.failureState?.recovery_ladder ?? null,
+      current: { removable_failure_size: proof.false_failure_size }, reason: 'committed_failure_cleanup_unproven' };
+    return { applied: false, proof, reason: conflict.reason, conflicts: [conflict] };
+  }
+  return {
+    applied: true, proof,
+    failure_state: migratedFailure.failure_state,
+    post_commit_marker: { ...proof.post_commit_marker,
+      migrated_false_failed_ladder_entry: migratedFailure.migrated },
+    removed_failure_size: migratedFailure.removed_failure_size,
   };
 }
 

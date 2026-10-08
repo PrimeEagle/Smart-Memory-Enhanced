@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.54] - 2026-10-08
+
+### Fixed
+
+- Short-Term crash recovery now recognizes a legacy committed compaction
+  checkpoint even when the prior build already cleared both its active plan
+  and post-commit marker. The recovery panel can expose the proven safe
+  boundary without writing state; Resume then archives the predecessor,
+  removes its false failure exactly once, reload-verifies a synthesized marker,
+  and starts the successor at the first uncommitted message.
+- Recovery exports now include a privacy-safe extension/build identity and the
+  loaded Short-Term recovery schema version, while unsafe checkpoint, summary,
+  source, tail, run, or phase mismatches retain exact blocking conflicts.
+
 ## [0.9.53] - 2026-10-08
 
 ### Fixed

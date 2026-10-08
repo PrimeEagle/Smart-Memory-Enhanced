@@ -198,9 +198,18 @@ import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
   countShortTermPhysicalAttempts, migrateCommittedShortTermFailureState,
+  deriveShortTermMissingPlanResumeEligibility,
+  deriveShortTermResumePresentation, migrateMissingPlanCommittedCheckpoint,
   isShortTermMinimumFloorExhausted,
   SHORTTERM_RECOVERY_SCHEMA_VERSION,
 } from './shortterm-recovery-utils.js';
+
+const SME_BUILD_IDENTITY = Object.freeze({
+  extension_version: '0.9.54',
+  build_fingerprint: 'sme-v0.9.54-shortterm-recovery-shape-b-r1',
+  recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
+  loaded_module_schema_versions: Object.freeze({ shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION }),
+});
 
 /** Set to true while a model test is running to allow cancellation. */
 let modelTestRunning = false;
@@ -213,6 +222,11 @@ function diagnosticFingerprint(value) {
     hash = Math.imul(hash, 16777619);
   }
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/** Must remain byte-for-byte compatible with compaction.js source identity. */
+function shortTermChatSourceFingerprint(chat = []) {
+  return diagnosticFingerprint(chat.map((message) => `${message?.name ?? ''}\u0000${message?.mes ?? ''}\u0000`).join(''));
 }
 
 /**
@@ -2119,10 +2133,23 @@ export function bindSettingsUI(ctrl) {
   const evaluateShortTermResumeEligibility = (checkpoint, context = getContext()) => {
     const finalization = checkpoint?.finalization ?? {};
     const plan = finalization.shortterm_recovery_plan ?? null;
-    if (!plan) return deriveShortTermResumeEligibility({ checkpointStatus: checkpoint?.status,
-      phaseDisposition: finalization.phase_dispositions?.shortterm_extraction,
-      failureState: finalization.shortterm_failure_state,
-      postCommitMarker: finalization.shortterm_post_commit_recovery_marker });
+    if (!plan) {
+      const marker = finalization.shortterm_post_commit_recovery_marker ?? null;
+      const metadata = context.chatMetadata?.[META_KEY] ?? {};
+      return deriveShortTermMissingPlanResumeEligibility({ checkpointStatus: checkpoint?.status,
+        phaseDisposition: finalization.phase_dispositions?.shortterm_extraction,
+        postCommitMarker: marker,
+        compactionCheckpoint: metadata.shortterm_compaction_checkpoint ?? null,
+        summaryEnd: metadata.summaryEnd,
+        currentSummaryHash: diagnosticFingerprint(metadata.summary ?? ''),
+        currentSourceFingerprint: shortTermChatSourceFingerprint(context.chat ?? []),
+        failureState: finalization.shortterm_failure_state,
+        logicalRunId: checkpoint?.run_id,
+        phase: 'shortterm_extraction',
+        promptShapeVersion: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
+        minimumSegmentFloor: 4,
+      });
+    }
     const items = (context.chat ?? []).map((item, index) => ({ item, index }))
       .filter(({ item, index }) => index >= Number(plan.next_segment_start) && item?.mes && !item?.is_system)
       .slice(0, Math.max(1, Number(plan.message_count) || 1));
@@ -2218,11 +2245,11 @@ export function bindSettingsUI(ctrl) {
       saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist restart health reconciliation:`, error));
       updateLiveMemoryHealthUI();
     }
-    $resume.prop('disabled', running || operatorActionRequired);
     const reconstructingSuccessor = resumeEligibility.decision === 'reconstruct_successor_from_committed_boundary';
+    const resumePresentation = deriveShortTermResumePresentation(resumeEligibility, running);
+    $resume.prop('disabled', resumePresentation.disabled);
     setResumeLabel(
-      running ? 'Resumed Automatically' : operatorActionRequired ? 'Short-Term Recovery Blocked'
-        : reconstructingSuccessor ? 'Resume From Safe Boundary' : 'Resume Incomplete Run',
+      resumePresentation.label,
       running
         ? 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
         : operatorActionRequired
@@ -2705,11 +2732,17 @@ export function bindSettingsUI(ctrl) {
     const metadata = getContext().chatMetadata?.[META_KEY] ?? {};
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
     const liveMemoryHealth = metadata.live_memory_health ? exportLiveMemoryHealth(metadata) : null;
-    const recovery = summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint);
+    const recovery = {
+      ...summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint),
+      shortterm_compaction_checkpoint: metadata.shortterm_compaction_checkpoint ? {
+        ...metadata.shortterm_compaction_checkpoint,
+      } : null,
+    };
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
-      return { ...completedRun, live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
+      return { ...completedRun, build_identity: SME_BUILD_IDENTITY,
+        live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
         runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
         page_run_lifecycle: summarizePageRunLifecycle(metadata, completedRun.logical_run?.attempt_count ?? null) };
     }
@@ -2721,6 +2754,7 @@ export function bindSettingsUI(ctrl) {
     if (!freshStartAudit && !manualIdempotence && !liveMemoryHealth && !recovery.available) return null;
     return {
       version: 1,
+      build_identity: SME_BUILD_IDENTITY,
       created_at: Date.now(),
       diagnostic_type: recovery.available ? 'incomplete_catchup_recovery' : 'pre_run_state_audit',
       status: recovery.available ? 'incomplete' : 'not_run',
@@ -4611,6 +4645,7 @@ export function bindSettingsUI(ctrl) {
     let catchUpErrorCount = 0;
     const runResult = {
       run_id: catchUpRunId,
+      build_identity: SME_BUILD_IDENTITY,
       historical_participant_scope: historicalParticipantScope,
       totalChunks: 0,
       completedChunks: 0,
@@ -6558,6 +6593,91 @@ export function bindSettingsUI(ctrl) {
             return restored;
           };
           let persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
+          if (!persistedRecoveryPlan && !checkpoint.finalization?.shortterm_post_commit_recovery_marker) {
+            const shortTermMetadata = catchUpContext.chatMetadata?.[META_KEY] ?? {};
+            const migratedAt = Date.now();
+            const migration = migrateMissingPlanCommittedCheckpoint({
+              activePlan: null, postCommitMarker: null,
+              compactionCheckpoint: shortTermMetadata.shortterm_compaction_checkpoint ?? null,
+              summaryEnd: shortTermMetadata.summaryEnd,
+              currentSummaryHash: diagnosticFingerprint(shortTermMetadata.summary ?? ''),
+              currentSourceFingerprint: shortTermChatSourceFingerprint(catchUpContext.chat ?? []),
+              failureState: checkpoint.finalization.shortterm_failure_state,
+              logicalRunId: checkpoint.run_id,
+              phase: 'shortterm_extraction',
+              configurationSignature: shortTermConfigurationSignature(),
+              promptShapeVersion: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
+              minimumSegmentFloor: 4,
+              migratedAt,
+            });
+            const missingPlanProof = migration.proof;
+            if (migration.applied) {
+              const committedPlan = missingPlanProof.committed_plan;
+              const history = checkpoint.finalization.shortterm_recovery_plan_history ?? [];
+              if (!history.some((entry) => entry?.plan_id === committedPlan.plan_id
+                && Number(entry?.committed_boundary) === missingPlanProof.committed_boundary)) {
+                checkpoint.finalization.shortterm_recovery_plan_history = [...history, committedPlan].slice(-16);
+              }
+              const oldLadderCount = Number(checkpoint.finalization.shortterm_failure_state?.recovery_ladder?.total_failures ?? 0);
+              checkpoint.finalization.shortterm_failure_state = migration.failure_state;
+              checkpoint.finalization.shortterm_post_commit_recovery_marker = migration.post_commit_marker;
+              checkpoint.finalization.shortterm_recovery_migration = {
+                schema_version: 1, applied: true,
+                reason: 'committed_predecessor_plan_was_already_cleared',
+                evidence_source: missingPlanProof.evidence_source,
+                committed_predecessor_range: missingPlanProof.committed_predecessor_range,
+                false_failure_size_removed: migration.removed_failure_size,
+                old_ladder_count: oldLadderCount,
+                new_ladder_count: Number(migration.failure_state?.recovery_ladder?.total_failures ?? 0),
+                synthesized_marker_id: missingPlanProof.marker_id,
+                successor_reconstruction_status: 'required',
+                migrated_at: migratedAt,
+              };
+              checkpoint.finalization.phase_dispositions ??= {};
+              checkpoint.finalization.phase_dispositions.shortterm_extraction = {
+                ...(checkpoint.finalization.phase_dispositions.shortterm_extraction ?? {}),
+                disposition: 'pending_resume', resumable: true,
+                resume_decision: 'reconstruct_successor_from_committed_boundary',
+                terminal_outcome: 'committed_progress_without_active_successor',
+              };
+              checkpoint.updated_at = migratedAt;
+              await saveChatMetadata(catchUpContext);
+              await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+              finalTransaction = beginCatchUpTransaction(catchUpContext);
+              const restoredMarker = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint
+                ?.finalization?.shortterm_post_commit_recovery_marker;
+              if (restoredMarker?.marker_id !== missingPlanProof.marker_id) {
+                const error = new Error('The repaired Short-Term post-commit marker failed durable reload verification.');
+                error.sme_reason_code = 'post_commit_marker_persistence_verification_failed';
+                throw error;
+              }
+              const reconstructed = buildRecoveryPlan({
+                start: missingPlanProof.successor_start,
+                count: Math.max(4, Number(committedPlan.target_message_count ?? committedPlan.message_count ?? 4)),
+                parentSummaryHash: missingPlanProof.successor_parent_hash,
+                predecessorPlan: committedPlan,
+                reductionReason: 'reconstructed_from_committed_boundary',
+              });
+              if (reconstructed) {
+                persistedRecoveryPlan = await persistAndVerifyRecoveryPlan(reconstructed);
+                checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_plan_id = persistedRecoveryPlan.plan_id;
+                checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_state = 'reload_verified';
+                checkpoint.finalization.shortterm_recovery_migration.successor_reconstruction_status = 'reload_verified';
+                await saveChatMetadata(catchUpContext);
+                await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+                finalTransaction = beginCatchUpTransaction(catchUpContext);
+              } else {
+                checkpoint.finalization.shortterm_recovery_migration.successor_reconstruction_status = 'tail_complete';
+              }
+              compactionRequestAudit.recovery_state_migration = checkpoint.finalization.shortterm_recovery_migration;
+            } else if (shortTermMetadata.shortterm_compaction_checkpoint) {
+              compactionRequestAudit.recovery_state_migration = {
+                applied: false, reason: migration.reason,
+                evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
+                conflicts: migration.conflicts,
+              };
+            }
+          }
           if (persistedRecoveryPlan) {
             if (Number(persistedRecoveryPlan.schema_version ?? 0) < 3) {
               const legacySchemaVersion = Number(persistedRecoveryPlan.schema_version ?? 2);

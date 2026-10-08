@@ -216,11 +216,22 @@ test('checkpoint diagnostics distinguish missing, resumable, and invalidated rec
 test('checkpoint diagnostics retain completed finalization phases and the recovery settings snapshot', () => {
   const summary = summarizeCatchUpCheckpoint({
     ...checkpoint,
-    finalization: { schema_version: 1, active_phase: 'shortterm_extraction', completed_phases: { scene_detection: { completed_at: 1 } } },
+    finalization: { schema_version: 1, active_phase: 'shortterm_extraction', completed_phases: { scene_detection: { completed_at: 1 } },
+      shortterm_resume_eligibility: { eligible: true, decision: 'reconstruct_successor_from_committed_boundary' },
+      shortterm_recovery_migration: { applied: true, false_failure_size_removed: 9 },
+      shortterm_post_commit_recovery_marker: { marker_id: 'marker-1', committed_boundary: 7645 },
+      shortterm_recovery_plan: { schema_version: 6, plan_id: 'successor', lifecycle_state: 'successor_reload_verified',
+        next_segment_start: 7645, next_segment_end: 7653, message_count: 9,
+        summary_parent_hash: 'fnv1a-summary', persistence_result: 'committed', reload_result: 'verified' } },
     run_settings_snapshot: { compaction_response_length: 3000, longterm_inject_budget: 600 },
   });
   assert.equal(summary.finalization.active_phase, 'shortterm_extraction');
   assert.deepEqual(summary.finalization.completed_phases, ['scene_detection']);
+  assert.equal(summary.finalization.shortterm_resume_eligibility.eligible, true);
+  assert.equal(summary.finalization.shortterm_recovery_migration.false_failure_size_removed, 9);
+  assert.equal(summary.finalization.shortterm_post_commit_recovery_marker.committed_boundary, 7645);
+  assert.equal(summary.finalization.shortterm_recovery_plan.next_segment_start, 7645);
+  assert.equal(summary.finalization.shortterm_recovery_plan.reload_result, 'verified');
   assert.equal(summary.run_settings_snapshot.available, true);
   assert.deepEqual(summary.run_settings_snapshot.setting_keys, ['compaction_response_length', 'longterm_inject_budget']);
 });
