@@ -96,6 +96,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
   onPassCommitted = null, shouldCancel = null, onRequestState = null,
   recoveryInputFraction = 1,
   recoveryPlan = null,
+  stopAfterRecoveryPlanCommit = false,
 } = {}) {
   const fullInputBudget = getMemoryInputBudget(responseLength);
   const inputBudget = Math.max(256, Math.floor(fullInputBudget * Math.min(1, Math.max(0.2, Number(recoveryInputFraction) || 1))));
@@ -106,6 +107,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     ? Math.max(1, Number(recoveryPlan.target_message_count)) : null;
   let recoveryPlanPending = Boolean(recoveryPlan);
   let consumedRecoveryPlan = null;
+  let recoveryPlanCommitCompleted = false;
   const compactFingerprint = compactionDiagnosticFingerprint;
   const sourceEvidence = (items, prompt, outputTokens) => {
     const indices = items.map((item) => Number(item.__sme_compaction_source_index)).filter(Number.isInteger);
@@ -288,7 +290,10 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         pass_number: passNumber, partition_depth: partitionDepth,
         output_budget: responseLength, adaptation: successfulAdaptation,
         input_budget: inputBudget, full_input_budget: fullInputBudget,
+        consumed_recovery_plan: consumingRecoveryPlan ? consumedRecoveryPlan : null,
+        provider_terminal_outcome: 'completed', segment_terminal_outcome: 'committed',
       });
+      if (consumingRecoveryPlan) recoveryPlanCommitCompleted = true;
     }
     if (partitionDepth === 0) consumedRecoveryPlan = null;
   };
@@ -301,6 +306,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     const candidatePrompt = buildPromptFor(candidate);
     if (chunk.length && plannedMaxMessages && candidate.length > plannedMaxMessages) {
       await summarizeChunk();
+      if (stopAfterRecoveryPlanCommit && recoveryPlanCommitCompleted) return rollingSummary;
       pending.unshift(message);
       continue;
     }
@@ -310,6 +316,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     const candidateInputBudget = recoveryPlanPending ? fullInputBudget : inputBudget;
     if (chunk.length && estimateTokens(candidatePrompt) > candidateInputBudget) {
       await summarizeChunk();
+      if (stopAfterRecoveryPlanCommit && recoveryPlanCommitCompleted) return rollingSummary;
       pending.unshift(message);
       continue;
     }
@@ -339,6 +346,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       chunk.push(head);
       if (remainder) pending.unshift({ ...message, mes: remainder, __sme_compaction_partial: false });
       await summarizeChunk();
+      if (stopAfterRecoveryPlanCommit && recoveryPlanCommitCompleted) return rollingSummary;
       continue;
     }
     chunk.push(message);
@@ -412,7 +420,7 @@ export async function shouldCompact() {
  * rather than rewriting it from scratch.
  * @returns {Promise<string|null>} The formatted summary, or null on failure.
  */
-export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null, recoveryInputFraction = 1, recoveryPlan = null } = {}) {
+export async function runCompaction({ includeLastMessage = false, checkpointEachPass = false, onPassCommitted = null, shouldCancel = null, onRequestState = null, recoveryInputFraction = 1, recoveryPlan = null, stopAfterRecoveryPlanCommit = false } = {}) {
   const settings = extension_settings[MODULE_NAME];
   const context = getContext();
 
@@ -530,6 +538,9 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         output_budget: passInfo.output_budget ?? (settings.compaction_response_length ?? 2000),
         input_budget: passInfo.input_budget ?? null,
         adaptation: passInfo.adaptation ?? 'normal_request',
+        consumed_recovery_plan: passInfo.consumed_recovery_plan ?? null,
+        provider_terminal_outcome: passInfo.provider_terminal_outcome ?? null,
+        segment_terminal_outcome: passInfo.segment_terminal_outcome ?? null,
         updated_at: meta.summaryUpdated,
       };
       await saveChatMetadata(context);
@@ -561,7 +572,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         existingSummary,
         storedMemories,
         settings.compaction_response_length || 2000,
-        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction, recoveryPlan },
+        { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction, recoveryPlan, stopAfterRecoveryPlanCommit },
       );
     } else {
       // Full compaction: first time or fresh chat with no existing summary.
@@ -579,7 +590,7 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
           'No earlier events have been summarized yet.',
           storedMemories,
           responseLength,
-          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction, recoveryPlan },
+          { onPassCommitted: persistBoundedPass, shouldCancel, onRequestState, recoveryInputFraction, recoveryPlan, stopAfterRecoveryPlanCommit },
         );
       } else {
         raw = await generateMemorySummarize(applyPromptOverride(buildSummaryPrompt(storedMemories), PROMPT_TASKS.COMPACTION), {
@@ -591,6 +602,14 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
     }
 
     if (!raw || raw.trim() === '') return null;
+
+    // One recovered plan is one durable transaction. Its bounded-pass
+    // checkpoint already owns the advanced boundary; return here so the caller
+    // can reload-verify the successor before dispatching another segment.
+    if (stopAfterRecoveryPlanCommit && recoveryPlan
+      && Number(context.chatMetadata[META_KEY]?.summaryEnd) < context.chat.length) {
+      return context.chatMetadata[META_KEY]?.summary ?? formatSummary(raw);
+    }
 
     // Providers may exceed the requested response length. Persist the capped
     // form so a finished Memorize Chat cannot immediately display a persistent

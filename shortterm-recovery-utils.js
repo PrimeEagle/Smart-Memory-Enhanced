@@ -1,4 +1,4 @@
-export const SHORTTERM_RECOVERY_SCHEMA_VERSION = 4;
+export const SHORTTERM_RECOVERY_SCHEMA_VERSION = 5;
 
 const finiteInteger = (value) => Number.isInteger(Number(value)) ? Math.floor(Number(value)) : null;
 
@@ -43,6 +43,84 @@ export function advanceShortTermRecoveryLadder(prior = {}, failedSegmentSize, mi
       effective_request_signature: evidence.effective_request_signature ?? null,
       terminal_outcome: evidence.terminal_outcome ?? null,
     } : prior.last_actual_dispatched_request ?? null,
+  };
+}
+
+export function countShortTermPhysicalAttempts(events = []) {
+  const transmissions = new Set();
+  for (const event of events) {
+    const requestId = event?.request_id ?? null;
+    if (!requestId) continue;
+    if (event.state === 'in_flight') transmissions.add(`${requestId}:primary`);
+    if (event.state === 'provider_diagnostic' && (
+      event.predecessor_endpoint_category
+      || event.terminal_adaptation === 'same_provider_proxy_nonstream_retry'
+      || /fallback/i.test(String(event.endpoint_category ?? ''))
+    )) transmissions.add(`${requestId}:fallback`);
+  }
+  return {
+    physical_provider_attempts: transmissions.size,
+    provider_attempt_ids: [...transmissions],
+  };
+}
+
+export function isShortTermMinimumFloorExhausted({ dispatched = false, failedBeforeCommit = false,
+  segmentSize = null, minimumSegmentFloor = 4, sourceStart = null, sourceEnd = null,
+  committedBoundary = null, configurationSignature = null, currentConfigurationSignature = null,
+  alternateRecoveryAvailable = false } = {}) {
+  const size = finiteInteger(segmentSize);
+  const floor = Math.max(1, finiteInteger(minimumSegmentFloor) ?? 4);
+  const start = finiteInteger(sourceStart);
+  const end = finiteInteger(sourceEnd);
+  const boundary = finiteInteger(committedBoundary);
+  const pending = start !== null && end !== null && boundary !== null && end >= boundary;
+  const configurationMatches = !configurationSignature || !currentConfigurationSignature
+    || configurationSignature === currentConfigurationSignature;
+  return Boolean(dispatched && failedBeforeCommit && size !== null && size <= floor
+    && pending && configurationMatches && !alternateRecoveryAvailable);
+}
+
+export function migrateCommittedShortTermFailureState(failureState = {}, {
+  committedBoundary = null, committedPlan = null, committedSummaryHash = null, migratedAt = Date.now(),
+} = {}) {
+  const boundary = finiteInteger(committedBoundary);
+  const start = finiteInteger(committedPlan?.next_segment_start);
+  const end = finiteInteger(committedPlan?.next_segment_end);
+  const size = finiteInteger(committedPlan?.message_count);
+  const safelyCommitted = boundary !== null && start !== null && end !== null
+    && end < boundary && size !== null && committedSummaryHash;
+  if (!safelyCommitted) return { failure_state: failureState, migrated: false, removed_failure_size: null };
+  const ladder = { ...(failureState?.recovery_ladder ?? {}) };
+  const failures = { ...(ladder.failures_by_segment_size ?? {}) };
+  if (!Number(failures[size] ?? 0)) return { failure_state: failureState, migrated: false, removed_failure_size: null };
+  const last = failureState?.last_failed_request ?? ladder.last_actual_dispatched_request ?? null;
+  const sameRange = finiteInteger(last?.source_start) === start && finiteInteger(last?.source_end) === end;
+  if (!sameRange) return { failure_state: failureState, migrated: false, removed_failure_size: null };
+  failures[size] = Math.max(0, Number(failures[size]) - 1);
+  if (failures[size] === 0) delete failures[size];
+  ladder.failures_by_segment_size = failures;
+  ladder.total_failures = Math.max(0, Number(ladder.total_failures ?? 0) - 1);
+  ladder.reductions_attempted = (ladder.reductions_attempted ?? []).filter((value) => Number(value) !== size || Number(failures[size] ?? 0) > 0);
+  ladder.smallest_segment_attempted = Object.keys(failures).length
+    ? Math.min(...Object.keys(failures).map(Number)) : null;
+  if (sameRange) delete ladder.last_actual_dispatched_request;
+  return {
+    migrated: true,
+    removed_failure_size: size,
+    failure_state: {
+      ...failureState,
+      failure_signature: null,
+      last_failed_request: null,
+      operator_action_required: false,
+      adaptation: 'committed_segment_failure_reclassified',
+      next_resume_strategy: 'reconstruct_successor_from_committed_boundary',
+      recovery_ladder: ladder,
+      committed_failure_migration: {
+        source_start: start, source_end: end, message_count: size,
+        committed_boundary: boundary, committed_summary_hash: committedSummaryHash,
+        migrated_at: migratedAt,
+      },
+    },
   };
 }
 
@@ -122,9 +200,12 @@ export function reconcileShortTermRecoveryState({ plan = null, validation = null
 }
 
 export function deriveShortTermResumeEligibility({ checkpointStatus = null, phaseDisposition = null,
-  plan = null, validation = null, failureState = null } = {}) {
+  plan = null, validation = null, failureState = null, postCommitMarker = null } = {}) {
   if (!['in_progress', 'awaiting_manual_resume'].includes(checkpointStatus)) return { eligible: false, decision: 'terminal_non_resumable', reason: 'checkpoint_not_resumable' };
   if (plan && validation?.valid) return { eligible: true, decision: 'ordinary_resume_safe', reason: 'verified_recovery_plan_available' };
+  if (!plan && postCommitMarker?.committed_boundary != null && postCommitMarker?.committed_summary_hash) {
+    return { eligible: true, decision: 'reconstruct_successor_from_committed_boundary', reason: 'committed_progress_without_active_successor' };
+  }
   if (plan && validation && !validation.valid) return { eligible: false, decision: 'plan_revalidation_required', reason: validation.reason, conflicts: validation.conflicts ?? [] };
   if (failureState?.operator_action_required) return { eligible: false, decision: 'configuration_or_provider_change_required', reason: failureState.adaptation ?? 'recovery_ladder_exhausted' };
   if (phaseDisposition?.disposition === 'explicitly_skipped') return { eligible: false, decision: 'explicit_skip_available', reason: 'phase_skipped_by_user_policy' };

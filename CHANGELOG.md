@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.53] - 2026-10-08
+
+### Fixed
+
+- Short-Term recovery now retires each committed segment plan before creating
+  and reload-verifying its successor from the new summary hash and exclusive
+  source boundary. Legacy checkpoints that left a committed predecessor active
+  are repaired without regenerating that range or contaminating the failure
+  ladder.
+- Post-commit successor persistence failures are distinguished from provider
+  failures, remain resumable from the safe boundary, and cannot trigger a false
+  minimum-floor exhaustion. Provider attempts are counted once per actual
+  transmission rather than once per diagnostic lifecycle event.
+- Blocked final reconciliation no longer emits the contradictory
+  `integrity_audit_consistent` reason for an unevaluated integrity audit.
+
 ## [0.9.52] - 2026-10-08
 
 ### Fixed
