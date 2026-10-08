@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceShortTermRecoveryLadder, nextShortTermRecoverySegmentSize, shortTermRecoveryPlanRepeatsFailure } from '../shortterm-recovery-utils.js';
+import {
+  advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
+  reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
+} from '../shortterm-recovery-utils.js';
 
 test('Short-Term reduction ladder replaces 84 messages with 42 and stops at its floor', () => {
   assert.equal(nextShortTermRecoverySegmentSize(169, 4), 85);
@@ -21,9 +24,71 @@ test('Short-Term ladder retains per-size and cumulative failures across restarts
 
 test('Resume rejects a plan whose effective signature repeats the exhausted request', () => {
   assert.equal(shortTermRecoveryPlanRepeatsFailure(
-    { effective_request_signature: 'same' }, { failure_signature: 'same' },
+    { effective_request_signature: 'same' }, { failure_signature: 'same', last_failed_request: {
+      source_start: 10, source_end: 17, effective_request_signature: 'same', dispatched: true,
+    } },
   ), true);
   assert.equal(shortTermRecoveryPlanRepeatsFailure(
     { effective_request_signature: 'smaller' }, { failure_signature: 'parent' },
   ), false);
+});
+
+test('verified nine-message plan remains authoritative over a synthetic below-floor history entry', () => {
+  const plan = { message_count: 9, effective_request_signature: 'next', next_segment_start: 7636, next_segment_end: 7644 };
+  const result = reconcileShortTermRecoveryState({
+    plan, validation: { valid: true, conflicts: [] }, minimumSegmentFloor: 4,
+    failureState: { recovery_ladder: { failures_by_segment_size: { 18: 1, 1: 1 } } },
+    currentAttempt: { physical_provider_attempts: 0, segment_sizes_attempted: [], retained_events: [] },
+    cumulative: { physical_provider_attempts: 2, segment_sizes_attempted: [18] },
+  });
+  assert.equal(result.verified_next_plan.message_count, 9);
+  assert.equal(result.next_legal_action, 'dispatch_verified_plan');
+  assert.deepEqual(result.quarantined_synthetic_ladder_sizes, [1]);
+  assert.equal(result.current_attempt_physical_attempts, 0);
+  assert.equal(result.cumulative_physical_attempts, 2);
+});
+
+test('pre-dispatch null-range failure does not advance the ladder or become a one-message failure', () => {
+  const ladder = advanceShortTermRecoveryLadder({ total_failures: 1, failures_by_segment_size: { 18: 1 } }, null, 4, {
+    dispatched: false, require_range: true,
+  });
+  assert.equal(ladder.total_failures, 1);
+  assert.deepEqual(ladder.failures_by_segment_size, { 18: 1 });
+  assert.equal(ladder.ignored_predispatch_failures, 1);
+  assert.equal(shortTermRecoveryPlanRepeatsFailure({ effective_request_signature: 'plan' }, {
+    failure_signature: 'plan', last_failed_request: { source_start: null, source_end: null, dispatched: false },
+  }), false);
+});
+
+test('recovery plan validation reports exact parent, source, configuration, and floor conflicts', () => {
+  const plan = {
+    schema_version: 4, logical_run_id: 'run', phase: 'shortterm_extraction', message_count: 9,
+    next_segment_start: 7636, next_segment_end: 7644, source_fingerprint: 'source-a',
+    summary_parent_hash: 'summary-a', prompt_shape_version: 'v3', effective_request_signature: 'request-a',
+    configuration_signature: 'config-a', minimum_segment_floor: 4,
+  };
+  assert.equal(validateShortTermRecoveryPlan(plan, {
+    logical_run_id: 'run', phase: 'shortterm_extraction', source_start: 7636, source_end: 7644,
+    source_fingerprint: 'source-a', parent_summary_hash: 'summary-a', prompt_shape_version: 'v3',
+    effective_request_signature: 'request-a', configuration_signature: 'config-a', minimum_segment_floor: 4,
+  }).valid, true);
+  const invalid = validateShortTermRecoveryPlan(plan, {
+    logical_run_id: 'run', phase: 'shortterm_extraction', source_start: 7636, source_end: 7644,
+    source_fingerprint: 'source-b', parent_summary_hash: 'summary-b', prompt_shape_version: 'v3',
+    effective_request_signature: 'request-b', configuration_signature: 'config-b', minimum_segment_floor: 10,
+  });
+  assert.deepEqual(new Set(invalid.conflicts.map((item) => item.reason)), new Set([
+    'source_fingerprint_mismatch', 'parent_summary_mismatch', 'effective_request_signature_mismatch',
+    'configuration_changed', 'minimum_floor_violation',
+  ]));
+});
+
+test('UI and backend use the same authoritative Resume eligibility decision', () => {
+  const safe = deriveShortTermResumeEligibility({ checkpointStatus: 'awaiting_manual_resume',
+    plan: { message_count: 9 }, validation: { valid: true } });
+  assert.deepEqual(safe, { eligible: true, decision: 'ordinary_resume_safe', reason: 'verified_recovery_plan_available' });
+  const blocked = deriveShortTermResumeEligibility({ checkpointStatus: 'awaiting_manual_resume',
+    plan: { message_count: 9 }, validation: { valid: false, reason: 'parent_summary_mismatch', conflicts: [] } });
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.decision, 'plan_revalidation_required');
 });

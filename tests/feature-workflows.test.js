@@ -21,7 +21,8 @@ test('compaction uses the context-window guard for both first and incremental su
   const compaction = read('compaction.js');
   assert.match(compaction, /async function summarizeInBoundedPasses/);
   assert.match(compaction, /const inputBudget = getMemoryInputBudget\(responseLength\)/);
-  assert.match(compaction, /estimateTokens\(candidatePrompt\) > inputBudget/);
+  assert.match(compaction, /candidateInputBudget = recoveryPlanPending \? fullInputBudget : inputBudget/);
+  assert.match(compaction, /estimateTokens\(candidatePrompt\) > candidateInputBudget/);
   assert.match(compaction, /Preserve an exceptionally long message by splitting it/);
   assert.match(compaction, /let low = 1/);
   assert.match(compaction, /pending\.unshift\(\{ \.\.\.message, mes: remainder/);
@@ -1713,7 +1714,12 @@ test('context-limited empty compaction partitions input and refuses exhausted eq
   assert.match(compaction, /summary_hash: summaryFingerprint\(summary\)/);
   assert.match(settings, /resumed_after_phase_failure/);
   assert.match(settings, /operator_action_required/);
-  assert.match(settings, /would repeat an exhausted Short-Term request strategy/);
+  assert.match(settings, /evaluateShortTermResumeEligibility/);
+  assert.match(settings, /Resume was not started \(\$\{resumeEligibility\.decision/);
+  assert.match(settings, /no provider request because plan validation failed/);
+  assert.match(settings, /requiredFinalizationComplete/);
+  assert.match(settings, /status: 'blocked_by_upstream_phase'/);
+  assert.match(settings, /result_scope: \['in_progress', 'awaiting_manual_resume'\]/);
 });
 
 test('persisted Short-Term recovery plans control effective provider input and export distinct adaptation evidence', () => {

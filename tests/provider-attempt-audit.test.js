@@ -47,6 +47,13 @@ test('bounded malformed retries expose unresolved churn and identical retry loop
   const summary = summarizeProviderAttemptAudit(metadata);
   assert.equal(summary.malformed_physical_responses, 2);
   assert.equal(summary.terminally_unresolved_malformed_obligations, 1);
+  assert.equal(summary.terminal_unresolved_obligations.length, 1);
+  assert.equal(summary.terminal_unresolved_obligations[0].root_obligation_id, 'session:0-19');
+  assert.equal(summary.terminal_unresolved_obligations[0].produced_no_update, true);
+  assert.equal(summary.terminal_unresolved_obligations[0].targeted_replay_eligible, true);
+  assert.equal(summary.coverage.source_traversal_and_generation_are_distinct, true);
+  assert.equal(summary.coverage.terminal_failed_obligations, 1);
+  assert.equal(summary.reconciliation.malformed_obligations_reconcile, true);
   assert.equal(summary.equivalent_retries_without_changed_dimension, 1);
   assert.equal(summary.accounting_reconciled, true);
 });

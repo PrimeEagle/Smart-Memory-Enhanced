@@ -140,6 +140,8 @@ export function beginProviderAttempt(metadata, input = {}) {
     estimated_final_request_tokens: input.estimated_final_request_tokens ?? null,
     terminal_outcome: 'running',
   };
+  if (!obligation.original_attempt_id && event.request_kind === 'original') obligation.original_attempt_id = event.attempt_id;
+  if (event.request_kind === 'format_repair') obligation.repair_attempt_id = event.attempt_id;
   audit.request_kind_counts[event.request_kind] = count(audit.request_kind_counts[event.request_kind]) + 1;
   if (event.runtime_context_lookup_status) {
     audit.runtime_context_lookup_counts[event.runtime_context_lookup_status] = count(audit.runtime_context_lookup_counts[event.runtime_context_lookup_status]) + 1;
@@ -175,6 +177,15 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
   const obligation = audit.obligations[event.logical_obligation_id];
   if (obligation) {
     obligation.terminal_outcome = event.terminal_outcome;
+    obligation.last_attempt_id = event.attempt_id;
+    obligation.last_source_range = event.source_range ?? obligation.root_source_range ?? null;
+    obligation.last_source_fingerprint = event.source_fingerprint ?? obligation.root_source_fingerprint ?? null;
+    obligation.prior_authoritative_memory_preserved = patch.prior_authoritative_memory_preserved ?? true;
+    obligation.produced_no_update = patch.produced_no_update
+      ?? !['completed', 'completed_repartitioned'].includes(event.terminal_outcome);
+    obligation.targeted_replay_eligible = patch.targeted_replay_eligible
+      ?? Boolean(event.malformed_reason || String(event.terminal_outcome).includes('malformed'));
+    obligation.final_disposition = patch.final_disposition ?? event.terminal_outcome;
     if (event.malformed_reason) {
       obligation.malformed_count++;
       obligation.last_malformed_reason = event.malformed_reason;
@@ -199,6 +210,7 @@ export function summarizeProviderAttemptAudit(metadata) {
   const obligations = Object.values(audit.obligations ?? {});
   const malformed = obligations.filter((item) => item.malformed_count > 0);
   const recovered = malformed.filter((item) => ['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome));
+  const unresolved = malformed.filter((item) => !['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome));
   const terminalTotal = Object.values(audit.terminal_counts ?? {}).reduce((sum, value) => sum + count(value), 0);
   const planned = count(audit.logical_obligation_count) || obligations.length;
   return {
@@ -223,6 +235,26 @@ export function summarizeProviderAttemptAudit(metadata) {
     unique_malformed_obligations: malformed.length,
     recovered_malformed_obligations: recovered.length,
     terminally_unresolved_malformed_obligations: malformed.length - recovered.length,
+    terminal_unresolved_obligations: unresolved.slice(-64).map((item) => {
+      const retainedAttempts = audit.recent_attempts.filter((attempt) => attempt.logical_obligation_id === item.logical_obligation_id);
+      return {
+        tier: item.tier ?? 'unknown', owner: item.owner ?? null,
+        source_range: item.last_source_range ?? item.root_source_range ?? null,
+        source_fingerprint: item.last_source_fingerprint ?? item.root_source_fingerprint ?? null,
+        root_obligation_id: item.logical_obligation_id,
+        original_attempt_id: item.original_attempt_id
+          ?? retainedAttempts.find((attempt) => attempt.request_kind === 'original')?.attempt_id ?? null,
+        repair_attempt_id: item.repair_attempt_id
+          ?? retainedAttempts.findLast((attempt) => attempt.request_kind === 'format_repair')?.attempt_id ?? null,
+        malformed_reason: item.last_malformed_reason ?? null,
+        prior_authoritative_memory_preserved: item.prior_authoritative_memory_preserved !== false,
+        produced_no_update: item.produced_no_update !== false,
+        targeted_replay_eligible: item.targeted_replay_eligible !== false,
+        final_disposition: item.final_disposition ?? item.terminal_outcome ?? 'terminal_malformed_unresolved',
+        attempt_lineage_available: Boolean(item.original_attempt_id || retainedAttempts.length),
+      };
+    }),
+    terminal_unresolved_obligation_detail_limit: 64,
     recovery_success_rate: malformed.length ? recovered.length / malformed.length : 1,
     equivalent_retries_without_changed_dimension: audit.equivalent_retry_count,
     changed_recovery_dimension_counts: { ...audit.changed_recovery_dimension_counts },
@@ -244,9 +276,22 @@ export function summarizeProviderAttemptAudit(metadata) {
         ['completed', 'completed_no_candidates'].includes(item.terminal_outcome)
         && !item.logical_obligation_id).length,
       equivalent_requests_without_changed_recovery_dimension: count(audit.equivalent_retry_count),
+      malformed_obligations_reconcile: malformed.length === recovered.length + unresolved.length,
+      repair_attempts_with_failed_attempt_link: audit.recent_attempts.filter((item) => item.request_kind === 'format_repair'
+        && !item.recovery_of_attempt_id && !item.parent_attempt_id).length === 0,
+      source_traversal_coverage_scope: 'checkpointed_source_ranges',
+      valid_generation_coverage_scope: 'logical_obligations_with_valid_terminal_output',
       limitation: planned > obligations.length
         ? 'obligation_detail_retention_is_bounded; cumulative counters remain authoritative'
         : null,
+    },
+    coverage: {
+      source_traversal_obligations: planned,
+      safely_checkpointed_obligations: obligations.filter((item) => item.terminal_outcome !== 'running').length,
+      valid_generation_obligations: obligations.filter((item) => ['completed', 'completed_repartitioned'].includes(item.terminal_outcome)).length,
+      intentionally_accepted_no_update_obligations: obligations.filter((item) => item.terminal_outcome === 'completed_no_candidates').length,
+      terminal_failed_obligations: obligations.filter((item) => !['running', 'completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome)).length,
+      source_traversal_and_generation_are_distinct: true,
     },
   };
 }

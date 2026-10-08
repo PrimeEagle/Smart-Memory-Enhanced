@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.52] - 2026-10-08
+
+### Fixed
+
+- Short-Term finalization now consumes a reload-verified reduced recovery
+  segment as the exact saved range before returning to conservative adaptive
+  sizing. Pre-dispatch validation failures no longer fabricate null-range,
+  one-message provider failures or exhaust the minimum-segment ladder.
+- Memorize Chat now reconciles cumulative recovery history separately from the
+  current Resume attempt and uses one eligibility decision for the backend and
+  Resume button, with precise plan, source, summary, configuration, and floor
+  conflicts retained in bounded diagnostics.
+- Required finalization failures now block final reconciliation, automatic
+  stabilization, completed-run hash certification, clean integrity labels,
+  and successful timing samples. A manual Developer check on an interrupted
+  run is explicitly labeled as partial-state idempotence only.
+- Provider diagnostics now retain bounded terminal malformed obligations and
+  report source traversal, valid generation, safe checkpointing, accepted
+  no-update outcomes, and terminal failures as separate coverage concepts.
+
 ## [0.9.51] - 2026-10-04
 
 ### Fixed

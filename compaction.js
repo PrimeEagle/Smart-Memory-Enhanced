@@ -140,6 +140,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
 
   const summarizeChunk = async (partitionDepth = 0) => {
     if (!chunk.length) return;
+    const consumingRecoveryPlan = recoveryPlanPending;
     const completedChunk = chunk;
     const prompt = buildPromptFor(chunk);
     const initialEvidence = sourceEvidence(completedChunk, prompt, responseLength);
@@ -183,8 +184,17 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
     }
     // The caller only appends a message after testing this exact prompt. This
     // check protects against a custom prompt override changing between passes.
-    if (estimateTokens(prompt) > inputBudget) {
-      throw new Error(`Compaction prompt exceeds its ${inputBudget}-token input budget.`);
+    const effectiveInputBudget = consumingRecoveryPlan || (partitionDepth > 0 && consumedRecoveryPlan)
+      ? fullInputBudget : inputBudget;
+    if (estimateTokens(prompt) > effectiveInputBudget) {
+      const error = new Error(`Compaction prompt exceeds its ${effectiveInputBudget}-token input budget.`);
+      if (consumedRecoveryPlan) error.sme_compaction_recovery = {
+        adaptation: 'verified_plan_input_budget_exceeded', operator_action: 'rebuild_recovery_plan',
+        requested_source_start: initialEvidence.requested_source_start,
+        requested_source_end: initialEvidence.requested_source_end,
+        estimated_input_tokens: estimateTokens(prompt), effective_input_budget: effectiveInputBudget,
+      };
+      throw error;
     }
     passNumber++;
     const firstRequestId = globalThis.crypto?.randomUUID?.() ?? `compact-${Date.now()}-${passNumber}`;
@@ -197,7 +207,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         configured_context_limit: getMaxContextSize(attemptResponseLength),
         memory_source: getMemorySource(),
         adaptation_applied_to_this_request: attempt === 1
-          ? (recoveryPlan ? 'persisted_segment_plan' : recoveryInputFraction < 1 ? 'reduced_input_budget' : 'normal_request')
+          ? (consumedRecoveryPlan ? 'persisted_segment_plan' : recoveryInputFraction < 1 ? 'reduced_input_budget' : 'normal_request')
           : 'increased_output_reserve',
         adaptation_planned_for_next_request: null,
         response_classification: null };
@@ -258,6 +268,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         await summarizeChunk(partitionDepth + 1);
         chunk = secondHalf;
         await summarizeChunk(partitionDepth + 1);
+        if (partitionDepth === 0) consumedRecoveryPlan = null;
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
@@ -279,6 +290,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         input_budget: inputBudget, full_input_budget: fullInputBudget,
       });
     }
+    if (partitionDepth === 0) consumedRecoveryPlan = null;
   };
 
   const pending = [...messages];
@@ -292,12 +304,16 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       pending.unshift(message);
       continue;
     }
-    if (chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
+    // A persisted plan is already a reduced, verified unit. Assemble that
+    // exact range against the full safe provider budget before returning to
+    // the ordinary fractional recovery budget for later segments.
+    const candidateInputBudget = recoveryPlanPending ? fullInputBudget : inputBudget;
+    if (chunk.length && estimateTokens(candidatePrompt) > candidateInputBudget) {
       await summarizeChunk();
       pending.unshift(message);
       continue;
     }
-    if (!chunk.length && estimateTokens(candidatePrompt) > inputBudget) {
+    if (!chunk.length && estimateTokens(candidatePrompt) > candidateInputBudget) {
       // Preserve an exceptionally long message by splitting it into the
       // largest safe prefix and an ordered remainder. This avoids both a
       // provider context overflow and silently discarding part of the chat.
@@ -308,7 +324,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       while (low <= high) {
         const middle = Math.floor((low + high) / 2);
         const partial = { ...message, mes: text.slice(0, middle) };
-        if (estimateTokens(buildPromptFor([partial])) <= inputBudget) {
+        if (estimateTokens(buildPromptFor([partial])) <= candidateInputBudget) {
           safeLength = middle;
           low = middle + 1;
         } else {
@@ -316,7 +332,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         }
       }
       if (!safeLength) {
-        throw new Error(`Compaction instructions exceed the ${inputBudget}-token input budget.`);
+        throw new Error(`Compaction instructions exceed the ${candidateInputBudget}-token input budget.`);
       }
       const remainder = text.slice(safeLength);
       const head = { ...message, mes: text.slice(0, safeLength), __sme_compaction_partial: Boolean(remainder) };
