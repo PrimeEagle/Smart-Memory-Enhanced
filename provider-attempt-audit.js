@@ -16,6 +16,16 @@ function fingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16)}`;
 }
 
+export function providerConfigurationSignature(input = {}) {
+  return fingerprint(JSON.stringify({
+    connection_profile_id: input.connection_profile_id ?? null,
+    model: input.model ?? null,
+    source: input.source ?? null,
+    response_length: input.response_length ?? null,
+    context_length: input.context_length ?? null,
+  }));
+}
+
 function ensure(metadata, runId = null) {
   metadata.live_memory_health ??= {};
   const health = metadata.live_memory_health;
@@ -107,8 +117,12 @@ export function beginProviderAttempt(metadata, input = {}) {
     tier: input.tier ?? 'unknown', owner: input.owner ?? null,
     root_source_range: input.root_source_range ?? input.source_range ?? null,
     root_source_fingerprint: input.root_source_fingerprint ?? input.source_fingerprint ?? null,
+    chat_id: input.chat_id ?? null,
+    configuration_signature: input.configuration_signature ?? null,
     physical_attempt_count: 0, malformed_count: 0, terminal_outcome: 'running',
   };
+  obligation.configuration_signature ??= input.configuration_signature ?? null;
+  obligation.chat_id ??= input.chat_id ?? null;
   if (isNewObligation) audit.logical_obligation_count = count(audit.logical_obligation_count) + 1;
   obligation.physical_attempt_count++;
   obligation.last_attempt_at = Date.now();
@@ -242,6 +256,8 @@ export function summarizeProviderAttemptAudit(metadata) {
         source_range: item.last_source_range ?? item.root_source_range ?? null,
         source_fingerprint: item.last_source_fingerprint ?? item.root_source_fingerprint ?? null,
         root_obligation_id: item.logical_obligation_id,
+        chat_id: item.chat_id ?? null,
+        configuration_signature: item.configuration_signature ?? null,
         original_attempt_id: item.original_attempt_id
           ?? retainedAttempts.find((attempt) => attempt.request_kind === 'original')?.attempt_id ?? null,
         repair_attempt_id: item.repair_attempt_id

@@ -4,6 +4,9 @@ import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
   countShortTermPhysicalAttempts, isShortTermMinimumFloorExhausted, migrateCommittedShortTermFailureState,
+  createShortTermAttemptAccounting, recordShortTermAttemptEvent,
+  finalizeShortTermAttemptAccounting, summarizeShortTermAttemptAccounting,
+  advanceShortTermRecoveryGrowth,
   deriveMissingPlanCommittedCheckpoint,
   deriveShortTermMissingPlanResumeEligibility,
   deriveShortTermResumePresentation,
@@ -276,6 +279,91 @@ test('a linked fallback is a distinct physical transmission but duplicate fallba
   ]);
   assert.equal(result.physical_provider_attempts, 2);
   assert.deepEqual(result.provider_attempt_ids, ['request-1:primary', 'request-1:fallback']);
+});
+
+test('durable Short-Term attempt totals remain exact after bounded detail would retain only 64 events', () => {
+  let accounting = createShortTermAttemptAccounting({ runId: 'run-a', attemptNumber: 1 });
+  for (let index = 0; index < 199; index++) {
+    accounting = recordShortTermAttemptEvent(accounting, {
+      state: 'in_flight', request_id: `request-${index}`, prompt_visible_message_count: index % 2 ? 8 : 9,
+    });
+    accounting = recordShortTermAttemptEvent(accounting, {
+      state: 'response_observed', request_id: `request-${index}`, response_present: true,
+    });
+  }
+  assert.equal(accounting.current_attempt_physical_transmissions, 199);
+  assert.equal(accounting.cumulative_physical_transmissions, 199);
+  assert.equal(accounting.current_attempt_terminal_transmissions, 199);
+  assert.equal(accounting.terminal_counts.completed, 199);
+  assert.equal(accounting.recent_attempt_ids.length, 64);
+  assert.equal(accounting.by_segment_size[9], 100);
+  assert.equal(accounting.by_segment_size[8], 99);
+  assert.equal(accounting.totals_exact, true);
+  const summary = summarizeShortTermAttemptAccounting(accounting, { successfulSegmentCommits: 199 });
+  assert.equal(summary.reconciliation.current_terminal_plus_active_equals_physical, true);
+  assert.equal(summary.reconciliation.successful_commits_do_not_exceed_completed_transmissions, true);
+  assert.equal(Object.hasOwn(summary, 'counted_attempt_ids'), false);
+});
+
+test('Short-Term attempt accounting resumes from durable scalars without fabricating legacy totals', () => {
+  let first = createShortTermAttemptAccounting({ runId: 'run-a', attemptNumber: 1 });
+  first = recordShortTermAttemptEvent(first, { state: 'in_flight', request_id: 'one', prompt_visible_message_count: 9 });
+  first = recordShortTermAttemptEvent(first, { state: 'request_error', request_id: 'one' });
+  let resumed = createShortTermAttemptAccounting({ prior: first, runId: 'run-a', attemptNumber: 2 });
+  resumed = recordShortTermAttemptEvent(resumed, { state: 'in_flight', request_id: 'two', prompt_visible_message_count: 9 });
+  resumed = recordShortTermAttemptEvent(resumed, { state: 'response_observed', request_id: 'two', response_present: true });
+  assert.equal(resumed.restored_prior_physical_transmissions, 1);
+  assert.equal(resumed.current_attempt_physical_transmissions, 1);
+  assert.equal(resumed.cumulative_physical_transmissions, 2);
+  assert.deepEqual(resumed.cumulative_terminal_counts, {
+    completed: 1, failed: 1, cancelled: 0, interrupted: 0, fallback_replaced: 0,
+  });
+  const legacy = createShortTermAttemptAccounting({ legacyPhysicalAttempts: 64 });
+  assert.equal(legacy.cumulative_physical_transmissions, 0);
+  assert.equal(legacy.legacy_cumulative_lower_bound, 64);
+  assert.equal(legacy.totals_exact, false);
+});
+
+test('Short-Term attempt lifecycle distinguishes a fallback transmission and interruption', () => {
+  let accounting = createShortTermAttemptAccounting();
+  accounting = recordShortTermAttemptEvent(accounting, { state: 'in_flight', request_id: 'request-1' });
+  accounting = recordShortTermAttemptEvent(accounting, { state: 'provider_diagnostic', request_id: 'request-1',
+    endpoint_category: 'proxy-fallback', predecessor_endpoint_category: 'direct-stream' });
+  accounting = finalizeShortTermAttemptAccounting(accounting, 'interrupted');
+  assert.equal(accounting.cumulative_physical_transmissions, 2);
+  assert.equal(accounting.terminal_counts.fallback_replaced, 1);
+  assert.equal(accounting.terminal_counts.interrupted, 1);
+});
+
+test('a persisted in-flight Short-Term transmission becomes interrupted exactly once after restart', () => {
+  let prior = createShortTermAttemptAccounting({ runId: 'run-a', attemptNumber: 1 });
+  prior = recordShortTermAttemptEvent(prior, { state: 'in_flight', request_id: 'in-flight' });
+  const restored = createShortTermAttemptAccounting({ prior, runId: 'run-a', attemptNumber: 2 });
+  assert.equal(restored.cumulative_physical_transmissions, 1);
+  assert.equal(restored.restored_interrupted_transmissions, 1);
+  assert.equal(restored.cumulative_terminal_counts.interrupted, 1);
+  assert.deepEqual(restored.active_attempts, {});
+});
+
+test('adaptive Short-Term recovery grows only after stable successes with context headroom', () => {
+  let growth = {};
+  for (let index = 0; index < 3; index++) growth = advanceShortTermRecoveryGrowth(growth, {
+    successfulSegmentSize: 9, estimatedInputTokens: 1800, requestedOutputTokens: 1000,
+    effectiveContextLimit: 8192, configurationSignature: 'same',
+  });
+  assert.equal(growth.proposed_segment_size, 9);
+  growth = advanceShortTermRecoveryGrowth(growth, {
+    successfulSegmentSize: 9, estimatedInputTokens: 1800, requestedOutputTokens: 1000,
+    effectiveContextLimit: 8192, configurationSignature: 'same',
+  });
+  assert.equal(growth.decision, 'grow_after_stable_successes');
+  assert.equal(growth.proposed_segment_size, 14);
+  const held = advanceShortTermRecoveryGrowth(growth, {
+    successfulSegmentSize: 14, estimatedInputTokens: 7000, requestedOutputTokens: 1000,
+    effectiveContextLimit: 8192, configurationSignature: 'same', requiredSuccesses: 1,
+  });
+  assert.equal(held.decision, 'hold_context_headroom_insufficient');
+  assert.equal(held.proposed_segment_size, 14);
 });
 
 test('a committed predecessor is removed from the false failure ladder exactly once', () => {

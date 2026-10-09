@@ -214,21 +214,21 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
         adaptation_planned_for_next_request: null,
         response_classification: null };
       if (consumedRecoveryPlan) base.consumed_recovery_plan = consumedRecoveryPlan;
-      onRequestState?.({ ...base, state: 'in_flight', response_present: null });
+      await onRequestState?.({ ...base, state: 'in_flight', response_present: null });
       try {
         const result = await generateMemorySummarize(prompt, {
           responseLength: attemptResponseLength, chatMessages: [],
           task: attempt === 1 ? 'shortterm_compaction' : 'shortterm_compaction_adapted_empty_retry',
           onRequestDiagnostic: (diagnostic) => onRequestState?.({ ...base, state: 'provider_diagnostic', ...diagnostic }),
         });
-        onRequestState?.({ ...base, state: 'response_observed', response_present: Boolean(result?.trim()),
+        await onRequestState?.({ ...base, state: 'response_observed', response_present: Boolean(result?.trim()),
           parsing_attempted: Boolean(result?.trim()),
           response_classification: typeof result !== 'string' ? 'adapter_non_string'
             : result.length === 0 ? 'empty_string' : result.trim().length === 0 ? 'whitespace_only_string' : 'content_string',
           content_type: typeof result, content_length: typeof result === 'string' ? result.length : null });
         return result;
       } catch (error) {
-        onRequestState?.({ ...base, state: 'request_error', response_present: false, parsing_attempted: false,
+        await onRequestState?.({ ...base, state: 'request_error', response_present: false, parsing_attempted: false,
           error_class: error?.name ?? 'Error', http_status: error?.sme_request_diagnostics?.http_status ?? null });
         throw error;
       }
@@ -249,7 +249,7 @@ async function summarizeInBoundedPasses(messages, initialSummary, storedMemories
       const adaptation = adaptedResponseLength > responseLength ? 'increased_output_reserve'
         : canPartition ? 'partitioned_input_scope'
           : 'adaptation_unavailable';
-      onRequestState?.({ pass_number: passNumber, attempt: 2, state: adaptedResponseLength > responseLength ? 'retry_scheduled' : 'recovery_scheduled',
+      await onRequestState?.({ pass_number: passNumber, attempt: 2, state: adaptedResponseLength > responseLength ? 'retry_scheduled' : 'recovery_scheduled',
         retry_reason: 'observed_empty_content', retry_delay_ms: adaptedResponseLength > responseLength ? retryDelayMs : 0,
         adaptation, adaptation_applied_to_this_request: null,
         adaptation_planned_for_next_request: canPartition ? 'partitioned_input_scope' : null,

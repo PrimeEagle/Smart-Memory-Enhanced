@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.55] - 2026-10-08
+
+### Added
+
+- Completed runs with terminal malformed Long-Term obligations now expose a
+  targeted replay control. It can retry one validated owner/range or every
+  eligible failure, verifies the current chat identity and exact source
+  fingerprint first, persists progress after every target, reuses the normal
+  format-repair and memory-validation pipeline, and refreshes generation debt
+  without rerunning successful extraction windows.
+- Reduced Short-Term recovery segments now grow conservatively after four
+  consecutive successes. Each increase is capped at 1.5x and 32 messages,
+  requires proven context headroom under the current configuration, and is
+  persisted with the reload-verified successor plan.
+
+### Fixed
+
+- Short-Term physical provider attempts are now recorded in durable scalar
+  lifecycle accounting instead of being recomputed from the last 64 retained
+  diagnostic events. Current-attempt, cumulative, terminal-outcome, retry,
+  fallback, and segment-size totals survive detail pruning and restart; legacy
+  retained-only values are labeled as inexact lower bounds rather than added
+  to new totals.
+- Request-start and terminal Short-Term accounting boundaries are saved before
+  proceeding, so a browser/process interruption is classified as interrupted
+  on restore instead of silently disappearing from attempt reconciliation.
+
 ## [0.9.54] - 2026-10-08
 
 ### Fixed

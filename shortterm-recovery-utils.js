@@ -1,6 +1,10 @@
 export const SHORTTERM_RECOVERY_SCHEMA_VERSION = 6;
+export const SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION = 1;
+export const SHORTTERM_RECOVERY_GROWTH_SCHEMA_VERSION = 1;
+const SHORTTERM_ATTEMPT_IDENTITY_LIMIT = 8192;
 
 const finiteInteger = (value) => Number.isInteger(Number(value)) ? Math.floor(Number(value)) : null;
+const count = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 
 export function nextShortTermRecoverySegmentSize(currentCount, minimumSegmentFloor = 4) {
   const current = Math.max(1, Math.floor(Number(currentCount) || 1));
@@ -61,6 +65,227 @@ export function countShortTermPhysicalAttempts(events = []) {
   return {
     physical_provider_attempts: transmissions.size,
     provider_attempt_ids: [...transmissions],
+  };
+}
+
+const emptyTerminalCounts = () => ({
+  completed: 0,
+  failed: 0,
+  cancelled: 0,
+  interrupted: 0,
+  fallback_replaced: 0,
+});
+
+/**
+ * Creates durable Short-Term provider accounting. Scalar totals are the
+ * authority; bounded event lists elsewhere are only diagnostic samples.
+ * Legacy retained-event counts are carried as an explicitly inexact lower
+ * bound instead of being presented as a cumulative total.
+ */
+export function createShortTermAttemptAccounting({ prior = null, runId = null,
+  attemptNumber = null, legacyPhysicalAttempts = 0 } = {}) {
+  const compatible = Number(prior?.schema_version) === SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION;
+  const priorTotal = compatible ? count(prior.cumulative_physical_transmissions) : 0;
+  const legacyLowerBound = compatible
+    ? count(prior.legacy_cumulative_lower_bound)
+    : Math.max(0, count(legacyPhysicalAttempts));
+  const restoredInterrupted = compatible ? Object.keys(prior?.active_attempts ?? {}).length : 0;
+  const cumulativeTerminal = compatible
+    ? { ...emptyTerminalCounts(), ...(prior.cumulative_terminal_counts ?? prior.terminal_counts ?? {}) }
+    : emptyTerminalCounts();
+  cumulativeTerminal.interrupted = count(cumulativeTerminal.interrupted) + restoredInterrupted;
+  return {
+    schema_version: SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
+    run_id: runId ?? prior?.run_id ?? null,
+    attempt_number: attemptNumber,
+    cumulative_physical_transmissions: priorTotal,
+    restored_prior_physical_transmissions: priorTotal,
+    current_attempt_physical_transmissions: 0,
+    current_attempt_terminal_transmissions: 0,
+    terminal_counts: emptyTerminalCounts(),
+    cumulative_terminal_counts: cumulativeTerminal,
+    restored_interrupted_transmissions: restoredInterrupted,
+    by_segment_size: {},
+    cumulative_by_segment_size: compatible ? { ...(prior.cumulative_by_segment_size ?? prior.by_segment_size ?? {}) } : {},
+    retry_transmissions: 0,
+    fallback_transmissions: 0,
+    format_repair_transmissions: 0,
+    active_attempts: {},
+    counted_attempt_ids: [],
+    terminal_attempt_ids: [],
+    recent_attempt_ids: [],
+    attempt_identity_limit: SHORTTERM_ATTEMPT_IDENTITY_LIMIT,
+    totals_exact: compatible ? prior.totals_exact !== false : legacyLowerBound === 0,
+    legacy_cumulative_lower_bound: legacyLowerBound,
+    legacy_limitation: !compatible && legacyLowerBound > 0
+      ? 'prior_build_retained_only_a_bounded_attempt_sample' : null,
+  };
+}
+
+function terminalizeShortTermAttempt(next, attemptId, outcome) {
+  if (!attemptId || next.terminal_attempt_ids.includes(attemptId)) return;
+  if (next.terminal_attempt_ids.length >= SHORTTERM_ATTEMPT_IDENTITY_LIMIT) {
+    next.totals_exact = false;
+    next.legacy_limitation ??= 'attempt_identity_limit_exceeded';
+    return;
+  }
+  next.terminal_attempt_ids.push(attemptId);
+  next.current_attempt_terminal_transmissions++;
+  next.terminal_counts[outcome] = count(next.terminal_counts[outcome]) + 1;
+  next.cumulative_terminal_counts[outcome] = count(next.cumulative_terminal_counts[outcome]) + 1;
+  delete next.active_attempts[attemptId];
+}
+
+/** Records one lifecycle event without consulting or mutating retained detail. */
+export function recordShortTermAttemptEvent(accounting, event = {}) {
+  const next = {
+    ...accounting,
+    terminal_counts: { ...emptyTerminalCounts(), ...(accounting?.terminal_counts ?? {}) },
+    cumulative_terminal_counts: { ...emptyTerminalCounts(), ...(accounting?.cumulative_terminal_counts ?? {}) },
+    by_segment_size: { ...(accounting?.by_segment_size ?? {}) },
+    cumulative_by_segment_size: { ...(accounting?.cumulative_by_segment_size ?? {}) },
+    active_attempts: { ...(accounting?.active_attempts ?? {}) },
+    counted_attempt_ids: [...(accounting?.counted_attempt_ids ?? [])],
+    terminal_attempt_ids: [...(accounting?.terminal_attempt_ids ?? [])],
+    recent_attempt_ids: [...(accounting?.recent_attempt_ids ?? [])],
+  };
+  const requestId = event.request_id ? String(event.request_id) : null;
+  if (!requestId) return next;
+  const fallbackEvent = event.state === 'provider_diagnostic' && (
+    event.predecessor_endpoint_category
+    || event.terminal_adaptation === 'same_provider_proxy_nonstream_retry'
+    || /fallback/i.test(String(event.endpoint_category ?? ''))
+  );
+  const attemptId = `${requestId}:${fallbackEvent ? 'fallback' : 'primary'}`;
+  if (event.state === 'in_flight' || fallbackEvent) {
+    if (!next.counted_attempt_ids.includes(attemptId)) {
+      if (next.counted_attempt_ids.length >= SHORTTERM_ATTEMPT_IDENTITY_LIMIT) {
+        next.totals_exact = false;
+        next.legacy_limitation ??= 'attempt_identity_limit_exceeded';
+      } else {
+        next.counted_attempt_ids.push(attemptId);
+        next.recent_attempt_ids = [...next.recent_attempt_ids, attemptId].slice(-64);
+        next.current_attempt_physical_transmissions++;
+        next.cumulative_physical_transmissions++;
+        const size = finiteInteger(event.prompt_visible_message_count);
+        if (size !== null) {
+          next.by_segment_size[size] = count(next.by_segment_size[size]) + 1;
+          next.cumulative_by_segment_size[size] = count(next.cumulative_by_segment_size[size]) + 1;
+        }
+        if (Number(event.attempt ?? 1) > 1) next.retry_transmissions++;
+        if (fallbackEvent) next.fallback_transmissions++;
+        if (event.request_kind === 'format_repair') next.format_repair_transmissions++;
+        next.active_attempts[attemptId] = { request_id: requestId, segment_size: size };
+      }
+    }
+    if (fallbackEvent) terminalizeShortTermAttempt(next, `${requestId}:primary`, 'fallback_replaced');
+    return next;
+  }
+  if (event.state === 'response_observed' || event.state === 'request_error') {
+    const activeId = next.active_attempts[`${requestId}:fallback`]
+      ? `${requestId}:fallback` : `${requestId}:primary`;
+    const outcome = event.state === 'request_error' || event.response_present === false ? 'failed' : 'completed';
+    terminalizeShortTermAttempt(next, activeId, outcome);
+  }
+  return next;
+}
+
+/** Closes transmissions that were active when a page/process stopped. */
+export function finalizeShortTermAttemptAccounting(accounting, outcome = 'interrupted') {
+  const next = recordShortTermAttemptEvent(accounting, {});
+  for (const attemptId of Object.keys(next.active_attempts)) terminalizeShortTermAttempt(next, attemptId, outcome);
+  return next;
+}
+
+/** Export-safe accounting view; identity ledgers stay checkpoint-internal. */
+export function summarizeShortTermAttemptAccounting(accounting, { successfulSegmentCommits = 0 } = {}) {
+  const terminalCounts = { ...emptyTerminalCounts(), ...(accounting?.terminal_counts ?? {}) };
+  const cumulativeTerminalCounts = { ...emptyTerminalCounts(), ...(accounting?.cumulative_terminal_counts ?? {}) };
+  const terminalTotal = Object.values(terminalCounts).reduce((sum, value) => sum + count(value), 0);
+  const cumulativeTerminalTotal = Object.values(cumulativeTerminalCounts).reduce((sum, value) => sum + count(value), 0);
+  const currentPhysical = count(accounting?.current_attempt_physical_transmissions);
+  const cumulativePhysical = count(accounting?.cumulative_physical_transmissions);
+  const active = Object.keys(accounting?.active_attempts ?? {}).length;
+  const completed = count(terminalCounts.completed);
+  return {
+    schema_version: SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
+    run_id: accounting?.run_id ?? null,
+    attempt_number: accounting?.attempt_number ?? null,
+    current_attempt_physical_transmissions: currentPhysical,
+    restored_prior_physical_transmissions: count(accounting?.restored_prior_physical_transmissions),
+    cumulative_physical_transmissions: cumulativePhysical,
+    current_attempt_terminal_transmissions: terminalTotal,
+    cumulative_terminal_transmissions: cumulativeTerminalTotal,
+    current_attempt_active_transmissions: active,
+    terminal_counts: terminalCounts,
+    cumulative_terminal_counts: cumulativeTerminalCounts,
+    by_segment_size: { ...(accounting?.by_segment_size ?? {}) },
+    cumulative_by_segment_size: { ...(accounting?.cumulative_by_segment_size ?? {}) },
+    retry_transmissions: count(accounting?.retry_transmissions),
+    fallback_transmissions: count(accounting?.fallback_transmissions),
+    format_repair_transmissions: count(accounting?.format_repair_transmissions),
+    totals_exact: accounting?.totals_exact !== false,
+    legacy_cumulative_lower_bound: count(accounting?.legacy_cumulative_lower_bound),
+    legacy_limitation: accounting?.legacy_limitation ?? null,
+    retained_attempt_id_count: (accounting?.recent_attempt_ids ?? []).length,
+    retained_attempt_id_limit: 64,
+    recent_attempt_ids: [...(accounting?.recent_attempt_ids ?? [])].slice(-64),
+    reconciliation: {
+      current_terminal_plus_active_equals_physical: terminalTotal + active === currentPhysical,
+      cumulative_terminal_equals_physical: accounting?.totals_exact === false
+        ? null : cumulativeTerminalTotal === cumulativePhysical,
+      successful_commits_do_not_exceed_completed_transmissions:
+        Number(successfulSegmentCommits) <= completed,
+      successful_segment_commits: Number(successfulSegmentCommits) || 0,
+      completed_transmissions: completed,
+    },
+  };
+}
+
+/**
+ * Conservative upward recovery after a reduced segment size has demonstrated
+ * stability. A proposal is never larger than 1.5x, 32 messages, or the proven
+ * context headroom. Missing budget/configuration evidence freezes the size.
+ */
+export function advanceShortTermRecoveryGrowth(prior = {}, {
+  successfulSegmentSize = null, estimatedInputTokens = null,
+  requestedOutputTokens = null, effectiveContextLimit = null,
+  safetyAndProtocolTokens = 1256, configurationSignature = null,
+  requiredSuccesses = 4, maximumSegmentSize = 32,
+} = {}) {
+  const size = finiteInteger(successfulSegmentSize);
+  const previousSize = finiteInteger(prior.current_segment_size) ?? size;
+  const sameConfiguration = !prior.configuration_signature || !configurationSignature
+    || prior.configuration_signature === configurationSignature;
+  const consecutive = sameConfiguration && size !== null && previousSize === size
+    ? count(prior.consecutive_successes) + 1 : 1;
+  const base = {
+    schema_version: SHORTTERM_RECOVERY_GROWTH_SCHEMA_VERSION,
+    current_segment_size: size,
+    last_known_safe_size: Math.max(count(prior.last_known_safe_size), size ?? 0) || null,
+    consecutive_successes: consecutive,
+    required_successes: requiredSuccesses,
+    maximum_segment_size: maximumSegmentSize,
+    configuration_signature: configurationSignature,
+    decision: 'hold', proposed_segment_size: size,
+  };
+  const numericEvidence = [size, estimatedInputTokens, requestedOutputTokens, effectiveContextLimit]
+    .every((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+  if (!sameConfiguration) return { ...base, decision: 'hold_configuration_changed', consecutive_successes: 1 };
+  if (!numericEvidence) return { ...base, decision: 'hold_missing_context_evidence' };
+  if (consecutive < requiredSuccesses) return { ...base, decision: 'hold_collecting_success_evidence' };
+  const proposed = Math.min(maximumSegmentSize, Math.max(size + 1, Math.ceil(size * 1.5)));
+  const projectedInput = Math.ceil(Number(estimatedInputTokens) * (proposed / size));
+  const projectedTotal = projectedInput + Number(requestedOutputTokens) + Number(safetyAndProtocolTokens);
+  if (proposed <= size) return { ...base, decision: 'hold_at_growth_cap', consecutive_successes: 0 };
+  if (projectedTotal > Number(effectiveContextLimit)) return {
+    ...base, decision: 'hold_context_headroom_insufficient', projected_input_tokens: projectedInput,
+    projected_total_tokens: projectedTotal,
+  };
+  return {
+    ...base, decision: 'grow_after_stable_successes', consecutive_successes: 0,
+    proposed_segment_size: proposed, projected_input_tokens: projectedInput,
+    projected_total_tokens: projectedTotal,
   };
 }
 
@@ -348,11 +573,18 @@ export function reconcileShortTermRecoveryState({ plan = null, validation = null
   const planValid = Boolean(plan && validation?.valid);
   const consumed = Boolean(retained.some((event) => event?.consumed_recovery_plan?.effective_request_signature === plan?.effective_request_signature));
   const blockingInvariant = planValid ? null : validation?.reason ?? 'recovery_plan_missing';
-  const currentPhysical = Number(currentAttempt.physical_provider_attempts ?? 0);
+  const accounting = currentAttempt.attempt_accounting ?? null;
+  const currentPhysical = Number(accounting?.current_attempt_physical_transmissions
+    ?? currentAttempt.physical_provider_attempts ?? 0);
+  const cumulativePhysical = accounting
+    ? Number(accounting.cumulative_physical_transmissions ?? currentPhysical)
+    : Number(cumulative.physical_provider_attempts ?? 0) + currentPhysical;
   return {
     schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
-    cumulative_physical_attempts: Number(cumulative.physical_provider_attempts ?? 0) + currentPhysical,
+    cumulative_physical_attempts: cumulativePhysical,
     current_attempt_physical_attempts: currentPhysical,
+    cumulative_physical_attempts_exact: accounting ? accounting.totals_exact !== false : null,
+    legacy_cumulative_lower_bound: accounting?.legacy_cumulative_lower_bound ?? null,
     cumulative_segment_sizes_attempted: [...new Set([...(cumulative.segment_sizes_attempted ?? []),
       ...Object.keys(historicalLadder.failures_by_segment_size ?? {}).map(Number).filter(Number.isFinite),
       ...(currentAttempt.segment_sizes_attempted ?? [])])].sort((a, b) => b - a),

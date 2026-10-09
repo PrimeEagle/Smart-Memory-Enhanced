@@ -193,22 +193,34 @@ import {
 } from './idempotence-utils.js';
 import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
-import { summarizeProviderAttemptAudit } from './provider-attempt-audit.js';
+import { providerConfigurationSignature, summarizeProviderAttemptAudit } from './provider-attempt-audit.js';
+import {
+  buildTargetedReplayCandidates, createTargetedReplayCheckpoint,
+  updateTargetedReplayCheckpoint, summarizeTargetedReplayCheckpoint,
+  TARGETED_REPLAY_SCHEMA_VERSION,
+} from './targeted-replay-utils.js';
 import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
-  countShortTermPhysicalAttempts, migrateCommittedShortTermFailureState,
+  migrateCommittedShortTermFailureState,
+  createShortTermAttemptAccounting, recordShortTermAttemptEvent,
+  finalizeShortTermAttemptAccounting, summarizeShortTermAttemptAccounting,
+  advanceShortTermRecoveryGrowth,
   deriveShortTermMissingPlanResumeEligibility,
   deriveShortTermResumePresentation, migrateMissingPlanCommittedCheckpoint,
   isShortTermMinimumFloorExhausted,
-  SHORTTERM_RECOVERY_SCHEMA_VERSION,
+  SHORTTERM_RECOVERY_SCHEMA_VERSION, SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.54',
-  build_fingerprint: 'sme-v0.9.54-shortterm-recovery-shape-b-r1',
+  extension_version: '0.9.55',
+  build_fingerprint: 'sme-v0.9.55-attempt-accounting-targeted-replay-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
-  loaded_module_schema_versions: Object.freeze({ shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION }),
+  loaded_module_schema_versions: Object.freeze({
+    shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
+    shortterm_attempt_accounting: SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
+    targeted_replay: TARGETED_REPLAY_SCHEMA_VERSION,
+  }),
 });
 
 /** Set to true while a model test is running to allow cancellation. */
@@ -2743,6 +2755,10 @@ export function bindSettingsUI(ctrl) {
       // This clone makes the export path strictly read-only.
       return { ...completedRun, build_identity: SME_BUILD_IDENTITY,
         live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
+        targeted_extraction_replay: metadata.targeted_extraction_replay
+          ? { ...(completedRun.targeted_extraction_replay ?? {}),
+            ...summarizeTargetedReplayCheckpoint(metadata.targeted_extraction_replay) }
+          : completedRun.targeted_extraction_replay ?? null,
         runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
         page_run_lifecycle: summarizePageRunLifecycle(metadata, completedRun.logical_run?.attempt_count ?? null) };
     }
@@ -2765,6 +2781,8 @@ export function bindSettingsUI(ctrl) {
       provider_calls_during_audit: 0,
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
+      targeted_extraction_replay: metadata.targeted_extraction_replay
+        ? summarizeTargetedReplayCheckpoint(metadata.targeted_extraction_replay) : null,
       runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
       page_run_lifecycle: summarizePageRunLifecycle(metadata, metadata.catch_up_checkpoint?.run_manifest?.total_attempt_count ?? null),
     };
@@ -2783,6 +2801,154 @@ export function bindSettingsUI(ctrl) {
     URL.revokeObjectURL(link.href);
   };
   $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics()).on('click', exportCatchUpDiagnostics);
+  const targetedReplayConfigurationSignature = () => providerConfigurationSignature({
+    connection_profile_id: s.connection_profile_id ?? null,
+    model: s.openai_compat_model ?? s.ollama_model ?? null,
+    source: s.source ?? memory_sources.main,
+    response_length: s.longterm_response_length ?? null,
+    context_length: s.context_length ?? null,
+  });
+  const getTargetedReplayCandidates = () => {
+    const context = getContext();
+    const metadata = context.chatMetadata?.[META_KEY];
+    return buildTargetedReplayCandidates(summarizeProviderAttemptAudit(metadata), {
+      chat: context.chat ?? [],
+      chatId: context.chatId ?? context.groupId ?? null,
+      configurationSignature: targetedReplayConfigurationSignature(),
+    });
+  };
+  const refreshTargetedReplayUI = () => {
+    const candidates = getTargetedReplayCandidates();
+    const eligible = candidates.filter((candidate) => candidate.eligible);
+    const $select = $('#sme_failed_extraction_target').empty();
+    if (eligible.length) {
+      $select.append($('<option>').val('all').text(`All ${eligible.length} failed Long-Term extractions`));
+      eligible.forEach((candidate) => $select.append($('<option>')
+        .val(candidate.root_obligation_id)
+        .text(`${candidate.owner} — messages ${candidate.source_range.start}–${candidate.source_range.end}`)));
+    }
+    $('#sme_failed_extraction_replay').toggle(candidates.length > 0);
+    $('#sme_retry_failed_extractions').prop('disabled', eligible.length === 0 || Boolean(ctrl.extractionRunning));
+  };
+  refreshTargetedReplayUI();
+  $('#sme_retry_failed_extractions').on('click', async () => {
+    if (ctrl.extractionRunning) return toastr.warning('Wait for Memorize Chat to finish before retrying failed extractions.', 'Smart Memory Enhanced');
+    const context = getContext();
+    const metadata = context.chatMetadata?.[META_KEY];
+    if (!metadata) return toastr.warning('No saved chat metadata is available.', 'Smart Memory Enhanced');
+    const selection = $('#sme_failed_extraction_target').val();
+    const eligible = getTargetedReplayCandidates().filter((candidate) => candidate.eligible
+      && (selection === 'all' || candidate.root_obligation_id === selection));
+    if (!eligible.length) {
+      refreshTargetedReplayUI();
+      return toastr.info('No validated failed extraction is available to retry.', 'Smart Memory Enhanced');
+    }
+    const label = selection === 'all' ? `all ${eligible.length} failed extraction ranges`
+      : `${eligible[0].owner}, messages ${eligible[0].source_range.start}–${eligible[0].source_range.end}`;
+    if (!(await callGenericPopup(
+      `Retry ${label}?\n\nOnly the exact failed Long-Term source ranges will be sent. Existing memories remain authoritative until a valid result is accepted.`,
+      POPUP_TYPE.CONFIRM,
+    ))) return;
+    const configSignature = targetedReplayConfigurationSignature();
+    let replay = createTargetedReplayCheckpoint(eligible, {
+      chatId: context.chatId ?? context.groupId ?? null,
+      configurationSignature: configSignature,
+    });
+    metadata.targeted_extraction_replay = replay;
+    await saveChatMetadata(context);
+    ctrl.extractionRunning = true;
+    $('#sme_retry_failed_extractions').prop('disabled', true);
+    $('#sme_catch_up, #sme_resume_catch_up, #sme_run_idempotence_check').prop('disabled', true);
+    const providerCallsBefore = Number(metadata.live_memory_health?.provider_attempt_audit?.attempted ?? 0);
+    const replayCoverage = { longterm: { records: [] } };
+    let anyAdded = false;
+    try {
+      for (const candidate of eligible) {
+        replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
+          terminal_outcome: 'running', attempted: true,
+        });
+        metadata.targeted_extraction_replay = replay;
+        await saveChatMetadata(context);
+        setStatusMessage(`Retrying failed extraction for ${candidate.owner} (${candidate.source_range.start}–${candidate.source_range.end})...`);
+        try {
+          const added = await extractAndStoreMemories(candidate.owner, candidate.source_messages, setStatusMessage, {
+            extractionCoverage: replayCoverage,
+            _providerRootObligationId: candidate.root_obligation_id,
+            _providerRootSourceRange: candidate.source_range,
+            _providerRootSourceFingerprint: candidate.source_fingerprint,
+            _providerRequestKind: 'targeted_replay',
+            _providerChangedRecoveryDimensions: ['operator_targeted_replay'],
+            _targetedReplay: true,
+          });
+          anyAdded ||= Number(added) > 0;
+          replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
+            terminal_outcome: Number(added) > 0 ? 'completed' : 'completed_no_candidates',
+            added_memories: Number(added) || 0,
+          });
+        } catch (error) {
+          replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
+            terminal_outcome: 'failed', normalized_error_type: error?.code ?? error?.name ?? 'Error',
+          });
+        }
+        metadata.targeted_extraction_replay = replay;
+        await saveChatMetadata(context);
+      }
+      replay = { ...replay, status: replay.targets.some((target) => target.terminal_outcome === 'failed')
+        ? 'completed_with_failures' : 'completed', completed_at: Date.now(), updated_at: Date.now() };
+      metadata.targeted_extraction_replay = replay;
+      const providerSummary = summarizeProviderAttemptAudit(metadata);
+      const report = metadata.catch_up_diagnostics;
+      if (report) {
+        report.provider_attempt_audit = providerSummary;
+        report.targeted_extraction_replay = {
+          ...summarizeTargetedReplayCheckpoint(replay),
+          provider_calls_before: providerCallsBefore,
+          provider_calls_after: Number(metadata.live_memory_health?.provider_attempt_audit?.attempted ?? 0),
+          reconciliation_scope: anyAdded
+            ? 'target_owner_longterm_memory_and_entity_registry_only'
+            : 'not_required_no_new_durable_records',
+          coverage: summarizeExtractionCoverage(replayCoverage.longterm.records),
+        };
+        const remaining = Number(providerSummary?.terminally_unresolved_malformed_obligations ?? 0);
+        if (report.generation_coverage) {
+          const priorFailed = Number(report.generation_coverage.terminal_failed_obligations ?? 0);
+          const resolved = Math.max(0, Math.min(eligible.length, priorFailed - remaining));
+          report.generation_coverage.valid_generation_obligations
+            = Number(report.generation_coverage.valid_generation_obligations ?? 0) + resolved;
+          report.generation_coverage.terminal_failed_obligations = remaining;
+          report.generation_coverage.targeted_replay_resolved_obligations
+            = Number(report.generation_coverage.targeted_replay_resolved_obligations ?? 0) + resolved;
+        }
+        if (report.quality) {
+          report.quality.reasons = (report.quality.reasons ?? [])
+            .filter((reason) => reason?.code !== 'terminal_malformed_provider_obligations');
+          if (remaining > 0) report.quality.reasons.push({
+            code: 'terminal_malformed_provider_obligations', tier: 'generation', count: remaining,
+            message: `${remaining} provider obligation(s) remain without valid parsed output.`,
+          });
+          const degrading = report.quality.reasons.filter((reason) => reason?.severity !== 'notice');
+          report.quality.status = degrading.length ? 'degraded' : 'clean';
+          report.quality.completion_quality_status = degrading.length ? 'completed_with_quality_debt' : 'completed_clean';
+          report.quality.data_quality_status = degrading.length ? 'attention' : 'clean';
+          report.quality.generation_quality_status = degrading.length ? 'attention' : 'completed_clean';
+        }
+      }
+      await saveChatMetadata(context);
+      updateLongTermUI(ctrl.getSelectedCharacterName());
+      $('#sme_export_diagnostics').prop('disabled', false);
+      const summary = summarizeTargetedReplayCheckpoint(replay);
+      toastr[summary.failed ? 'warning' : 'success'](
+        `Targeted replay finished: ${summary.completed} resolved, ${summary.failed} still failed, ${summary.added_memories} memories added.`,
+        'Smart Memory Enhanced', { timeOut: 8000 },
+      );
+    } finally {
+      ctrl.extractionRunning = false;
+      $('#sme_catch_up, #sme_run_idempotence_check').prop('disabled', false);
+      refreshCatchUpRecoveryUI();
+      setStatusMessage('');
+      refreshTargetedReplayUI();
+    }
+  });
   const showSceneStability = () => {
     const report = latestExportDiagnostics ?? getContext().chatMetadata?.[META_KEY]?.catch_up_diagnostics;
     const stability = report?.sceneDetection?.scene_stability_history;
@@ -6349,7 +6515,19 @@ export function bindSettingsUI(ctrl) {
             let successorPlan = null;
             if (committedActivePlan) {
               const nextStart = Number(progress.summary_end);
-              const targetCount = Math.max(1, Number(activeRecoveryPlan.target_message_count ?? 1));
+              const growth = advanceShortTermRecoveryGrowth(
+                checkpoint.finalization.shortterm_recovery_growth ?? {}, {
+                  successfulSegmentSize: activeRecoveryPlan.message_count,
+                  estimatedInputTokens: activeRecoveryPlan.expected_input_token_estimate,
+                  requestedOutputTokens: activeRecoveryPlan.requested_output_tokens,
+                  effectiveContextLimit: activeRecoveryPlan.effective_context_limit,
+                  configurationSignature: shortTermConfigurationSignature(),
+                },
+              );
+              checkpoint.finalization.shortterm_recovery_growth = growth;
+              compactionRequestAudit.recovery_growth = growth;
+              const targetCount = Math.max(1, Number(growth.proposed_segment_size
+                ?? activeRecoveryPlan.target_message_count ?? 1));
               const committedPlan = {
                 ...activeRecoveryPlan,
                 lifecycle_state: 'consumed_successfully', terminal_state: 'committed',
@@ -6443,6 +6621,7 @@ export function bindSettingsUI(ctrl) {
             updateActivePageMarker(checkpoint, 'shortterm_extraction', 'idle');
             setStatusMessage(`Extracting short-term memories... ${progress.completed_passes} compaction pass${progress.completed_passes === 1 ? '' : 'es'} safely committed.`);
           };
+          const priorCompactionAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.compaction_request_audit;
           const compactionRequestAudit = {
             scope: 'current_page_attempt', logical_run_id: catchUpRunId, page_instance_id: pageInstanceId,
             logical_attempt_number: checkpoint.run_manifest?.total_attempt_count ?? null,
@@ -6456,6 +6635,13 @@ export function bindSettingsUI(ctrl) {
             provider_transmission_events: [], provider_transmission_event_limit: 64,
             last_response_presence: null, terminal_outcome: 'running',
           };
+          let shortTermAttemptAccounting = createShortTermAttemptAccounting({
+            prior: checkpoint.finalization?.shortterm_attempt_accounting ?? null,
+            runId: checkpoint.run_id ?? catchUpRunId,
+            attemptNumber: checkpoint.run_manifest?.total_attempt_count ?? null,
+            legacyPhysicalAttempts: priorCompactionAudit?.physical_provider_attempts ?? 0,
+          });
+          compactionRequestAudit.attempt_accounting = shortTermAttemptAccounting;
           runResult.compactionRequestAudit = compactionRequestAudit;
           const priorShortTermFailures = Number(checkpoint.finalization?.shortterm_failure_state?.equivalent_failure_count ?? 0);
           const historicalPhaseFailures = (checkpoint.run_manifest?.checkpoint_transitions ?? [])
@@ -6505,6 +6691,7 @@ export function bindSettingsUI(ctrl) {
               summary_parent_hash: parentSummaryHash,
               expected_input_token_estimate: estimateTokens(sourceItems.map(({ item }) => `${item?.name ?? ''}: ${item?.mes ?? ''}`).join('\n\n')),
               requested_output_tokens: requestedOutputTokens,
+              effective_context_limit: getMaxContextSize(0),
               effective_request_signature: effectiveRequestSignature,
               configuration_signature: shortTermConfigurationSignature(),
               predecessor_plan_signature: predecessorPlan?.effective_request_signature ?? predecessorPlan?.attempted_request_signature ?? null,
@@ -6780,7 +6967,6 @@ export function bindSettingsUI(ctrl) {
               }
             }
           }
-          const priorCompactionAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.compaction_request_audit;
           const priorFailedRequest = [...(priorCompactionAudit?.retained_events ?? [])].reverse()
             .find((event) => event?.state === 'response_observed' && event?.response_present === false);
           const priorFailureState = checkpoint.finalization?.shortterm_failure_state;
@@ -6804,7 +6990,13 @@ export function bindSettingsUI(ctrl) {
             throw new Error('Resume refused because the persisted Short-Term plan would repeat an exhausted effective request.');
           }
           compactionRequestAudit.persisted_recovery_plan = persistedRecoveryPlan;
-          const onCompactionRequestState = (event) => {
+          const onCompactionRequestState = async (event) => {
+            shortTermAttemptAccounting = recordShortTermAttemptEvent(shortTermAttemptAccounting, event);
+            compactionRequestAudit.attempt_accounting = shortTermAttemptAccounting;
+            compactionRequestAudit.physical_provider_attempts
+              = shortTermAttemptAccounting.current_attempt_physical_transmissions;
+            compactionRequestAudit.provider_attempt_ids = shortTermAttemptAccounting.recent_attempt_ids;
+            checkpoint.finalization.shortterm_attempt_accounting = shortTermAttemptAccounting;
             const activePlan = checkpoint.finalization.shortterm_recovery_plan;
             if (activePlan && event.actual_request_signature === activePlan.effective_request_signature) {
               if (event.state === 'in_flight') {
@@ -6884,13 +7076,15 @@ export function bindSettingsUI(ctrl) {
                 },
               ].slice(-compactionRequestAudit.provider_transmission_event_limit);
             }
-            const physical = countShortTermPhysicalAttempts(compactionRequestAudit.provider_transmission_events);
-            compactionRequestAudit.physical_provider_attempts = physical.physical_provider_attempts;
-            compactionRequestAudit.provider_attempt_ids = physical.provider_attempt_ids;
             updateActivePageMarker(checkpoint, 'shortterm_extraction', event.state === 'in_flight' ? 'in_flight' : event.state, {
               request_attempt: event.attempt,
               observed_empty_response_count: compactionRequestAudit.observed_empty_responses,
             });
+            if (['in_flight', 'response_observed', 'request_error'].includes(event.state)) {
+              checkpoint.finalization.updated_at = Date.now();
+              checkpoint.updated_at = Date.now();
+              await saveChatMetadata(catchUpContext);
+            }
           };
           const executeShortTermTransactions = async () => {
             let activePlan = persistedRecoveryPlan;
@@ -6920,6 +7114,13 @@ export function bindSettingsUI(ctrl) {
           };
           await executeShortTermTransactions()
             .then((summary) => {
+              shortTermAttemptAccounting = finalizeShortTermAttemptAccounting(shortTermAttemptAccounting, 'interrupted');
+              checkpoint.finalization.shortterm_attempt_accounting = shortTermAttemptAccounting;
+              compactionRequestAudit.attempt_accounting = summarizeShortTermAttemptAccounting(
+                shortTermAttemptAccounting, { successfulSegmentCommits: compactionRequestAudit.successful_segment_commits },
+              );
+              compactionRequestAudit.physical_provider_attempts
+                = shortTermAttemptAccounting.current_attempt_physical_transmissions;
               compactionRequestAudit.terminal_outcome = summary ? 'completed' : 'no_summary';
               compactionRequestAudit.persisted_recovery_plan = checkpoint.finalization.shortterm_recovery_plan ?? null;
               compactionRequestAudit.recovery_plan_history = [
@@ -6950,6 +7151,15 @@ export function bindSettingsUI(ctrl) {
               }
             })
             .catch(async (err) => {
+              shortTermAttemptAccounting = finalizeShortTermAttemptAccounting(
+                shortTermAttemptAccounting, ctrl.catchUpCancelled ? 'cancelled' : 'interrupted',
+              );
+              checkpoint.finalization.shortterm_attempt_accounting = shortTermAttemptAccounting;
+              compactionRequestAudit.attempt_accounting = summarizeShortTermAttemptAccounting(
+                shortTermAttemptAccounting, { successfulSegmentCommits: compactionRequestAudit.successful_segment_commits },
+              );
+              compactionRequestAudit.physical_provider_attempts
+                = shortTermAttemptAccounting.current_attempt_physical_transmissions;
               resumableFinalizationFailure = true;
               const failureStage = err?.sme_shortterm_failure_stage
                 ?? err?.sme_compaction_recovery?.adaptation
@@ -6987,6 +7197,17 @@ export function bindSettingsUI(ctrl) {
               const minimumSegmentFloor = 4;
               const targetCount = hasActualDispatchedFailure
                 ? nextShortTermRecoverySegmentSize(originalCount, minimumSegmentFloor) : null;
+              if (hasActualDispatchedFailure) {
+                checkpoint.finalization.shortterm_recovery_growth = {
+                  ...(checkpoint.finalization.shortterm_recovery_growth ?? {}),
+                  consecutive_successes: 0,
+                  failed_segment_size: originalCount,
+                  proposed_segment_size: targetCount,
+                  decision: targetCount === null ? 'minimum_floor_exhausted' : 'reduced_after_failure',
+                  updated_at: Date.now(),
+                };
+                compactionRequestAudit.recovery_growth = checkpoint.finalization.shortterm_recovery_growth;
+              }
               const nextStart = Number(failedRequest?.requested_source_start);
               let nextPlan = hasActualDispatchedFailure && targetCount !== null ? buildRecoveryPlan({
                 start: nextStart, count: targetCount,
@@ -8392,6 +8613,7 @@ export function bindSettingsUI(ctrl) {
         $('#sme_run_idempotence_check').prop('disabled', false);
         $('#sme_catch_up_eta').hide().empty();
         refreshCatchUpRecoveryUI();
+        refreshTargetedReplayUI();
       } catch (cleanupErr) {
         console.warn('[Smart Memory Enhanced] Catch-up control cleanup warning:', cleanupErr);
       }

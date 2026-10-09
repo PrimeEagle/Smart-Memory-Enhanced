@@ -123,6 +123,7 @@ import {
   beginProviderAttempt,
   classifyMalformedProviderOutput,
   finishProviderAttempt,
+  providerConfigurationSignature,
 } from './provider-attempt-audit.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
 
@@ -892,8 +893,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `longterm:${String(characterName).toLowerCase()}:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
-    const beginPhysicalAttempt = (requestKind = depth ? 'repartition_child' : 'original', changedDimensions = depth ? ['source_range', 'estimated_request_size'] : [], recovery = {}) => beginProviderAttempt(providerMetadata, {
+    const beginPhysicalAttempt = (requestKind = options._providerRequestKind
+      ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
+      ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
       tier: 'longterm', owner: characterName, logical_obligation_id: rootObligationId,
+      chat_id: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
       parent_attempt_id: options._providerParentAttemptId ?? null,
       repartition_parent_id: options._contextOverflowParentRangeId ?? null,
       request_kind: requestKind,
@@ -914,6 +918,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       estimated_input_tokens: preflight.estimated_input_tokens,
       estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
       schema_version: 'longterm-tagged-v1',
+      configuration_signature: providerConfigurationSignature({
+        connection_profile_id: settings.connection_profile_id ?? null,
+        model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+        source: settings.source ?? null,
+        response_length: responseLength,
+        context_length: settings.context_length ?? null,
+      }),
     });
     const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
@@ -982,6 +993,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
             _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
             _providerParentAttemptId: parentAttemptId ?? options._providerParentAttemptId ?? null,
+            _providerRequestKind: 'repartition_child',
+            _providerChangedRecoveryDimensions: ['source_range', 'estimated_request_size'],
           });
           await options._onContextOverflowChildCommitted?.({
             key: childKey, tier: 'longterm', owner: characterName,
@@ -1250,7 +1263,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // cues not present in the memory text itself, scored at a higher bonus per hit.
     // Runs sequentially to avoid OOM on limited VRAM (Ollama serialises anyway).
     const existingKeys = new Set(activeMemories.map((m) => `${m.type}|${m.content}`));
-    if (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled) {
+    if (!options._targetedReplay && (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled)) {
       for (const mem of finalActive) {
         // Skip if triggers are already present - covers both new memories with
         // triggers derived this pass and existing memories that survived consolidation
@@ -1285,7 +1298,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Relationship delta extraction: runs after memory extraction so newly
     // added memories are already in finalActive and entity names are known.
     // Sequential like trigger generation to avoid OOM on limited VRAM.
-    {
+    if (!options._targetedReplay) {
       // Build the current-state string from stored history for the prompt baseline.
       // Format: "pair: word(magnitude), word(magnitude)" so the model sees existing magnitudes.
       const stateLines = Object.entries(relHistory)
