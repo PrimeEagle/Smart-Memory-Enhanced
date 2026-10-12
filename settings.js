@@ -192,8 +192,9 @@ import {
   normalizeIdempotenceResult,
 } from './idempotence-utils.js';
 import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
+import { deriveRunStatus, normalizeRunStatusReport, RUN_STATUS_CLASSIFIER_VERSION } from './run-status-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
-import { providerConfigurationSignature, summarizeProviderAttemptAudit } from './provider-attempt-audit.js';
+import { providerConfigurationSignature, summarizeProviderAttemptAudit, PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION } from './provider-attempt-audit.js';
 import {
   buildTargetedReplayCandidates, createTargetedReplayCheckpoint,
   updateTargetedReplayCheckpoint, summarizeTargetedReplayCheckpoint,
@@ -208,18 +209,20 @@ import {
   advanceShortTermRecoveryGrowth,
   deriveShortTermMissingPlanResumeEligibility,
   deriveShortTermResumePresentation, migrateMissingPlanCommittedCheckpoint,
-  isShortTermMinimumFloorExhausted,
+  isShortTermMinimumFloorExhausted, deriveShortTermPhaseProgress, reconcileShortTermSegmentLedger,
   SHORTTERM_RECOVERY_SCHEMA_VERSION, SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.55',
-  build_fingerprint: 'sme-v0.9.55-attempt-accounting-targeted-replay-r1',
+  extension_version: '0.9.56',
+  build_fingerprint: 'sme-v0.9.56-run-status-severity-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
     shortterm_attempt_accounting: SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
     targeted_replay: TARGETED_REPLAY_SCHEMA_VERSION,
+    provider_attempt_audit: PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
+    run_status_classifier: RUN_STATUS_CLASSIFIER_VERSION,
   }),
 });
 
@@ -2753,14 +2756,16 @@ export function bindSettingsUI(ctrl) {
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
-      return { ...completedRun, build_identity: SME_BUILD_IDENTITY,
+      return normalizeRunStatusReport({ ...completedRun, build_identity: SME_BUILD_IDENTITY,
+        compaction_request_audit: completedRun.compaction_request_audit
+          ? reconcileShortTermSegmentLedger(completedRun.compaction_request_audit) : null,
         live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
         targeted_extraction_replay: metadata.targeted_extraction_replay
           ? { ...(completedRun.targeted_extraction_replay ?? {}),
             ...summarizeTargetedReplayCheckpoint(metadata.targeted_extraction_replay) }
           : completedRun.targeted_extraction_replay ?? null,
         runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
-        page_run_lifecycle: summarizePageRunLifecycle(metadata, completedRun.logical_run?.attempt_count ?? null) };
+        page_run_lifecycle: summarizePageRunLifecycle(metadata, completedRun.logical_run?.attempt_count ?? null) });
     }
     // Fresh Start is itself a consequential, persisted operation. Its
     // postcondition needs to be inspectable before a long historical rebuild,
@@ -2786,6 +2791,56 @@ export function bindSettingsUI(ctrl) {
       runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
       page_run_lifecycle: summarizePageRunLifecycle(metadata, metadata.catch_up_checkpoint?.run_manifest?.total_attempt_count ?? null),
     };
+  };
+  const refreshRunOutcomeUI = () => {
+    const report = getExportableDiagnostics();
+    const status = report?.run_status ?? null;
+    const $summary = $('#sme_run_outcome_summary');
+    const $headerStatus = $('#sme_status');
+    const $headerCount = $('#sme_catch_up_error_count');
+    if (!status || status.lifecycle_status === 'not_run') {
+      $summary.hide().empty().removeClass('sme_outcome_success sme_outcome_warning sme_outcome_error sme_outcome_info');
+      return;
+    }
+    const className = status.severity === 'success' ? 'sme_outcome_success'
+      : status.severity === 'warning' ? 'sme_outcome_warning'
+        : status.severity === 'error' ? 'sme_outcome_error' : 'sme_outcome_info';
+    const source = status.completion_evidence?.source_message_count;
+    const committed = status.completion_evidence?.committed_message_count;
+    const noticeSuffix = status.notice_count > 0
+      ? ` ${status.notice_count} safe quality notice${status.notice_count === 1 ? '' : 's'} also remain available in diagnostics.` : '';
+    const recoverySuffix = status.recovered_error_count > 0
+      ? ` ${status.recovered_error_count} other failed extraction obligation${status.recovered_error_count === 1 ? ' was' : 's were'} recovered.` : '';
+    const detail = status.lifecycle_status === 'completed' && status.unresolved_error_count > 0
+      ? `All ${Number(source ?? committed ?? 0).toLocaleString()} messages were processed and finalization completed, but ${status.unresolved_error_count} memory extraction${status.unresolved_error_count === 1 ? '' : 's'} remain unresolved.${recoverySuffix}${noticeSuffix}`
+      : status.lifecycle_status === 'completed' && status.outcome_status === 'completed_recovered_errors'
+        ? status.recovered_error_count > 0
+          ? `${status.recovered_error_count} failed extraction obligation${status.recovered_error_count === 1 ? ' was' : 's were'} recovered; none remain unresolved.${noticeSuffix}`
+          : `${status.historical_failure_observation_count} transient failure observation${status.historical_failure_observation_count === 1 ? ' was' : 's were'} recorded; none remain unresolved.${noticeSuffix}`
+        : status.lifecycle_status === 'completed' && status.notice_count > 0
+          ? `Processing and finalization completed with ${status.notice_count} safe quality notice${status.notice_count === 1 ? '' : 's'}.`
+          : status.lifecycle_status === 'completed'
+            ? `${Number(committed ?? source ?? 0).toLocaleString()} source messages were safely committed and finalization completed.`
+            : String(status.recovery_reason_code ?? status.status_reason_codes.join(', ')).replaceAll('_', ' ');
+    $summary
+      .removeClass('sme_outcome_success sme_outcome_warning sme_outcome_error sme_outcome_info')
+      .addClass(className)
+      .attr('aria-label', `${status.label}. ${detail}`)
+      .empty()
+      .append($('<strong>').append($('<i>').addClass(`fa-solid fa-${status.icon}`).attr('aria-hidden', 'true'), ` ${status.label}`))
+      .append($('<span>').text(detail))
+      .show();
+    $headerStatus.removeClass('sme_status_warning sme_status_error');
+    $headerCount.removeClass('sme_catch_up_errors_many').hide().text('');
+    if (status.severity === 'error') {
+      $headerStatus.addClass('sme_status_error');
+      if (status.unresolved_error_count > 0) $headerCount
+        .addClass('sme_catch_up_errors_many')
+        .text(`${status.unresolved_error_count} unresolved extraction error${status.unresolved_error_count === 1 ? '' : 's'}`)
+        .show();
+    } else if (status.severity === 'warning') {
+      $headerStatus.addClass('sme_status_warning');
+    }
   };
   const exportCatchUpDiagnostics = () => {
     // A manual Developer check updates persisted chat diagnostics after the
@@ -2828,7 +2883,12 @@ export function bindSettingsUI(ctrl) {
         .text(`${candidate.owner} — messages ${candidate.source_range.start}–${candidate.source_range.end}`)));
     }
     $('#sme_failed_extraction_replay').toggle(candidates.length > 0);
-    $('#sme_retry_failed_extractions').prop('disabled', eligible.length === 0 || Boolean(ctrl.extractionRunning));
+    $('#sme_retry_failed_extractions')
+      .prop('disabled', eligible.length === 0 || Boolean(ctrl.extractionRunning))
+      .find('span').text(eligible.length
+        ? `Retry ${eligible.length} Failed Memory Extraction${eligible.length === 1 ? '' : 's'}`
+        : 'Retry Failed Memory Extractions');
+    refreshRunOutcomeUI();
   };
   refreshTargetedReplayUI();
   $('#sme_retry_failed_extractions').on('click', async () => {
@@ -2850,10 +2910,18 @@ export function bindSettingsUI(ctrl) {
       POPUP_TYPE.CONFIRM,
     ))) return;
     const configSignature = targetedReplayConfigurationSignature();
+    const reportBeforeReplay = getExportableDiagnostics();
+    const unresolvedBefore = Number(reportBeforeReplay?.run_status?.unresolved_error_count
+      ?? reportBeforeReplay?.provider_attempt_audit?.terminally_unresolved_malformed_obligations ?? eligible.length);
     let replay = createTargetedReplayCheckpoint(eligible, {
       chatId: context.chatId ?? context.groupId ?? null,
       configurationSignature: configSignature,
+      prior: metadata.targeted_extraction_replay ?? null,
+      selectionReason: selection === 'all' ? 'operator_selected_all_eligible_terminal_failures' : 'operator_selected_one_terminal_failure',
+      originalRunId: reportBeforeReplay?.logical_run?.logical_run_id ?? null,
+      statusClassificationBefore: reportBeforeReplay?.run_status ?? null,
     });
+    replay.before_unresolved_count = unresolvedBefore;
     metadata.targeted_extraction_replay = replay;
     await saveChatMetadata(context);
     ctrl.extractionRunning = true;
@@ -2866,6 +2934,7 @@ export function bindSettingsUI(ctrl) {
       for (const candidate of eligible) {
         replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
           terminal_outcome: 'running', attempted: true,
+          provider_outcome: 'in_progress', parse_repair_outcome: 'pending', persistence_outcome: 'pending',
         });
         metadata.targeted_extraction_replay = replay;
         await saveChatMetadata(context);
@@ -2884,10 +2953,14 @@ export function bindSettingsUI(ctrl) {
           replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
             terminal_outcome: Number(added) > 0 ? 'completed' : 'completed_no_candidates',
             added_memories: Number(added) || 0,
+            provider_outcome: 'completed', parse_repair_outcome: 'valid_output_accepted',
+            persistence_outcome: 'committed',
           });
         } catch (error) {
           replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
             terminal_outcome: 'failed', normalized_error_type: error?.code ?? error?.name ?? 'Error',
+            provider_outcome: error?.sme_request_diagnostics ? 'failed' : 'unknown',
+            parse_repair_outcome: 'not_accepted', persistence_outcome: 'not_committed',
           });
         }
         metadata.targeted_extraction_replay = replay;
@@ -2897,6 +2970,13 @@ export function bindSettingsUI(ctrl) {
         ? 'completed_with_failures' : 'completed', completed_at: Date.now(), updated_at: Date.now() };
       metadata.targeted_extraction_replay = replay;
       const providerSummary = summarizeProviderAttemptAudit(metadata);
+      const unresolvedAfterIds = (providerSummary?.terminal_unresolved_obligations ?? [])
+        .map((item) => item.root_obligation_id).filter(Boolean);
+      const selectedIds = eligible.map((candidate) => candidate.root_obligation_id);
+      replay.before_unresolved_count = unresolvedBefore;
+      replay.after_unresolved_count = Number(providerSummary?.terminally_unresolved_malformed_obligations ?? 0);
+      replay.recovered_obligation_ids = selectedIds.filter((id) => !unresolvedAfterIds.includes(id));
+      replay.still_unresolved_obligation_ids = selectedIds.filter((id) => unresolvedAfterIds.includes(id));
       const report = metadata.catch_up_diagnostics;
       if (report) {
         report.provider_attempt_audit = providerSummary;
@@ -2932,6 +3012,18 @@ export function bindSettingsUI(ctrl) {
           report.quality.data_quality_status = degrading.length ? 'attention' : 'clean';
           report.quality.generation_quality_status = degrading.length ? 'attention' : 'completed_clean';
         }
+        const normalizedReport = normalizeRunStatusReport(report);
+        Object.assign(report, normalizedReport);
+        replay.status_classification_after = report.run_status;
+        metadata.targeted_extraction_replay = replay;
+        report.targeted_extraction_replay = {
+          ...report.targeted_extraction_replay,
+          ...summarizeTargetedReplayCheckpoint(replay),
+        };
+        report.targeted_extraction_replay.status_transition = {
+          before: replay.status_classification_before ?? null,
+          after: report.run_status,
+        };
       }
       await saveChatMetadata(context);
       updateLongTermUI(ctrl.getSelectedCharacterName());
@@ -5218,6 +5310,7 @@ export function bindSettingsUI(ctrl) {
         active_label: null,
         active_phase_started_at: null,
         active_request: null,
+        shortterm_progress: null,
         phase_durations: {},
       };
       let finalizationEtaRefreshTimer = null;
@@ -5283,13 +5376,33 @@ export function bindSettingsUI(ctrl) {
         const streamedRequestRemaining = streamedTokenRate && requestedTokens > streamedTokens
           ? Math.round(((requestedTokens - streamedTokens) / streamedTokenRate) * 1000)
           : null;
-        const activeEstimate = streamedRequestRemaining ?? (finalizationTiming.active_phase ? phaseEstimate(finalizationTiming.active_phase) : 0);
+        const projectedRequestDuration = streamedTokenRate && requestedTokens > 0
+          ? Math.round((requestedTokens / streamedTokenRate) * 1000) : null;
+        const shortTermState = finalizationTiming.active_phase === 'shortterm_extraction'
+          ? finalizationTiming.shortterm_progress : null;
+        const shortTermProgress = shortTermState ? deriveShortTermPhaseProgress({
+          totalSourceMessages: shortTermState.total_source_messages,
+          committedSourceMessages: shortTermState.committed_source_messages,
+          committedPasses: shortTermState.committed_passes,
+          committedMessageCounts: shortTermState.committed_message_counts,
+          completedRequestDurationsMs: shortTermState.completed_request_durations_ms,
+          currentRequestMessageCount: shortTermState.current_request?.message_count,
+          currentRequestActive: Boolean(shortTermState.current_request
+            && !['response_received', 'failed'].includes(shortTermState.current_request.status)),
+          currentRequestRemainingMs: streamedRequestRemaining,
+          projectedCurrentRequestDurationMs: projectedRequestDuration,
+        }) : null;
+        const activeEstimate = shortTermProgress?.estimated_remaining_ms
+          ?? streamedRequestRemaining
+          ?? (finalizationTiming.active_phase ? phaseEstimate(finalizationTiming.active_phase) : 0);
         const futureKinds = finalizationPlan.slice(completedUnits + (finalizationTiming.active_phase ? 1 : 0));
         const futureEstimate = futureKinds.reduce((totalMs, kind) => {
           const estimate = phaseEstimate(kind);
           return estimate ? totalMs + estimate : totalMs;
         }, 0);
-        const activeEstimateExceeded = streamedRequestRemaining === null && Boolean(finalizationTiming.active_phase)
+        const estimateAlreadyRemaining = Number.isFinite(shortTermProgress?.estimated_remaining_ms)
+          || streamedRequestRemaining !== null;
+        const activeEstimateExceeded = !estimateAlreadyRemaining && Boolean(finalizationTiming.active_phase)
           && Number.isFinite(activeEstimate)
           && activeElapsed >= activeEstimate;
         // A provider-backed finalization phase has no reliable sub-request
@@ -5300,23 +5413,28 @@ export function bindSettingsUI(ctrl) {
         // provider boundary completes.
         const estimatedRemaining = activeEstimateExceeded || !Number.isFinite(activeEstimate) || futureKinds.some((kind) => !Number.isFinite(phaseEstimate(kind)))
           ? null
-          : Math.max(0, Math.round(Math.max(0, activeEstimate - activeElapsed) + futureEstimate));
+          : Math.max(0, Math.round(Math.max(0, estimateAlreadyRemaining ? activeEstimate : activeEstimate - activeElapsed) + futureEstimate));
         catchUpTiming.estimated_remaining_ms = estimatedRemaining;
         catchUpTiming.estimate_available = estimatedRemaining !== null;
         const displayPhase = Math.min(completedUnits + (finalizationTiming.active_phase ? 1 : 0), finalizationTiming.planned_units);
         const elapsedDetail = `running for ${formatCatchUpDuration(activeElapsed)}`;
+        const shortTermPhaseDetail = shortTermProgress
+          ? ` - ${shortTermProgress.committed_source_messages}/${shortTermProgress.total_source_messages} source messages safely committed across ${shortTermProgress.committed_passes} pass${shortTermProgress.committed_passes === 1 ? '' : 'es'}${shortTermProgress.estimated_remaining_passes === null ? '' : `; approximately ${shortTermProgress.estimated_remaining_passes} pass${shortTermProgress.estimated_remaining_passes === 1 ? '' : 'es'} remaining`}.`
+          : null;
+        const currentPassLabel = shortTermProgress
+          ? ` for pass ${shortTermProgress.committed_passes + 1}` : '';
         const liveProgressDetail = streamedTokenRate
-          ? ` - live provider progress: ~${streamedTokens}/${requestedTokens || '?'} output tokens at ~${streamedTokenRate.toFixed(1)} tok/s; rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
+          ? ` Current provider request${currentPassLabel}: ~${streamedTokens}/${requestedTokens || '?'} maximum output tokens at ~${streamedTokenRate.toFixed(1)} tok/s${Number.isFinite(shortTermProgress?.estimated_remaining_ms) ? `; Short-Term rough remaining estimate: ${formatCatchUpDuration(shortTermProgress.estimated_remaining_ms)}` : estimatedRemaining !== null ? `; rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}` : ''}.`
           : null;
         const noStreamDetail = activeRequest && !activeRequest.streaming
-          ? ` - live token progress is unavailable through this provider; ${estimatedRemaining !== null ? `rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.` : `${elapsedDetail}; waiting for the current request to complete.`}`
+          ? ` Current provider request${currentPassLabel}: live token progress is unavailable; ${estimatedRemaining !== null ? `rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.` : `${elapsedDetail}; waiting for it to complete.`}`
           : null;
         const etaDetail = liveProgressDetail ?? noStreamDetail ?? (activeEstimateExceeded
           ? ` - ${elapsedDetail}; this phase has exceeded its observed estimate and the provider has not exposed live token progress, so remaining time is unavailable until the current request completes.`
           : estimatedRemaining !== null
             ? ` - rough remaining estimate: ${formatCatchUpDuration(estimatedRemaining)}.`
             : ` - ${elapsedDetail}; estimating remaining time from completed phases.`);
-        eta.text(`Finalizing: ${finalizationTiming.active_label ?? label} (${displayPhase}/${finalizationTiming.planned_units} phases)${etaDetail}`).show();
+        eta.text(`Finalizing: ${finalizationTiming.active_label ?? label} (phase ${displayPhase} of ${finalizationTiming.planned_units})${shortTermPhaseDetail ?? ''}${etaDetail}`).show();
       };
       updateCatchUpEta(0);
 
@@ -6487,18 +6605,46 @@ export function bindSettingsUI(ctrl) {
         // count to decide what to include, so chunking doesn't apply.
         if (!ctrl.catchUpCancelled && settings.compaction_enabled && !hasCompletedFinalizationPhase('shortterm_extraction')) {
           await startFinalizationPhase('shortterm_extraction');
+          const initialShortTermMetadata = catchUpContext.chatMetadata?.[META_KEY] ?? {};
+          const initialShortTermCheckpoint = initialShortTermMetadata.shortterm_compaction_checkpoint ?? {};
+          finalizationTiming.shortterm_progress = {
+            total_source_messages: catchUpContext.chat.length,
+            committed_source_messages: Math.min(catchUpContext.chat.length,
+              Math.max(0, Number(initialShortTermMetadata.summaryEnd) || 0)),
+            committed_passes: Math.max(0, Number(initialShortTermCheckpoint.completed_passes) || 0),
+            committed_message_counts: [],
+            completed_request_durations_ms: [],
+            current_request: null,
+          };
           updateFinalizationEta('short-term memory extraction');
           setStatusMessage('Extracting short-term memories...');
           const commitShortTermPass = async (progress) => {
-            compactionRequestAudit.successful_segment_commits = Number(compactionRequestAudit.successful_segment_commits ?? 0) + 1;
+            const shortTermProgress = finalizationTiming.shortterm_progress;
+            if (shortTermProgress) {
+              const priorBoundary = shortTermProgress.committed_source_messages;
+              const nextBoundary = Math.min(shortTermProgress.total_source_messages,
+                Math.max(priorBoundary, Number(progress.summary_end) || 0));
+              const newlyCommitted = nextBoundary - priorBoundary;
+              if (newlyCommitted > 0) shortTermProgress.committed_message_counts = [
+                ...shortTermProgress.committed_message_counts, newlyCommitted,
+              ].slice(-16);
+              shortTermProgress.committed_source_messages = nextBoundary;
+              shortTermProgress.committed_passes = Math.max(shortTermProgress.committed_passes,
+                Number(progress.completed_passes) || 0);
+              shortTermProgress.current_request = null;
+            }
             const committedSignature = progress.consumed_recovery_plan?.effective_request_signature ?? null;
-            compactionRequestAudit.segment_attempt_ledger = (compactionRequestAudit.segment_attempt_ledger ?? []).map((entry) => (
-              committedSignature && entry.effective_request_signature === committedSignature
-                ? { ...entry, parsed: true, committed: true, failed_before_commit: false,
-                  failed_after_commit: false, segment_terminal_outcome: 'committed', committed_at: Date.now(),
-                  committed_boundary: progress.summary_end, committed_summary_hash: progress.summary_hash }
-                : entry
-            )).slice(-32);
+            const ledger = compactionRequestAudit.segment_attempt_ledger ?? [];
+            const commitLedgerIndex = ledger.findLastIndex((entry) => (
+              committedSignature
+                ? entry.effective_request_signature === committedSignature
+                : Number(entry.source_end) === Number(progress.source_end)
+                  && entry.provider_completed === true && entry.parsed === true && entry.committed !== true
+            ));
+            const commitRequestId = commitLedgerIndex >= 0 ? ledger[commitLedgerIndex].request_id : null;
+            compactionRequestAudit.segment_attempt_ledger = ledger.map((entry, index) => index === commitLedgerIndex
+              ? { ...entry, commit_started: true, commit_started_at: Date.now(), latest_state: 'commit_started' }
+              : entry).slice(-32);
             checkpoint.finalization.shortterm_compaction_progress = {
               schema_version: 1,
               completed_passes: progress.completed_passes,
@@ -6543,6 +6689,13 @@ export function bindSettingsUI(ctrl) {
                 predecessorPlan: committedPlan, reductionReason: 'committed_predecessor_successor',
               });
               if (successorPlan) {
+                successorPlan.adaptive_growth = {
+                  decision: growth.decision,
+                  growth_cap_applies: true,
+                  maximum_segment_size: growth.maximum_segment_size,
+                  prior_segment_size: activeRecoveryPlan.message_count,
+                  proposed_segment_size: growth.proposed_segment_size,
+                };
                 successorPlan.lifecycle_state = 'successor_pending';
                 successorPlan.persisted_at = Date.now();
                 successorPlan.persistence_result = 'save_requested';
@@ -6605,6 +6758,12 @@ export function bindSettingsUI(ctrl) {
               finalTransaction = beginCatchUpTransaction(catchUpContext);
               }
             } catch (error) {
+              compactionRequestAudit.segment_attempt_ledger = (compactionRequestAudit.segment_attempt_ledger ?? []).map((entry) => (
+                entry.request_id === commitRequestId
+                  ? { ...entry, committed: false, failed_after_commit: true,
+                    commit_persistence_failed: true, latest_state: 'commit_persistence_failed' }
+                  : entry
+              )).slice(-32);
               if (committedActivePlan) {
                 error.sme_reason_code ??= 'successor_plan_persistence_failed';
                 error.sme_shortterm_failure_stage ??= 'successor_plan_persistence_failure';
@@ -6618,8 +6777,20 @@ export function bindSettingsUI(ctrl) {
               }
               throw error;
             }
+            compactionRequestAudit.successful_segment_commits = Number(compactionRequestAudit.successful_segment_commits ?? 0) + 1;
+            compactionRequestAudit.segment_attempt_ledger = (compactionRequestAudit.segment_attempt_ledger ?? []).map((entry) => (
+              entry.request_id === commitRequestId
+                ? { ...entry, parsed: true, committed: true, failed_before_commit: false,
+                  failed_after_commit: false, commit_persistence_failed: false,
+                  segment_terminal_outcome: 'committed', latest_state: 'committed', committed_at: Date.now(),
+                  committed_boundary: progress.summary_end, committed_summary_hash: progress.summary_hash }
+                : entry
+            )).slice(-32);
             updateActivePageMarker(checkpoint, 'shortterm_extraction', 'idle');
-            setStatusMessage(`Extracting short-term memories... ${progress.completed_passes} compaction pass${progress.completed_passes === 1 ? '' : 'es'} safely committed.`);
+            updateFinalizationEta('short-term memory extraction', { refreshOnly: true });
+            const committed = finalizationTiming.shortterm_progress?.committed_source_messages ?? progress.summary_end;
+            const total = finalizationTiming.shortterm_progress?.total_source_messages ?? catchUpContext.chat.length;
+            setStatusMessage(`Extracting short-term memories... ${committed}/${total} source messages safely committed across ${progress.completed_passes} compaction pass${progress.completed_passes === 1 ? '' : 'es'}.`);
           };
           const priorCompactionAudit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.compaction_request_audit;
           const compactionRequestAudit = {
@@ -6632,6 +6803,8 @@ export function bindSettingsUI(ctrl) {
             transports_attempted: [], segment_sizes_attempted: [], output_reserves_attempted: [],
             request_errors: 0, retained_events: [], retained_event_limit: 24,
             segment_attempt_ledger: [], segment_attempt_ledger_limit: 32,
+            segment_size_distribution: {}, provider_elapsed_ms: 0,
+            longest_requests: [], longest_request_limit: 16,
             provider_transmission_events: [], provider_transmission_event_limit: 64,
             last_response_presence: null, terminal_outcome: 'running',
           };
@@ -6991,6 +7164,31 @@ export function bindSettingsUI(ctrl) {
           }
           compactionRequestAudit.persisted_recovery_plan = persistedRecoveryPlan;
           const onCompactionRequestState = async (event) => {
+            const shortTermProgress = finalizationTiming.shortterm_progress;
+            if (shortTermProgress && event.state === 'in_flight') {
+              shortTermProgress.current_request = {
+                request_id: event.request_id,
+                attempt: Number(event.attempt) || 1,
+                message_count: Number(event.prompt_visible_message_count) || null,
+                source_start: Number.isInteger(event.requested_source_start) ? event.requested_source_start : null,
+                source_end: Number.isInteger(event.requested_source_end) ? event.requested_source_end : null,
+                started_at: Date.now(),
+                status: 'generating',
+              };
+              updateFinalizationEta('short-term memory extraction', { refreshOnly: true });
+            } else if (shortTermProgress?.current_request?.request_id === event.request_id
+              && event.state === 'response_observed' && event.response_present === true) {
+              const duration = Math.max(0, Date.now() - shortTermProgress.current_request.started_at);
+              if (duration > 0) shortTermProgress.completed_request_durations_ms = [
+                ...shortTermProgress.completed_request_durations_ms, duration,
+              ].slice(-16);
+              shortTermProgress.current_request.status = 'response_received';
+              updateFinalizationEta('short-term memory extraction', { refreshOnly: true });
+            } else if (shortTermProgress?.current_request?.request_id === event.request_id
+              && event.state === 'request_error') {
+              shortTermProgress.current_request.status = 'failed';
+              updateFinalizationEta('short-term memory extraction', { refreshOnly: true });
+            }
             shortTermAttemptAccounting = recordShortTermAttemptEvent(shortTermAttemptAccounting, event);
             compactionRequestAudit.attempt_accounting = shortTermAttemptAccounting;
             compactionRequestAudit.physical_provider_attempts
@@ -7023,6 +7221,14 @@ export function bindSettingsUI(ctrl) {
                 source_start: event.requested_source_start ?? priorEntry.source_start ?? null,
                 source_end: event.requested_source_end ?? priorEntry.source_end ?? null,
                 message_count: event.prompt_visible_message_count ?? priorEntry.message_count ?? null,
+                segment_origin: priorEntry.segment_origin ?? (activePlan ? 'adaptive_recovery' : 'normal_compaction'),
+                recovery_growth_cap_applies: priorEntry.recovery_growth_cap_applies
+                  ?? activePlan?.adaptive_growth?.growth_cap_applies ?? false,
+                recovery_growth_cap_messages: priorEntry.recovery_growth_cap_messages
+                  ?? activePlan?.adaptive_growth?.maximum_segment_size ?? null,
+                recovery_growth_decision: priorEntry.recovery_growth_decision
+                  ?? activePlan?.adaptive_growth?.decision ?? null,
+                dispatched_at: priorEntry.dispatched_at ?? (event.state === 'in_flight' ? Date.now() : null),
                 dispatched: priorEntry.dispatched || event.state === 'in_flight',
                 provider_completed: priorEntry.provider_completed
                   || (event.state === 'provider_diagnostic' && event.transport_completed === true)
@@ -7032,6 +7238,10 @@ export function bindSettingsUI(ctrl) {
                 failed_before_commit: Boolean(priorEntry.failed_before_commit)
                   || event.state === 'request_error' || (event.state === 'response_observed' && event.response_present === false),
                 failed_after_commit: Boolean(priorEntry.failed_after_commit),
+                provider_duration_ms: priorEntry.provider_duration_ms ?? (
+                  ['response_observed', 'request_error'].includes(event.state) && priorEntry.dispatched_at
+                    ? Math.max(0, Date.now() - priorEntry.dispatched_at) : null
+                ),
                 latest_state: event.state,
               };
               compactionRequestAudit.segment_attempt_ledger = [
@@ -7041,6 +7251,11 @@ export function bindSettingsUI(ctrl) {
             }
             if (event.state === 'in_flight') {
               compactionRequestAudit.observed_requests++;
+              const segmentSize = Number(event.prompt_visible_message_count);
+              if (Number.isInteger(segmentSize) && segmentSize > 0) {
+                compactionRequestAudit.segment_size_distribution[segmentSize]
+                  = Number(compactionRequestAudit.segment_size_distribution[segmentSize] ?? 0) + 1;
+              }
               if (Number(event.attempt ?? 1) > 1) compactionRequestAudit.same_signature_retries++;
               if (Number.isInteger(event.prompt_visible_message_count)) compactionRequestAudit.segment_sizes_attempted = [...new Set([
                 ...compactionRequestAudit.segment_sizes_attempted, event.prompt_visible_message_count,
@@ -7061,6 +7276,21 @@ export function bindSettingsUI(ctrl) {
               if (!event.response_present) compactionRequestAudit.observed_empty_responses++;
             }
             if (event.state === 'request_error') compactionRequestAudit.request_errors++;
+            if (event.request_id && ['response_observed', 'request_error'].includes(event.state)) {
+              const terminalEntry = (compactionRequestAudit.segment_attempt_ledger ?? [])
+                .find((entry) => entry.request_id === event.request_id);
+              const duration = Number(terminalEntry?.provider_duration_ms ?? 0);
+              if (duration > 0 && terminalEntry?.provider_duration_counted !== true) {
+                compactionRequestAudit.provider_elapsed_ms += duration;
+                compactionRequestAudit.longest_requests = [
+                  ...compactionRequestAudit.longest_requests,
+                  { request_id: event.request_id, source_start: terminalEntry.source_start,
+                    source_end: terminalEntry.source_end, message_count: terminalEntry.message_count,
+                    duration_ms: duration, terminal_outcome: event.state },
+                ].sort((a, b) => b.duration_ms - a.duration_ms).slice(0, compactionRequestAudit.longest_request_limit);
+                terminalEntry.provider_duration_counted = true;
+              }
+            }
             compactionRequestAudit.retained_events = [...compactionRequestAudit.retained_events, event].slice(-24);
             if (event.state === 'in_flight' || (event.state === 'provider_diagnostic' && (
               event.predecessor_endpoint_category
@@ -7959,12 +8189,10 @@ export function bindSettingsUI(ctrl) {
       for (const [code, passed, message] of requiredIdentityInvariants) {
         if (!passed) qualityReasons.push({ code, tier: 'identity', message });
       }
-      const projectedOperationalStatus = ctrl.catchUpCancelled
-        ? 'cancelled'
-        : resumableFinalizationFailure ? 'partial'
-        : catchUpErrorCount > 0
-          ? (runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial')
-          : 'completed';
+      // Lifecycle is derived only from durable traversal/finalization state.
+      // Nonfatal extraction errors affect outcome severity, never completion.
+      const projectedOperationalStatus = ctrl.catchUpCancelled || resumableFinalizationFailure
+        ? 'incomplete' : 'completed';
       const maintenanceActions = {
         entity_links_repaired: entityLinkRepairs.actual_logical_mutations_this_run ?? 0,
         entity_link_store_mutations: entityLinkRepairs.actual_physical_store_mutations_this_run ?? entityLinkRepairs.physical_store_mutations_this_run ?? 0,
@@ -8132,7 +8360,9 @@ export function bindSettingsUI(ctrl) {
         },
         logical_run: logicalRunAtDiagnosticBuild,
         page_run_lifecycle: summarizePageRunLifecycle(catchUpContext.chatMetadata?.[META_KEY], logicalRunAtDiagnosticBuild.attempt_count),
-        compaction_request_audit: runResult.compactionRequestAudit ?? null,
+        compaction_request_audit: runResult.compactionRequestAudit
+            ? reconcileShortTermSegmentLedger(runResult.compactionRequestAudit)
+            : null,
         provider_attempt_audit: providerAttemptSummary,
         provider_request_reconciliation: (() => {
           const persistedChildren = checkpoint.context_overflow_recovery?.completed_children?.length ?? 0;
@@ -8444,6 +8674,8 @@ export function bindSettingsUI(ctrl) {
         }
         clearCatchUpSettingsStorage(catchUpRunId, catchUpContext);
       }
+      Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
+      runResult.quality = diagnostics.quality ?? runResult.quality;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
       catchUpContext.chatMetadata[META_KEY].request_efficiency_history = diagnostics.request_efficiency_history;
@@ -8518,6 +8750,7 @@ export function bindSettingsUI(ctrl) {
           stable: false, passes: 0, changed_components: [], check_failed: true,
         };
       }
+      Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
       latestExportDiagnostics = diagnostics;
       try {
         await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
@@ -8530,6 +8763,8 @@ export function bindSettingsUI(ctrl) {
         diagnostics.persistence_failures = runResult.saveFailures;
         diagnostics.error_details = runResult.errors;
         diagnostics.final_persistence_error = String(err?.message ?? err ?? 'Unknown persistence error').replace(/\s+/g, ' ').slice(0, 300);
+        diagnostics.fatal_run_error_count = Number(diagnostics.fatal_run_error_count ?? 0) + 1;
+        Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
         // The transaction rollback removes saved metadata, but this session
         // copy remains available through Export Diagnostics.
         latestExportDiagnostics = diagnostics;
@@ -8544,26 +8779,9 @@ export function bindSettingsUI(ctrl) {
           timeOut: 5000,
           positionClass: 'toast-bottom-right',
         });
-      } else if (catchUpErrorCount > 0) {
-        runResult.status = runResult.completedChunks === 0 && runResult.failedChunks > 0 ? 'failed' : 'partial';
-        const persistenceDetail = runResult.saveFailures > 0
-          ? `, ${runResult.saveFailures} persistence failure${runResult.saveFailures === 1 ? '' : 's'}`
-          : '';
-        const lateStageLabels = [...new Set(runResult.errors
-          .map((entry) => entry.label)
-          .filter((label) => !/\(chunk\)|chunk persistence/i.test(label)))];
-        const lateStageDetail = lateStageLabels.length
-          ? ` Late-stage failure${lateStageLabels.length === 1 ? '' : 's'}: ${lateStageLabels.join('; ')}.`
-          : '';
-        setStatusMessage(
-          `Catch-up ${runResult.status}: ${runResult.completedChunks}/${runResult.totalChunks} chunks completed, ${runResult.failedChunks} failed${persistenceDetail}.${lateStageDetail}`,
-        );
-        toastr.warning(
-          `Catch-up ${runResult.status}. ${runResult.failedChunks} chunk${runResult.failedChunks === 1 ? '' : 's'} failed${persistenceDetail} after ${runResult.retriedRequests} retr${runResult.retriedRequests === 1 ? 'y' : 'ies'}.${lateStageDetail}`,
-          'Smart Memory Enhanced',
-          { timeOut: 8000, positionClass: 'toast-bottom-right' },
-        );
       } else {
+        const classified = diagnostics.run_status ?? deriveRunStatus(diagnostics);
+        runResult.status = classified.lifecycle_status;
         const logicalRun = diagnostics.logical_run ?? null;
         const recoveryDetail = logicalRun?.attempt_count > 1
           ? ` Completed after ${logicalRun.attempt_count - 1} resume${logicalRun.attempt_count === 2 ? '' : 's'} — full cumulative coverage confirmed: ${logicalRun.cumulative_committed_count}/${logicalRun.source_window?.message_count ?? 0} messages.`
@@ -8586,13 +8804,18 @@ export function bindSettingsUI(ctrl) {
         const maintenanceDetail = repairedLinks > 0
           ? ` ${repairedLinks} entity link${repairedLinks === 1 ? '' : 's'} repaired${repairStores > 1 ? ` across ${repairStores} durable store mutations` : ''}.`
           : '';
-        setStatusMessage(`Catch-up complete.${recoveryDetail}${coverageDetail}${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`);
-        const notifier = runResult.quality.status === 'degraded' ? toastr.warning : toastr.success;
-        notifier(`Full catch-up extraction finished.${recoveryDetail}${coverageDetail}${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
-          timeOut: runResult.quality.status === 'degraded' ? 8000 : 4000,
+        const unresolvedDetail = classified.unresolved_error_count > 0
+          ? ` All ${Number(classified.completion_evidence.source_message_count ?? 0).toLocaleString()} messages were processed and finalization completed, but ${classified.unresolved_error_count} memory extraction${classified.unresolved_error_count === 1 ? '' : 's'} remain unresolved.`
+          : '';
+        setStatusMessage(`${classified.label}.${unresolvedDetail}${recoveryDetail}${coverageDetail}${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`);
+        const notifier = classified.severity === 'error' ? toastr.error
+          : classified.severity === 'warning' ? toastr.warning : toastr.success;
+        notifier(`${classified.label}.${unresolvedDetail}${recoveryDetail}${coverageDetail}${qualityDetail}${profileGuardDetail}${maintenanceDetail}${sceneSummary}`, 'Smart Memory Enhanced', {
+          timeOut: classified.severity === 'success' ? 4000 : 8000,
           positionClass: 'toast-bottom-right',
         });
       }
+      refreshRunOutcomeUI();
       $('#sme_export_diagnostics').prop('disabled', false);
     } catch (err) {
       if (finalTransaction) rollbackCatchUpTransaction(finalTransaction);

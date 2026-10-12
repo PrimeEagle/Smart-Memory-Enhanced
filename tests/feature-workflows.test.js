@@ -364,10 +364,30 @@ test('late catch-up stages isolate non-critical failures and retain diagnostics'
   assert.match(settings, /reconciliationSnapshot/);
   assert.match(settings, /latestExportDiagnostics = diagnostics/);
   assert.match(settings, /final_persistence_error/);
-  assert.match(settings, /Late-stage failure/);
+  assert.match(settings, /fatal_run_error_count/);
+  assert.match(settings, /normalizeRunStatusReport/);
   assert.match(settings, /scene_detection_candidate_fallbacks/);
   assert.match(settings, /warningsSuppressed/);
   assert.match(settings, /warnings_suppressed/);
+});
+
+test('completed-run lifecycle, severity UI, and targeted repair share one classifier', () => {
+  const settings = read('settings.js');
+  const html = read('settings.html');
+  const css = read('style.css');
+  const status = read('run-status-utils.js');
+  assert.match(settings, /normalizeRunStatusReport/);
+  assert.match(settings, /Object\.assign\(diagnostics, normalizeRunStatusReport\(diagnostics\)\)/);
+  assert.doesNotMatch(settings, /catchUpErrorCount > 0\s*\?\s*\(runResult\.completedChunks/);
+  assert.match(html, /id="sme_run_outcome_summary"/);
+  assert.match(html, /role="status" aria-live="polite"/);
+  assert.match(css, /sme_outcome_success/);
+  assert.match(css, /sme_outcome_warning/);
+  assert.match(css, /sme_outcome_error/);
+  assert.match(settings, /Retry \$\{eligible\.length\} Failed Memory Extraction/);
+  assert.match(status, /terminal_unresolved_obligations/);
+  assert.match(status, /finalization_committed/);
+  assert.match(status, /Completed with \$\{unresolvedCount\} error/);
 });
 
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
@@ -1811,8 +1831,10 @@ test('catch-up keeps a rough finalization ETA after the chunk phase completes', 
   assert.match(settings, /activeEstimateExceeded/);
   assert.match(settings, /has exceeded its observed estimate/);
   assert.match(settings, /onMemoryRequestProgress/);
-  assert.match(settings, /live provider progress/);
-  assert.match(settings, /live token progress is unavailable through this provider/);
+  assert.match(settings, /Current provider request/);
+  assert.match(settings, /source messages safely committed across/);
+  assert.match(settings, /deriveShortTermPhaseProgress/);
+  assert.match(settings, /live token progress is unavailable/);
   assert.match(settings, /streamedTokenRate/);
   assert.match(read('generate.js'), /onMemoryRequestProgress/);
   assert.match(read('generate.js'), /readOllamaStream/);

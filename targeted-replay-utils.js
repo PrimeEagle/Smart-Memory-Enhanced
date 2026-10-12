@@ -1,6 +1,6 @@
 import { sourceWindowFingerprint } from './extraction-window-utils.js';
 
-export const TARGETED_REPLAY_SCHEMA_VERSION = 1;
+export const TARGETED_REPLAY_SCHEMA_VERSION = 2;
 
 const integer = (value) => Number.isInteger(Number(value)) ? Number(value) : null;
 
@@ -53,28 +53,57 @@ export function buildTargetedReplayCandidates(providerSummary, {
       source_messages: sourceMessages,
       prior_authoritative_memory_preserved: obligation?.prior_authoritative_memory_preserved !== false,
       malformed_reason: obligation?.malformed_reason ?? null,
+      original_attempt_id: obligation?.original_attempt_id ?? null,
+      repair_attempt_id: obligation?.repair_attempt_id ?? null,
+      original_run_id: obligation?.run_id ?? providerSummary?.run_id ?? null,
     };
   });
 }
 
 export function createTargetedReplayCheckpoint(candidates, {
   chatId = null, configurationSignature = null, runId = null, now = Date.now(),
+  prior = null, selectionReason = 'operator_selected_terminal_malformed_obligations',
+  originalRunId = null, statusClassificationBefore = null,
 } = {}) {
+  const canResume = prior?.status === 'in_progress'
+    && prior?.chat_id === chatId
+    && prior?.configuration_signature === configurationSignature;
+  const priorTargets = new Map((canResume ? prior.targets : []).map((target) => [target.root_obligation_id, target]));
+  const replayRunId = canResume ? prior.replay_run_id : runId ?? `targeted-replay-${now}`;
   return {
     schema_version: TARGETED_REPLAY_SCHEMA_VERSION,
-    replay_run_id: runId ?? `targeted-replay-${now}`,
+    replay_run_id: replayRunId,
+    invocation_id: `${replayRunId}-invocation-${Number(prior?.invocation_count ?? 0) + 1}`,
+    invocation_count: Number(prior?.invocation_count ?? 0) + 1,
     chat_id: chatId,
     configuration_signature: configurationSignature,
+    selection_reason: selectionReason,
+    selected_obligation_ids: candidates.map((candidate) => candidate.root_obligation_id),
+    original_run_id: originalRunId,
+    status_classification_before: statusClassificationBefore,
     status: 'in_progress',
-    created_at: now,
+    created_at: canResume ? prior.created_at : now,
+    resumed_interrupted_invocation: canResume,
     updated_at: now,
-    targets: candidates.map((candidate) => ({
-      root_obligation_id: candidate.root_obligation_id,
-      tier: candidate.tier, owner: candidate.owner,
-      source_range: candidate.source_range,
-      source_fingerprint: candidate.source_fingerprint,
-      terminal_outcome: 'pending', attempts: 0, added_memories: 0,
-    })),
+    targets: candidates.map((candidate) => {
+      const previous = priorTargets.get(candidate.root_obligation_id);
+      return {
+        root_obligation_id: candidate.root_obligation_id,
+        tier: candidate.tier, owner: candidate.owner,
+        source_range: candidate.source_range,
+        source_fingerprint: candidate.source_fingerprint,
+        original_attempt_id: candidate.original_attempt_id ?? null,
+        repair_attempt_id: candidate.repair_attempt_id ?? null,
+        original_run_id: candidate.original_run_id ?? originalRunId,
+        terminal_outcome: previous?.terminal_outcome === 'completed' ? 'completed' : 'pending',
+        attempts: Number(previous?.attempts ?? 0),
+        added_memories: Number(previous?.added_memories ?? 0),
+        restored_in_flight_as_pending: previous?.terminal_outcome === 'running',
+        provider_outcome: previous?.provider_outcome ?? 'not_started',
+        parse_repair_outcome: previous?.parse_repair_outcome ?? 'not_started',
+        persistence_outcome: previous?.persistence_outcome ?? 'not_started',
+      };
+    }),
   };
 }
 
@@ -94,6 +123,11 @@ export function summarizeTargetedReplayCheckpoint(checkpoint) {
   return {
     schema_version: checkpoint?.schema_version ?? TARGETED_REPLAY_SCHEMA_VERSION,
     replay_run_id: checkpoint?.replay_run_id ?? null,
+    invocation_id: checkpoint?.invocation_id ?? null,
+    invocation_count: checkpoint?.invocation_count ?? 0,
+    selection_reason: checkpoint?.selection_reason ?? null,
+    selected_obligation_ids: checkpoint?.selected_obligation_ids ?? [],
+    original_run_id: checkpoint?.original_run_id ?? null,
     status: checkpoint?.status ?? 'not_run',
     requested: targets.length,
     completed: count('completed') + count('completed_no_candidates'),
@@ -106,6 +140,19 @@ export function summarizeTargetedReplayCheckpoint(checkpoint) {
       source_fingerprint: target.source_fingerprint, terminal_outcome: target.terminal_outcome,
       attempts: target.attempts, added_memories: target.added_memories,
       normalized_error_type: target.normalized_error_type ?? null,
+      original_attempt_id: target.original_attempt_id ?? null,
+      repair_attempt_id: target.repair_attempt_id ?? null,
+      original_run_id: target.original_run_id ?? null,
+      provider_outcome: target.provider_outcome ?? null,
+      parse_repair_outcome: target.parse_repair_outcome ?? null,
+      persistence_outcome: target.persistence_outcome ?? null,
+      restored_in_flight_as_pending: Boolean(target.restored_in_flight_as_pending),
     })),
+    before_unresolved_count: checkpoint?.before_unresolved_count ?? null,
+    after_unresolved_count: checkpoint?.after_unresolved_count ?? null,
+    recovered_obligation_ids: checkpoint?.recovered_obligation_ids ?? [],
+    still_unresolved_obligation_ids: checkpoint?.still_unresolved_obligation_ids ?? [],
+    status_classification_before: checkpoint?.status_classification_before ?? null,
+    status_classification_after: checkpoint?.status_classification_after ?? null,
   };
 }

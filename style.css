@@ -2271,3 +2271,17 @@ body.sme-read-only .mes_edit_delete {
 #smart_memory_enhanced_settings #sme_catch_up_error_count.sme_catch_up_errors_many {
   color: #d9534f;
 }
+
+#smart_memory_enhanced_settings .sme-run-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 4px solid currentColor;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+#smart_memory_enhanced_settings .sme_outcome_success { color: #63b86f; }
+#smart_memory_enhanced_settings .sme_outcome_warning { color: #d6a300; }
+#smart_memory_enhanced_settings .sme_outcome_error { color: #e15b57; }
+#smart_memory_enhanced_settings .sme_outcome_info { color: var(--SmartReplyColor, #aaa); }

@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.56] - 2026-10-12
+
+### Changed
+
+- Memorize Chat diagnostics now use one versioned classifier that separates
+  durable lifecycle (`completed`, `incomplete`, `blocked`, or `failed`) from
+  outcome severity. Completed runs with unresolved extraction obligations are
+  shown in red as `Completed with N errors`; recovered failures and safe quality
+  notices remain completed and use warning presentation.
+- Error exports now distinguish current-attempt retained records, cumulative
+  failure observations, malformed physical responses, unique failed,
+  recovered, and terminal-unresolved obligations, fatal run errors, nonfatal
+  generation errors, and safe notices, with explicit scope, units, retention,
+  authority, and reconciliation invariants.
+- Targeted extraction repair now records invocation and original lineage,
+  provider/parse/persistence outcomes, before/after unresolved totals,
+  recovered and remaining obligation IDs, and status transitions. Its button
+  includes the exact eligible repair count and interrupted invocations resume
+  without resetting attempt history.
+- Provider-efficiency diagnostics now separate active attempt wall time,
+  provider time, and between-attempt wait time and include operation/category
+  counts, segment distributions, amplification, longest requests, and bounded
+  avoidable/unavoidable overhead estimates. Per-segment diagnostics also state
+  whether the adaptive recovery-growth cap applied.
+- Bounded provider-obligation detail now archives exact aggregate counters, so
+  unique failed, recovered, unresolved, and coverage totals remain
+  authoritative after older successful detail records roll off.
+- Short-Term finalization now separates the overall phase from each provider
+  request. The live display reports the durable source-message boundary,
+  committed pass count, estimated remaining pass count, and the current
+  request's output against its maximum rather than implying that reaching or
+  resetting the output counter advances the 17 high-level phases.
+
+### Fixed
+
+- A fully traversed, finalized Memorize Chat is no longer labeled `partial`
+  merely because nonfatal provider or parsing failures were observed. Durable
+  completion evidence controls lifecycle; unresolved terminal obligations and
+  integrity failures control error severity.
+- Ordinary Short-Term compaction passes now advance retained ledger entries
+  through commit-start and durable-commit states. Completed legacy ledgers are
+  reconciled from exact commit counters, preventing successful entries from
+  remaining indefinitely at `response_observed`.
+- Short-Term remaining-time estimates now cover the current request plus the
+  estimated provider requests still needed for the uncommitted tail. An
+  already-remaining request estimate is no longer reduced a second time by the
+  full high-level phase elapsed time.
+
+### Tests
+
+- Added lifecycle/outcome precedence, supplied-run error-scope reconciliation,
+  all/partial targeted replay, legacy migration, bounded-detail accounting,
+  provider-efficiency, and Short-Term segment-ledger commit/reload coverage.
+
 ## [0.9.55] - 2026-10-08
 
 ### Added

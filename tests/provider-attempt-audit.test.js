@@ -4,6 +4,7 @@ import {
   beginProviderAttempt,
   classifyMalformedProviderOutput,
   finishProviderAttempt,
+  PROVIDER_OBLIGATION_LIMIT,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
 
@@ -68,4 +69,44 @@ test('malformed classifier distinguishes privacy-safe response-shape failures', 
   assert.equal(classifyMalformedProviderOutput('x', { shapeFailure: 'wrong_field_types' }), 'wrong_field_types');
   assert.equal(classifyMalformedProviderOutput('x', { expectedOwnerCount: 3, observedOwnerCount: 2 }), 'partial_owner_result');
   assert.equal(classifyMalformedProviderOutput('x', { shapeFailure: 'unsupported_schema_fields' }), 'unsupported_schema_fields');
+});
+
+test('provider performance keeps exact cumulative request and segment accounting', () => {
+  const metadata = { active_catchup_run_id: 'run-performance' };
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'lt:a:20-39', request_kind: 'original',
+    source_range: { start: 20, end: 39, message_count: 20 }, source_fingerprint: 'source-b',
+  });
+  finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.schema_version, 2);
+  assert.equal(summary.performance.exact_cumulative_timing, true);
+  assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
+  assert.equal(summary.performance.source_messages_attempted, 20);
+  assert.equal(summary.performance.average_source_messages_per_request, 20);
+  assert.equal(summary.performance.segment_size_distribution[20], 1);
+  assert.equal(summary.performance.queue_wait_time_available, false);
+});
+
+test('bounded obligation detail preserves exact aggregate counts and unresolved repair records', () => {
+  const metadata = { active_catchup_run_id: 'run-bounded-obligations' };
+  for (let index = 0; index < PROVIDER_OBLIGATION_LIMIT + 2; index++) {
+    const attempt = beginProviderAttempt(metadata, {
+      tier: 'longterm', logical_obligation_id: `lt:${index}`, request_kind: 'original',
+      source_range: { start: index, end: index, message_count: 1 }, source_fingerprint: `source-${index}`,
+    });
+    finishProviderAttempt(metadata, attempt, index === PROVIDER_OBLIGATION_LIMIT + 1
+      ? { terminal_outcome: 'provider_response_malformed', malformed_reason: 'invalid_json' }
+      : { terminal_outcome: 'completed' });
+  }
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.obligation_history_truncated, true);
+  assert.equal(summary.obligation_aggregate_counts_exact, true);
+  assert.equal(summary.unique_logical_obligations, PROVIDER_OBLIGATION_LIMIT + 2);
+  assert.equal(summary.unique_malformed_obligations, 1);
+  assert.equal(summary.terminally_unresolved_malformed_obligations, 1);
+  assert.equal(summary.terminal_unresolved_obligations[0].root_obligation_id,
+    `lt:${PROVIDER_OBLIGATION_LIMIT + 1}`);
+  assert.equal(summary.coverage.safely_checkpointed_obligations, PROVIDER_OBLIGATION_LIMIT + 2);
+  assert.match(summary.reconciliation.limitation, /archived cumulative counters remain authoritative/);
 });

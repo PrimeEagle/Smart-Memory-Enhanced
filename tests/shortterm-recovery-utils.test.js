@@ -11,7 +11,83 @@ import {
   deriveShortTermMissingPlanResumeEligibility,
   deriveShortTermResumePresentation,
   migrateMissingPlanCommittedCheckpoint,
+  deriveShortTermPhaseProgress,
+  reconcileShortTermSegmentLedger,
 } from '../shortterm-recovery-utils.js';
+
+test('Short-Term phase progress distinguishes durable passes from the current provider request', () => {
+  const progress = deriveShortTermPhaseProgress({
+    totalSourceMessages: 9435,
+    committedSourceMessages: 4820,
+    committedPasses: 14,
+    committedMessageCounts: [310, 320, 315],
+    completedRequestDurationsMs: [3_600_000, 3_900_000, 3_750_000],
+    currentRequestMessageCount: 315,
+    currentRequestActive: true,
+    currentRequestRemainingMs: 900_000,
+  });
+  assert.equal(progress.committed_passes, 14);
+  assert.equal(progress.remaining_source_messages, 4615);
+  assert.equal(progress.estimated_messages_per_pass, 315);
+  assert.equal(progress.estimated_remaining_passes, 15);
+  assert.equal(progress.estimated_future_passes, 14);
+  assert.equal(progress.estimated_remaining_ms, 53_400_000);
+});
+
+test('Short-Term phase progress does not imply completion when one request reaches its token cap', () => {
+  const beforeReset = deriveShortTermPhaseProgress({
+    totalSourceMessages: 1000, committedSourceMessages: 400, committedPasses: 4,
+    committedMessageCounts: [100, 100, 100], currentRequestMessageCount: 100,
+    currentRequestActive: true, currentRequestRemainingMs: 0,
+    projectedCurrentRequestDurationMs: 60_000,
+  });
+  assert.equal(beforeReset.estimated_remaining_passes, 6);
+  assert.equal(beforeReset.estimated_future_passes, 5);
+  assert.equal(beforeReset.estimated_remaining_ms, 300_000);
+  const afterCommit = deriveShortTermPhaseProgress({
+    totalSourceMessages: 1000, committedSourceMessages: 500, committedPasses: 5,
+    committedMessageCounts: [100, 100, 100, 100], currentRequestActive: false,
+    projectedCurrentRequestDurationMs: 60_000,
+  });
+  assert.equal(afterCommit.estimated_remaining_passes, 5);
+  assert.equal(afterCommit.estimated_remaining_ms, 300_000);
+});
+
+test('Short-Term phase progress remains indeterminate before pass size or duration evidence exists', () => {
+  const progress = deriveShortTermPhaseProgress({
+    totalSourceMessages: 1000, committedSourceMessages: 200, committedPasses: 2,
+  });
+  assert.equal(progress.estimated_remaining_passes, null);
+  assert.equal(progress.estimated_remaining_ms, null);
+});
+
+test('completed legacy compaction ledger restores committed state from exact durable totals', () => {
+  const audit = reconcileShortTermSegmentLedger({
+    terminal_outcome: 'completed', successful_segment_commits: 564, segment_attempt_ledger_limit: 32,
+    segment_attempt_ledger: Array.from({ length: 32 }, (_, index) => ({
+      request_id: `request-${index}`, provider_completed: true, parsed: true,
+      committed: false, latest_state: 'response_observed',
+    })),
+    attempt_accounting: {
+      cumulative_physical_transmissions: 564, cumulative_terminal_transmissions: 564,
+      restored_prior_physical_transmissions: 0, current_attempt_physical_transmissions: 564,
+      active_attempts: {},
+    },
+  });
+  assert.equal(audit.segment_attempt_ledger.every((entry) => entry.committed), true);
+  assert.equal(audit.ledger_reconciliation.legacy_entries_restored_from_exact_totals, 32);
+  assert.equal(audit.ledger_reconciliation.no_terminal_success_stuck, true);
+  assert.equal(audit.ledger_reconciliation.active_plus_terminal_equals_physical, true);
+});
+
+test('failed compaction never fabricates a committed retained segment', () => {
+  const audit = reconcileShortTermSegmentLedger({
+    terminal_outcome: 'request_or_compaction_failure', successful_segment_commits: 1,
+    segment_attempt_ledger: [{ provider_completed: true, parsed: true, committed: false, latest_state: 'response_observed' }],
+  });
+  assert.equal(audit.segment_attempt_ledger[0].committed, false);
+  assert.equal(audit.ledger_reconciliation.legacy_entries_restored_from_exact_totals, 0);
+});
 
 const missingPlanFixture = (overrides = {}) => ({
   activePlan: null,

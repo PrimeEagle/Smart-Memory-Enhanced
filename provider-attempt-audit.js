@@ -1,11 +1,39 @@
 /** Bounded, content-free accounting for actual Long-Term/Session provider calls. */
-export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 1;
+export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 2;
 export const PROVIDER_ATTEMPT_EVENT_LIMIT = 160;
 // Large enough to retain every root obligation in the supplied 9,434-message
 // replay while remaining explicitly bounded for arbitrarily large chats.
 export const PROVIDER_OBLIGATION_LIMIT = 4096;
 
 const count = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const SUCCESSFUL_TERMINAL_OUTCOMES = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
+
+function emptyArchivedObligationCounts(exact = true) {
+  return {
+    exact,
+    total: 0,
+    malformed: 0,
+    recovered_malformed: 0,
+    safely_checkpointed: 0,
+    valid_generation: 0,
+    intentionally_accepted_no_update: 0,
+    terminal_failed: 0,
+  };
+}
+
+function archiveObligation(audit, obligation) {
+  if (!obligation) return;
+  const archived = audit.archived_obligation_counts ??= emptyArchivedObligationCounts(true);
+  const successful = SUCCESSFUL_TERMINAL_OUTCOMES.has(obligation.terminal_outcome);
+  const malformed = count(obligation.malformed_count) > 0;
+  archived.total++;
+  if (malformed) archived.malformed++;
+  if (malformed && successful) archived.recovered_malformed++;
+  if (obligation.terminal_outcome !== 'running') archived.safely_checkpointed++;
+  if (['completed', 'completed_repartitioned'].includes(obligation.terminal_outcome)) archived.valid_generation++;
+  if (obligation.terminal_outcome === 'completed_no_candidates') archived.intentionally_accepted_no_update++;
+  if (!successful && obligation.terminal_outcome !== 'running') archived.terminal_failed++;
+}
 
 function fingerprint(value) {
   let hash = 2166136261;
@@ -49,9 +77,33 @@ function ensure(metadata, runId = null) {
       obligations: {},
       recent_attempts: [],
       running_count: 0,
+      provider_elapsed_ms: 0,
+      provider_elapsed_ms_by_request_kind: {},
+      provider_elapsed_ms_by_tier: {},
+      provider_elapsed_ms_by_terminal_outcome: {},
+      request_counts_by_tier: {},
+      source_messages_attempted: 0,
+      segment_size_distribution: {},
+      failed_or_superseded_elapsed_ms: 0,
+      longest_requests: [],
+      archived_obligation_counts: emptyArchivedObligationCounts(true),
     };
   }
-  return health.provider_attempt_audit;
+  const audit = health.provider_attempt_audit;
+  const performanceTotalsCompatible = Number(audit.schema_version) >= 2;
+  audit.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
+  audit.performance_totals_exact ??= performanceTotalsCompatible;
+  audit.provider_elapsed_ms ??= 0;
+  audit.provider_elapsed_ms_by_request_kind ??= {};
+  audit.provider_elapsed_ms_by_tier ??= {};
+  audit.provider_elapsed_ms_by_terminal_outcome ??= {};
+  audit.request_counts_by_tier ??= {};
+  audit.source_messages_attempted ??= 0;
+  audit.segment_size_distribution ??= {};
+  audit.failed_or_superseded_elapsed_ms ??= 0;
+  audit.longest_requests ??= [];
+  audit.archived_obligation_counts ??= emptyArchivedObligationCounts(false);
+  return audit;
 }
 
 export function classifyMalformedProviderOutput(response, {
@@ -128,7 +180,18 @@ export function beginProviderAttempt(metadata, input = {}) {
   obligation.last_attempt_at = Date.now();
   audit.obligations[obligationId] = obligation;
   const keys = Object.keys(audit.obligations);
-  if (keys.length > PROVIDER_OBLIGATION_LIMIT) delete audit.obligations[keys[0]];
+  if (keys.length > PROVIDER_OBLIGATION_LIMIT) {
+    // Prefer archiving a completed record so unresolved obligations remain
+    // available for targeted replay. Aggregate counters survive detail
+    // eviction and therefore remain exact for newly recorded audits.
+    const evictionKey = keys.find((key) => key !== obligationId
+      && SUCCESSFUL_TERMINAL_OUTCOMES.has(audit.obligations[key]?.terminal_outcome))
+      ?? keys.find((key) => key !== obligationId);
+    if (evictionKey) {
+      archiveObligation(audit, audit.obligations[evictionKey]);
+      delete audit.obligations[evictionKey];
+    }
+  }
   const event = {
     attempt_id: `provider-${Date.now().toString(36)}-${audit.sequence}`,
     at: Date.now(), run_id: audit.run_id, logical_obligation_id: obligationId,
@@ -157,6 +220,11 @@ export function beginProviderAttempt(metadata, input = {}) {
   if (!obligation.original_attempt_id && event.request_kind === 'original') obligation.original_attempt_id = event.attempt_id;
   if (event.request_kind === 'format_repair') obligation.repair_attempt_id = event.attempt_id;
   audit.request_kind_counts[event.request_kind] = count(audit.request_kind_counts[event.request_kind]) + 1;
+  audit.request_counts_by_tier[event.tier] = count(audit.request_counts_by_tier[event.tier]) + 1;
+  const sourceMessageCount = count(event.source_range?.message_count);
+  audit.source_messages_attempted = count(audit.source_messages_attempted) + sourceMessageCount;
+  if (sourceMessageCount > 0) audit.segment_size_distribution[sourceMessageCount]
+    = count(audit.segment_size_distribution[sourceMessageCount]) + 1;
   if (event.runtime_context_lookup_status) {
     audit.runtime_context_lookup_counts[event.runtime_context_lookup_status] = count(audit.runtime_context_lookup_counts[event.runtime_context_lookup_status]) + 1;
   }
@@ -186,6 +254,21 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
   if (event.overflow_despite_valid_learned_limit === true) audit.overflow_despite_valid_learned_limit_count++;
   event.recoverable = patch.recoverable ?? null;
   event.duration_ms = Math.max(0, Date.now() - event.at);
+  audit.provider_elapsed_ms = count(audit.provider_elapsed_ms) + event.duration_ms;
+  audit.provider_elapsed_ms_by_request_kind[event.request_kind]
+    = count(audit.provider_elapsed_ms_by_request_kind[event.request_kind]) + event.duration_ms;
+  audit.provider_elapsed_ms_by_tier[event.tier]
+    = count(audit.provider_elapsed_ms_by_tier[event.tier]) + event.duration_ms;
+  audit.provider_elapsed_ms_by_terminal_outcome[event.terminal_outcome]
+    = count(audit.provider_elapsed_ms_by_terminal_outcome[event.terminal_outcome]) + event.duration_ms;
+  if (!['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(event.terminal_outcome)) {
+    audit.failed_or_superseded_elapsed_ms = count(audit.failed_or_superseded_elapsed_ms) + event.duration_ms;
+  }
+  audit.longest_requests = [...(audit.longest_requests ?? []), {
+    attempt_id: event.attempt_id, tier: event.tier, request_kind: event.request_kind,
+    source_range: event.source_range, duration_ms: event.duration_ms,
+    terminal_outcome: event.terminal_outcome,
+  }].sort((a, b) => b.duration_ms - a.duration_ms).slice(0, 16);
   audit.running_count = Math.max(0, count(audit.running_count) - 1);
   audit.terminal_counts[event.terminal_outcome] = count(audit.terminal_counts[event.terminal_outcome]) + 1;
   const obligation = audit.obligations[event.logical_obligation_id];
@@ -227,6 +310,12 @@ export function summarizeProviderAttemptAudit(metadata) {
   const unresolved = malformed.filter((item) => !['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome));
   const terminalTotal = Object.values(audit.terminal_counts ?? {}).reduce((sum, value) => sum + count(value), 0);
   const planned = count(audit.logical_obligation_count) || obligations.length;
+  const archived = audit.archived_obligation_counts ?? emptyArchivedObligationCounts(false);
+  const obligationHistoryTruncated = count(archived.total) > 0 || planned > obligations.length;
+  const aggregateCountsExact = archived.exact === true || !obligationHistoryTruncated;
+  const uniqueMalformed = count(archived.malformed) + malformed.length;
+  const recoveredMalformed = count(archived.recovered_malformed) + recovered.length;
+  const terminalUnresolvedMalformed = uniqueMalformed - recoveredMalformed;
   return {
     schema_version: audit.schema_version,
     scope: 'longterm_and_session_extraction_provider_calls',
@@ -246,9 +335,10 @@ export function summarizeProviderAttemptAudit(metadata) {
     unique_logical_obligations: planned,
     malformed_physical_responses: Object.values(audit.malformed_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
     malformed_reason_counts: { ...audit.malformed_reason_counts },
-    unique_malformed_obligations: malformed.length,
-    recovered_malformed_obligations: recovered.length,
-    terminally_unresolved_malformed_obligations: malformed.length - recovered.length,
+    unique_malformed_obligations: uniqueMalformed,
+    recovered_malformed_obligations: recoveredMalformed,
+    terminally_unresolved_malformed_obligations: terminalUnresolvedMalformed,
+    obligation_aggregate_counts_exact: aggregateCountsExact,
     terminal_unresolved_obligations: unresolved.slice(-64).map((item) => {
       const retainedAttempts = audit.recent_attempts.filter((attempt) => attempt.logical_obligation_id === item.logical_obligation_id);
       return {
@@ -271,7 +361,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       };
     }),
     terminal_unresolved_obligation_detail_limit: 64,
-    recovery_success_rate: malformed.length ? recovered.length / malformed.length : 1,
+    recovery_success_rate: uniqueMalformed ? recoveredMalformed / uniqueMalformed : 1,
     equivalent_retries_without_changed_dimension: audit.equivalent_retry_count,
     changed_recovery_dimension_counts: { ...audit.changed_recovery_dimension_counts },
     runtime_context_lookup_counts: { ...audit.runtime_context_lookup_counts },
@@ -279,10 +369,43 @@ export function summarizeProviderAttemptAudit(metadata) {
     overflow_despite_valid_learned_limit: count(audit.overflow_despite_valid_learned_limit_count),
     extra_requests_caused_by_recovery: Math.max(0, count(audit.attempted) - planned),
     request_amplification: planned ? count(audit.attempted) / planned : 0,
+    performance: {
+      schema_version: 1,
+      scope: 'provider_transmissions_only',
+      provider_elapsed_ms_total: count(audit.provider_elapsed_ms),
+      provider_elapsed_ms_by_operation_type: { ...audit.provider_elapsed_ms_by_request_kind },
+      provider_elapsed_ms_by_extraction_category: { ...audit.provider_elapsed_ms_by_tier },
+      provider_elapsed_ms_by_terminal_outcome: { ...audit.provider_elapsed_ms_by_terminal_outcome },
+      queue_wait_time_ms: null,
+      queue_wait_time_available: false,
+      queue_wait_time_limitation: 'provider adapter does not expose queue admission timestamps',
+      request_counts_by_operation_type: { ...audit.request_kind_counts },
+      request_counts_by_extraction_category: { ...audit.request_counts_by_tier },
+      source_messages_attempted: count(audit.source_messages_attempted),
+      average_source_messages_per_request: count(audit.attempted)
+        ? count(audit.source_messages_attempted) / count(audit.attempted) : 0,
+      segment_size_distribution: { ...audit.segment_size_distribution },
+      format_repair_amplification_requests: count(audit.request_kind_counts?.format_repair),
+      repartition_amplification_requests: count(audit.request_kind_counts?.repartition_child),
+      equivalent_retry_amplification_requests: count(audit.equivalent_retry_count),
+      failed_or_superseded_elapsed_ms: count(audit.failed_or_superseded_elapsed_ms),
+      longest_requests: [...(audit.longest_requests ?? [])],
+      longest_request_detail_limit: 16,
+      exact_cumulative_timing: audit.performance_totals_exact === true,
+      avoidable_overhead_estimate: {
+        request_count: count(audit.request_kind_counts?.format_repair) + count(audit.equivalent_retry_count),
+        definition: 'format-repair and unchanged-equivalent retries; diagnostic estimate only',
+      },
+      unavoidable_overhead_estimate: {
+        request_count: count(audit.request_kind_counts?.repartition_child),
+        definition: 'bounded repartition requests required by effective context limits; diagnostic estimate only',
+      },
+    },
     retained_attempt_scope: `last_${PROVIDER_ATTEMPT_EVENT_LIMIT}_attempts`,
     retained_attempts: audit.recent_attempts,
     retained_obligation_count: obligations.length,
-    obligation_history_truncated: planned > obligations.length,
+    obligation_history_truncated: obligationHistoryTruncated,
+    archived_obligation_counts: { ...archived },
     reconciliation: {
       every_provider_attempt_has_one_terminal_category: terminalTotal === count(audit.attempted) && count(audit.running_count) === 0,
       running_attempts: count(audit.running_count),
@@ -292,21 +415,28 @@ export function summarizeProviderAttemptAudit(metadata) {
         ['completed', 'completed_no_candidates'].includes(item.terminal_outcome)
         && !item.logical_obligation_id).length,
       equivalent_requests_without_changed_recovery_dimension: count(audit.equivalent_retry_count),
-      malformed_obligations_reconcile: malformed.length === recovered.length + unresolved.length,
+      malformed_obligations_reconcile: aggregateCountsExact
+        ? uniqueMalformed === recoveredMalformed + terminalUnresolvedMalformed : null,
       repair_attempts_with_failed_attempt_link: audit.recent_attempts.filter((item) => item.request_kind === 'format_repair'
         && !item.recovery_of_attempt_id && !item.parent_attempt_id).length === 0,
       source_traversal_coverage_scope: 'checkpointed_source_ranges',
       valid_generation_coverage_scope: 'logical_obligations_with_valid_terminal_output',
-      limitation: planned > obligations.length
-        ? 'obligation_detail_retention_is_bounded; cumulative counters remain authoritative'
+      limitation: obligationHistoryTruncated
+        ? aggregateCountsExact
+          ? 'obligation detail retention is bounded; archived cumulative counters remain authoritative'
+          : 'legacy obligation detail retention was bounded before exact archive counters were available'
         : null,
     },
     coverage: {
       source_traversal_obligations: planned,
-      safely_checkpointed_obligations: obligations.filter((item) => item.terminal_outcome !== 'running').length,
-      valid_generation_obligations: obligations.filter((item) => ['completed', 'completed_repartitioned'].includes(item.terminal_outcome)).length,
-      intentionally_accepted_no_update_obligations: obligations.filter((item) => item.terminal_outcome === 'completed_no_candidates').length,
-      terminal_failed_obligations: obligations.filter((item) => !['running', 'completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome)).length,
+      safely_checkpointed_obligations: count(archived.safely_checkpointed)
+        + obligations.filter((item) => item.terminal_outcome !== 'running').length,
+      valid_generation_obligations: count(archived.valid_generation)
+        + obligations.filter((item) => ['completed', 'completed_repartitioned'].includes(item.terminal_outcome)).length,
+      intentionally_accepted_no_update_obligations: count(archived.intentionally_accepted_no_update)
+        + obligations.filter((item) => item.terminal_outcome === 'completed_no_candidates').length,
+      terminal_failed_obligations: count(archived.terminal_failed)
+        + obligations.filter((item) => !['running', 'completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome)).length,
       source_traversal_and_generation_are_distinct: true,
     },
   };

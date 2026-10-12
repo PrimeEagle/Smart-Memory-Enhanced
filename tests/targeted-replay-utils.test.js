@@ -67,3 +67,23 @@ test('targeted replay checkpoint is restart-safe and summarizes one/all outcomes
   assert.equal(summary.added_memories, 2);
   assert.equal(summary.targets[0].attempts, 1);
 });
+
+test('restored in-flight targeted replay reuses its invocation and never duplicates a committed target', () => {
+  const [candidate] = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [obligation] }, {
+    chat, chatId: 'chat-a', configurationSignature: 'config-a',
+  });
+  let prior = createTargetedReplayCheckpoint([candidate], {
+    chatId: 'chat-a', configurationSignature: 'config-a', originalRunId: 'run-original', now: 100,
+  });
+  prior = updateTargetedReplayCheckpoint(prior, candidate.root_obligation_id, {
+    terminal_outcome: 'running', attempted: true, provider_outcome: 'in_progress',
+  }, 101);
+  const resumed = createTargetedReplayCheckpoint([candidate], {
+    chatId: 'chat-a', configurationSignature: 'config-a', prior, originalRunId: 'run-original', now: 200,
+  });
+  assert.equal(resumed.replay_run_id, prior.replay_run_id);
+  assert.equal(resumed.invocation_count, 2);
+  assert.equal(resumed.targets[0].terminal_outcome, 'pending');
+  assert.equal(resumed.targets[0].restored_in_flight_as_pending, true);
+  assert.equal(resumed.targets[0].attempts, 1);
+});

@@ -6,6 +6,121 @@ const SHORTTERM_ATTEMPT_IDENTITY_LIMIT = 8192;
 const finiteInteger = (value) => Number.isInteger(Number(value)) ? Math.floor(Number(value)) : null;
 const count = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 
+const medianPositive = (values = []) => {
+  const sorted = values.map(Number).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+};
+
+/**
+ * Derives phase-level Short-Term progress from durable commit boundaries and
+ * bounded observations from this page run. Provider token progress describes
+ * only the current request; it must never be mistaken for the whole phase.
+ */
+export function deriveShortTermPhaseProgress({
+  totalSourceMessages = 0,
+  committedSourceMessages = 0,
+  committedPasses = 0,
+  committedMessageCounts = [],
+  completedRequestDurationsMs = [],
+  currentRequestMessageCount = null,
+  currentRequestActive = false,
+  currentRequestRemainingMs = null,
+  projectedCurrentRequestDurationMs = null,
+} = {}) {
+  const total = Math.max(0, Math.floor(Number(totalSourceMessages) || 0));
+  const committed = Math.min(total, Math.max(0, Math.floor(Number(committedSourceMessages) || 0)));
+  const remainingMessages = Math.max(0, total - committed);
+  const observedMessagesPerPass = medianPositive(committedMessageCounts);
+  const requestMessages = Math.max(0, Math.floor(Number(currentRequestMessageCount) || 0));
+  const estimatedMessagesPerPass = observedMessagesPerPass ?? (requestMessages > 0 ? requestMessages : null);
+  const estimatedRemainingPasses = remainingMessages === 0 ? 0
+    : estimatedMessagesPerPass ? Math.max(1, Math.ceil(remainingMessages / estimatedMessagesPerPass)) : null;
+  const estimatedFuturePasses = estimatedRemainingPasses === null ? null
+    : Math.max(0, estimatedRemainingPasses - (currentRequestActive ? 1 : 0));
+  const observedRequestDurationMs = medianPositive(completedRequestDurationsMs);
+  const projectedDuration = Number(projectedCurrentRequestDurationMs);
+  const estimatedPassDurationMs = observedRequestDurationMs
+    ?? (Number.isFinite(projectedDuration) && projectedDuration > 0 ? projectedDuration : null);
+  const requestRemaining = Number(currentRequestRemainingMs);
+  const currentRemainingMs = currentRequestActive && Number.isFinite(requestRemaining) && requestRemaining >= 0
+    ? requestRemaining : null;
+  let estimatedRemainingMs = null;
+  if (remainingMessages === 0) {
+    estimatedRemainingMs = 0;
+  } else if (estimatedRemainingPasses !== null && estimatedPassDurationMs !== null) {
+    if (currentRequestActive) {
+      estimatedRemainingMs = currentRemainingMs === null ? null
+        : Math.round(currentRemainingMs + estimatedFuturePasses * estimatedPassDurationMs);
+    } else {
+      estimatedRemainingMs = Math.round(estimatedRemainingPasses * estimatedPassDurationMs);
+    }
+  }
+  return {
+    total_source_messages: total,
+    committed_source_messages: committed,
+    remaining_source_messages: remainingMessages,
+    committed_passes: Math.max(0, Math.floor(Number(committedPasses) || 0)),
+    estimated_messages_per_pass: estimatedMessagesPerPass,
+    estimated_remaining_passes: estimatedRemainingPasses,
+    estimated_future_passes: estimatedFuturePasses,
+    estimated_pass_duration_ms: estimatedPassDurationMs,
+    estimated_remaining_ms: estimatedRemainingMs,
+  };
+}
+
+/** Repairs legacy retained ledger entries only when exact terminal counters prove every successful segment committed. */
+export function reconcileShortTermSegmentLedger(audit = {}) {
+  const retained = (audit.segment_attempt_ledger ?? []).map((entry) => ({ ...entry }));
+  const exactCommits = Math.max(0, Number(audit.successful_segment_commits) || 0);
+  const terminalCompleted = audit.terminal_outcome === 'completed';
+  const eligibleLegacy = retained.filter((entry) => entry.provider_completed === true
+    && entry.parsed === true && entry.committed !== true
+    && entry.failed_before_commit !== true && entry.failed_after_commit !== true);
+  const canRestore = terminalCompleted && exactCommits >= eligibleLegacy.length;
+  const ledger = canRestore ? retained.map((entry) => eligibleLegacy.includes(entry) ? {
+    ...entry,
+    committed: true,
+    commit_started: true,
+    segment_terminal_outcome: 'committed',
+    latest_state: 'committed',
+    restored_from_authoritative_commit_totals: true,
+  } : entry) : retained;
+  const committed = ledger.filter((entry) => entry.committed === true);
+  const invalidCommitted = committed.filter((entry) => entry.provider_completed !== true || entry.parsed !== true);
+  const stuckSuccessful = ledger.filter((entry) => entry.provider_completed === true && entry.parsed === true
+    && entry.committed !== true && entry.failed_before_commit !== true && entry.failed_after_commit !== true);
+  const accounting = audit.attempt_accounting ?? {};
+  const physical = Number(accounting.cumulative_physical_transmissions ?? audit.physical_provider_attempts ?? 0);
+  const terminal = Number(accounting.cumulative_terminal_transmissions
+    ?? Object.values(accounting.cumulative_terminal_counts ?? accounting.terminal_counts ?? {})
+      .reduce((sum, value) => sum + (Number(value) || 0), 0));
+  const completed = Number(accounting.cumulative_terminal_counts?.completed
+    ?? accounting.terminal_counts?.completed ?? terminal);
+  const active = Number(accounting.active_transmissions ?? Object.keys(accounting.active_attempts ?? {}).length);
+  const restored = Number(accounting.restored_prior_physical_transmissions ?? 0);
+  const current = Number(accounting.current_attempt_physical_transmissions ?? 0);
+  return {
+    ...audit,
+    segment_attempt_ledger: ledger,
+    ledger_reconciliation: {
+      retained_entry_count: ledger.length,
+      retained_detail_bounded: true,
+      retained_detail_limit: Number(audit.segment_attempt_ledger_limit ?? 32),
+      exact_successful_commit_count: exactCommits,
+      legacy_entries_restored_from_exact_totals: canRestore ? eligibleLegacy.length : 0,
+      successful_commits_do_not_exceed_completed_provider_attempts: exactCommits <= completed,
+      completed_provider_attempts: completed,
+      committed_entries_are_completed_and_parsed: invalidCommitted.length === 0,
+      terminal_successful_entries_stuck_at_response_observed: stuckSuccessful.length,
+      no_terminal_success_stuck: stuckSuccessful.length === 0,
+      active_plus_terminal_equals_physical: active + terminal === physical,
+      restored_plus_current_equals_cumulative: restored + current === physical,
+    },
+  };
+}
+
 export function nextShortTermRecoverySegmentSize(currentCount, minimumSegmentFloor = 4) {
   const current = Math.max(1, Math.floor(Number(currentCount) || 1));
   const floor = Math.max(1, Math.floor(Number(minimumSegmentFloor) || 1));
