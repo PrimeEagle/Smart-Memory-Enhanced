@@ -255,7 +255,8 @@ export function deriveRunPerformanceDiagnostics(report = {}) {
     request_amplification: {
       ratio: provider.request_amplification ?? null,
       extra_requests_caused_by_recovery: number(provider.extra_requests_caused_by_recovery),
-      repartition_requests: number(provider.request_kind_counts?.repartition_child),
+      repartition_requests: number(provider.request_kind_counts?.repartition_child)
+        + number(provider.request_kind_counts?.malformed_repartition_child),
       format_repair_requests: number(provider.request_kind_counts?.format_repair),
       same_signature_retries: number(compaction.same_signature_retries),
       shortterm_segment_reductions: number(compaction.segment_reductions),

@@ -79,7 +79,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 2);
+  assert.equal(summary.schema_version, 3);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -109,4 +109,50 @@ test('bounded obligation detail preserves exact aggregate counts and unresolved 
     `lt:${PROVIDER_OBLIGATION_LIMIT + 1}`);
   assert.equal(summary.coverage.safely_checkpointed_obligations, PROVIDER_OBLIGATION_LIMIT + 2);
   assert.match(summary.reconciliation.limitation, /archived cumulative counters remain authoritative/);
+});
+
+test('supplied-run accounting shape retains 88 failure observations while automatic recovery closes the final five', () => {
+  const metadata = { active_catchup_run_id: 'run-supplied-shape' };
+  const unresolved = [];
+  for (let index = 0; index < 88; index++) {
+    const root = `longterm:owner:${index * 20}-${index * 20 + 19}`;
+    const original = beginProviderAttempt(metadata, {
+      tier: 'longterm', owner: 'Owner', logical_obligation_id: root,
+      source_range: { start: index * 20, end: index * 20 + 19, message_count: 20 },
+      source_fingerprint: `source-${index}`, request_kind: 'original',
+    });
+    finishProviderAttempt(metadata, original, {
+      terminal_outcome: 'provider_response_malformed', malformed_reason: 'missing_tagged_records',
+      recovery_stage: 'strict_generation', recoverable: true,
+    });
+    if (index < 83) {
+      const repair = beginProviderAttempt(metadata, {
+        tier: 'longterm', owner: 'Owner', logical_obligation_id: root,
+        source_range: original.source_range, source_fingerprint: `source-${index}`,
+        request_kind: 'format_repair', recovery_stage: 'compact_response_repair',
+        recovery_of_attempt_id: original.attempt_id,
+        changed_recovery_dimensions: ['malformed_response_input', 'compact_repair_prompt'],
+      });
+      finishProviderAttempt(metadata, repair, { terminal_outcome: 'completed' });
+    } else unresolved.push({ root, source_range: original.source_range, source_fingerprint: `source-${index}` });
+  }
+  const before = summarizeProviderAttemptAudit(metadata);
+  assert.equal(before.unique_malformed_obligations, 88);
+  assert.equal(before.recovered_malformed_obligations, 83);
+  assert.equal(before.terminally_unresolved_malformed_obligations, 5);
+  for (const item of unresolved) {
+    const sweep = beginProviderAttempt(metadata, {
+      tier: 'longterm', owner: 'Owner', logical_obligation_id: item.root,
+      source_range: item.source_range, source_fingerprint: item.source_fingerprint,
+      request_kind: 'automatic_recovery_sweep', recovery_stage: 'changed_dimension_regeneration',
+      changed_recovery_dimensions: ['automatic_end_of_source_sweep', 'fresh_recovery_budget'],
+    });
+    finishProviderAttempt(metadata, sweep, { terminal_outcome: 'completed' });
+  }
+  const after = summarizeProviderAttemptAudit(metadata);
+  assert.equal(after.unique_malformed_obligations, 88);
+  assert.equal(after.recovered_malformed_obligations, 88);
+  assert.equal(after.terminally_unresolved_malformed_obligations, 0);
+  assert.equal(after.malformed_physical_responses, 88);
+  assert.equal(after.reconciliation.recovered_and_terminal_unresolved_disjoint, true);
 });

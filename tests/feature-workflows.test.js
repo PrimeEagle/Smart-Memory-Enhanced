@@ -390,6 +390,23 @@ test('completed-run lifecycle, severity UI, and targeted repair share one classi
   assert.match(status, /Completed with \$\{unresolvedCount\} error/);
 });
 
+test('automatic malformed-output sweep is durable, bounded, and precedes finalization', () => {
+  const settings = read('settings.js');
+  const longterm = read('longterm.js');
+  const session = read('session.js');
+  const sweep = settings.indexOf('source_extraction_completed_before_automatic_malformed_sweep');
+  const finalization = settings.indexOf('// Each expensive finalization phase receives its own durable commit.');
+  assert.ok(sweep >= 0 && sweep < finalization);
+  assert.match(settings, /automatic_malformed_recovery/);
+  assert.match(settings, /MALFORMED_RECOVERY_LIMITS\.automatic_sweep_rounds/);
+  assert.match(settings, /candidate\.tier === 'session'/);
+  assert.match(settings, /await saveSweep\(\)/);
+  assert.match(longterm, /malformed_output_repartition/);
+  assert.match(session, /malformed_output_repartition/);
+  assert.match(longterm, /malformedChildCoverageComplete/);
+  assert.match(session, /malformedChildCoverageComplete/);
+});
+
 test('final reconciliation builds a persona-aware roster that includes approved chat-local characters', () => {
   const ui = read('ui.js');
   const canonical = read('canonical-entities.js');
@@ -996,7 +1013,8 @@ test('session extraction repairs citation-only omissions once and never persists
   assert.match(session, /pretty-printed array/);
   assert.match(session, /Do not add, remove, reword, or combine memories/);
   assert.match(session, /const citedCandidates = parsedCandidates\.filter/);
-  assert.match(session, /Session extraction remained unparseable after one bounded format repair/);
+  assert.match(session, /recoverMalformedTaggedOutput/);
+  assert.match(session, /malformed_output_repartition/);
   assert.match(settings, /sessionExtraction: \{/);
   assert.match(settings, /session_malformed_provider_output/);
   for (const disposition of ['accepted_validated', 'accepted_after_citation_repair', 'missing_provenance', 'semantic_support_rejected', 'malformed_candidate', 'duplicate_same_pass', 'duplicate_existing']) {

@@ -121,11 +121,18 @@ import {
 } from './extraction-window-utils.js';
 import {
   beginProviderAttempt,
-  classifyMalformedProviderOutput,
   finishProviderAttempt,
   providerConfigurationSignature,
 } from './provider-attempt-audit.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
+import {
+  analyzeMalformedResponse,
+  createMalformedRecoveryBudget,
+  consumeMalformedRecoveryRequest,
+  malformedChildCoverageComplete,
+  partitionMalformedSourceWindow,
+  recoverMalformedTaggedOutput,
+} from './malformed-output-recovery.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 
@@ -904,6 +911,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       changed_recovery_dimensions: changedDimensions,
       recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
       repair_reason: recovery.repair_reason ?? null,
+      recovery_stage: recovery.recovery_stage ?? null,
+      expected_output_format: recovery.expected_output_format ?? 'longterm_tagged_lines_v1',
       root_source_range: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
       root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
       source_range: { start: range.start, end: range.end, message_count: range.message_count },
@@ -1030,6 +1039,57 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       });
       return added;
     };
+    const malformedRecoveryDepth = Number(options._malformedRecoveryDepth ?? 0);
+    const malformedRecoveryBudget = createMalformedRecoveryBudget(options._malformedRecoveryBudget);
+    const splitMalformedWindow = async ({ budget, nextDepth, reason, parentAttemptId }) => {
+      const children = partitionMalformedSourceWindow(sourceMessages);
+      if (!children.length) return { completed: false, reason: 'minimum_malformed_recovery_window_reached' };
+      let added = 0;
+      const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('longterm', characterName, child));
+      for (const child of children) {
+        const childRange = sourceRange(child);
+        const childKey = extractionRecoveryChildKey('longterm', characterName, child);
+        if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)
+          || budget.split_children_committed.includes(childKey)) continue;
+        const allowance = consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition');
+        if (!allowance.allowed) return { completed: false, reason: allowance.reason };
+        added += await extractAndStoreMemories(characterName, child, statusFn, {
+          ...options,
+          liveHealth: null,
+          _malformedRecoveryDepth: nextDepth,
+          _malformedRecoveryBudget: budget,
+          _contextOverflowParentRangeId: rangeId,
+          _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + nextDepth),
+          _providerRootObligationId: rootObligationId,
+          _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
+          _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+          _providerParentAttemptId: parentAttemptId,
+          _providerRequestKind: 'malformed_repartition_child',
+          _providerChangedRecoveryDimensions: ['source_range', 'malformed_output_repartition'],
+        });
+        budget.split_children_committed.push(childKey);
+        await options._onContextOverflowChildCommitted?.({
+          key: childKey, tier: 'longterm', owner: characterName,
+          source_start_index: childRange.start, source_end_index: childRange.end,
+          message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
+          parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: nextDepth,
+          split_reason: 'malformed_output_repartition', malformed_reason: reason,
+        });
+      }
+      const committedChildKeys = [
+        ...(options._contextOverflowCompletedChildren ?? []),
+        ...budget.split_children_committed,
+      ];
+      if (!malformedChildCoverageComplete(expectedChildKeys, committedChildKeys)) {
+        return { completed: false, reason: 'malformed_child_coverage_incomplete' };
+      }
+      recordExtractionCoverage(coverageLedger, {
+        ...coverageBase, provider_outcome: 'malformed_output_repartition_recovered',
+        coverage_terminal_state: 'repartitioned_completed', all_source_messages_covered: true,
+        child_range_count: children.length,
+      });
+      return { completed: true, added };
+    };
 
     if (!preflight.fits) {
       healthUpdate({ provider_outcome: 'locally_prevented', preflight: { ...preflight, prevented: true, resized_or_repartitioned: true } });
@@ -1076,12 +1136,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
-    if (!response || !response.trim()) {
-      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_response_empty', malformed_reason: 'empty_or_whitespace_response', recoverable: true });
-      healthFinish({ provider_outcome: 'provider_response_empty', response_received: true, parser_outcome: 'not_applicable_empty_response', terminal_health: 'provider_response_empty', persistence: 'not_needed', candidates: { emitted: 0 }, attention_reason_codes: ['provider_response_empty'] });
-      return 0;
-    }
-    if (response.trim().toUpperCase() === 'NONE') {
+    if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
@@ -1089,43 +1144,37 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     let parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
-      const malformedReason = classifyMalformedProviderOutput(response, { expectedFormat: 'tagged_records' });
-      finishProviderAttempt(providerMetadata, providerAttempt, {
-        terminal_outcome: 'provider_response_malformed',
-        malformed_reason: malformedReason,
-        recoverable: true,
+      const recovery = await recoverMalformedTaggedOutput({
+        response, tier: 'longterm', parse: parseExtractionOutput,
+        generate: generateMemoryExtract, originalPrompt: prompt, responseLength,
+        originalAttempt: providerAttempt, beginAttempt: beginPhysicalAttempt,
+        finishAttempt: (attempt, patch) => finishProviderAttempt(providerMetadata, attempt, patch),
+        splitWindow: splitMalformedWindow, budget: malformedRecoveryBudget,
+        splitDepth: malformedRecoveryDepth,
       });
-      const repairAttempt = beginPhysicalAttempt('format_repair', ['prompt_schema'], {
-        recovery_of_attempt_id: providerAttempt?.attempt_id ?? null,
-        repair_reason: malformedReason,
-      });
-      try {
-        const repairedResponse = await generateMemoryExtract(`${prompt}\n\nFORMAT REPAIR: Return only valid tagged memory lines in the required schema, or exactly NONE. Do not include commentary or JSON.`, { responseLength });
-        parsed = parseExtractionOutput(repairedResponse);
-        if (parsed.length) {
-          finishProviderAttempt(providerMetadata, repairAttempt, { terminal_outcome: 'completed' });
-          healthUpdate({ provider_outcome: 'completed_after_format_repair', parser_outcome: 'parsed_after_format_repair' });
-        } else {
-          finishProviderAttempt(providerMetadata, repairAttempt, {
-            terminal_outcome: 'provider_response_malformed',
-            malformed_reason: classifyMalformedProviderOutput(repairedResponse, { expectedFormat: 'tagged_records' }),
-            recoverable: false,
-          });
-          smLog('[Smart Memory Enhanced] Extraction response remained unparseable after one bounded format repair.');
-          healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'format_repair_exhausted', terminal_health: 'provider_response_malformed', attention_reason_codes: ['unparseable_provider_response'] });
-          const malformedError = new Error('Long-term extraction remained unparseable after one bounded format repair.');
-          malformedError.code = 'SME_MALFORMED_PROVIDER_OUTPUT';
-          malformedError.sme_request_diagnostics = { tier: 'longterm', malformed_reason: malformedReason, format_repair_exhausted: true };
-          throw malformedError;
-        }
-      } catch (repairError) {
-        finishProviderAttempt(providerMetadata, repairAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
-        smLog('[Smart Memory Enhanced] Extraction format repair failed:', repairError?.message ?? repairError);
-        healthFinish({ provider_outcome: 'provider_response_malformed', response_received: true, parser_outcome: 'format_repair_provider_failure', terminal_health: 'provider_response_malformed', attention_reason_codes: ['unparseable_provider_response'] });
-        throw repairError;
+      if (recovery.repartitioned) {
+        healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved',
+          provider_outcome: 'completed_after_malformed_repartition', parser_outcome: 'repartitioned' });
+        return recovery.added;
       }
+      if (recovery.explicit_none) {
+        healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
+          provider_outcome: 'completed_no_candidates_after_regeneration', parser_outcome: 'explicit_none' });
+        return 0;
+      }
+      parsed = recovery.records;
+      healthUpdate({ provider_outcome: `completed_after_${recovery.stage}`, parser_outcome: `parsed_after_${recovery.stage}` });
     } else {
-      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed' });
+      const responseShape = analyzeMalformedResponse(response, { tier: 'longterm' });
+      const partialReason = responseShape.rejected_tagged_record_count > 0 ? 'partial_valid_output'
+        : responseShape.prose_before_structure || responseShape.prose_after_structure ? 'prose_around_tagged_records' : null;
+      finishProviderAttempt(providerMetadata, providerAttempt, {
+        terminal_outcome: 'completed', malformed_reason: partialReason,
+        recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',
+        final_recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',
+        response_text: partialReason ? response : undefined,
+        partial_output_policy: partialReason ? 'accept_complete_valid_records_and_reject_only_malformed_fragments' : null,
+      });
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
 
@@ -1503,7 +1552,14 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     });
     return added;
   } catch (err) {
-    healthFinish({ terminal_health: 'provider_failure', persistence: 'preserved', attention_reason_codes: ['extraction_or_persistence_failure'] });
+    const malformedExhausted = err?.code === 'SME_MALFORMED_PROVIDER_OUTPUT';
+    healthFinish({
+      terminal_health: malformedExhausted ? 'provider_response_malformed' : 'provider_failure',
+      provider_outcome: malformedExhausted ? 'bounded_malformed_recovery_exhausted' : 'provider_failure',
+      parser_outcome: malformedExhausted ? 'bounded_recovery_exhausted' : undefined,
+      persistence: 'preserved',
+      attention_reason_codes: [malformedExhausted ? 'unparseable_provider_response' : 'extraction_or_persistence_failure'],
+    });
     console.error('[Smart Memory Enhanced] Memory extraction failed:', err);
     throw err;
   }

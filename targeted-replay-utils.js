@@ -1,6 +1,6 @@
 import { sourceWindowFingerprint } from './extraction-window-utils.js';
 
-export const TARGETED_REPLAY_SCHEMA_VERSION = 2;
+export const TARGETED_REPLAY_SCHEMA_VERSION = 3;
 
 const integer = (value) => Number.isInteger(Number(value)) ? Number(value) : null;
 
@@ -12,6 +12,9 @@ export function buildTargetedReplayCandidates(providerSummary, {
     const start = integer(obligation?.source_range?.start);
     const end = integer(obligation?.source_range?.end);
     const owner = String(obligation?.owner ?? '').trim();
+    const currentConfigurationSignature = configurationSignature && typeof configurationSignature === 'object'
+      ? configurationSignature[obligation?.tier] ?? null
+      : configurationSignature;
     const sourceMessages = start !== null && end !== null && end >= start
       ? chat.slice(start, end + 1)
         .map((message, offset) => ({ ...message, __sme_original_index: start + offset }))
@@ -19,10 +22,10 @@ export function buildTargetedReplayCandidates(providerSummary, {
       : [];
     const actualFingerprint = sourceMessages.length ? sourceWindowFingerprint(sourceMessages) : null;
     const reasons = [];
-    if (obligation?.tier !== 'longterm') reasons.push('unsupported_tier');
+    if (!['longterm', 'session'].includes(obligation?.tier)) reasons.push('unsupported_tier');
     if (!obligation?.targeted_replay_eligible) reasons.push('obligation_not_replay_eligible');
-    if (!owner) reasons.push('owner_missing');
-    if (allowedOwners && !allowedOwners.includes(owner)) reasons.push('owner_not_in_current_chat_scope');
+    if (obligation?.tier === 'longterm' && !owner) reasons.push('owner_missing');
+    if (obligation?.tier === 'longterm' && allowedOwners && !allowedOwners.includes(owner)) reasons.push('owner_not_in_current_chat_scope');
     if (start === null || end === null || end < start) reasons.push('invalid_source_range');
     if (!sourceMessages.length) reasons.push('source_range_empty');
     if (integer(obligation?.source_range?.message_count) !== null
@@ -31,8 +34,8 @@ export function buildTargetedReplayCandidates(providerSummary, {
     if (actualFingerprint && obligation?.source_fingerprint !== actualFingerprint) reasons.push('source_fingerprint_mismatch');
     if (!chatId) reasons.push('chat_identity_missing');
     if (obligation?.chat_id && chatId && obligation.chat_id !== chatId) reasons.push('chat_identity_mismatch');
-    if (obligation?.configuration_signature && configurationSignature
-      && obligation.configuration_signature !== configurationSignature) reasons.push('provider_configuration_changed');
+    if (obligation?.configuration_signature && currentConfigurationSignature
+      && obligation.configuration_signature !== currentConfigurationSignature) reasons.push('provider_configuration_changed');
     return {
       schema_version: TARGETED_REPLAY_SCHEMA_VERSION,
       root_obligation_id: obligation?.root_obligation_id ?? null,
@@ -44,7 +47,7 @@ export function buildTargetedReplayCandidates(providerSummary, {
       source_fingerprint: obligation?.source_fingerprint ?? null,
       current_source_fingerprint: actualFingerprint,
       chat_id: chatId,
-      configuration_signature: configurationSignature,
+      configuration_signature: currentConfigurationSignature,
       original_configuration_signature: obligation?.configuration_signature ?? null,
       configuration_validation: obligation?.configuration_signature
         ? 'matched_current_configuration' : 'unavailable_for_legacy_obligation',

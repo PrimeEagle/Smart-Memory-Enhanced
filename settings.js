@@ -200,6 +200,7 @@ import {
   updateTargetedReplayCheckpoint, summarizeTargetedReplayCheckpoint,
   TARGETED_REPLAY_SCHEMA_VERSION,
 } from './targeted-replay-utils.js';
+import { MALFORMED_RECOVERY_LIMITS, MALFORMED_RECOVERY_SCHEMA_VERSION } from './malformed-output-recovery.js';
 import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
@@ -214,14 +215,15 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.56',
-  build_fingerprint: 'sme-v0.9.56-run-status-severity-r1',
+  extension_version: '0.9.57',
+  build_fingerprint: 'sme-v0.9.57-malformed-output-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
     shortterm_attempt_accounting: SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
     targeted_replay: TARGETED_REPLAY_SCHEMA_VERSION,
     provider_attempt_audit: PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
+    malformed_output_recovery: MALFORMED_RECOVERY_SCHEMA_VERSION,
     run_status_classifier: RUN_STATUS_CLASSIFIER_VERSION,
   }),
 });
@@ -2856,20 +2858,24 @@ export function bindSettingsUI(ctrl) {
     URL.revokeObjectURL(link.href);
   };
   $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics()).on('click', exportCatchUpDiagnostics);
-  const targetedReplayConfigurationSignature = () => providerConfigurationSignature({
-    connection_profile_id: s.connection_profile_id ?? null,
-    model: s.openai_compat_model ?? s.ollama_model ?? null,
-    source: s.source ?? memory_sources.main,
-    response_length: s.longterm_response_length ?? null,
-    context_length: s.context_length ?? null,
-  });
+  const targetedReplayConfigurationSignatures = () => Object.fromEntries(['longterm', 'session'].map((tier) => [tier,
+    providerConfigurationSignature({
+      connection_profile_id: s.connection_profile_id ?? null,
+      model: s.openai_compat_model ?? s.ollama_model ?? null,
+      source: s.source ?? memory_sources.main,
+      response_length: tier === 'session' ? s.session_response_length ?? null : s.longterm_response_length ?? null,
+      context_length: s.context_length ?? null,
+    })]));
+  const targetedReplayConfigurationSignature = () => diagnosticFingerprint(
+    JSON.stringify(targetedReplayConfigurationSignatures()),
+  );
   const getTargetedReplayCandidates = () => {
     const context = getContext();
     const metadata = context.chatMetadata?.[META_KEY];
     return buildTargetedReplayCandidates(summarizeProviderAttemptAudit(metadata), {
       chat: context.chat ?? [],
       chatId: context.chatId ?? context.groupId ?? null,
-      configurationSignature: targetedReplayConfigurationSignature(),
+      configurationSignature: targetedReplayConfigurationSignatures(),
     });
   };
   const refreshTargetedReplayUI = () => {
@@ -2877,10 +2883,10 @@ export function bindSettingsUI(ctrl) {
     const eligible = candidates.filter((candidate) => candidate.eligible);
     const $select = $('#sme_failed_extraction_target').empty();
     if (eligible.length) {
-      $select.append($('<option>').val('all').text(`All ${eligible.length} failed Long-Term extractions`));
+      $select.append($('<option>').val('all').text(`All ${eligible.length} failed memory extractions`));
       eligible.forEach((candidate) => $select.append($('<option>')
         .val(candidate.root_obligation_id)
-        .text(`${candidate.owner} — messages ${candidate.source_range.start}–${candidate.source_range.end}`)));
+        .text(`${candidate.tier === 'session' ? 'Session Memory' : candidate.owner} — messages ${candidate.source_range.start}–${candidate.source_range.end}`)));
     }
     $('#sme_failed_extraction_replay').toggle(candidates.length > 0);
     $('#sme_retry_failed_extractions')
@@ -2906,7 +2912,7 @@ export function bindSettingsUI(ctrl) {
     const label = selection === 'all' ? `all ${eligible.length} failed extraction ranges`
       : `${eligible[0].owner}, messages ${eligible[0].source_range.start}–${eligible[0].source_range.end}`;
     if (!(await callGenericPopup(
-      `Retry ${label}?\n\nOnly the exact failed Long-Term source ranges will be sent. Existing memories remain authoritative until a valid result is accepted.`,
+      `Retry ${label}?\n\nOnly the exact failed Long-Term or Session source ranges will be sent. Existing memories remain authoritative until a valid result is accepted.`,
       POPUP_TYPE.CONFIRM,
     ))) return;
     const configSignature = targetedReplayConfigurationSignature();
@@ -2928,7 +2934,7 @@ export function bindSettingsUI(ctrl) {
     $('#sme_retry_failed_extractions').prop('disabled', true);
     $('#sme_catch_up, #sme_resume_catch_up, #sme_run_idempotence_check').prop('disabled', true);
     const providerCallsBefore = Number(metadata.live_memory_health?.provider_attempt_audit?.attempted ?? 0);
-    const replayCoverage = { longterm: { records: [] } };
+    const replayCoverage = { longterm: { records: [] }, session: { records: [] } };
     let anyAdded = false;
     try {
       for (const candidate of eligible) {
@@ -2940,7 +2946,7 @@ export function bindSettingsUI(ctrl) {
         await saveChatMetadata(context);
         setStatusMessage(`Retrying failed extraction for ${candidate.owner} (${candidate.source_range.start}–${candidate.source_range.end})...`);
         try {
-          const added = await extractAndStoreMemories(candidate.owner, candidate.source_messages, setStatusMessage, {
+          const replayOptions = {
             extractionCoverage: replayCoverage,
             _providerRootObligationId: candidate.root_obligation_id,
             _providerRootSourceRange: candidate.source_range,
@@ -2948,7 +2954,10 @@ export function bindSettingsUI(ctrl) {
             _providerRequestKind: 'targeted_replay',
             _providerChangedRecoveryDimensions: ['operator_targeted_replay'],
             _targetedReplay: true,
-          });
+          };
+          const added = candidate.tier === 'session'
+            ? await extractSessionMemories(candidate.source_messages, null, replayOptions)
+            : await extractAndStoreMemories(candidate.owner, candidate.source_messages, setStatusMessage, replayOptions);
           anyAdded ||= Number(added) > 0;
           replay = updateTargetedReplayCheckpoint(replay, candidate.root_obligation_id, {
             terminal_outcome: Number(added) > 0 ? 'completed' : 'completed_no_candidates',
@@ -2987,7 +2996,10 @@ export function bindSettingsUI(ctrl) {
           reconciliation_scope: anyAdded
             ? 'target_owner_longterm_memory_and_entity_registry_only'
             : 'not_required_no_new_durable_records',
-          coverage: summarizeExtractionCoverage(replayCoverage.longterm.records),
+          coverage: {
+            longterm: summarizeExtractionCoverage(replayCoverage.longterm.records),
+            session: summarizeExtractionCoverage(replayCoverage.session.records),
+          },
         };
         const remaining = Number(providerSummary?.terminally_unresolved_malformed_obligations ?? 0);
         if (report.generation_coverage) {
@@ -5768,6 +5780,131 @@ export function bindSettingsUI(ctrl) {
         }
       }
 
+      // A malformed terminal response can survive an individual source chunk
+      // without corrupting already-authoritative memories. Before any
+      // expensive finalization begins, revisit only those exact unresolved
+      // source obligations with a fresh bounded recovery budget. The compact
+      // checkpoint is saved before and after every target so a page/service
+      // restart resumes without replaying a successfully recovered range.
+      if (!ctrl.catchUpCancelled && Number(checkpoint.next_source_offset) >= total) {
+        reconcileInterruptedExtractionEvents(catchUpContext.chatMetadata?.[META_KEY], checkpoint, {
+          reason: 'source_extraction_completed_before_automatic_malformed_sweep',
+        });
+        const metadata = catchUpContext.chatMetadata?.[META_KEY];
+        const chatId = catchUpContext.chatId ?? catchUpContext.groupId ?? null;
+        const priorSweep = checkpoint.automatic_malformed_recovery;
+        const sweep = priorSweep?.status === 'in_progress'
+          ? priorSweep
+          : {
+            schema_version: 1,
+            status: 'in_progress',
+            started_at: Date.now(),
+            round_count: 0,
+            maximum_rounds: MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds,
+            targets: [],
+            recovered_obligation_ids: [],
+            still_unresolved_obligation_ids: [],
+          };
+        checkpoint.automatic_malformed_recovery = sweep;
+        const completedTargets = new Set((sweep.targets ?? [])
+          .filter((target) => ['completed', 'completed_no_candidates'].includes(target.terminal_outcome))
+          .map((target) => target.root_obligation_id));
+        const saveSweep = async () => {
+          sweep.updated_at = Date.now();
+          checkpoint.updated_at = sweep.updated_at;
+          await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
+        };
+        const commitSweepChild = async (record) => {
+          checkpoint.context_overflow_recovery ??= { schema_version: 1, completed_children: [] };
+          checkpoint.context_overflow_recovery.completed_children ??= [];
+          if (!record?.key || checkpoint.context_overflow_recovery.completed_children.some((item) => item?.key === record.key)) return;
+          checkpoint.context_overflow_recovery.completed_children.push({
+            ...record, committed_at: Date.now(), terminal_state: 'safely_committed',
+          });
+          checkpoint.context_overflow_recovery.completed_children
+            = checkpoint.context_overflow_recovery.completed_children.slice(-2048);
+          await saveSweep();
+        };
+        const summaryBeforeSweep = summarizeProviderAttemptAudit(metadata);
+        sweep.before_unresolved_count ??= Number(summaryBeforeSweep?.terminally_unresolved_malformed_obligations ?? 0);
+        for (let round = Number(sweep.round_count ?? 0);
+          round < MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds; round++) {
+          const summary = summarizeProviderAttemptAudit(metadata);
+          const candidates = buildTargetedReplayCandidates(summary, {
+            chat: catchUpContext.chat ?? [], chatId,
+            configurationSignature: null,
+            allowedOwners: catchUpCharacterNames,
+          }).filter((candidate) => candidate.eligible && !completedTargets.has(candidate.root_obligation_id));
+          if (!candidates.length) break;
+          sweep.round_count = round + 1;
+          for (const candidate of candidates) {
+            if (ctrl.catchUpCancelled) break;
+            const priorTarget = (sweep.targets ?? []).find((item) => item.root_obligation_id === candidate.root_obligation_id);
+            const target = {
+              root_obligation_id: candidate.root_obligation_id,
+              tier: candidate.tier,
+              owner: candidate.owner || null,
+              source_range: candidate.source_range,
+              source_fingerprint: candidate.source_fingerprint,
+              round: round + 1,
+              attempt_count: Number(priorTarget?.attempt_count ?? 0) + 1,
+              prior_attempts: [
+                ...(priorTarget?.prior_attempts ?? []),
+                ...(priorTarget ? [{
+                  round: priorTarget.round,
+                  terminal_outcome: priorTarget.terminal_outcome,
+                  normalized_error_type: priorTarget.normalized_error_type ?? null,
+                  completed_at: priorTarget.completed_at ?? null,
+                }] : []),
+              ].slice(-MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds),
+              terminal_outcome: 'running',
+              started_at: Date.now(),
+            };
+            sweep.targets = [...(sweep.targets ?? []).filter((item) => item.root_obligation_id !== candidate.root_obligation_id), target];
+            setStatusMessage(`Recovering malformed ${candidate.tier === 'session' ? 'Session' : 'Long-Term'} extraction (${candidate.source_range.start}–${candidate.source_range.end}) before finalization...`);
+            await saveSweep();
+            try {
+              const commonOptions = {
+                extractionCoverage: runResult.extractionCoverage,
+                _providerRootObligationId: candidate.root_obligation_id,
+                _providerRootSourceRange: candidate.source_range,
+                _providerRootSourceFingerprint: candidate.source_fingerprint,
+                _providerRequestKind: 'automatic_recovery_sweep',
+                _providerChangedRecoveryDimensions: ['automatic_end_of_source_sweep', 'fresh_recovery_budget'],
+                _contextOverflowCompletedChildren: (checkpoint.context_overflow_recovery?.completed_children ?? []).map((item) => item?.key).filter(Boolean),
+                _onContextOverflowChildCommitted: commitSweepChild,
+              };
+              const added = candidate.tier === 'session'
+                ? await extractSessionMemories(candidate.source_messages, null, {
+                  ...commonOptions, sessionDiagnostics: runResult.sessionExtraction,
+                })
+                : await extractAndStoreMemories(candidate.owner, candidate.source_messages, setStatusMessage, commonOptions);
+              target.terminal_outcome = Number(added) > 0 ? 'completed' : 'completed_no_candidates';
+              target.added_memories = Number(added) || 0;
+              target.completed_at = Date.now();
+              completedTargets.add(candidate.root_obligation_id);
+            } catch (error) {
+              target.terminal_outcome = 'failed';
+              target.normalized_error_type = error?.code ?? error?.name ?? 'Error';
+              target.completed_at = Date.now();
+              recordCatchUpError(`automatic malformed-output recovery (${candidate.tier})`, error, candidate.tier);
+            }
+            await saveSweep();
+          }
+          if (ctrl.catchUpCancelled) break;
+        }
+        const summaryAfterSweep = summarizeProviderAttemptAudit(metadata);
+        const unresolvedIds = (summaryAfterSweep?.terminal_unresolved_obligations ?? [])
+          .map((item) => item.root_obligation_id).filter(Boolean);
+        sweep.after_unresolved_count = Number(summaryAfterSweep?.terminally_unresolved_malformed_obligations ?? 0);
+        sweep.recovered_obligation_ids = [...completedTargets].filter((id) => !unresolvedIds.includes(id));
+        sweep.still_unresolved_obligation_ids = unresolvedIds;
+        sweep.status = ctrl.catchUpCancelled ? 'interrupted'
+          : unresolvedIds.length ? 'completed_with_unresolved_failures' : 'completed';
+        sweep.completed_at = ctrl.catchUpCancelled ? null : Date.now();
+        await saveSweep();
+      }
+
       const extractionCoverageBeforeFinalization = summarizeCatchUpRunManifest(checkpoint.run_manifest);
       const unresolvedTierCoverage = Object.entries(extractionCoverageBeforeFinalization.cumulative_tier_coverage ?? {})
         .filter(([, tier]) => tier.enabled === true && tier.coverage_complete !== true)
@@ -8364,13 +8501,49 @@ export function bindSettingsUI(ctrl) {
             ? reconcileShortTermSegmentLedger(runResult.compactionRequestAudit)
             : null,
         provider_attempt_audit: providerAttemptSummary,
+        automatic_malformed_recovery: (() => {
+          const sweep = checkpoint.automatic_malformed_recovery ?? null;
+          if (!sweep) return null;
+          const attemptedIds = new Set((sweep.targets ?? []).map((target) => target.root_obligation_id));
+          const unresolvedIds = providerAttemptSummary?.terminal_unresolved_obligations
+            ?.map((item) => item.root_obligation_id).filter(Boolean) ?? [];
+          const eligibleUnresolvedIds = buildTargetedReplayCandidates(providerAttemptSummary, {
+            chat: catchUpContext.chat ?? [],
+            chatId: catchUpContext.chatId ?? catchUpContext.groupId ?? null,
+            configurationSignature: null,
+            allowedOwners: catchUpCharacterNames,
+          }).filter((candidate) => candidate.eligible)
+            .map((candidate) => candidate.root_obligation_id);
+          return {
+            ...sweep,
+            limits: {
+              maximum_rounds: MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds,
+              maximum_split_depth: MALFORMED_RECOVERY_LIMITS.maximum_split_depth,
+              minimum_child_messages: MALFORMED_RECOVERY_LIMITS.minimum_child_messages,
+              maximum_additional_provider_requests_per_root: MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests,
+              maximum_wall_time_ms_per_root: MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms,
+            },
+            reconciliation: {
+              every_remaining_eligible_obligation_attempted: eligibleUnresolvedIds.every((id) => attemptedIds.has(id)),
+              eligible_unresolved_obligation_count: eligibleUnresolvedIds.length,
+              recovered_and_unresolved_disjoint: (sweep.recovered_obligation_ids ?? [])
+                .every((id) => !unresolvedIds.includes(id)),
+              authoritative_unresolved_count: Number(providerAttemptSummary?.terminally_unresolved_malformed_obligations ?? 0),
+              retained_unresolved_ids: unresolvedIds,
+            },
+          };
+        })(),
         provider_request_reconciliation: (() => {
           const persistedChildren = checkpoint.context_overflow_recovery?.completed_children?.length ?? 0;
-          const providerChildren = Number(providerAttemptSummary?.request_kind_counts?.repartition_child ?? 0);
+          const providerContextChildren = Number(providerAttemptSummary?.request_kind_counts?.repartition_child ?? 0);
+          const providerMalformedChildren = Number(providerAttemptSummary?.request_kind_counts?.malformed_repartition_child ?? 0);
+          const providerChildren = providerContextChildren + providerMalformedChildren;
           return {
             logical_obligations: providerAttemptSummary?.unique_logical_obligations ?? null,
             physical_provider_requests: providerAttemptSummary?.physical_attempts ?? null,
             provider_repartition_child_requests: providerChildren,
+            provider_context_repartition_child_requests: providerContextChildren,
+            provider_malformed_repartition_child_requests: providerMalformedChildren,
             persisted_overflow_or_preflight_children: persistedChildren,
             persisted_minus_provider_child_requests: persistedChildren - providerChildren,
             locally_preflighted_or_restored_children: Math.max(0, persistedChildren - providerChildren),

@@ -26,15 +26,35 @@ test('targeted replay validates exact current source identity without exposing t
   assert.deepEqual(checkpoint.targets[0].source_range, { start: 10, end: 19, message_count: 10 });
 });
 
-test('targeted replay refuses stale source fingerprints and unsupported tiers', () => {
+test('targeted replay refuses stale source fingerprints while supporting session parity', () => {
   const candidates = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
     { ...obligation, source_fingerprint: 'fnv1a-stale' },
     { ...obligation, tier: 'session', root_obligation_id: 'session:chat:10-19' },
   ] }, { chat, chatId: 'chat-a' });
   assert.equal(candidates[0].eligible, false);
   assert.ok(candidates[0].rejection_reasons.includes('source_fingerprint_mismatch'));
-  assert.equal(candidates[1].eligible, false);
-  assert.ok(candidates[1].rejection_reasons.includes('unsupported_tier'));
+  assert.equal(candidates[1].eligible, true);
+  assert.equal(candidates[1].owner, 'Aster Graves');
+});
+
+test('session replay does not require an owner while unknown tiers remain unsupported', () => {
+  const [session, unknown] = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
+    { ...obligation, tier: 'session', owner: null, root_obligation_id: 'session:chat:10-19' },
+    { ...obligation, tier: 'profile', owner: null, root_obligation_id: 'profile:chat:10-19' },
+  ] }, { chat, chatId: 'chat-a' });
+  assert.equal(session.eligible, true);
+  assert.equal(unknown.eligible, false);
+  assert.ok(unknown.rejection_reasons.includes('unsupported_tier'));
+});
+
+test('tier-specific configuration signatures validate Session independently from Long-Term', () => {
+  const [session] = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
+    { ...obligation, tier: 'session', owner: null, configuration_signature: 'session-config' },
+  ] }, { chat, chatId: 'chat-a', configurationSignature: {
+    longterm: 'longterm-config', session: 'session-config',
+  } });
+  assert.equal(session.eligible, true);
+  assert.equal(session.configuration_signature, 'session-config');
 });
 
 test('targeted replay rejects a known provider-configuration mismatch but labels legacy evidence honestly', () => {

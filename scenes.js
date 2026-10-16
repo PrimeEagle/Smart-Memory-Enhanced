@@ -316,6 +316,30 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
   const lineage = options.lineage ?? { next_attempt_id: 1 };
   const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, confidence_outcomes: { confidence_available: 0, confidence_not_returned: 0, confidence_invalid: 0, confidence_removed_during_repair: 0 }, partial_response_recovery: { provider_omissions: [], local_normalization: [], targeted_recoveries: [] }, batch_attempts: [], candidate_dispositions: [] };
   const requestSceneBatch = options.request ?? generateMemoryExtract;
+  const describeResponseStructure = (raw, parsed = null) => {
+    const text = String(raw ?? '');
+    const trimmed = text.trim();
+    const characterClass = (character) => !character ? 'none'
+      : character === '{' ? 'json_object_open'
+        : character === '[' ? 'json_array_open'
+          : /[A-Za-z]/.test(character) ? 'letter'
+            : /\d/.test(character) ? 'digit' : 'punctuation_or_symbol';
+    return {
+      response_received: text.length > 0,
+      response_character_length: text.length,
+      response_line_count: text.replace(/\r\n?/g, '\n').split('\n').length,
+      first_non_whitespace_character_class: characterClass(trimmed[0]),
+      last_non_whitespace_character_class: characterClass(trimmed.at(-1)),
+      code_fence_present: /```/.test(text),
+      json_like_object: /^\s*\{/.test(text),
+      json_like_array: /^\s*\[/.test(text),
+      parser_failure_reason: parsed?.parse_error_code ?? null,
+      valid_decision_count: Number(parsed?.valid_decision_count ?? 0),
+      invalid_decision_count: Number(parsed?.invalid_decision_count ?? 0),
+      missing_decision_count: parsed?.missing_candidate_ids?.length ?? null,
+      truncated_output_suspected: Boolean(parsed?.truncated_output_suspected),
+    };
+  };
   const parseBatch = (raw, requestedIds) => {
     const original = String(raw ?? '');
     const codeFencePresent = /^\s*```/m.test(original);
@@ -381,6 +405,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       attempt.response_present = Boolean(String(response ?? '').trim());
       if (!attempt.response_present) { attempt.returned_none = true; attempt.parser_failure_reason = 'empty_provider_response'; throw new Error('Empty scene-boundary batch response.'); }
       let parsed = parseBatch(response, attempt.candidate_ids_requested); Object.assign(attempt, parsed);
+      attempt.original_structural_diagnostics = describeResponseStructure(response, parsed);
       attempt.parser_failure_reason = parsed.ok ? null : (parsed.parse_error_code ?? 'invalid_structured_output');
       attempt.local_normalization_attempts = 1;
       attempt.local_normalization_succeeded = parsed.ok;
@@ -405,6 +430,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
           repairAttempt.request_completed = true;
           repairAttempt.response_present = Boolean(String(repaired ?? '').trim());
           const repairedParsed = parseBatch(repaired, attempt.candidate_ids_requested);
+          repairAttempt.structural_diagnostics = describeResponseStructure(repaired, repairedParsed);
           repairAttempt.parser_failure_reason = repairedParsed.ok ? null : (repairedParsed.parse_error_code ?? 'invalid_structured_output');
           if (repairedParsed.ok) {
             parsed = repairedParsed; Object.assign(attempt, repairedParsed);

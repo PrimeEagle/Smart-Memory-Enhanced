@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.57] - 2026-10-16
+
+### Added
+
+- Long-Term and Session extraction now share a bounded malformed-output
+  recovery ladder: strict parsing, conservative local normalization, a compact
+  repair of the actual malformed response, changed-dimension regeneration,
+  and deterministic 20-to-10-to-5 source-window repartition. Per-obligation
+  limits cap recovery at two split levels, 20 added provider requests, and six
+  hours of observed recovery time between requests for slow local providers.
+- Memorize Chat now performs a durable, restart-safe pre-finalization sweep of
+  eligible unresolved Long-Term and Session obligations. It persists every
+  target, skips committed children, makes at most two sweep rounds, and leaves
+  a truthful terminal error only after the bounded policy is exhausted.
+- Privacy-safe malformed-response diagnostics now retain structural shape,
+  precise reason codes, parser and normalization paths, recovery lineage,
+  changed dimensions, stage timing/counts, child coverage, and final recovery
+  disposition without exporting prompts, response text, or private facts.
+
+### Changed
+
+- Manual targeted extraction replay supports Session as well as Long-Term
+  obligations and remains a last-resort control after automatic recovery.
+- Scene batch diagnostics now retain privacy-safe response shape and exact
+  repair failure details while preserving deterministic fallback as a notice
+  whenever every candidate still receives a terminal decision.
+- Partially valid tagged output follows an explicit conservative policy:
+  complete records continue through normal validation, while malformed
+  fragments are rejected and recorded instead of being silently treated as
+  `NONE`.
+
+### Fixed
+
+- Format repair no longer resends the full extraction task with one appended
+  instruction. The repair request operates on the bounded malformed response;
+  only a later recovery stage regenerates from source with materially changed
+  instructions.
+- Parser exhaustion is no longer caught and relabeled as a provider transport
+  failure, and each physical attempt receives exactly one terminal outcome.
+- Empty responses now enter malformed-output recovery rather than being
+  accepted as an empty result. Tagged-output failures no longer use
+  `invalid_json` as a generic fallback.
+- Malformed repartition verifies complete child coverage before closing its
+  parent, reuses safely committed child checkpoints after interruption, and
+  does not spend request budget on children already committed.
+
+### Tests
+
+- Added malformed-shape normalization, actual-response repair,
+  changed-dimension regeneration, provider/parse failure separation,
+  Long-Term/Session parity, 20-to-10-to-5 repartition, child coverage, hard-cap,
+  durable automatic-sweep, pruned-accounting, recovered-status, and supplied
+  88/83/5 accounting-shape coverage.
+
 ## [0.9.56] - 2026-10-12
 
 ### Changed
