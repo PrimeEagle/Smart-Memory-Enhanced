@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.58] - 2026-10-16
+
+### Fixed
+
+- Session extraction now imports the SillyTavern chat-identity helper used by
+  provider-attempt diagnostics. This prevents an immediate pre-request
+  `getCurrentChatId is not defined` failure on every Session source window.
+- Pre-request Session programming errors, provider transport failures,
+  post-response processing failures, and persistence failures now retain
+  distinct live-health and diagnostic classifications.
+- Incomplete Long-Term or Session coverage now produces an automatic safe
+  pause rather than a misleading user-cancellation message. Manual Cancel
+  remains independently identified.
+- Finalization is blocked while source-tier coverage is incomplete. Resuming a
+  v0.9.57 checkpoint invalidates any premature finalization commits, preserves
+  safely committed tier work, replays only the missing tier, and performs the
+  definitive reconciliation after complete source coverage.
+
 ## [0.9.57] - 2026-10-16
 
 ### Added

@@ -31,6 +31,48 @@ export function validateCatchUpResumeSource(checkpoint, messages = []) {
   };
 }
 
+/**
+ * Removes finalization commits that were recorded while source or enabled-tier
+ * coverage was still incomplete. Such commits are useful only as intermediate
+ * observations and must never cause a resumed run to skip its definitive
+ * post-extraction finalization.
+ */
+export function invalidatePrematureFinalization(checkpoint) {
+  if (!checkpoint?.finalization || !checkpoint?.run_manifest) {
+    return { invalidated: false, phase_keys: [] };
+  }
+  const summary = summarizeCatchUpRunManifest(checkpoint.run_manifest);
+  const sourceIncomplete = Number(checkpoint.next_source_offset ?? 0)
+    < Number(checkpoint.source_message_count ?? 0);
+  const tierIncomplete = Object.values(summary.cumulative_tier_coverage ?? {})
+    .some((tier) => tier.enabled === true && tier.coverage_complete !== true);
+  if (!sourceIncomplete && !tierIncomplete) return { invalidated: false, phase_keys: [] };
+
+  const completed = checkpoint.finalization.completed_phases ?? {};
+  const phaseKeys = Object.keys(completed);
+  if (!phaseKeys.length) return { invalidated: false, phase_keys: [] };
+  checkpoint.finalization.invalidated_phases ??= [];
+  checkpoint.finalization.phase_dispositions ??= {};
+  for (const key of phaseKeys) {
+    checkpoint.finalization.invalidated_phases.push({
+      phase: key,
+      prior_completed_at: completed[key]?.completed_at ?? null,
+      reason_code: 'source_or_tier_coverage_incomplete',
+      invalidated_at: Date.now(),
+    });
+    checkpoint.finalization.phase_dispositions[key] = {
+      disposition: 'invalidated_by_incomplete_source_coverage',
+      resumable: true,
+      reason_code: 'source_or_tier_coverage_incomplete',
+    };
+    delete completed[key];
+  }
+  checkpoint.finalization.invalidated_phases = checkpoint.finalization.invalidated_phases.slice(-24);
+  checkpoint.finalization.active_phase = null;
+  checkpoint.finalization.updated_at = Date.now();
+  return { invalidated: true, phase_keys: phaseKeys };
+}
+
 const MAX_CATCH_UP_ATTEMPTS = 8;
 const MAX_COMMITTED_RANGES = 512;
 const MAX_COMMITTED_CHUNK_DETAILS = 512;

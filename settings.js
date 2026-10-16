@@ -90,6 +90,7 @@ import {
   isCatchUpTierRangeSafelyCovered,
   getCatchUpOwnerRangeStatus,
   recordCatchUpOwnerRange,
+  invalidatePrematureFinalization,
 } from './catchup-recovery-utils.js';
 import {
   beginCatchUpTransaction,
@@ -215,8 +216,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.57',
-  build_fingerprint: 'sme-v0.9.57-malformed-output-recovery-r1',
+  extension_version: '0.9.58',
+  build_fingerprint: 'sme-v0.9.58-session-resume-finalization-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -4880,6 +4881,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.extractionRunning = true;
     ctrl.compactionRunning = true;
     ctrl.catchUpCancelled = false;
+    ctrl.catchUpStopReason = null;
     $('#sme_resume_catch_up').prop('disabled', true);
     // The developer check touches the same durable stores as catch-up. Make
     // its unavailable state visible instead of relying only on a click-time
@@ -5148,6 +5150,10 @@ export function bindSettingsUI(ctrl) {
         })),
       };
       checkpoint.run_manifest = ensureCatchUpRunManifest(checkpoint, sourceWindow);
+      // v0.9.57 could run and commit final reconciliation after source-tier
+      // ingestion paused. On resume, remove every premature finalization
+      // marker so the definitive phases run only after complete tier coverage.
+      invalidatePrematureFinalization(checkpoint);
       const resumeWasManual = resumableCheckpoint?.status === 'awaiting_manual_resume';
       const priorTerminalReason = resumableCheckpoint?.run_manifest?.terminal_reason_code ?? null;
       const resumeAttemptType = !resumableCheckpoint ? 'initial'
@@ -5579,7 +5585,10 @@ export function bindSettingsUI(ctrl) {
               _onContextOverflowChildCommitted: commitOverflowChild,
             }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
-              if (err?.sme_context_overflow_checkpoint_failure) ctrl.catchUpCancelled = true;
+              if (err?.sme_context_overflow_checkpoint_failure) {
+                ctrl.catchUpCancelled = true;
+                ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
+              }
             });
             const completedOwnerRecord = runResult.extractionCoverage.longterm.records.findLast((record) =>
               record?.parent_range_id == null
@@ -5619,7 +5628,10 @@ export function bindSettingsUI(ctrl) {
             _onContextOverflowChildCommitted: commitOverflowChild,
           }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
-            if (err?.sme_context_overflow_checkpoint_failure) ctrl.catchUpCancelled = true;
+            if (err?.sme_context_overflow_checkpoint_failure) {
+              ctrl.catchUpCancelled = true;
+              ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
+            }
           });
           if (ctrl.catchUpCancelled) {
             rollbackCatchUpTransaction(chunkTransaction);
@@ -5730,6 +5742,7 @@ export function bindSettingsUI(ctrl) {
           // retry this exact window without loss or duplication.
           recordCatchUpError('chunk persistence error', err, null, true);
           ctrl.catchUpCancelled = true;
+          ctrl.catchUpStopReason = 'persistence_failure';
         }
 
         // Update progress and token display after each chunk so the user can
@@ -5766,6 +5779,7 @@ export function bindSettingsUI(ctrl) {
             checkpointForCommit.updated_at = Date.now();
             await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
             ctrl.catchUpCancelled = true;
+            ctrl.catchUpStopReason = 'tier_coverage_incomplete';
             setStatusMessage(`Source ingestion paused: Long-Term or Session coverage is incomplete for ${i}-${processed - 1}. Resume will replay only the pending tier work.`);
           } else {
             checkpointForCommit.next_source_offset = processed;
@@ -5918,6 +5932,7 @@ export function bindSettingsUI(ctrl) {
         checkpoint.updated_at = Date.now();
         await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
         ctrl.catchUpCancelled = true;
+        ctrl.catchUpStopReason = 'tier_coverage_incomplete';
         setStatusMessage(`Source ingestion complete, but memory-tier coverage remains incomplete: ${unresolvedTierCoverage.map((entry) => `${entry.pending_messages} ${entry.tier === 'longterm' ? 'Long-Term' : 'Session'} messages pending recovery`).join('; ')}.`);
       }
       // Tier coverage is a prerequisite, not a diagnostic afterthought. A
@@ -7943,8 +7958,22 @@ export function bindSettingsUI(ctrl) {
         settings: structuredClone(extension_settings[MODULE_NAME] ?? {}),
       };
       let reconciliation;
-      runResult.finalReconciliation.attempted = resumableFinalizationFailure ? 0 : 1;
-      if (resumableFinalizationFailure) {
+      runResult.finalReconciliation.attempted = (ctrl.catchUpCancelled || resumableFinalizationFailure) ? 0 : 1;
+      if (ctrl.catchUpCancelled) {
+        reconciliation = {
+          matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
+          persona_roster_size: catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.persona_roster_size ?? 0,
+          participant_lists_rewritten: 0, resolved_review_items_removed: 0, quarantined_arc_summaries: 0,
+          integrity_audit: {
+            status: 'blocked_by_upstream_phase', evaluated: false,
+            blocked_by: 'source_extraction', stale_entity_references: [], final_state: null,
+          },
+        };
+        checkpoint.finalization.phase_dispositions.final_reconciliation = {
+          disposition: 'blocked_by_upstream_phase', upstream_phase: 'source_extraction',
+          reason_code: ctrl.catchUpStopReason ?? 'source_extraction_incomplete', resumable: true,
+        };
+      } else if (resumableFinalizationFailure) {
         reconciliation = {
           matched: [], merged: [], skipped: [], unmatched: [], card_local_reports: [], identity_outcomes: [],
           persona_roster_size: catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.finalReconciliation?.persona_roster_size ?? 0,
@@ -8778,7 +8807,7 @@ export function bindSettingsUI(ctrl) {
             ? 'finalization_phase_failed'
             : terminalCheckpoint.run_manifest?.terminal_reason_code === 'tier_coverage_incomplete'
               ? 'tier_coverage_incomplete'
-              : 'manual_cancel';
+              : ctrl.catchUpStopReason ?? 'manual_cancel';
           terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
             status: 'awaiting_manual_resume', reasonCode: terminalReasonCode,
             attemptMetrics: {
@@ -8946,9 +8975,15 @@ export function bindSettingsUI(ctrl) {
       }
 
       if (ctrl.catchUpCancelled) {
-        runResult.status = 'cancelled';
-        setStatusMessage('Catch-up cancelled.');
-        toastr.warning('Catch-up cancelled. Partial results have been saved.', 'Smart Memory Enhanced', {
+        const automaticallyPaused = ctrl.catchUpStopReason && ctrl.catchUpStopReason !== 'manual_cancel';
+        runResult.status = automaticallyPaused ? 'paused_resumable' : 'cancelled';
+        const pausedMessage = ctrl.catchUpStopReason === 'tier_coverage_incomplete'
+          ? 'Memorize Chat paused safely because one memory tier is incomplete. Resume retries only the pending tier work.'
+          : ctrl.catchUpStopReason === 'persistence_failure' || ctrl.catchUpStopReason === 'checkpoint_persistence_failure'
+            ? 'Memorize Chat paused safely after a persistence failure. Resume continues from the last durable boundary.'
+            : 'Catch-up cancelled. Partial results have been saved.';
+        setStatusMessage(pausedMessage);
+        toastr.warning(pausedMessage, 'Smart Memory Enhanced', {
           timeOut: 5000,
           positionClass: 'toast-bottom-right',
         });
@@ -9003,6 +9038,7 @@ export function bindSettingsUI(ctrl) {
       ctrl.extractionRunning = false;
       ctrl.compactionRunning = false;
       ctrl.catchUpCancelled = false;
+      ctrl.catchUpStopReason = null;
       try {
         $('#sme_cancel_catch_up').hide().prop('disabled', false);
         $('#sme_catch_up').show().prop('disabled', false);
@@ -9038,6 +9074,7 @@ export function bindSettingsUI(ctrl) {
 
   $('#sme_cancel_catch_up').on('click', function () {
     ctrl.catchUpCancelled = true;
+    ctrl.catchUpStopReason = 'manual_cancel';
     interruptRunningExtractionEvents(getContext().chatMetadata?.[META_KEY], 'cancelled_by_manual_stop');
     $(this).prop('disabled', true);
     abortCurrentMemoryGeneration();

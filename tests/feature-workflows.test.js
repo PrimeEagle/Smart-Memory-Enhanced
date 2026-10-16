@@ -419,7 +419,7 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   assert.match(settings, /power_user\.personas/);
   assert.match(settings, /user_avatar/);
   assert.match(settings, /getLivePersonaCaptureContext\(catchUpContext\)/);
-  assert.match(settings, /finalReconciliation\.attempted = resumableFinalizationFailure \? 0 : 1/);
+  assert.match(settings, /finalReconciliation\.attempted = \(ctrl\.catchUpCancelled \|\| resumableFinalizationFailure\) \? 0 : 1/);
   assert.match(settings, /finalReconciliation\.completed = 1/);
   assert.match(settings, /finalReconciliation\.rolled_back = true/);
   assert.match(settings, /active_persona_stable_id_present/);
@@ -800,7 +800,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', true\)/);
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', false\)/);
   assert.match(settings, /renderIdempotenceResult\(savedResult\);\s*\$\('#sme_export_diagnostics'\)\.prop\('disabled', !getExportableDiagnostics\(\)\);/s);
-  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*ctrl\.catchUpCancelled = false;\s*try \{\s*\$\('#sme_cancel_catch_up'\)\.hide\(\)/s);
+  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*try \{\s*\$\('#sme_cancel_catch_up'\)\.hide\(\)/s);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);
@@ -1891,4 +1891,23 @@ test('scene diagnostics distinguish grounded relocation coverage gaps from gener
   assert.match(settings, /pending_grounded_relocation_opening/);
   assert.match(settings, /completed_relocation_evidence/);
   assert.match(settings, /transition_evidence_coverage_risk/);
+});
+
+test('Session extraction imports chat identity and distinguishes pre-request internal failures', () => {
+  const session = read('session.js');
+  assert.match(session, /extension_prompt_roles,\s*getCurrentChatId,/);
+  assert.match(session, /chat_id: getCurrentChatId\(\)/);
+  assert.match(session, /const preRequestInternalFailure = !malformedExhausted && !providerRequestSent/);
+  assert.match(session, /request_not_sent_internal_error/);
+  assert.match(session, /sessionDiagnostics\.internalFailures/);
+});
+
+test('incomplete source tiers pause safely and block definitive final reconciliation', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /ctrl\.catchUpStopReason = 'tier_coverage_incomplete'/);
+  assert.match(settings, /runResult\.finalReconciliation\.attempted = \(ctrl\.catchUpCancelled \|\| resumableFinalizationFailure\) \? 0 : 1/);
+  assert.match(settings, /blocked_by: 'source_extraction'/);
+  assert.match(settings, /invalidatePrematureFinalization\(checkpoint\)/);
+  assert.match(settings, /Memorize Chat paused safely because one memory tier is incomplete/);
+  assert.match(settings, /ctrl\.catchUpStopReason = 'manual_cancel'/);
 });

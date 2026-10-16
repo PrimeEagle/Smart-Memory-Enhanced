@@ -39,6 +39,7 @@ import {
   setExtensionPrompt,
   extension_prompt_types,
   extension_prompt_roles,
+  getCurrentChatId,
 } from '../../../../script.js';
 import { generateMemoryExtract, getMemoryRequestBudget } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
@@ -409,6 +410,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
   const sessionDiagnostics = options.sessionDiagnostics;
   let parsedCandidateCount = 0;
   let terminalCandidateCount = 0;
+  let providerRequestSent = false;
+  let providerResponseReceived = false;
+  let persistenceStarted = false;
   const recordDisposition = (name, count = 1) => {
     if (!sessionDiagnostics || count <= 0) return;
     sessionDiagnostics.terminalDispositions ??= {};
@@ -698,7 +702,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let response;
     const providerAttempt = beginPhysicalAttempt();
     try {
+      providerRequestSent = true;
       response = await generateMemoryExtract(prompt, { responseLength });
+      providerResponseReceived = true;
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
         request_sent: true,
@@ -720,6 +726,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return added;
       }
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
+      if (err && typeof err === 'object') {
+        err.sme_provider_request_sent = true;
+        err.sme_failure_stage ??= 'provider_request';
+        err.sme_live_health_finished = true;
+      }
       healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
@@ -1323,7 +1334,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (entityRegistry.length > 0) {
       reconcileCanonicalEntityRegistry(entityRegistry, getContext(), finalActive);
       reconcileEntityRegistry(entityRegistry, finalActive);
-      if (!abortCheck?.()) await saveSessionEntityRegistry(entityRegistry);
+      if (!abortCheck?.()) {
+        persistenceStarted = true;
+        await saveSessionEntityRegistry(entityRegistry);
+      }
     }
 
     // Newly retired active memories move to the retired pool.
@@ -1336,6 +1350,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     const added = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`)).length;
     if (abortCheck?.()) return 0;
+    persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
     healthFinish({
       terminal_health: 'completed', persistence: 'saved',
@@ -1351,22 +1366,40 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     return added;
   } catch (err) {
     const malformedExhausted = err?.code === 'SME_MALFORMED_PROVIDER_OUTPUT';
+    const preRequestInternalFailure = !malformedExhausted && !providerRequestSent;
+    const providerFailure = !malformedExhausted && providerRequestSent && !providerResponseReceived;
+    const persistenceFailure = !malformedExhausted && providerResponseReceived && persistenceStarted;
+    const processingFailure = !malformedExhausted && providerResponseReceived && !persistenceStarted;
+    const terminalHealth = malformedExhausted ? 'provider_response_malformed'
+      : preRequestInternalFailure ? 'internal_error'
+        : providerFailure ? 'provider_failure'
+          : persistenceFailure ? 'persistence_failure' : 'processing_failure';
+    const attentionReason = malformedExhausted ? 'unparseable_provider_response'
+      : preRequestInternalFailure ? 'pre_request_internal_error'
+        : providerFailure ? 'provider_failure'
+          : persistenceFailure ? 'persistence_failure' : 'post_response_processing_failure';
     if (sessionDiagnostics) {
       if (malformedExhausted) {
         sessionDiagnostics.malformedRecoveryExhausted = (sessionDiagnostics.malformedRecoveryExhausted ?? 0) + 1;
         sessionDiagnostics.parserFailures = (sessionDiagnostics.parserFailures ?? 0) + 1;
-      } else sessionDiagnostics.providerFailures = (sessionDiagnostics.providerFailures ?? 0) + 1;
+      } else if (providerFailure) sessionDiagnostics.providerFailures = (sessionDiagnostics.providerFailures ?? 0) + 1;
+      else if (persistenceFailure) sessionDiagnostics.persistenceFailures = (sessionDiagnostics.persistenceFailures ?? 0) + 1;
+      else sessionDiagnostics.internalFailures = (sessionDiagnostics.internalFailures ?? 0) + 1;
       // A request can fail after its initial response was parsed (for example,
       // during embedding verification). Give every affected parsed candidate
       // a terminal outcome so diagnostics still reconcile exactly.
       recordDisposition('provider_or_parser_error', Math.max(0, parsedCandidateCount - terminalCandidateCount));
     }
-    healthFinish({
-      terminal_health: malformedExhausted ? 'provider_response_malformed' : 'provider_failure',
-      provider_outcome: malformedExhausted ? 'bounded_malformed_recovery_exhausted' : 'provider_failure',
-      parser_outcome: malformedExhausted ? 'bounded_recovery_exhausted' : undefined,
-      persistence: 'preserved',
-      attention_reason_codes: [malformedExhausted ? 'unparseable_provider_response' : 'extraction_or_persistence_failure'],
+    if (!err?.sme_live_health_finished) healthFinish({
+      terminal_health: terminalHealth,
+      provider_outcome: malformedExhausted ? 'bounded_malformed_recovery_exhausted'
+        : preRequestInternalFailure ? 'request_not_sent_internal_error'
+          : providerFailure ? 'provider_failure'
+            : providerResponseReceived ? 'response_received' : 'request_not_sent',
+      parser_outcome: malformedExhausted ? 'bounded_recovery_exhausted'
+        : processingFailure ? 'post_response_processing_failed' : undefined,
+      persistence: persistenceFailure ? 'failed' : 'preserved',
+      attention_reason_codes: [attentionReason],
     });
     console.error('[Smart Memory Enhanced] Session extraction failed:', err);
     throw err;

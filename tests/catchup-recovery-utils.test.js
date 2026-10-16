@@ -12,7 +12,58 @@ import {
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
+  invalidatePrematureFinalization,
 } from '../catchup-recovery-utils.js';
+
+test('incomplete tier coverage invalidates premature finalization before resume', () => {
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-incomplete', source_message_count: 9434 });
+  manifest = recordCatchUpOwnerRange(manifest, 'Alex Mercer', {
+    start_offset: 0, end_offset: 19, source_start_index: 0, source_end_index: 19,
+  }, { safelyCommitted: true, terminalOutcome: 'completed' });
+  const checkpoint = {
+    source_message_count: 9434,
+    next_source_offset: 0,
+    run_manifest: manifest,
+    finalization: {
+      active_phase: null,
+      completed_phases: { final_reconciliation: { completed_at: 10 } },
+      phase_dispositions: { final_reconciliation: { disposition: 'completed' } },
+    },
+  };
+  const result = invalidatePrematureFinalization(checkpoint);
+  assert.equal(result.invalidated, true);
+  assert.deepEqual(result.phase_keys, ['final_reconciliation']);
+  assert.deepEqual(checkpoint.finalization.completed_phases, {});
+  assert.equal(checkpoint.finalization.phase_dispositions.final_reconciliation.disposition,
+    'invalidated_by_incomplete_source_coverage');
+  assert.equal(checkpoint.finalization.invalidated_phases[0].reason_code,
+    'source_or_tier_coverage_incomplete');
+});
+
+test('complete source and tier coverage preserves committed finalization', () => {
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-complete', source_message_count: 20 });
+  manifest = recordCommittedCatchUpRange(manifest, {
+    start_offset: 0, end_offset: 19, source_start_index: 0, source_end_index: 19,
+  }, {
+    tierOutcomes: {
+      longterm: { enabled: true, complete: true },
+      session: { enabled: true, complete: true },
+    },
+  });
+  const checkpoint = {
+    source_message_count: 20,
+    next_source_offset: 20,
+    run_manifest: manifest,
+    finalization: {
+      active_phase: null,
+      completed_phases: { final_reconciliation: { completed_at: 10 } },
+      phase_dispositions: { final_reconciliation: { disposition: 'completed' } },
+    },
+  };
+  const result = invalidatePrematureFinalization(checkpoint);
+  assert.equal(result.invalidated, false);
+  assert.equal(checkpoint.finalization.completed_phases.final_reconciliation.completed_at, 10);
+});
 
 test('completed Long-Term owners survive manifest normalization and skip sibling replay', () => {
   const range = { start_offset: 2660, end_offset: 2679, source_start_index: 2660, source_end_index: 2679 };
