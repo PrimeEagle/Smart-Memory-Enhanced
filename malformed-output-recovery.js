@@ -1,5 +1,7 @@
 /** Privacy-safe structural recovery for tagged Long-Term and Session output. */
-export const MALFORMED_RECOVERY_SCHEMA_VERSION = 1;
+import { analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
+
+export const MALFORMED_RECOVERY_SCHEMA_VERSION = 2;
 
 export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   local_normalization_paths: 5,
@@ -14,10 +16,7 @@ export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   automatic_sweep_rounds: 2,
 });
 
-const TYPE_BY_TIER = Object.freeze({
-  longterm: ['fact', 'relationship', 'preference', 'event'],
-  session: ['scene', 'revelation', 'development', 'detail'],
-});
+const taggedTypes = (tier) => getTaggedMemoryGrammar(tier).types;
 
 const classifyCharacter = (character) => {
   if (!character) return 'none';
@@ -39,10 +38,7 @@ export function analyzeMalformedResponse(response, { tier = 'longterm', finishRe
   const text = String(response ?? '');
   const trimmed = text.trim();
   const lines = responseLines(text);
-  const allowedTypes = TYPE_BY_TIER[tier] ?? TYPE_BY_TIER.longterm;
-  const taggedCandidateLines = lines.filter((line) => /^\s*(?:[-*+]\s*)?\[[^\]]*/.test(line));
-  const validTaggedLines = lines.filter((line) => new RegExp(`^\\s*(?:[-*+]\\s*)?\\[(?:${allowedTypes.join('|')})(?:[^\\]]*)\\]\\s*\\S`, 'i').test(line));
-  const rejectedTaggedLines = taggedCandidateLines.filter((line) => !validTaggedLines.includes(line));
+  const lexical = analyzeTaggedMemoryOutput(text, { tier });
   const firstStructure = lines.findIndex((line) => /^\s*(?:[-*+]\s*)?\[/.test(line));
   const lastStructure = lines.findLastIndex((line) => /^\s*(?:[-*+]\s*)?\[/.test(line));
   const proseBefore = firstStructure > 0 && lines.slice(0, firstStructure).some((line) => line.trim() && !/^```/.test(line.trim()));
@@ -72,9 +68,17 @@ export function analyzeMalformedResponse(response, { tier = 'longterm', finishRe
     json_like_object: /^\s*\{/.test(text),
     json_like_array: /^\s*\[\s*\{/.test(text),
     valid_json: validJson,
-    tagged_line_candidate_count: taggedCandidateLines.length,
-    valid_tagged_record_count: validTaggedLines.length,
-    rejected_tagged_record_count: rejectedTaggedLines.length,
+    tagged_line_candidate_count: lexical.tagged_candidate_count,
+    valid_tagged_record_count: lexical.parser_accepted_record_count,
+    parser_accepted_record_count: lexical.parser_accepted_record_count,
+    normalization_accepted_record_count: 0,
+    semantic_validation_rejected_record_count: null,
+    rejected_tagged_record_count: lexical.structurally_rejected_record_count,
+    structurally_rejected_record_count: lexical.structurally_rejected_record_count,
+    unclassified_fragment_count: lexical.unclassified_fragment_count,
+    structural_candidate_count: lexical.structural_candidate_count,
+    recoverable_claim_fragment_count: lexical.recoverable_claim_fragment_count,
+    parser_shape_counts_reconciled: lexical.accounting_reconciled,
     prose_before_structure: proseBefore,
     prose_after_structure: proseAfter,
     escaped_newlines_present: /\\[rn]/.test(text),
@@ -106,7 +110,7 @@ export function classifyTaggedResponseFailure(response, options = {}) {
   if (shape.valid_tagged_record_count > 0 && (shape.prose_before_structure || shape.prose_after_structure)) return 'prose_around_tagged_records';
   if (shape.tagged_line_candidate_count > 0) {
     const tagText = responseLines(text).filter((line) => /^\s*(?:[-*+]\s*)?\[/.test(line)).join('\n');
-    const allowed = TYPE_BY_TIER[options.tier ?? 'longterm'] ?? TYPE_BY_TIER.longterm;
+    const allowed = taggedTypes(options.tier ?? 'longterm');
     if (!new RegExp(`\\[(?:${allowed.join('|')})(?:[:\\]])`, 'i').test(tagText)) return 'unsupported_memory_type';
     if (/\[[^\]]*(?:source|sources|source_indices)\s*=\s*[^\d\]]/i.test(tagText)) return 'invalid_source_citations';
     if (/\[[^\]]*(?:source|sources|source_indices)\s*=\s*\]/i.test(tagText)) return 'missing_source_citations';
@@ -116,9 +120,28 @@ export function classifyTaggedResponseFailure(response, options = {}) {
   return 'missing_tagged_records';
 }
 
+/** Selects the cheapest safe recovery stage from content-free response shape. */
+export function routeMalformedTaggedRecovery(response, { tier = 'longterm', reason = null } = {}) {
+  const malformedReason = reason ?? classifyTaggedResponseFailure(response, { tier });
+  const shape = analyzeMalformedResponse(response, { tier });
+  const repairableReasons = new Set(['invalid_modifier_syntax', 'malformed_tag', 'partial_valid_output']);
+  const compactRepairEligible = repairableReasons.has(malformedReason)
+    && shape.recoverable_claim_fragment_count > 0;
+  return {
+    route: compactRepairEligible ? 'compact_response_repair' : 'changed_dimension_regeneration',
+    malformed_reason: malformedReason,
+    compact_repair_eligible: compactRepairEligible,
+    recoverable_claim_fragment_count: shape.recoverable_claim_fragment_count,
+    avoided_repair_reason: compactRepairEligible ? null
+      : malformedReason === 'repair_failure_sentinel' ? 'repair_failure_sentinel'
+        : shape.recoverable_claim_fragment_count === 0 ? 'no_recoverable_claim_content'
+          : `reason_not_repair_eligible:${malformedReason}`,
+  };
+}
+
 function canonicalJsonRecord(record, tier) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
-  const allowed = TYPE_BY_TIER[tier] ?? TYPE_BY_TIER.longterm;
+  const allowed = taggedTypes(tier);
   const type = String(record.type ?? record.memory_type ?? record.category ?? '').trim().toLowerCase();
   const content = String(record.content ?? record.memory ?? record.text ?? record.description ?? '').trim();
   if (!allowed.includes(type) || content.length < (tier === 'session' ? 4 : 6)) return null;
@@ -167,7 +190,7 @@ export function normalizeTaggedMemoryOutput(response, { tier = 'longterm', parse
   result ??= unescaped !== unfenced ? tryPath('decode_escaped_newlines', unescaped) : null;
   const unbulleted = unescaped.replace(/^\s*[-*+]\s+(?=\[)/gm, '');
   result ??= unbulleted !== unescaped ? tryPath('remove_tagged_line_bullets', unbulleted) : null;
-  const allowed = TYPE_BY_TIER[tier] ?? TYPE_BY_TIER.longterm;
+  const allowed = taggedTypes(tier);
   const extracted = responseLines(unbulleted).filter((line) => new RegExp(`^\\s*\\[(?:${allowed.join('|')})(?:[^\\]]*)\\]\\s*\\S`, 'i').test(line)).join('\n');
   result ??= extracted && extracted !== unbulleted.trim() ? tryPath('extract_complete_tagged_lines', extracted) : null;
   const json = jsonRecords(unfenced, tier);
@@ -184,14 +207,14 @@ export function normalizeTaggedMemoryOutput(response, { tier = 'longterm', parse
 }
 
 export function buildCompactFormatRepairPrompt(response, { tier = 'longterm' } = {}) {
-  const types = TYPE_BY_TIER[tier] ?? TYPE_BY_TIER.longterm;
+  const types = taggedTypes(tier);
   const defaultExpiration = tier === 'session' ? 'session' : 'permanent';
   const boundedResponse = String(response ?? '').slice(0, 16000);
   return `Transform the supplied malformed model output into the exact tagged-line schema below.\n\nRules:\n- Preserve only claims already present in MALFORMED OUTPUT.\n- Do not add, infer, summarize, or embellish facts.\n- Keep source indices only when present and valid.\n- Drop ambiguous fragments.\n- Output repaired tagged records only.\n- If no record can be repaired without inventing content, output exactly REPAIR_FAILED.\n\nSchema:\n[type:importance:expiration:entity=name:source=0,1] content\nAllowed types: ${types.join(', ')}\nImportance: 1, 2, or 3\nDefault expiration: ${defaultExpiration}\n\nMALFORMED OUTPUT BEGIN\n${boundedResponse}\nMALFORMED OUTPUT END`;
 }
 
 export function buildChangedDimensionRegenerationPrompt(originalPrompt, { tier = 'longterm' } = {}) {
-  const types = TYPE_BY_TIER[tier] ?? TYPE_BY_TIER.longterm;
+  const types = taggedTypes(tier);
   return `RECOVERY MODE — MINIMAL CANONICAL OUTPUT\nReturn only complete tagged lines. No JSON, markdown, analysis, preface, or trailing commentary. Use only these types: ${types.join(', ')}. Every record must cite source indices from the supplied numbered messages. If there are no supported records, output exactly NONE.\n\n${originalPrompt}`;
 }
 
@@ -253,12 +276,15 @@ export async function recoverMalformedTaggedOutput({
 } = {}) {
   const parserPaths = ['strict_expected_format'];
   const originalReason = classifyTaggedResponseFailure(response, { tier });
+  const recoveryRoute = routeMalformedTaggedRecovery(response, { tier, reason: originalReason });
   const local = normalizeTaggedMemoryOutput(response, { tier, parse });
   if (local.succeeded) {
     finishAttempt(originalAttempt, {
-      terminal_outcome: 'completed', malformed_reason: originalReason, recoverable: true,
+      terminal_outcome: 'completed', malformed_reason: null,
+      notice_reason: `local_normalization:${originalReason}`, recoverable: true,
       recovery_stage: 'local_normalization', final_recovery_stage: 'local_normalization',
-      response_text: response, parser_paths_attempted: parserPaths,
+      response_shape: { ...local.structural, normalization_accepted_record_count: local.records.length },
+      parser_paths_attempted: parserPaths,
       local_normalization_paths_attempted: local.paths_attempted.map((item) => item.path),
     });
     markMalformedRecoverySuccess(budget, 'local_normalization');
@@ -269,12 +295,16 @@ export async function recoverMalformedTaggedOutput({
     recovery_stage: 'strict_generation', response_text: response,
     parser_paths_attempted: parserPaths,
     local_normalization_paths_attempted: local.paths_attempted.map((item) => item.path),
+    recovery_route: recoveryRoute.route,
+    avoided_repair_reason: recoveryRoute.avoided_repair_reason,
   });
 
   let lastReason = originalReason;
   let lastFailedAttempt = originalAttempt;
   let lastProviderError = null;
-  const repairBudget = consumeMalformedRecoveryRequest(budget, 'compact_response_repair');
+  const repairBudget = recoveryRoute.compact_repair_eligible
+    ? consumeMalformedRecoveryRequest(budget, 'compact_response_repair')
+    : { allowed: false, reason: recoveryRoute.avoided_repair_reason };
   if (repairBudget.allowed) {
     const attempt = beginAttempt('format_repair', ['malformed_response_input', 'compact_repair_prompt'], {
       recovery_of_attempt_id: originalAttempt?.attempt_id ?? null, repair_reason: originalReason,

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  analyzeTaggedMemoryOutput,
   parseExtractionOutput,
   parseBracketModifiers,
   isPlausibleEntityName,
@@ -17,6 +18,17 @@ import {
   parseEpistemicResponse,
   parseEpistemicRetireIndices,
 } from '../parsers.js';
+
+test('tagged lexical analysis and authoritative parsers agree exactly', () => {
+  const longterm = '[fact:2:permanent:sources=1] A fully supported fact.\n[unknown] rejected fragment';
+  const longtermShape = analyzeTaggedMemoryOutput(longterm, { tier: 'longterm' });
+  assert.equal(longtermShape.parser_accepted_record_count, parseExtractionOutput(longterm).length);
+  assert.equal(longtermShape.structurally_rejected_record_count, 1);
+  assert.equal(longtermShape.accounting_reconciled, true);
+  const session = '[detail:2:session:sources=2] Current session detail.';
+  assert.equal(analyzeTaggedMemoryOutput(session, { tier: 'session' }).parser_accepted_record_count,
+    parseSessionOutput(session).length);
+});
 import { applyDirectProvenance } from '../grounding.js';
 
 // =========================================================================

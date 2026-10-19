@@ -4,9 +4,30 @@ import {
   beginProviderAttempt,
   classifyMalformedProviderOutput,
   finishProviderAttempt,
+  migrateProviderAttemptAuditReport,
   PROVIDER_OBLIGATION_LIMIT,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
+
+test('persisted schema-three summaries reclassify strict partial inflation without losing true failures', () => {
+  const migrated = migrateProviderAttemptAuditReport({
+    schema_version: 3, malformed_physical_responses: 1579,
+    malformed_reason_counts: { partial_valid_output: 1341, invalid_modifier_syntax: 140, repair_failure_sentinel: 98 },
+    unique_malformed_obligations: 1409, recovered_malformed_obligations: 1409,
+    terminally_unresolved_malformed_obligations: 0,
+    recoveries_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
+    malformed_recovery_performance: {
+      obligations_recovered_by_stage: { strict_partial_valid_preserved: 1239, changed_dimension_regeneration: 101 },
+      successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
+    },
+  });
+  assert.equal(migrated.schema_version, 4);
+  assert.equal(migrated.malformed_physical_responses, 238);
+  assert.equal(migrated.unique_malformed_obligations, 170);
+  assert.equal(migrated.recovered_malformed_obligations, 170);
+  assert.equal(migrated.notice_reason_counts.partial_valid_output, 1341);
+  assert.equal(migrated.malformed_reason_counts.partial_valid_output, undefined);
+});
 
 test('malformed output is reason-coded and a changed format repair closes the same obligation', () => {
   const metadata = { active_catchup_run_id: 'run-a' };
@@ -35,6 +56,62 @@ test('malformed output is reason-coded and a changed format repair closes the sa
   assert.equal(summary.repair_reason_counts.prose_around_structured_output, 1);
   assert.equal(summary.reconciliation.every_provider_attempt_has_one_terminal_category, true);
   assert.equal(summary.retained_attempts[0].recovered_by_attempt_id, repair.attempt_id);
+  assert.equal(summary.recovery_effectiveness[0].attempts, 1);
+  assert.equal(summary.recovery_effectiveness[0].successes, 1);
+  assert.equal(summary.recovery_effectiveness[0].unique_obligations_recovered, 1);
+});
+
+test('accepted partial fragments are notices, not recovered failed obligations', () => {
+  const metadata = { active_catchup_run_id: 'run-notice' };
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'lt:notice', request_kind: 'original',
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'completed', notice_reason: 'partial_valid_output',
+    recovery_stage: 'strict_partial_valid_preserved', parser_count_consistent: true,
+    response_shape: { parser_accepted_record_count: 1, structurally_rejected_record_count: 2 },
+  });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.unique_malformed_obligations, 0);
+  assert.equal(summary.recovered_malformed_obligations, 0);
+  assert.equal(summary.notice_reason_counts.partial_valid_output, 1);
+  assert.equal(summary.obligation_outcome_counts.partial_output_obligations, 1);
+  assert.equal(summary.obligation_outcome_counts.partial_output_rejected_fragments, 2);
+  assert.equal(summary.reconciliation.parser_and_structural_counts_agree, true);
+});
+
+test('context repartition remains separate from malformed-output recovery', () => {
+  const metadata = { active_catchup_run_id: 'run-context-repartition' };
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'session:child', request_kind: 'repartition_child',
+    recovery_stage: 'repartition_child', parent_attempt_id: 'parent-overflow',
+  });
+  finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed', recovery_stage: 'repartition_child' });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.unique_malformed_obligations, 0);
+  assert.equal(summary.obligation_outcome_counts.context_repartition_obligations, 1);
+  assert.equal(summary.outcome_taxonomy.context_repartition_requests, 1);
+});
+
+test('schema-three strict partial accounting migrates to notices once', () => {
+  const metadata = { active_catchup_run_id: 'legacy', live_memory_health: { provider_attempt_audit: {
+    schema_version: 3, run_id: 'legacy', sequence: 1, attempted: 1, running_count: 0,
+    terminal_counts: { completed: 1 }, malformed_reason_counts: { partial_valid_output: 1 },
+    request_kind_counts: { original: 1 }, repair_reason_counts: {}, changed_recovery_dimension_counts: {},
+    runtime_context_lookup_counts: {}, logical_obligation_count: 1, recent_attempts: [],
+    obligations: { legacy: { logical_obligation_id: 'legacy', malformed_count: 1,
+      last_malformed_reason: 'partial_valid_output', final_recovery_stage: 'strict_partial_valid_preserved',
+      terminal_outcome: 'completed', physical_attempt_count: 1 } },
+    archived_obligation_counts: { exact: true, total: 0, malformed: 0, recovered_malformed: 0,
+      safely_checkpointed: 0, valid_generation: 0, intentionally_accepted_no_update: 0,
+      terminal_failed: 0, recovered_by_stage: {} }, recoveries_by_stage: { strict_partial_valid_preserved: 1 },
+  } } };
+  const next = beginProviderAttempt(metadata, { tier: 'session', logical_obligation_id: 'new' });
+  finishProviderAttempt(metadata, next, { terminal_outcome: 'completed_no_candidates' });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.unique_malformed_obligations, 0);
+  assert.equal(summary.notice_reason_counts.partial_valid_output, 1);
+  assert.equal(summary.legacy_accounting_migration.partial_obligations_reclassified_as_notices, 1);
 });
 
 test('bounded malformed retries expose unresolved churn and identical retry loops', () => {
@@ -79,7 +156,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 3);
+  assert.equal(summary.schema_version, 4);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);

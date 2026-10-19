@@ -1,4 +1,6 @@
-export const RUN_STATUS_CLASSIFIER_VERSION = 1;
+import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
+
+export const RUN_STATUS_CLASSIFIER_VERSION = 2;
 
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const array = (value) => Array.isArray(value) ? value : [];
@@ -10,14 +12,20 @@ export function deriveRunErrorAccounting(report = {}) {
   const logical = report.logical_run ?? {};
   const currentDetails = array(report.error_details);
   const notices = array(report.quality?.notices ?? report.quality_notices);
+  const providerNoticeCategories = Object.values(provider.notice_reason_counts ?? {})
+    .filter((value) => number(value) > 0).length;
   const unresolved = number(provider.terminally_unresolved_malformed_obligations
     ?? provider.coverage?.terminal_failed_obligations
     ?? report.unresolved_error_count);
   const recovered = number(provider.recovered_malformed_obligations ?? report.recovered_error_count);
   const uniqueFailed = number(provider.unique_malformed_obligations) || unresolved + recovered;
-  const cumulativeFailureObservations = number(logical.cumulative_request_counters?.provider_failure_count
+  const observedTransportFailures = number(logical.cumulative_request_counters?.provider_failure_count
     ?? report.provider_failure_observation_count
     ?? array(report.provider_failures).length);
+  // A genuinely malformed root obligation is itself a historical failure
+  // observation even when transport succeeded. Formatting notices are kept in
+  // the provider notice counters and never enter uniqueFailed.
+  const cumulativeFailureObservations = Math.max(observedTransportFailures, uniqueFailed);
   const fatalRunErrors = Math.max(
     number(report.fatal_run_error_count),
     report.final_persistence_error ? 1 : 0,
@@ -32,7 +40,7 @@ export function deriveRunErrorAccounting(report = {}) {
   const providerAggregateCountsExact = provider.obligation_aggregate_counts_exact === true
     || provider.obligation_history_truncated !== true;
   return {
-    schema_version: 1,
+    schema_version: 2,
     current_attempt_error_records: {
       count: currentDetails.length, unit: 'retained_events', scope: 'current_attempt',
       includes_recovered: true, bounded: true, authoritative: false,
@@ -72,7 +80,7 @@ export function deriveRunErrorAccounting(report = {}) {
       includes_recovered: false, bounded: false, authoritative: true,
     },
     quality_notices: {
-      count: notices.length, unit: 'notice_categories', scope: 'final_quality_review',
+      count: notices.length + providerNoticeCategories, unit: 'notice_categories', scope: 'final_quality_review_and_provider_output_shape',
       includes_recovered: false, bounded: false, authoritative: true,
     },
     reconciliation: {
@@ -85,9 +93,11 @@ export function deriveRunErrorAccounting(report = {}) {
       displayed_unresolved_equals_authoritative_set: unresolved === number(provider.terminally_unresolved_malformed_obligations
         ?? provider.coverage?.terminal_failed_obligations ?? unresolved),
       bounded_detail_does_not_replace_authoritative_count: unresolved >= retainedUnresolvedCount,
+      recovered_failures_have_historical_observation: recovered === 0 || cumulativeFailureObservations > 0,
       consistent: unresolved <= uniqueFailed
-        && recovered + unresolved <= Math.max(uniqueFailed, recovered + unresolved)
-        && unresolved >= retainedUnresolvedCount,
+        && (!providerAggregateCountsExact || recovered + unresolved === uniqueFailed)
+        && unresolved >= retainedUnresolvedCount
+        && (recovered === 0 || cumulativeFailureObservations > 0),
     },
   };
 }
@@ -114,11 +124,15 @@ export function deriveRunStatus(report = {}) {
     ?? report.final_integrity_status
     ?? report.finalReconciliation?.integrity_audit?.status
     ?? null;
+  const automaticMissedMutation = report.manual_idempotence?.post_automatic_manual_dependency_trace?.automatic_missed_mutation === true
+    || report.developer_idempotence_check?.post_automatic_manual_dependency_trace?.automatic_missed_mutation === true
+    || report.finalReconciliation?.final_state_consistency?.automatic_missed_mutation === true;
   const integrityFailure = integrityStatus !== null && !cleanIntegrity(integrityStatus);
   const unresolvedCount = number(accounting.terminal_unresolved_obligations?.count);
   const recoveredCount = number(accounting.recovered_obligations?.count);
   const historicalFailureObservationCount = number(accounting.historical_failure_observations?.count);
   const noticeCount = number(accounting.quality_notices?.count);
+  const displayedNoticeCount = noticeCount + (automaticMissedMutation ? 1 : 0);
   const fatalCount = number(accounting.fatal_run_level_errors?.count);
   const legacyStatus = String(report.lifecycle_status ?? report.operational_status ?? report.status ?? '').toLowerCase();
   const statusReasonCodes = [];
@@ -156,7 +170,7 @@ export function deriveRunStatus(report = {}) {
     } else if (recoveredCount > 0 || historicalFailureObservationCount > 0) {
       outcomeStatus = 'completed_recovered_errors'; severity = 'warning'; icon = 'triangle-exclamation';
       label = 'Completed — recovered errors'; statusReasonCodes.push('historical_errors_fully_recovered');
-    } else if (noticeCount > 0) {
+    } else if (displayedNoticeCount > 0) {
       outcomeStatus = 'completed_with_notices'; severity = 'warning'; icon = 'circle-info';
       label = 'Completed with notices'; statusReasonCodes.push('safe_quality_notices');
     } else {
@@ -173,6 +187,7 @@ export function deriveRunStatus(report = {}) {
   } else {
     outcomeStatus = 'failed'; severity = 'error'; icon = 'circle-xmark'; label = 'Failed';
   }
+  if (automaticMissedMutation) statusReasonCodes.push('automatic_finalization_missed_mutation');
   return {
     classifier_version: RUN_STATUS_CLASSIFIER_VERSION,
     lifecycle_status: lifecycleStatus,
@@ -183,7 +198,8 @@ export function deriveRunStatus(report = {}) {
     unresolved_error_count: unresolvedCount,
     recovered_error_count: recoveredCount,
     historical_failure_observation_count: historicalFailureObservationCount,
-    notice_count: noticeCount,
+    notice_count: displayedNoticeCount,
+    attention_required: automaticMissedMutation || unresolvedCount > 0 || integrityFailure,
     recovery_reason_code: recovery.reason_code ?? null,
     status_reason_codes: [...new Set(statusReasonCodes)],
     completion_evidence: {
@@ -193,6 +209,7 @@ export function deriveRunStatus(report = {}) {
       remaining_gap_count: number(logical.remaining_gap_count),
       finalization_committed: finalizationCommitted,
       final_integrity_status: integrityStatus,
+      automatic_missed_mutation: automaticMissedMutation,
     },
   };
 }
@@ -313,10 +330,12 @@ export function deriveRunPerformanceDiagnostics(report = {}) {
 
 /** Read-only compatibility normalization for persisted legacy reports. */
 export function normalizeRunStatusReport(report = {}) {
-  const errorAccounting = deriveRunErrorAccounting(report);
-  const runStatus = deriveRunStatus({ ...report, error_accounting: errorAccounting });
+  const providerAttemptAudit = migrateProviderAttemptAuditReport(report.provider_attempt_audit);
+  const normalizedInput = { ...report, provider_attempt_audit: providerAttemptAudit };
+  const errorAccounting = deriveRunErrorAccounting(normalizedInput);
+  const runStatus = deriveRunStatus({ ...normalizedInput, error_accounting: errorAccounting });
   return {
-    ...report,
+    ...normalizedInput,
     status: runStatus.lifecycle_status,
     operational_status: runStatus.lifecycle_status,
     lifecycle_status: runStatus.lifecycle_status,
@@ -324,7 +343,7 @@ export function normalizeRunStatusReport(report = {}) {
     severity: runStatus.severity,
     run_status: runStatus,
     error_accounting: errorAccounting,
-    performance_diagnostics: deriveRunPerformanceDiagnostics(report),
+    performance_diagnostics: deriveRunPerformanceDiagnostics(normalizedInput),
     quality: report.quality ? {
       ...report.quality,
       status: runStatus.outcome_status,

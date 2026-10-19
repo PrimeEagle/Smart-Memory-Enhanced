@@ -1900,6 +1900,18 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     includeChatLocalApproved: true,
     runtimeSnapshot,
   });
+  // Cross-store entity merges above can change relationship-pair safety after
+  // the initial roster snapshot. Re-run card-local relationship normalization
+  // now, inside the same reconciliation transaction, so unresolved/conflicting
+  // pairs are quarantined before automatic stabilization declares a fixed
+  // point. A following manual Developer check must therefore start at 0/0.
+  for (const [localName, history] of Object.entries(meta.card_local_relationships ?? {})) {
+    await yieldEvery();
+    const relationshipResult = reconcileRelationshipHistoryMap(history, finalizedRoster);
+    if (!relationshipResult.changed) continue;
+    meta.card_local_relationships[localName] = relationshipResult.history;
+    localRelationshipPairsMerged += relationshipResult.merged;
+  }
   const rewriteFinalizedStoredNarratives = async (memories) => {
     let count = 0;
     for (const memory of memories) {

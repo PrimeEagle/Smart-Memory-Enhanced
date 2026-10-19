@@ -1166,13 +1166,27 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       healthUpdate({ provider_outcome: `completed_after_${recovery.stage}`, parser_outcome: `parsed_after_${recovery.stage}` });
     } else {
       const responseShape = analyzeMalformedResponse(response, { tier: 'longterm' });
-      const partialReason = responseShape.rejected_tagged_record_count > 0 ? 'partial_valid_output'
-        : responseShape.prose_before_structure || responseShape.prose_after_structure ? 'prose_around_tagged_records' : null;
+      const parserCountConsistent = parsed.length === responseShape.parser_accepted_record_count;
+      if (!parserCountConsistent) {
+        finishProviderAttempt(providerMetadata, providerAttempt, {
+          terminal_outcome: 'internal_failure', malformed_reason: 'parser_structural_analysis_mismatch',
+          response_shape: responseShape, parser_count_consistent: false, recoverable: false,
+          final_disposition: 'developer_consistency_failure',
+        });
+        const consistencyError = new Error('Long-term parser and structural analysis disagreed on accepted record count.');
+        consistencyError.code = 'SME_PARSER_ANALYSIS_MISMATCH';
+        throw consistencyError;
+      }
+      const partialReason = responseShape.parser_accepted_record_count > 0
+        && responseShape.structurally_rejected_record_count > 0 ? 'partial_valid_output' : null;
+      const noticeReason = !parserCountConsistent ? 'parser_structural_analysis_mismatch'
+        : partialReason ?? ((responseShape.prose_before_structure || responseShape.prose_after_structure)
+        ? 'prose_around_tagged_records' : null);
       finishProviderAttempt(providerMetadata, providerAttempt, {
-        terminal_outcome: 'completed', malformed_reason: partialReason,
+        terminal_outcome: 'completed', malformed_reason: null, notice_reason: noticeReason,
         recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',
         final_recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',
-        response_text: partialReason ? response : undefined,
+        response_shape: responseShape, parser_count_consistent: parserCountConsistent,
         partial_output_policy: partialReason ? 'accept_complete_valid_records_and_reject_only_malformed_fragments' : null,
       });
     }

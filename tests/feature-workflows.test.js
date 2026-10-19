@@ -1714,6 +1714,16 @@ test('pre-run diagnostics and automatic stabilization share the durable semantic
   assert.match(idempotence, /summarizeStoryArcChanges/);
 });
 
+test('final reconciliation revisits card-local relationships after the finalized roster exists', () => {
+  const ui = readFileSync(new URL('../ui.js', import.meta.url), 'utf8');
+  const finalizedRoster = ui.indexOf('const finalizedRoster = buildCanonicalCharacterRoster');
+  const postMergeRelationshipPass = ui.indexOf('reconcileRelationshipHistoryMap(history, finalizedRoster)', finalizedRoster);
+  const integrityAudit = ui.indexOf('const relationshipPairKeyIssues', postMergeRelationshipPass);
+  assert.ok(finalizedRoster >= 0);
+  assert.ok(postMergeRelationshipPass > finalizedRoster);
+  assert.ok(integrityAudit > postMergeRelationshipPass);
+});
+
 test('ambiguous dangling memory entity links are withheld without identity guessing', () => {
   const ui = read('ui.js');
   const settings = read('settings.js');

@@ -53,6 +53,16 @@ const MODIFIER_KEYS = new Set(['entity', 'entities', 'source', 'sources', 'sourc
 const ENTITY_CONTROL_WORDS = new Set([...MEMORY_TYPES, ...SESSION_TYPES, 'arc', 'resolved', 'scene', 'session', 'permanent', 'none', 'source', 'sources', 'source_messages', 'source_indices', 'score', 'expiration', 'expires', 'entity', 'entities', 'witnessed_by', 'trigger', 'triggers']);
 const COLLECTIVE_ENTITY_NAMES = new Set(['all three', 'all four', 'both of them', 'the two of them', 'the couple', 'the group', 'everyone', 'everybody', 'the others', 'the trio', 'the family', 'the roommates', 'the partners']);
 const ROLE_PLACEHOLDER_ENTITY_NAMES = new Set(['supporting_character', 'supporting character', 'side_character', 'side character', 'character', 'person', 'npc', 'unknown character', 'minor character']);
+const TAGGED_MEMORY_GRAMMARS = Object.freeze({
+  longterm: { types: MEMORY_TYPES, minimumContentLength: 6, defaultExpiration: 'permanent' },
+  session: { types: SESSION_TYPES, minimumContentLength: 4, defaultExpiration: 'session' },
+});
+
+export function getTaggedMemoryGrammar(tier = 'longterm') {
+  const grammar = TAGGED_MEMORY_GRAMMARS[tier] ?? TAGGED_MEMORY_GRAMMARS.longterm;
+  return { types: [...grammar.types], minimumContentLength: grammar.minimumContentLength,
+    defaultExpiration: grammar.defaultExpiration };
+}
 
 /** Exact role labels are not durable people or named entities. */
 export function isEntityRolePlaceholder(candidate) {
@@ -102,6 +112,106 @@ export function parseBracketModifiers(rawModifiers = '') {
   return result;
 }
 
+/**
+ * Authoritative lexical analysis for Long-Term and Session tagged output.
+ * Parsing, recovery classification, and exported structural diagnostics all
+ * consume this result so an accepted record can never simultaneously be
+ * reported as a rejected fragment. Record text is deliberately retained only
+ * in the private `accepted`/`rejected` arrays; diagnostic callers project the
+ * content-free counters.
+ */
+export function analyzeTaggedMemoryOutput(text, { tier = 'longterm' } = {}) {
+  const grammar = TAGGED_MEMORY_GRAMMARS[tier] ?? TAGGED_MEMORY_GRAMMARS.longterm;
+  const raw = String(text ?? '');
+  const lines = raw.replace(/\r\n?/g, '\n').split('\n');
+  const typeAlternation = grammar.types.join('|');
+  const acceptedPattern = new RegExp(`^\\[(${typeAlternation})([^\\]]*)\\]\\s*(.+)$`, 'i');
+  const candidatePattern = /^\s*(?:[-*+]\s*)?\[[^\]]*/;
+  const accepted = [];
+  const rejected = [];
+  let unclassifiedFragmentCount = 0;
+  let candidateLineCount = 0;
+  for (const [lineIndex, line] of lines.entries()) {
+    const match = line.match(acceptedPattern);
+    if (match) {
+      candidateLineCount++;
+      const content = match[3].trim();
+      if (content.length >= grammar.minimumContentLength) {
+        accepted.push({
+          line_index: lineIndex,
+          type: match[1].toLowerCase(),
+          modifiers: match[2],
+          content,
+          parsed_modifiers: parseBracketModifiers(match[2]),
+        });
+      } else {
+        rejected.push({ line_index: lineIndex, reason_code: 'content_too_short', recoverable_claim_content: false });
+      }
+      continue;
+    }
+    if (candidatePattern.test(line)) {
+      candidateLineCount++;
+      const closed = line.match(/^\s*(?:[-*+]\s*)?\[([^\]]*)\]\s*(.*)$/);
+      const content = closed?.[2]?.trim() ?? '';
+      rejected.push({
+        line_index: lineIndex,
+        reason_code: closed ? 'parser_rejected_tagged_record' : 'truncated_tagged_record',
+        recoverable_claim_content: Boolean(closed && content.length >= grammar.minimumContentLength),
+      });
+    } else if (line.trim() && !/^```/.test(line.trim())) {
+      unclassifiedFragmentCount++;
+    }
+  }
+  return {
+    tier,
+    accepted,
+    rejected,
+    parser_accepted_record_count: accepted.length,
+    structurally_rejected_record_count: rejected.length,
+    tagged_candidate_count: candidateLineCount,
+    unclassified_fragment_count: unclassifiedFragmentCount,
+    structural_candidate_count: candidateLineCount + unclassifiedFragmentCount,
+    recoverable_claim_fragment_count: rejected.filter((entry) => entry.recoverable_claim_content).length,
+    accounting_reconciled: candidateLineCount + unclassifiedFragmentCount
+      === accepted.length + rejected.length + unclassifiedFragmentCount,
+  };
+}
+
+function buildTaggedMemoryRecords(text, tier) {
+  const grammar = TAGGED_MEMORY_GRAMMARS[tier] ?? TAGGED_MEMORY_GRAMMARS.longterm;
+  return analyzeTaggedMemoryOutput(text, { tier }).accepted.map((entry) => {
+    const parsedModifiers = entry.parsed_modifiers;
+    const source_message_indices = parsedModifiers.sourceIndices;
+    return {
+      type: entry.type,
+      content: entry.content,
+      importance: parsedModifiers.score ?? 2,
+      expiration: parsedModifiers.expiration ?? grammar.defaultExpiration,
+      ts: Date.now(),
+      consolidated: false,
+      _raw_entity_names: parsedModifiers.entityNames,
+      ...(tier === 'session' ? {
+        _citation_candidate_id: parsedModifiers.candidateId,
+        _citation_claim_hash: parsedModifiers.claimHash,
+      } : {}),
+      id: generateMemoryId(),
+      source_messages: [],
+      grounding_status: source_message_indices.length ? 'direct' : 'ungrounded',
+      validation_status: source_message_indices.length ? 'unvalidated' : 'needs_review',
+      validation_issues: source_message_indices.length ? [] : ['No source messages were supplied.'],
+      source_message_indices,
+      parent_memory_ids: [],
+      entities: [],
+      time_scope: tier === 'session' ? 'session' : 'global',
+      valid_from: null,
+      valid_to: null,
+      supersedes: [],
+      superseded_by: null,
+      contradicts: [],
+    };
+  });
+}
+
 // ---- Long-term extraction -----------------------------------------------
 
 /**
@@ -119,58 +229,7 @@ export function parseBracketModifiers(rawModifiers = '') {
  */
 export function parseExtractionOutput(text) {
   if (!text || text.trim().toUpperCase() === 'NONE') return [];
-
-  const results = [];
-  // Capture type and all modifier fields as a single string, then parse them
-  // separately. This is resilient to local models reordering optional fields
-  // (score, expiration, entity=) or omitting some of them.
-  const linePattern = /^\[(fact|relationship|preference|event)([^\]]*)\]\s*(.+)$/gim;
-  let match;
-
-  while ((match = linePattern.exec(text)) !== null) {
-    const type = match[1].toLowerCase();
-    const modifiers = match[2]; // e.g. ":2:permanent" or ":2:permanent:entity=Senjin,Alex"
-    const content = match[3].trim();
-
-    if (!MEMORY_TYPES.includes(type) || content.length <= 5) continue;
-
-    const parsedModifiers = parseBracketModifiers(modifiers);
-    const importance = parsedModifiers.score ?? 2;
-    const expiration = parsedModifiers.expiration ?? 'permanent';
-    const rawEntityNames = parsedModifiers.entityNames;
-    const source_message_indices = parsedModifiers.sourceIndices;
-
-    // New entries start as unprocessed - they will be evaluated against the
-    // consolidated base before being promoted.
-    // _raw_entity_names is a transient pipeline field: resolved to entity ids
-    // and stripped before the memory reaches storage.
-    results.push({
-      type,
-      content,
-      importance,
-      expiration,
-      ts: Date.now(),
-      consolidated: false,
-      _raw_entity_names: rawEntityNames,
-      // Graph fields - supersession links are added by the verifier pass.
-      id: generateMemoryId(),
-      source_messages: [],
-      grounding_status: source_message_indices.length ? 'direct' : 'ungrounded',
-      validation_status: source_message_indices.length ? 'unvalidated' : 'needs_review',
-      validation_issues: source_message_indices.length ? [] : ['No source messages were supplied.'],
-      source_message_indices,
-      parent_memory_ids: [],
-      entities: [],
-      time_scope: 'global',
-      valid_from: null,
-      valid_to: null,
-      supersedes: [],
-      superseded_by: null,
-      contradicts: [],
-    });
-  }
-
-  return results;
+  return buildTaggedMemoryRecords(text, 'longterm');
 }
 
 // ---- Session extraction -------------------------------------------------
@@ -190,55 +249,7 @@ export function parseExtractionOutput(text) {
  */
 export function parseSessionOutput(text) {
   if (!text || text.trim().toUpperCase() === 'NONE') return [];
-  const results = [];
-  // Same flexible bracket-content approach as parseExtractionOutput.
-  const pattern = /^\[(scene|revelation|development|detail)([^\]]*)\]\s*(.+)$/gim;
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    const type = match[1].toLowerCase();
-    const modifiers = match[2];
-    const content = match[3].trim();
-
-    if (!SESSION_TYPES.includes(type) || content.length <= 3) continue;
-
-    const parsedModifiers = parseBracketModifiers(modifiers);
-    const importance = parsedModifiers.score ?? 2;
-    const expiration = parsedModifiers.expiration ?? 'session';
-    const rawEntityNames = parsedModifiers.entityNames;
-    const source_message_indices = parsedModifiers.sourceIndices;
-
-    // New entries start as unprocessed - they will be evaluated against the
-    // consolidated base before being promoted.
-    // _raw_entity_names is a transient pipeline field: resolved to entity ids
-    // and stripped before the memory reaches storage.
-    results.push({
-      type,
-      content,
-      importance,
-      expiration,
-      ts: Date.now(),
-      consolidated: false,
-      _raw_entity_names: rawEntityNames,
-      _citation_candidate_id: parsedModifiers.candidateId,
-      _citation_claim_hash: parsedModifiers.claimHash,
-      // Graph fields - session memories use 'session' scope by default.
-      id: generateMemoryId(),
-      source_messages: [],
-      grounding_status: source_message_indices.length ? 'direct' : 'ungrounded',
-      validation_status: source_message_indices.length ? 'unvalidated' : 'needs_review',
-      validation_issues: source_message_indices.length ? [] : ['No source messages were supplied.'],
-      source_message_indices,
-      parent_memory_ids: [],
-      entities: [],
-      time_scope: 'session',
-      valid_from: null,
-      valid_to: null,
-      supersedes: [],
-      superseded_by: null,
-      contradicts: [],
-    });
-  }
-  return results;
+  return buildTaggedMemoryRecords(text, 'session');
 }
 
 // ---- Arc extraction -----------------------------------------------------

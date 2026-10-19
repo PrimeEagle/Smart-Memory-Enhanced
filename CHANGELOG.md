@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.59] - 2026-10-19
+
+### Fixed
+
+- Long-Term and Session tagged-output parsing, structural analysis, partial
+  classification, and recovery now share one authoritative lexical grammar.
+  Accepted records can no longer be simultaneously reported as zero valid
+  records plus rejected fragments; any future count disagreement stops with an
+  explicit developer consistency failure instead of becoming a recovery count.
+- Harmless local normalization, prose wrappers, and accepted partial fragments
+  are now reported as notices rather than recovered extraction failures.
+  Provider-attempt audit schema v4 migrates v3 `strict_partial_valid_preserved`
+  inflation deterministically and exposes parser-count consistency.
+- Run-status accounting now distinguishes notices, genuine malformed
+  obligations, recovered failures, unresolved failures, empty results, and
+  provider transport failures. A recovered failure always has a corresponding
+  historical failure observation.
+- Malformed-output recovery now sends compact repair requests only when a
+  rejected tagged fragment contains usable claim content. Empty, prose-only,
+  unsupported, and other non-repairable shapes proceed directly to bounded
+  changed-dimension regeneration, reducing ineffective provider calls.
+- Final identity reconciliation now rechecks every card-local relationship map
+  after cross-store entity merges and the finalized roster are available. Late
+  unresolved pairs are quarantined during automatic stabilization instead of
+  becoming a first-pass mutation in the following manual idempotence check.
+
 ## [0.9.58] - 2026-10-16
 
 ### Fixed

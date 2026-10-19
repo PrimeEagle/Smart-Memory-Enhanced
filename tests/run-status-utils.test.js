@@ -61,7 +61,7 @@ test('supplied-run shape is completed with six errors rather than partial', () =
   });
   const accounting = deriveRunErrorAccounting(report);
   assert.equal(accounting.current_attempt_error_records.count, 5);
-  assert.equal(accounting.historical_failure_observations.count, 8);
+  assert.equal(accounting.historical_failure_observations.count, 100);
   assert.equal(accounting.terminal_unresolved_obligations.count, 6);
   assert.equal(accounting.reconciliation.consistent, true);
   const normalized = normalizeRunStatusReport(report);
@@ -82,6 +82,22 @@ test('incomplete resumable, blocked, fatal, and notice-only states have determin
   assert.equal(failed.lifecycle_status, 'failed');
   const notices = deriveRunStatus(completed({ quality: { final_integrity_status: 'clean', notices: [{ code: 'safe' }] } }));
   assert.equal(notices.outcome_status, 'completed_with_notices');
+  const providerNotices = deriveRunStatus(completed({ provider_attempt_audit: {
+    unique_malformed_obligations: 0, recovered_malformed_obligations: 0,
+    terminally_unresolved_malformed_obligations: 0, terminal_unresolved_obligations: [],
+    notice_reason_counts: { partial_valid_output: 12 },
+  } }));
+  assert.equal(providerNotices.outcome_status, 'completed_with_notices');
+});
+
+test('recovered failures canonically supply a missing historical observation count', () => {
+  const corrected = deriveRunErrorAccounting(completed({ provider_attempt_audit: {
+    unique_malformed_obligations: 2, recovered_malformed_obligations: 2,
+    terminally_unresolved_malformed_obligations: 0, terminal_unresolved_obligations: [],
+  }, logical_run: { ...completed().logical_run, cumulative_request_counters: { provider_failure_count: 0 } } }));
+  assert.equal(corrected.historical_failure_observations.count, 2);
+  assert.equal(corrected.reconciliation.recovered_failures_have_historical_observation, true);
+  assert.equal(corrected.reconciliation.consistent, true);
 });
 
 test('bounded detail never replaces exact authoritative unresolved totals', () => {
@@ -95,6 +111,16 @@ test('bounded detail never replaces exact authoritative unresolved totals', () =
   assert.equal(accounting.terminal_unresolved_obligations.count, 80);
   assert.equal(accounting.terminal_unresolved_obligations.retained_detail_count, 64);
   assert.equal(accounting.terminal_unresolved_obligations.detail_truncated, true);
+});
+
+test('a manual repair missed by automatic finalization prevents clean certification', () => {
+  const result = deriveRunStatus(completed({ manual_idempotence: {
+    post_automatic_manual_dependency_trace: { automatic_missed_mutation: true },
+  } }));
+  assert.equal(result.outcome_status, 'completed_with_notices');
+  assert.equal(result.severity, 'warning');
+  assert.equal(result.attention_required, true);
+  assert.ok(result.status_reason_codes.includes('automatic_finalization_missed_mutation'));
 });
 
 test('performance diagnostics exclude between-attempt downtime from provider time', () => {

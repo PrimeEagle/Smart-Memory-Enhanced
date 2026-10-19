@@ -12,6 +12,7 @@ import {
   normalizeTaggedMemoryOutput,
   partitionMalformedSourceWindow,
   recoverMalformedTaggedOutput,
+  routeMalformedTaggedRecovery,
 } from '../malformed-output-recovery.js';
 
 const validLongterm = '[fact:2:permanent:sources=0] The garden gate is locked.';
@@ -47,6 +48,16 @@ test('privacy-safe structural classifier distinguishes malformed response famili
   assert.equal(shape.valid_tagged_record_count, 1);
   assert.equal(shape.prose_before_structure, true);
   assert.equal(JSON.stringify(shape).includes('garden gate'), false);
+});
+
+test('valid plus rejected tagged fragments is a reconciled partial, not total parse failure', () => {
+  const response = `${validLongterm}\n[unsupported:2] A rejected but structurally distinct fragment.`;
+  const shape = analyzeMalformedResponse(response, { tier: 'longterm' });
+  assert.equal(shape.parser_accepted_record_count, 1);
+  assert.equal(shape.structurally_rejected_record_count, 1);
+  assert.equal(shape.unclassified_fragment_count, 0);
+  assert.equal(shape.parser_shape_counts_reconciled, true);
+  assert.equal(classifyTaggedResponseFailure(response, { tier: 'longterm' }), 'partial_valid_output');
 });
 
 test('local normalization handles fences, escaped newlines, bullets, prose, and supported JSON conservatively', () => {
@@ -90,9 +101,12 @@ test('recovery accepts local normalization without another provider request', as
   assert.equal(result.stage, 'local_normalization');
   assert.equal(calls, 0);
   assert.equal(original.finished.terminal_outcome, 'completed');
+  assert.equal(original.finished.malformed_reason, null);
+  assert.match(original.finished.notice_reason, /^local_normalization:/);
+  assert.equal(original.finished.response_shape.normalization_accepted_record_count, 1);
 });
 
-test('recovery uses one compact response repair and records its changed dimension', async () => {
+test('response without a recoverable tagged claim skips compact repair and regenerates', async () => {
   const audit = auditHarness();
   const original = { attempt_id: 'original' };
   const prompts = [];
@@ -102,24 +116,33 @@ test('recovery uses one compact response repair and records its changed dimensio
     originalPrompt: 'ORIGINAL SOURCE PROMPT', responseLength: 100,
     originalAttempt: original, beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
   });
-  assert.equal(result.stage, 'compact_response_repair');
+  assert.equal(result.stage, 'changed_dimension_regeneration');
   assert.equal(prompts.length, 1);
-  assert.doesNotMatch(prompts[0], /ORIGINAL SOURCE PROMPT/);
-  assert.deepEqual(audit.events[0].changed, ['malformed_response_input', 'compact_repair_prompt']);
+  assert.match(prompts[0], /ORIGINAL SOURCE PROMPT/);
+  assert.deepEqual(audit.events[0].changed, ['minimal_output_prompt', 'deterministic_fresh_generation']);
+});
+
+test('compact repair is reserved for malformed tagged records with usable claim content', () => {
+  const eligible = routeMalformedTaggedRecovery(' [fact:2] A sufficiently complete claim.', { tier: 'longterm' });
+  assert.equal(eligible.route, 'compact_response_repair');
+  assert.equal(eligible.recoverable_claim_fragment_count, 1);
+  const ineligible = routeMalformedTaggedRecovery('I could not format this.', { tier: 'longterm' });
+  assert.equal(ineligible.route, 'changed_dimension_regeneration');
+  assert.equal(ineligible.avoided_repair_reason, 'no_recoverable_claim_content');
 });
 
 test('repair failure changes dimension before regeneration and supports session parity', async () => {
   const audit = auditHarness();
   const original = { attempt_id: 'original' };
-  const replies = ['REPAIR_FAILED', validSession];
+  const replies = [validSession];
   const result = await recoverMalformedTaggedOutput({
     response: '{bad json', tier: 'session', parse: parseSessionOutput,
     generate: async () => replies.shift(), originalPrompt: 'numbered session source', responseLength: 100,
     originalAttempt: original, beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
   });
   assert.equal(result.stage, 'changed_dimension_regeneration');
-  assert.equal(audit.events.length, 2);
-  assert.deepEqual(audit.events[1].changed, ['minimal_output_prompt', 'deterministic_fresh_generation']);
+  assert.equal(audit.events.length, 1);
+  assert.deepEqual(audit.events[0].changed, ['minimal_output_prompt', 'deterministic_fresh_generation']);
   assert.equal(audit.events.every((event) => event.finished), true);
 });
 
@@ -128,7 +151,7 @@ test('provider exception remains distinct from malformed output and does not dou
   const original = { attempt_id: 'original' };
   let call = 0;
   const result = await recoverMalformedTaggedOutput({
-    response: 'prose only', tier: 'longterm', parse: parseExtractionOutput,
+    response: ' [fact:2] A sufficiently complete claim.', tier: 'longterm', parse: parseExtractionOutput,
     generate: async () => { call++; if (call === 1) throw new Error('transport'); return validLongterm; },
     originalPrompt: 'source', responseLength: 100,
     originalAttempt: original, beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
@@ -158,14 +181,14 @@ test('exhausted repair and regeneration delegates once to the bounded split call
     generate: async () => 'still bad', originalPrompt: 'source', responseLength: 100,
     originalAttempt: original, beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
     budget, splitWindow: async ({ nextDepth, parentAttemptId }) => {
-      splits++; assert.equal(nextDepth, 1); assert.equal(parentAttemptId, 'attempt-2');
+      splits++; assert.equal(nextDepth, 1); assert.equal(parentAttemptId, 'attempt-1');
       return { completed: true, added: 3 };
     },
   });
   assert.equal(result.repartitioned, true);
   assert.equal(result.added, 3);
   assert.equal(splits, 1);
-  assert.equal(budget.additional_provider_requests, 2);
+  assert.equal(budget.additional_provider_requests, 1);
   assert.equal(MALFORMED_RECOVERY_LIMITS.maximum_split_depth, 2);
 });
 

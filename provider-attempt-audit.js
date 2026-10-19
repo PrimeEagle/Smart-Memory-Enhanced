@@ -1,7 +1,7 @@
 /** Bounded, content-free accounting for actual Long-Term/Session provider calls. */
 import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malformed-output-recovery.js';
 
-export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 3;
+export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 4;
 export const PROVIDER_ATTEMPT_EVENT_LIMIT = 160;
 // Large enough to retain every root obligation in the supplied 9,434-message
 // replay while remaining explicitly bounded for arbitrarily large chats.
@@ -20,8 +20,43 @@ function emptyArchivedObligationCounts(exact = true) {
     valid_generation: 0,
     intentionally_accepted_no_update: 0,
     terminal_failed: 0,
+    strict_success: 0,
+    local_normalization: 0,
+    partial_output_notice: 0,
+    context_repartition: 0,
+    provider_recovery_attempted: 0,
+    safe_notice: 0,
     recovered_by_stage: {},
   };
+}
+
+function migrateLegacyAudit(audit) {
+  const sourceSchemaVersion = Number(audit?.schema_version ?? 1);
+  if (!audit || sourceSchemaVersion >= 4 || audit.schema_v4_migration) return audit;
+  const partialPhysical = count(audit.malformed_reason_counts?.partial_valid_output);
+  let partialObligations = 0;
+  for (const obligation of Object.values(audit.obligations ?? {})) {
+    if (obligation?.final_recovery_stage !== 'strict_partial_valid_preserved'
+      || obligation?.terminal_outcome !== 'completed') continue;
+    partialObligations++;
+    obligation.malformed_count = Math.max(0, count(obligation.malformed_count) - 1);
+    obligation.notice_count = count(obligation.notice_count) + 1;
+    obligation.last_notice_reason = 'partial_valid_output';
+    if (obligation.malformed_count === 0) obligation.last_malformed_reason = null;
+  }
+  audit.notice_reason_counts ??= {};
+  audit.notice_reason_counts.partial_valid_output
+    = count(audit.notice_reason_counts.partial_valid_output) + partialPhysical;
+  if (audit.malformed_reason_counts) delete audit.malformed_reason_counts.partial_valid_output;
+  if (audit.recoveries_by_stage) delete audit.recoveries_by_stage.strict_partial_valid_preserved;
+  audit.schema_v4_migration = {
+    source_schema_version: sourceSchemaVersion,
+    partial_physical_responses_reclassified_as_notices: partialPhysical,
+    partial_obligations_reclassified_as_notices: partialObligations,
+    archived_obligation_counts_reclassifiable: count(audit.archived_obligation_counts?.total) === 0,
+  };
+  audit.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
+  return audit;
 }
 
 function archiveObligation(audit, obligation) {
@@ -41,6 +76,12 @@ function archiveObligation(audit, obligation) {
   if (['completed', 'completed_repartitioned'].includes(obligation.terminal_outcome)) archived.valid_generation++;
   if (obligation.terminal_outcome === 'completed_no_candidates') archived.intentionally_accepted_no_update++;
   if (!successful && obligation.terminal_outcome !== 'running') archived.terminal_failed++;
+  if (successful && !malformed && !count(obligation.notice_count)) archived.strict_success++;
+  if (!malformed && obligation.final_recovery_stage === 'local_normalization') archived.local_normalization++;
+  if (obligation.last_notice_reason === 'partial_valid_output') archived.partial_output_notice++;
+  if ((obligation.recovery_stages_attempted ?? []).includes('repartition_child')) archived.context_repartition++;
+  if (malformed && count(obligation.physical_attempt_count) > 1) archived.provider_recovery_attempted++;
+  if (count(obligation.notice_count) > 0) archived.safe_notice++;
 }
 
 function fingerprint(value) {
@@ -60,6 +101,64 @@ export function providerConfigurationSignature(input = {}) {
     response_length: input.response_length ?? null,
     context_length: input.context_length ?? null,
   }));
+}
+
+/** Read-only migration for already-exported/persisted schema-v3 summaries. */
+export function migrateProviderAttemptAuditReport(report) {
+  if (!report || Number(report.schema_version) >= PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION) return report;
+  const migrated = typeof structuredClone === 'function'
+    ? structuredClone(report) : JSON.parse(JSON.stringify(report));
+  const partialPhysical = count(migrated.malformed_reason_counts?.partial_valid_output);
+  const partialObligations = count(migrated.malformed_recovery_performance
+    ?.obligations_recovered_by_stage?.strict_partial_valid_preserved);
+  migrated.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
+  migrated.notice_reason_counts = {
+    ...(migrated.notice_reason_counts ?? {}),
+    partial_valid_output: count(migrated.notice_reason_counts?.partial_valid_output) + partialPhysical,
+  };
+  migrated.notice_physical_responses = count(migrated.notice_physical_responses) + partialPhysical;
+  if (migrated.malformed_reason_counts) delete migrated.malformed_reason_counts.partial_valid_output;
+  if (migrated.recoveries_by_stage) delete migrated.recoveries_by_stage.strict_partial_valid_preserved;
+  migrated.malformed_physical_responses = Math.max(0, count(migrated.malformed_physical_responses) - partialPhysical);
+  migrated.unique_malformed_obligations = Math.max(0, count(migrated.unique_malformed_obligations) - partialObligations);
+  migrated.recovered_malformed_obligations = Math.max(0, count(migrated.recovered_malformed_obligations) - partialObligations);
+  migrated.terminally_unresolved_malformed_obligations = Math.max(0,
+    count(migrated.unique_malformed_obligations) - count(migrated.recovered_malformed_obligations));
+  if (migrated.malformed_recovery_performance?.obligations_recovered_by_stage) {
+    delete migrated.malformed_recovery_performance.obligations_recovered_by_stage.strict_partial_valid_preserved;
+  }
+  if (migrated.malformed_recovery_performance?.successful_physical_attempts_by_stage) {
+    delete migrated.malformed_recovery_performance.successful_physical_attempts_by_stage.strict_partial_valid_preserved;
+  }
+  migrated.recovery_success_rate = migrated.unique_malformed_obligations
+    ? migrated.recovered_malformed_obligations / migrated.unique_malformed_obligations : 1;
+  migrated.legacy_accounting_migration = {
+    source_schema_version: Number(report.schema_version ?? 1),
+    partial_physical_responses_reclassified_as_notices: partialPhysical,
+    partial_obligations_reclassified_as_notices: partialObligations,
+    source: 'persisted_summary',
+  };
+  migrated.obligation_outcome_counts = {
+    ...(migrated.obligation_outcome_counts ?? {}),
+    strict_success_obligations: migrated.obligation_outcome_counts?.strict_success_obligations ?? null,
+    local_normalization_obligations: migrated.obligation_outcome_counts?.local_normalization_obligations ?? null,
+    partial_output_obligations: partialObligations,
+    partial_output_rejected_fragments: null,
+    partial_output_rejected_fragments_exact: false,
+    context_repartition_obligations: migrated.obligation_outcome_counts?.context_repartition_obligations ?? null,
+    true_failed_obligations: migrated.unique_malformed_obligations,
+    provider_recovery_attempted_obligations: migrated.obligation_outcome_counts?.provider_recovery_attempted_obligations ?? null,
+    provider_recovered_obligations: migrated.recovered_malformed_obligations,
+    terminal_unresolved_obligations: migrated.terminally_unresolved_malformed_obligations,
+    safe_notice_obligations: partialObligations,
+    counts_exact: false,
+  };
+  migrated.reconciliation = {
+    ...(migrated.reconciliation ?? {}),
+    malformed_obligations_reconcile: migrated.unique_malformed_obligations
+      === migrated.recovered_malformed_obligations + migrated.terminally_unresolved_malformed_obligations,
+  };
+  return migrated;
 }
 
 function ensure(metadata, runId = null) {
@@ -98,11 +197,17 @@ function ensure(metadata, runId = null) {
       archived_obligation_counts: emptyArchivedObligationCounts(true),
       recovery_stage_request_counts: {},
       recoveries_by_stage: {},
+      notice_reason_counts: {},
+      avoided_repair_request_counts: {},
+      partial_output_rejected_fragment_count: 0,
+      recovery_effectiveness: {},
     };
   }
   const audit = health.provider_attempt_audit;
-  const performanceTotalsCompatible = Number(audit.schema_version) >= 2;
-  const recoveryStageTotalsCompatible = Number(audit.schema_version) >= 3;
+  const sourceSchemaVersion = Number(audit.schema_version ?? 1);
+  migrateLegacyAudit(audit);
+  const performanceTotalsCompatible = sourceSchemaVersion >= 2;
+  const recoveryStageTotalsCompatible = sourceSchemaVersion >= 3;
   audit.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
   audit.performance_totals_exact ??= performanceTotalsCompatible;
   audit.provider_elapsed_ms ??= 0;
@@ -118,6 +223,10 @@ function ensure(metadata, runId = null) {
   audit.archived_obligation_counts ??= emptyArchivedObligationCounts(false);
   audit.recovery_stage_request_counts ??= {};
   audit.recoveries_by_stage ??= {};
+  audit.notice_reason_counts ??= {};
+  audit.avoided_repair_request_counts ??= {};
+  audit.partial_output_rejected_fragment_count ??= 0;
+  audit.recovery_effectiveness ??= {};
   audit.recovery_stage_totals_exact ??= recoveryStageTotalsCompatible;
   return audit;
 }
@@ -280,6 +389,7 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
   const audit = ensure(metadata, event.run_id ?? metadata.active_catchup_run_id ?? null);
   event.terminal_outcome = patch.terminal_outcome ?? 'internal_failure';
   event.malformed_reason = patch.malformed_reason ?? null;
+  event.notice_reason = patch.notice_reason ?? null;
   event.provider_reported_prompt_tokens = patch.provider_reported_prompt_tokens ?? null;
   event.provider_reported_context_tokens = patch.provider_reported_context_tokens ?? null;
   event.local_preflight_underestimated_provider_prompt_total = Number.isFinite(Number(event.provider_reported_prompt_tokens))
@@ -302,6 +412,9 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
   event.local_normalization_paths_attempted = [...new Set(patch.local_normalization_paths_attempted ?? [])].slice(0, 12);
   event.smaller_window_retry_followed = patch.smaller_window_retry_followed ?? false;
   event.partial_output_policy = patch.partial_output_policy ?? null;
+  event.parser_count_consistent = patch.parser_count_consistent ?? null;
+  event.recovery_route = patch.recovery_route ?? null;
+  event.avoided_repair_reason = patch.avoided_repair_reason ?? null;
   event.duration_ms = Math.max(0, Date.now() - event.at);
   audit.provider_elapsed_ms = count(audit.provider_elapsed_ms) + event.duration_ms;
   audit.provider_elapsed_ms_by_request_kind[event.request_kind]
@@ -343,12 +456,52 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
       obligation.malformed_count++;
       obligation.last_malformed_reason = event.malformed_reason;
     }
+    if (event.notice_reason) {
+      obligation.notice_count = count(obligation.notice_count) + 1;
+      obligation.last_notice_reason = event.notice_reason;
+    }
   }
   if (event.malformed_reason) {
     audit.malformed_reason_counts[event.malformed_reason] = count(audit.malformed_reason_counts[event.malformed_reason]) + 1;
   }
+  if (event.notice_reason) audit.notice_reason_counts[event.notice_reason]
+    = count(audit.notice_reason_counts[event.notice_reason]) + 1;
+  if (event.notice_reason === 'partial_valid_output') audit.partial_output_rejected_fragment_count
+    = count(audit.partial_output_rejected_fragment_count)
+      + count(event.response_shape?.structurally_rejected_record_count ?? event.response_shape?.rejected_tagged_record_count);
+  if (event.avoided_repair_reason) audit.avoided_repair_request_counts[event.avoided_repair_reason]
+    = count(audit.avoided_repair_request_counts[event.avoided_repair_reason]) + 1;
+  const effectivenessReason = event.repair_reason ?? event.malformed_reason ?? event.avoided_repair_reason ?? 'unspecified';
+  const configurationSignature = obligation?.configuration_signature ?? 'unknown';
+  if (event.request_kind !== 'original' || event.avoided_repair_reason) {
+    const stage = event.avoided_repair_reason ? 'compact_response_repair_avoided' : event.recovery_stage ?? event.request_kind;
+    const effectivenessKey = [configurationSignature, event.tier, effectivenessReason, stage].join('|');
+    const effectiveness = audit.recovery_effectiveness[effectivenessKey] ?? {
+      provider_configuration_signature: configurationSignature,
+      tier: event.tier,
+      malformed_reason: effectivenessReason,
+      recovery_stage: stage,
+      attempts: 0,
+      successes: 0,
+      requests_avoided: 0,
+      provider_elapsed_ms: 0,
+      recovered_obligation_ids: [],
+    };
+    if (event.avoided_repair_reason) effectiveness.requests_avoided++;
+    else {
+      effectiveness.attempts++;
+      effectiveness.provider_elapsed_ms += event.duration_ms;
+      if (SUCCESSFUL_TERMINAL_OUTCOMES.has(event.terminal_outcome)) {
+        effectiveness.successes++;
+        effectiveness.recovered_obligation_ids = [...new Set([
+          ...effectiveness.recovered_obligation_ids, event.logical_obligation_id,
+        ])].slice(-PROVIDER_OBLIGATION_LIMIT);
+      }
+    }
+    audit.recovery_effectiveness[effectivenessKey] = effectiveness;
+  }
   if (['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(event.terminal_outcome)) {
-    if (event.recovery_stage && event.recovery_stage !== 'strict_generation') {
+    if (obligation?.malformed_count > 0 && event.recovery_stage && event.recovery_stage !== 'strict_generation') {
       audit.recoveries_by_stage[event.recovery_stage] = count(audit.recoveries_by_stage[event.recovery_stage]) + 1;
     }
     for (const prior of audit.recent_attempts) {
@@ -361,9 +514,14 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
 }
 
 export function summarizeProviderAttemptAudit(metadata) {
-  const audit = metadata?.live_memory_health?.provider_attempt_audit;
+  const sourceAudit = metadata?.live_memory_health?.provider_attempt_audit;
+  const audit = sourceAudit && Number(sourceAudit.schema_version) < PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION
+    ? migrateLegacyAudit(typeof structuredClone === 'function'
+      ? structuredClone(sourceAudit) : JSON.parse(JSON.stringify(sourceAudit)))
+    : sourceAudit;
   if (!audit) return null;
   const obligations = Object.values(audit.obligations ?? {});
+  const recentAttempts = Array.isArray(audit.recent_attempts) ? audit.recent_attempts : [];
   const malformed = obligations.filter((item) => item.malformed_count > 0);
   const recovered = malformed.filter((item) => ['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome));
   const unresolved = malformed.filter((item) => !['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(item.terminal_outcome));
@@ -375,6 +533,19 @@ export function summarizeProviderAttemptAudit(metadata) {
   const uniqueMalformed = count(archived.malformed) + malformed.length;
   const recoveredMalformed = count(archived.recovered_malformed) + recovered.length;
   const terminalUnresolvedMalformed = uniqueMalformed - recoveredMalformed;
+  const successfulObligations = obligations.filter((item) => SUCCESSFUL_TERMINAL_OUTCOMES.has(item.terminal_outcome));
+  const localNormalizationObligations = count(archived.local_normalization) + obligations.filter((item) =>
+    item.final_recovery_stage === 'local_normalization' && count(item.malformed_count) === 0).length;
+  const partialOutputObligations = count(archived.partial_output_notice) + obligations.filter((item) =>
+    item.last_notice_reason === 'partial_valid_output').length;
+  const contextRepartitionObligations = count(archived.context_repartition) + obligations.filter((item) =>
+    (item.recovery_stages_attempted ?? []).includes('repartition_child')).length;
+  const providerRecoveryAttemptedObligations = count(archived.provider_recovery_attempted) + malformed.filter((item) =>
+    count(item.physical_attempt_count) > 1).length;
+  const safeNoticeObligations = count(archived.safe_notice) + obligations.filter((item) => count(item.notice_count) > 0).length;
+  const strictSuccessObligations = count(archived.strict_success) + successfulObligations.filter((item) =>
+    count(item.malformed_count) === 0 && count(item.notice_count) === 0
+      && item.final_recovery_stage !== 'local_normalization').length;
   const obligationsRecoveredByStage = recovered.reduce((counts, item) => {
     const stage = item.final_recovery_stage ?? 'unknown';
     counts[stage] = count(counts[stage]) + 1;
@@ -401,12 +572,55 @@ export function summarizeProviderAttemptAudit(metadata) {
     unique_logical_obligations: planned,
     malformed_physical_responses: Object.values(audit.malformed_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
     malformed_reason_counts: { ...audit.malformed_reason_counts },
+    notice_physical_responses: Object.values(audit.notice_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
+    notice_reason_counts: { ...audit.notice_reason_counts },
+    avoided_repair_request_counts: { ...audit.avoided_repair_request_counts },
+    legacy_accounting_migration: audit.schema_v4_migration ?? null,
+    outcome_taxonomy: {
+      strict_successful_physical_attempts: count(audit.terminal_counts?.completed)
+        - Object.values(audit.notice_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
+      harmless_notice_physical_attempts: Object.values(audit.notice_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
+      genuine_failed_obligations: uniqueMalformed,
+      recovered_failed_obligations: recoveredMalformed,
+      unresolved_failed_obligations: terminalUnresolvedMalformed,
+      provider_transport_failures: count(audit.terminal_counts?.provider_failure),
+      empty_or_no_candidate_successes: count(audit.terminal_counts?.completed_no_candidates),
+      context_repartition_requests: count(audit.request_kind_counts?.repartition_child),
+      compact_provider_repair_requests: count(audit.request_kind_counts?.format_repair),
+      changed_dimension_regeneration_requests: count(audit.request_kind_counts?.changed_dimension_regeneration),
+      malformed_repartition_requests: count(audit.request_kind_counts?.malformed_repartition_child),
+    },
+    obligation_outcome_counts: {
+      strict_success_obligations: strictSuccessObligations,
+      local_normalization_obligations: localNormalizationObligations,
+      partial_output_obligations: partialOutputObligations,
+      partial_output_rejected_fragments: count(audit.partial_output_rejected_fragment_count),
+      partial_output_rejected_fragments_exact: Number(audit.schema_v4_migration?.source_schema_version ?? 4) >= 4,
+      context_repartition_obligations: contextRepartitionObligations,
+      true_failed_obligations: uniqueMalformed,
+      provider_recovery_attempted_obligations: providerRecoveryAttemptedObligations,
+      provider_recovered_obligations: recoveredMalformed,
+      terminal_unresolved_obligations: terminalUnresolvedMalformed,
+      safe_notice_obligations: safeNoticeObligations,
+      counts_exact: aggregateCountsExact,
+    },
+    recovery_effectiveness: Object.values(audit.recovery_effectiveness ?? {}).map((entry) => ({
+      provider_configuration_signature: entry.provider_configuration_signature,
+      tier: entry.tier,
+      malformed_reason: entry.malformed_reason,
+      recovery_stage: entry.recovery_stage,
+      attempts: count(entry.attempts),
+      successes: count(entry.successes),
+      unique_obligations_recovered: new Set(entry.recovered_obligation_ids ?? []).size,
+      added_provider_time_ms: count(entry.provider_elapsed_ms),
+      requests_avoided: count(entry.requests_avoided),
+    })),
     unique_malformed_obligations: uniqueMalformed,
     recovered_malformed_obligations: recoveredMalformed,
     terminally_unresolved_malformed_obligations: terminalUnresolvedMalformed,
     obligation_aggregate_counts_exact: aggregateCountsExact,
     terminal_unresolved_obligations: unresolved.slice(-64).map((item) => {
-      const retainedAttempts = audit.recent_attempts.filter((attempt) => attempt.logical_obligation_id === item.logical_obligation_id);
+      const retainedAttempts = recentAttempts.filter((attempt) => attempt.logical_obligation_id === item.logical_obligation_id);
       return {
         tier: item.tier ?? 'unknown', owner: item.owner ?? null,
         source_range: item.last_source_range ?? item.root_source_range ?? null,
@@ -442,7 +656,7 @@ export function summarizeProviderAttemptAudit(metadata) {
             ? count(obligationsRecoveredByStage[stage]) / count(requests) : 0])),
         provider_elapsed_ms_by_recovery_stage: { ...audit.provider_elapsed_ms_by_recovery_stage },
         recovery_stage_totals_exact: audit.recovery_stage_totals_exact === true,
-        terminal_physical_failures_by_recovery_stage: audit.recent_attempts.reduce((counts, attempt) => {
+        terminal_physical_failures_by_recovery_stage: recentAttempts.reduce((counts, attempt) => {
           if (!SUCCESSFUL_TERMINAL_OUTCOMES.has(attempt.terminal_outcome)) {
             const stage = attempt.recovery_stage ?? 'unknown';
             counts[stage] = count(counts[stage]) + 1;
@@ -499,24 +713,24 @@ export function summarizeProviderAttemptAudit(metadata) {
       },
     },
     retained_attempt_scope: `last_${PROVIDER_ATTEMPT_EVENT_LIMIT}_attempts`,
-    retained_attempts: audit.recent_attempts,
+    retained_attempts: recentAttempts,
     retained_obligation_count: obligations.length,
     obligation_history_truncated: obligationHistoryTruncated,
     archived_obligation_counts: { ...archived },
     reconciliation: {
       every_provider_attempt_has_one_terminal_category: terminalTotal === count(audit.attempted) && count(audit.running_count) === 0,
       running_attempts: count(audit.running_count),
-      repartition_children_without_parent_lineage: audit.recent_attempts.filter((item) => item.request_kind === 'repartition_child'
+      repartition_children_without_parent_lineage: recentAttempts.filter((item) => item.request_kind === 'repartition_child'
         && !item.parent_attempt_id && !item.repartition_parent_id).length,
-      accepted_outputs_without_known_obligation: audit.recent_attempts.filter((item) =>
+      accepted_outputs_without_known_obligation: recentAttempts.filter((item) =>
         ['completed', 'completed_no_candidates'].includes(item.terminal_outcome)
         && !item.logical_obligation_id).length,
       equivalent_requests_without_changed_recovery_dimension: count(audit.equivalent_retry_count),
       malformed_obligations_reconcile: aggregateCountsExact
         ? uniqueMalformed === recoveredMalformed + terminalUnresolvedMalformed : null,
-      repair_attempts_with_failed_attempt_link: audit.recent_attempts.filter((item) => item.request_kind === 'format_repair'
+      repair_attempts_with_failed_attempt_link: recentAttempts.filter((item) => item.request_kind === 'format_repair'
         && !item.recovery_of_attempt_id && !item.parent_attempt_id).length === 0,
-      recovery_attempts_without_failed_attempt_or_unresolved_obligation: audit.recent_attempts.filter((item) => {
+      recovery_attempts_without_failed_attempt_or_unresolved_obligation: recentAttempts.filter((item) => {
         if (item.request_kind === 'original') return false;
         const obligation = audit.obligations?.[item.logical_obligation_id];
         return !item.recovery_of_attempt_id && !item.parent_attempt_id && !item.repartition_parent_id
@@ -525,6 +739,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       every_malformed_response_belongs_to_physical_attempt: count(audit.attempted)
         >= Object.values(audit.malformed_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
       recovered_and_terminal_unresolved_disjoint: recovered.every((item) => !unresolved.includes(item)),
+      parser_and_structural_counts_agree: !recentAttempts.some((attempt) => attempt.parser_count_consistent === false),
       retained_unresolved_detail_is_internally_consistent: unresolved.slice(-64).length
         === Math.min(unresolved.length, 64),
       authoritative_unresolved_count: terminalUnresolvedMalformed,
