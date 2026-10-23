@@ -704,19 +704,36 @@ function escapeRegExp(value) {
 /** Rewrites only deterministic roster aliases/variants in generated prose. */
 export function canonicalizeNarrativeNames(text, roster, { preserveHistoricalPersonaNames = false } = {}) {
   const replacements = [];
-  const value = String(text ?? '');
-  const output = value.replace(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g, (candidate) => {
-    const resolution = resolveCanonicalCharacterName(candidate, roster);
-    if (!resolution.canonicalName || !['resolved', 'rejected'].includes(resolution.status)) return candidate;
-    if (normalize(candidate) === normalize(resolution.canonicalName)) return candidate;
-    // Scene archives retain source-era persona wording for historical context,
-    // while their participant references continue to carry the current stable
-    // persona ID. Other generated prose remains normalized by default.
-    if (preserveHistoricalPersonaNames && resolution.reason === 'Historical active persona name.') return candidate;
-    replacements.push({ from: candidate, to: resolution.canonicalName, reason: resolution.reason });
-    return resolution.canonicalName;
-  });
-  return { text: output, replacements };
+  let output = String(text ?? '');
+  const seen = new Set([output]);
+  let passes = 0;
+  // A replacement can expose a shorter adjacent alias that the same regular
+  // expression could not see in its original maximal title-case span. Close
+  // that dependency here so one reconciliation call reaches its fixed point.
+  while (passes < 8) {
+    passes++;
+    const passReplacements = [];
+    const next = output.replace(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g, (candidate) => {
+      const resolution = resolveCanonicalCharacterName(candidate, roster);
+      if (!resolution.canonicalName || !['resolved', 'rejected'].includes(resolution.status)) return candidate;
+      if (normalize(candidate) === normalize(resolution.canonicalName)) return candidate;
+      // Scene archives retain source-era persona wording for historical context,
+      // while their participant references continue to carry the current stable
+      // persona ID. Other generated prose remains normalized by default.
+      if (preserveHistoricalPersonaNames && resolution.reason === 'Historical active persona name.') return candidate;
+      passReplacements.push({ from: candidate, to: resolution.canonicalName, reason: resolution.reason, pass: passes });
+      return resolution.canonicalName;
+    });
+    replacements.push(...passReplacements);
+    if (next === output || passReplacements.length === 0) {
+      output = next;
+      return { text: output, replacements, fixed_point_passes: passes, fixed_point_reached: true };
+    }
+    if (seen.has(next)) return { text: output, replacements, fixed_point_passes: passes, fixed_point_reached: false };
+    seen.add(next);
+    output = next;
+  }
+  return { text: output, replacements, fixed_point_passes: passes, fixed_point_reached: false };
 }
 
 /** Coalesces repeated identity decisions while retaining their evidence. */

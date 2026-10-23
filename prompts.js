@@ -215,13 +215,12 @@ GROUNDING RULES: Never copy names, facts, objects, relationships, or events from
 
 The supplied conversation messages are numbered from 0 upward. Every output item MUST include one or more source message indices from that numbered excerpt. Do not emit an item without supporting source indices. Use only indices shown in the source excerpt. The source field is mandatory: write :sources=1,2 inside every bracket. If no message supports a claim, omit it.
 
-One item per line, exact format:
-[scene:2:scene:sources=0] <ENTITY_A> is at <LOCATION> during the current scene.
-[detail:3:permanent:entity=<ENTITY_A>/character:sources=0] <ENTITY_A> has the explicitly described <EXPLICIT_OBJECT>.
-[revelation:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] <ENTITY_A> revealed the stated relationship to <ENTITY_B>.
-[revelation:1:session:sources=0] A minor event explicitly mentioned in the conversation occurred.
+CANONICAL GRAMMAR — use this exact key spelling and order immediately below:
+[type:score:expiration:entity=Name/type:sources=0,2] claim text
+The optional entity field may be omitted. The sources field is mandatory. Use a colon between modifiers, one equals sign after each key, and commas only within entity and sources lists.
+Valid example: [revelation:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] <ENTITY_A> revealed the stated relationship to <ENTITY_B>.
 
-FINAL RULE: Output ONLY [type:score:expiration:sources=0] or [type:score:expiration:entity=Name/type:sources=0,2] lines. No headers. No intros. No explanations.
+FINAL RULE: Output only records matching that canonical grammar. No headers, intros, explanations, duplicate keys, legacy key aliases, or alternate delimiters.
 If nothing new, output exactly: NONE`
   );
 }
@@ -807,15 +806,12 @@ GROUNDING RULES: Never copy names, facts, objects, relationships, or events from
 
 The supplied conversation messages are numbered from 0 upward. Every line MUST include :sources= followed by one or more supporting message indices from that supplied conversation. If no message supports a claim, omit it.
 
-Output ONLY one memory per line using this exact format (nothing else):
-[fact:2:permanent:sources=0] <ENTITY_A> has the explicitly stated role or attribute.
-[fact:2:permanent:entity=<ENTITY_A>/character:sources=0] <ENTITY_A> has the explicitly described characteristic.
-[relationship:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] The conversation states the relationship between <ENTITY_A> and <ENTITY_B>.
-[event:2:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] <ENTITY_A> and <ENTITY_B> took the explicitly described action.
-[preference:2:session:sources=0] The user explicitly expressed a preference.
-[event:1:scene:sources=0] The conversation explicitly mentions a minor scene event.
+CANONICAL GRAMMAR — use this exact key spelling and order immediately below:
+[type:score:expiration:entity=Name/type:sources=0,2] claim text
+The optional entity field may be omitted. The sources field is mandatory. Use a colon between modifiers, one equals sign after each key, and commas only within entity and sources lists.
+Valid example: [relationship:3:permanent:entity=<ENTITY_A>/character,<ENTITY_B>/character:sources=0,2] The conversation states the relationship between <ENTITY_A> and <ENTITY_B>.
 
-FINAL RULE: Output ONLY [type:score:expiration:sources=0] or [type:score:expiration:entity=Name/type:sources=0,2] lines. No headers. No intros. No explanations.
+FINAL RULE: Output only records matching that canonical grammar. No headers, intros, explanations, duplicate keys, legacy key aliases, or alternate delimiters.
 If there is nothing new worth preserving, output exactly: NONE`
   );
 }

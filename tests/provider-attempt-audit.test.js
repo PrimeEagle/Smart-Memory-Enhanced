@@ -21,7 +21,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 4);
+  assert.equal(migrated.schema_version, 5);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -78,6 +78,29 @@ test('accepted partial fragments are notices, not recovered failed obligations',
   assert.equal(summary.obligation_outcome_counts.partial_output_obligations, 1);
   assert.equal(summary.obligation_outcome_counts.partial_output_rejected_fragments, 2);
   assert.equal(summary.reconciliation.parser_and_structural_counts_agree, true);
+});
+
+test('safe modifier normalization is a notice with subtype effectiveness, not a failed obligation', () => {
+  const metadata = { active_catchup_run_id: 'run-modifier-normalization' };
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'lt:normalized', request_kind: 'original',
+    configuration_signature: 'config-signature',
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'completed', notice_reason: 'local_normalization:canonical_modifiers',
+    recovery_stage: 'local_normalization', response_shape: {
+      modifier_normalization_subtype_counts: { canonicalize_modifier_key: 2 },
+      modifier_locally_normalizable_count: 2,
+    },
+  });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  const stats = summary.modifier_failure_subtype_statistics.canonicalize_modifier_key;
+  assert.equal(summary.failure_accounting.unique_failed_obligation_count, 0);
+  assert.equal(summary.failure_accounting.local_normalization_notice_count, 1);
+  assert.equal(stats.observed_count, 2);
+  assert.equal(stats.locally_normalizable_count, 2);
+  assert.equal(stats.local_normalization_success_count, 2);
+  assert.deepEqual(stats.provider_configuration_signatures, ['config-signature']);
 });
 
 test('context repartition remains separate from malformed-output recovery', () => {
@@ -156,7 +179,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 4);
+  assert.equal(summary.schema_version, 5);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -232,4 +255,133 @@ test('supplied-run accounting shape retains 88 failure observations while automa
   assert.equal(after.terminally_unresolved_malformed_obligations, 0);
   assert.equal(after.malformed_physical_responses, 88);
   assert.equal(after.reconciliation.recovered_and_terminal_unresolved_disjoint, true);
+});
+
+test('physical failures, unique failed obligations, and recovery reconcile at their proper scopes', () => {
+  const metadata = { active_catchup_run_id: 'run-accounting-scopes' };
+  const obligations = [];
+  for (let index = 0; index < 120; index++) {
+    const root = `session:${index}`;
+    obligations.push(root);
+    const attempt = beginProviderAttempt(metadata, {
+      tier: 'session', logical_obligation_id: root, request_kind: 'original',
+      request_signature: `malformed-${index}`,
+    });
+    finishProviderAttempt(metadata, attempt, {
+      terminal_outcome: 'provider_response_malformed', malformed_reason: 'invalid_modifier_syntax',
+      response_shape: { modifier_failure_subtype_counts: { duplicate_source_modifier: 1 } },
+    });
+  }
+  for (let index = 0; index < 14; index++) {
+    const repeat = beginProviderAttempt(metadata, {
+      tier: 'session', logical_obligation_id: obligations[index], request_kind: 'changed_dimension_regeneration',
+      request_signature: `malformed-repeat-${index}`, changed_recovery_dimensions: ['prompt_schema'],
+    });
+    finishProviderAttempt(metadata, repeat, {
+      terminal_outcome: 'provider_response_malformed', malformed_reason: 'invalid_modifier_syntax',
+    });
+  }
+  const transport = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: obligations[0], request_kind: 'changed_dimension_regeneration',
+    request_signature: 'transport', changed_recovery_dimensions: ['fresh_request'],
+  });
+  finishProviderAttempt(metadata, transport, {
+    terminal_outcome: 'provider_failure', failure_classification: 'provider_http_503',
+  });
+  for (const [index, root] of obligations.entries()) {
+    const success = beginProviderAttempt(metadata, {
+      tier: 'session', logical_obligation_id: root, request_kind: 'changed_dimension_regeneration',
+      request_signature: `success-${index}`, changed_recovery_dimensions: ['prompt_schema'],
+    });
+    finishProviderAttempt(metadata, success, { terminal_outcome: 'completed' });
+  }
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.failure_accounting.physical_failure_observation_count, 135);
+  assert.equal(summary.failure_accounting.unique_failed_obligation_count, 120);
+  assert.equal(summary.failure_accounting.recovered_failed_obligation_count, 120);
+  assert.equal(summary.failure_accounting.terminal_unresolved_obligation_count, 0);
+  assert.equal(summary.failure_accounting.provider_transport_failure_count, 1);
+  assert.equal(summary.provider_failure_lineage.retained[0].failure_classification, 'provider_http_503');
+  assert.equal(summary.provider_failure_lineage.retained[0].affected_final_obligation_status, false);
+  assert.equal(summary.reconciliation.consistent, true);
+});
+
+test('same-signature transport retry is permitted while unchanged malformed repetition remains inconsistent', () => {
+  const metadata = { active_catchup_run_id: 'run-equivalence' };
+  const failed = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'transport-root', request_kind: 'original', request_signature: 'same',
+  });
+  finishProviderAttempt(metadata, failed, { terminal_outcome: 'provider_failure' });
+  const retry = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'transport-root', request_kind: 'original', request_signature: 'same',
+  });
+  finishProviderAttempt(metadata, retry, { terminal_outcome: 'completed' });
+  let summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.equivalent_request_accounting.total_equivalent_requests, 1);
+  assert.equal(summary.equivalent_request_accounting.permitted_equivalent_requests, 1);
+  assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 0);
+  assert.equal(summary.equivalent_request_accounting.consistent, true);
+
+  const malformed = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'malformed-root', request_kind: 'original', request_signature: 'unchanged',
+  });
+  finishProviderAttempt(metadata, malformed, {
+    terminal_outcome: 'provider_response_malformed', malformed_reason: 'invalid_modifier_syntax',
+  });
+  const unchanged = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'malformed-root', request_kind: 'original', request_signature: 'unchanged',
+  });
+  finishProviderAttempt(metadata, unchanged, { terminal_outcome: 'completed' });
+  summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 1);
+  assert.equal(summary.equivalent_request_accounting.consistent, false);
+  assert.equal(summary.reconciliation.consistent, false);
+});
+
+test('restored attempts and repartition children carry explicit permitted dimensions', () => {
+  const metadata = { active_catchup_run_id: 'run-restored-child' };
+  const original = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'restored-root', request_kind: 'original', request_signature: 'restored',
+  });
+  finishProviderAttempt(metadata, original, { terminal_outcome: 'internal_failure' });
+  const restored = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'restored-root', request_kind: 'original',
+    request_signature: 'restored', restored_in_flight: true,
+  });
+  finishProviderAttempt(metadata, restored, { terminal_outcome: 'completed' });
+  const child = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'child-root', request_kind: 'repartition_child',
+    request_signature: 'child', parent_attempt_id: original.attempt_id,
+    source_range: { start: 0, end: 9, message_count: 10 },
+  });
+  finishProviderAttempt(metadata, child, { terminal_outcome: 'completed' });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.equivalent_request_accounting.reason_counts.restored_in_flight_attempt, 1);
+  assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 0);
+  assert.ok(child.changed_recovery_dimensions.includes('source_range_repartition'));
+  assert.equal(summary.reconciliation.equivalent_request_accounting_consistent, true);
+});
+
+test('bounded provider-failure lineage never replaces its exact aggregate', () => {
+  const metadata = { active_catchup_run_id: 'run-provider-lineage-bound' };
+  for (let index = 0; index < 65; index++) {
+    const attempt = beginProviderAttempt(metadata, {
+      tier: 'longterm', logical_obligation_id: 'one-root', request_kind: 'changed_dimension_regeneration',
+      request_signature: `failure-${index}`, changed_recovery_dimensions: ['fresh_transport_attempt'],
+    });
+    finishProviderAttempt(metadata, attempt, {
+      terminal_outcome: 'provider_failure', failure_classification: 'provider_transport_failure',
+    });
+  }
+  const success = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'one-root', request_kind: 'changed_dimension_regeneration',
+    request_signature: 'success', changed_recovery_dimensions: ['fresh_transport_attempt'],
+  });
+  finishProviderAttempt(metadata, success, { terminal_outcome: 'completed' });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.provider_failure_lineage.exact_count, 65);
+  assert.equal(summary.provider_failure_lineage.retained.length, 64);
+  assert.equal(summary.provider_failure_lineage.details_pruned_or_legacy, true);
+  assert.equal(summary.failure_accounting.unique_failed_obligation_count, 1);
+  assert.equal(summary.failure_accounting.recovered_failed_obligation_count, 1);
 });

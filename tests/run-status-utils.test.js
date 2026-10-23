@@ -61,7 +61,8 @@ test('supplied-run shape is completed with six errors rather than partial', () =
   });
   const accounting = deriveRunErrorAccounting(report);
   assert.equal(accounting.current_attempt_error_records.count, 5);
-  assert.equal(accounting.historical_failure_observations.count, 100);
+  assert.equal(accounting.historical_failure_observations.count, 116);
+  assert.equal(accounting.unique_obligations_ever_failed.count, 100);
   assert.equal(accounting.terminal_unresolved_obligations.count, 6);
   assert.equal(accounting.reconciliation.consistent, true);
   const normalized = normalizeRunStatusReport(report);
@@ -98,6 +99,39 @@ test('recovered failures canonically supply a missing historical observation cou
   assert.equal(corrected.historical_failure_observations.count, 2);
   assert.equal(corrected.reconciliation.recovered_failures_have_historical_observation, true);
   assert.equal(corrected.reconciliation.consistent, true);
+});
+
+test('supplied 3304-obligation fixture preserves physical and logical scopes', () => {
+  const report = completed({ provider_attempt_audit: {
+    schema_version: 5,
+    physical_attempts: 3660,
+    failure_accounting: {
+      physical_failure_observation_count: 135,
+      malformed_response_count: 134,
+      provider_transport_failure_count: 1,
+      parser_structural_failure_count: 134,
+      validation_failure_count: 0,
+      unique_failed_obligation_count: 120,
+      recovered_failed_obligation_count: 120,
+      terminal_unresolved_obligation_count: 0,
+    },
+    unique_logical_obligations: 3304,
+    terminal_unresolved_obligations: [],
+    obligation_aggregate_counts_exact: true,
+    performance: { equivalent_retry_amplification_requests: 1,
+      permitted_equivalent_retry_requests: 1, unexplained_equivalent_retry_requests: 0 },
+  } });
+  const accounting = deriveRunErrorAccounting(report);
+  const status = deriveRunStatus(report);
+  const performance = deriveRunPerformanceDiagnostics(report);
+  assert.equal(accounting.physical_failure_observations.count, 135);
+  assert.equal(accounting.unique_obligations_ever_failed.count, 120);
+  assert.equal(accounting.recovered_obligations.count, 120);
+  assert.equal(accounting.terminal_unresolved_obligations.count, 0);
+  assert.equal(accounting.reconciliation.consistent, true);
+  assert.equal(status.outcome_status, 'completed_recovered_errors');
+  assert.equal(performance.request_amplification.same_signature_retries, 1);
+  assert.equal(performance.request_amplification.unexplained_same_signature_retries, 0);
 });
 
 test('bounded detail never replaces exact authoritative unresolved totals', () => {

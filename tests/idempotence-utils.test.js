@@ -91,6 +91,20 @@ test('bounded stabilization parent verdict follows the final verification pass',
   assert.equal(result.converged_on_pass, 2);
 });
 
+test('literal pass-two mutation converges only when pass three is a stable verification', () => {
+  const passes = [
+    { pass_number: 1, input_semantic_hash: 'a', output_semantic_hash: 'b', logical_mutations: 1, physical_mutations: 1, stale_references: 0, recreated_links: 0 },
+    { pass_number: 2, input_semantic_hash: 'b', output_semantic_hash: 'c', logical_mutations: 1, physical_mutations: 1, stale_references: 0, recreated_links: 0 },
+    { pass_number: 3, input_semantic_hash: 'c', output_semantic_hash: 'c', logical_mutations: 0, physical_mutations: 0, stale_references: 0, recreated_links: 0 },
+  ];
+  const result = deriveAutomaticStabilizationResult(passes, 4);
+  assert.equal(result.converged, true);
+  assert.equal(result.converged_on_pass, 3);
+  assert.equal(result.final_verification_pass, 3);
+  assert.equal(passes[1].logical_mutations, 1);
+  assert.equal(passes[2].logical_mutations, 0);
+});
+
 test('bounded stabilization requires a clean final integrity audit', () => {
   const result = deriveAutomaticStabilizationResult([
     { pass_number: 1, input_semantic_hash: 'a', output_semantic_hash: 'a', logical_mutations: 0, physical_mutations: 0, stale_references: 0, recreated_links: 0, unsafe_merge_candidates: 1, unresolved_integrity_failures: 0 },

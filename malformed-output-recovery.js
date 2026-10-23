@@ -1,5 +1,5 @@
 /** Privacy-safe structural recovery for tagged Long-Term and Session output. */
-import { analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
+import { analyzeBracketModifiers, analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
 
 export const MALFORMED_RECOVERY_SCHEMA_VERSION = 2;
 
@@ -56,6 +56,16 @@ export function analyzeMalformedResponse(response, { tier = 'longterm', finishRe
       && reportedOutputTokens !== null && reportedOutputTokens !== undefined
       && Number.isFinite(Number(requestedOutputTokens)) && Number.isFinite(Number(reportedOutputTokens))
       && Number(reportedOutputTokens) >= Number(requestedOutputTokens));
+  const modifierFailures = lexical.rejected.flatMap((entry) => (entry.modifier_failure_subtypes ?? [])
+    .map((reason_code, index) => ({ reason_code, line_index: entry.line_index,
+      token_index: entry.modifier_field_positions?.[index]?.token_index ?? null })));
+  const modifierNormalizations = [
+    ...lexical.accepted.flatMap((entry) => entry.modifier_diagnostics?.normalizations?.map((item) => item.reason_code) ?? []),
+    ...lexical.rejected.flatMap((entry) => entry.modifier_normalization_subtypes ?? []),
+  ];
+  const modifierMissingSourceCitationCount = lexical.accepted.filter((entry) =>
+    entry.modifier_diagnostics?.missing_source_citation === true).length
+    + lexical.rejected.filter((entry) => entry.modifier_missing_source_citation === true).length;
   return {
     schema_version: MALFORMED_RECOVERY_SCHEMA_VERSION,
     expected_output_format: `${tier}_tagged_lines_v1`,
@@ -79,6 +89,20 @@ export function analyzeMalformedResponse(response, { tier = 'longterm', finishRe
     structural_candidate_count: lexical.structural_candidate_count,
     recoverable_claim_fragment_count: lexical.recoverable_claim_fragment_count,
     parser_shape_counts_reconciled: lexical.accounting_reconciled,
+    modifier_failure_subtype_counts: modifierFailures.reduce((counts, item) => {
+      counts[item.reason_code] = (counts[item.reason_code] ?? 0) + 1;
+      return counts;
+    }, {}),
+    modifier_failure_field_positions: modifierFailures.slice(0, 24),
+    modifier_failure_field_positions_bounded: modifierFailures.length > 24,
+    modifier_locally_normalizable_count: lexical.accepted.filter((entry) =>
+      entry.modifier_diagnostics?.safely_normalizable === true).length
+      + lexical.rejected.filter((entry) => entry.modifier_safely_normalizable).length,
+    modifier_missing_source_citation_count: modifierMissingSourceCitationCount,
+    modifier_normalization_subtype_counts: modifierNormalizations.reduce((counts, reason) => {
+      counts[reason] = (counts[reason] ?? 0) + 1;
+      return counts;
+    }, {}),
     prose_before_structure: proseBefore,
     prose_after_structure: proseAfter,
     escaped_newlines_present: /\\[rn]/.test(text),
@@ -114,7 +138,8 @@ export function classifyTaggedResponseFailure(response, options = {}) {
     if (!new RegExp(`\\[(?:${allowed.join('|')})(?:[:\\]])`, 'i').test(tagText)) return 'unsupported_memory_type';
     if (/\[[^\]]*(?:source|sources|source_indices)\s*=\s*[^\d\]]/i.test(tagText)) return 'invalid_source_citations';
     if (/\[[^\]]*(?:source|sources|source_indices)\s*=\s*\]/i.test(tagText)) return 'missing_source_citations';
-    if (/\[[^\]]*[=:]\s*[^:\]]*[=:]/.test(tagText)) return 'invalid_modifier_syntax';
+    if (Object.keys(shape.modifier_failure_subtype_counts ?? {}).length
+      || shape.modifier_locally_normalizable_count > 0) return 'invalid_modifier_syntax';
     return 'malformed_tag';
   }
   return 'missing_tagged_records';
@@ -157,7 +182,7 @@ function canonicalJsonRecord(record, tier) {
   const modifiers = [importance, expiration];
   if (entities.length) modifiers.push(`entity=${entities.map(String).join(',')}`);
   const validSources = sources.map(Number).filter((value) => Number.isInteger(value) && value >= 0);
-  if (validSources.length) modifiers.push(`source=${validSources.join(',')}`);
+  if (validSources.length) modifiers.push(`sources=${validSources.join(',')}`);
   return `[${type}:${modifiers.join(':')}] ${content.replace(/\s+/g, ' ')}`;
 }
 
@@ -190,6 +215,21 @@ export function normalizeTaggedMemoryOutput(response, { tier = 'longterm', parse
   result ??= unescaped !== unfenced ? tryPath('decode_escaped_newlines', unescaped) : null;
   const unbulleted = unescaped.replace(/^\s*[-*+]\s+(?=\[)/gm, '');
   result ??= unbulleted !== unescaped ? tryPath('remove_tagged_line_bullets', unbulleted) : null;
+  const modifierLines = responseLines(unbulleted);
+  let modifierChanged = false;
+  let modifierAmbiguous = false;
+  const normalizedModifierLines = modifierLines.map((line) => {
+    const match = line.match(/^\s*\[([a-z_]+)([^\]]*)\]\s*(\S[\s\S]*)$/i);
+    if (!match || !taggedTypes(tier).includes(match[1].toLowerCase())) return line;
+    const analysis = analyzeBracketModifiers(match[2]);
+    if (analysis.failures.length) { modifierAmbiguous = true; return line; }
+    if (!analysis.safely_normalizable) return line;
+    modifierChanged = true;
+    const suffix = analysis.canonical_modifiers ? `:${analysis.canonical_modifiers}` : '';
+    return `[${match[1].toLowerCase()}${suffix}] ${match[3].trim()}`;
+  });
+  result ??= modifierChanged && !modifierAmbiguous
+    ? tryPath('normalize_unambiguous_modifiers', normalizedModifierLines.join('\n')) : null;
   const allowed = taggedTypes(tier);
   const extracted = responseLines(unbulleted).filter((line) => new RegExp(`^\\s*\\[(?:${allowed.join('|')})(?:[^\\]]*)\\]\\s*\\S`, 'i').test(line)).join('\n');
   result ??= extracted && extracted !== unbulleted.trim() ? tryPath('extract_complete_tagged_lines', extracted) : null;
@@ -210,12 +250,12 @@ export function buildCompactFormatRepairPrompt(response, { tier = 'longterm' } =
   const types = taggedTypes(tier);
   const defaultExpiration = tier === 'session' ? 'session' : 'permanent';
   const boundedResponse = String(response ?? '').slice(0, 16000);
-  return `Transform the supplied malformed model output into the exact tagged-line schema below.\n\nRules:\n- Preserve only claims already present in MALFORMED OUTPUT.\n- Do not add, infer, summarize, or embellish facts.\n- Keep source indices only when present and valid.\n- Drop ambiguous fragments.\n- Output repaired tagged records only.\n- If no record can be repaired without inventing content, output exactly REPAIR_FAILED.\n\nSchema:\n[type:importance:expiration:entity=name:source=0,1] content\nAllowed types: ${types.join(', ')}\nImportance: 1, 2, or 3\nDefault expiration: ${defaultExpiration}\n\nMALFORMED OUTPUT BEGIN\n${boundedResponse}\nMALFORMED OUTPUT END`;
+  return `Transform the supplied malformed model output into the exact tagged-line schema below.\n\nRules:\n- Preserve only claims already present in MALFORMED OUTPUT.\n- Do not add, infer, summarize, or embellish facts.\n- Keep source indices only when present and valid.\n- Drop ambiguous fragments.\n- Output repaired tagged records only.\n- If no record can be repaired without inventing content, output exactly REPAIR_FAILED.\n\nSchema:\n[type:importance:expiration:entity=Name/type:sources=0,1] content\nAllowed types: ${types.join(', ')}\nImportance: 1, 2, or 3\nDefault expiration: ${defaultExpiration}\n\nMALFORMED OUTPUT BEGIN\n${boundedResponse}\nMALFORMED OUTPUT END`;
 }
 
 export function buildChangedDimensionRegenerationPrompt(originalPrompt, { tier = 'longterm' } = {}) {
   const types = taggedTypes(tier);
-  return `RECOVERY MODE — MINIMAL CANONICAL OUTPUT\nReturn only complete tagged lines. No JSON, markdown, analysis, preface, or trailing commentary. Use only these types: ${types.join(', ')}. Every record must cite source indices from the supplied numbered messages. If there are no supported records, output exactly NONE.\n\n${originalPrompt}`;
+  return `RECOVERY MODE — MINIMAL CANONICAL OUTPUT\nReturn only complete tagged lines. No JSON, markdown, analysis, preface, or trailing commentary. Use only these types: ${types.join(', ')}. Use exactly this modifier order and spelling: [type:importance:expiration:entity=Name/type:sources=0,1]. Omit entity when none is grounded, but sources is mandatory. Use commas only inside entity and sources lists. Every record must cite source indices from the supplied numbered messages. If there are no supported records, output exactly NONE.\n\n${originalPrompt}`;
 }
 
 export function partitionMalformedSourceWindow(messages, { minimumChildMessages = MALFORMED_RECOVERY_LIMITS.minimum_child_messages } = {}) {

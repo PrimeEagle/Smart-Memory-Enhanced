@@ -50,6 +50,32 @@ test('privacy-safe structural classifier distinguishes malformed response famili
   assert.equal(JSON.stringify(shape).includes('garden gate'), false);
 });
 
+test('modifier diagnostics expose subtype counts and normalize only unambiguous syntax', () => {
+  const safeResponse = '[fact:2:permanent:source=01;2] A supported durable claim.';
+  const safeShape = analyzeMalformedResponse(safeResponse, { tier: 'longterm' });
+  assert.equal(safeShape.modifier_locally_normalizable_count, 1);
+  assert.equal(safeShape.modifier_normalization_subtype_counts.normalize_source_list_delimiter, 1);
+  const normalized = normalizeTaggedMemoryOutput(safeResponse, { tier: 'longterm', parse: parseExtractionOutput });
+  assert.match(normalized.normalized_text, /:sources=1,2\]/);
+  assert.equal(parseExtractionOutput(normalized.normalized_text).length, 1);
+
+  const ambiguousResponse = '[fact:2:permanent:sources=1:sources=2] An ambiguous durable claim.';
+  const ambiguousShape = analyzeMalformedResponse(ambiguousResponse, { tier: 'longterm' });
+  assert.equal(ambiguousShape.modifier_failure_subtype_counts.duplicate_source_modifier, 1);
+  assert.equal(normalizeTaggedMemoryOutput(ambiguousResponse, { tier: 'longterm', parse: parseExtractionOutput }).succeeded, false);
+  assert.equal(JSON.stringify(ambiguousShape).includes('ambiguous durable claim'), false);
+});
+
+test('missing source citations remain explicit and are never invented by local normalization', () => {
+  const response = '[fact:2:permanent] A durable claim without a citation.';
+  const shape = analyzeMalformedResponse(response, { tier: 'longterm' });
+  assert.equal(shape.modifier_missing_source_citation_count, 1);
+  const normalized = normalizeTaggedMemoryOutput(response, { tier: 'longterm', parse: parseExtractionOutput });
+  assert.equal(normalized.succeeded, false);
+  assert.doesNotMatch(response, /sources=/);
+  assert.equal(parseExtractionOutput(response)[0].grounding_status, 'ungrounded');
+});
+
 test('valid plus rejected tagged fragments is a reconciled partial, not total parse failure', () => {
   const response = `${validLongterm}\n[unsupported:2] A rejected but structurally distinct fragment.`;
   const shape = analyzeMalformedResponse(response, { tier: 'longterm' });

@@ -1,6 +1,6 @@
 import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
 
-export const RUN_STATUS_CLASSIFIER_VERSION = 2;
+export const RUN_STATUS_CLASSIFIER_VERSION = 3;
 
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const array = (value) => Array.isArray(value) ? value : [];
@@ -14,18 +14,29 @@ export function deriveRunErrorAccounting(report = {}) {
   const notices = array(report.quality?.notices ?? report.quality_notices);
   const providerNoticeCategories = Object.values(provider.notice_reason_counts ?? {})
     .filter((value) => number(value) > 0).length;
-  const unresolved = number(provider.terminally_unresolved_malformed_obligations
+  const failure = provider.failure_accounting ?? {};
+  const unresolved = number(failure.terminal_unresolved_obligation_count
+    ?? provider.terminally_unresolved_malformed_obligations
     ?? provider.coverage?.terminal_failed_obligations
     ?? report.unresolved_error_count);
-  const recovered = number(provider.recovered_malformed_obligations ?? report.recovered_error_count);
-  const uniqueFailed = number(provider.unique_malformed_obligations) || unresolved + recovered;
-  const observedTransportFailures = number(logical.cumulative_request_counters?.provider_failure_count
+  const recovered = number(failure.recovered_failed_obligation_count
+    ?? provider.recovered_malformed_obligations ?? report.recovered_error_count);
+  const uniqueFailed = number(failure.unique_failed_obligation_count
+    ?? provider.unique_malformed_obligations) || unresolved + recovered;
+  const observedTransportFailures = number(failure.provider_transport_failure_count
+    ?? provider.terminal_counts?.provider_failure
+    ?? logical.cumulative_request_counters?.provider_failure_count
     ?? report.provider_failure_observation_count
     ?? array(report.provider_failures).length);
-  // A genuinely malformed root obligation is itself a historical failure
-  // observation even when transport succeeded. Formatting notices are kept in
-  // the provider notice counters and never enter uniqueFailed.
-  const cumulativeFailureObservations = Math.max(observedTransportFailures, uniqueFailed);
+  const malformedPhysical = number(failure.malformed_response_count ?? provider.malformed_physical_responses);
+  const validationFailures = number(failure.validation_failure_count);
+  const parserStructuralFailures = number(failure.parser_structural_failure_count ?? malformedPhysical);
+  const categorizedPhysicalFailures = malformedPhysical + observedTransportFailures + validationFailures;
+  const physicalCategoryAccountingAvailable = provider.failure_accounting != null
+    || categorizedPhysicalFailures > 0;
+  const cumulativeFailureObservations = failure.physical_failure_observation_count !== undefined
+    ? number(failure.physical_failure_observation_count)
+    : Math.max(categorizedPhysicalFailures, uniqueFailed);
   const fatalRunErrors = Math.max(
     number(report.fatal_run_error_count),
     report.final_persistence_error ? 1 : 0,
@@ -40,18 +51,25 @@ export function deriveRunErrorAccounting(report = {}) {
   const providerAggregateCountsExact = provider.obligation_aggregate_counts_exact === true
     || provider.obligation_history_truncated !== true;
   return {
-    schema_version: 2,
+    schema_version: 3,
     current_attempt_error_records: {
       count: currentDetails.length, unit: 'retained_events', scope: 'current_attempt',
       includes_recovered: true, bounded: true, authoritative: false,
     },
     historical_failure_observations: {
-      count: cumulativeFailureObservations, unit: 'attempt_level_observations',
-      scope: 'cumulative_logical_run_across_attempts', includes_recovered: true,
+      count: cumulativeFailureObservations, unit: 'physical_failure_events',
+      scope: 'cumulative_provider_transmissions_across_attempts', includes_recovered: true,
+      bounded: false, authoritative: true,
+      compatibility_alias: true,
+      canonical_field: 'physical_failure_observations',
+    },
+    physical_failure_observations: {
+      count: cumulativeFailureObservations, unit: 'physical_failure_events',
+      scope: 'cumulative_provider_transmissions_across_attempts', includes_recovered: true,
       bounded: false, authoritative: true,
     },
     malformed_provider_responses: {
-      count: number(provider.malformed_physical_responses), unit: 'physical_response_events',
+      count: malformedPhysical, unit: 'physical_response_events',
       scope: provider.scope ?? 'provider_attempt_audit', includes_recovered: true,
       bounded: false, authoritative: true,
     },
@@ -63,6 +81,27 @@ export function deriveRunErrorAccounting(report = {}) {
     recovered_obligations: {
       count: recovered, unit: 'unique_logical_obligations', scope: 'cumulative_provider_audit',
       includes_recovered: true, bounded: false, authoritative: true,
+    },
+    provider_transport_failures: {
+      count: observedTransportFailures, unit: 'physical_request_events', scope: 'cumulative_provider_audit',
+      includes_recovered: true, bounded: false, authoritative: true,
+    },
+    parser_structural_failures: {
+      count: parserStructuralFailures, unit: 'physical_response_events', scope: 'cumulative_provider_audit',
+      includes_recovered: true, bounded: false, authoritative: true,
+    },
+    validation_failures: {
+      count: validationFailures, unit: 'physical_or_candidate_validation_events', scope: 'cumulative_provider_audit',
+      includes_recovered: true, bounded: false, authoritative: true,
+    },
+    local_normalization_notices: {
+      count: number(failure.local_normalization_notice_count), unit: 'physical_response_notices',
+      scope: 'cumulative_provider_audit', includes_recovered: false, bounded: false, authoritative: true,
+    },
+    partial_valid_output_notices: {
+      count: number(failure.partial_valid_output_notice_count ?? provider.notice_reason_counts?.partial_valid_output),
+      unit: 'physical_response_notices', scope: 'cumulative_provider_audit', includes_recovered: false,
+      bounded: false, authoritative: true,
     },
     terminal_unresolved_obligations: {
       count: unresolved, unit: 'unique_logical_obligations', scope: 'terminal_current_state',
@@ -94,10 +133,15 @@ export function deriveRunErrorAccounting(report = {}) {
         ?? provider.coverage?.terminal_failed_obligations ?? unresolved),
       bounded_detail_does_not_replace_authoritative_count: unresolved >= retainedUnresolvedCount,
       recovered_failures_have_historical_observation: recovered === 0 || cumulativeFailureObservations > 0,
+      physical_failure_observations_not_less_than_unique_failed: cumulativeFailureObservations >= uniqueFailed,
+      malformed_transport_validation_reconcile: physicalCategoryAccountingAvailable
+        ? cumulativeFailureObservations === categorizedPhysicalFailures : null,
       consistent: unresolved <= uniqueFailed
         && (!providerAggregateCountsExact || recovered + unresolved === uniqueFailed)
         && unresolved >= retainedUnresolvedCount
-        && (recovered === 0 || cumulativeFailureObservations > 0),
+        && (recovered === 0 || cumulativeFailureObservations > 0)
+        && cumulativeFailureObservations >= uniqueFailed
+        && (!physicalCategoryAccountingAvailable || cumulativeFailureObservations === categorizedPhysicalFailures),
     },
   };
 }
@@ -275,7 +319,15 @@ export function deriveRunPerformanceDiagnostics(report = {}) {
       repartition_requests: number(provider.request_kind_counts?.repartition_child)
         + number(provider.request_kind_counts?.malformed_repartition_child),
       format_repair_requests: number(provider.request_kind_counts?.format_repair),
-      same_signature_retries: number(compaction.same_signature_retries),
+      same_signature_retries: number(provider.equivalent_request_accounting?.total_equivalent_requests
+        ?? provider.performance?.equivalent_retry_amplification_requests),
+      permitted_same_signature_retries: number(provider.equivalent_request_accounting?.permitted_equivalent_requests
+        ?? provider.performance?.permitted_equivalent_retry_requests),
+      unexplained_same_signature_retries: number(provider.equivalent_request_accounting?.unexplained_equivalent_requests
+        ?? provider.performance?.unexplained_equivalent_retry_requests),
+      equivalent_request_accounting_consistent: provider.equivalent_request_accounting?.consistent
+        ?? provider.reconciliation?.equivalent_request_accounting_consistent ?? null,
+      shortterm_same_signature_retries: number(compaction.same_signature_retries),
       shortterm_segment_reductions: number(compaction.segment_reductions),
     },
     failed_or_superseded_request_time: {

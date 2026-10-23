@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.60] - 2026-10-23
+
+### Fixed
+
+- Long-Term and Session prompts now present one canonical tagged-record
+  modifier grammar immediately before output, use `sources=` consistently,
+  require citations, and avoid conflicting legacy examples. Changed-dimension
+  regeneration and compact repair use the same grammar.
+- Modifier parsing now reports privacy-safe structural subtypes and field
+  positions instead of grouping nearly every defect under
+  `invalid_modifier_syntax`. Unambiguous aliases, duplicate separators,
+  numeric source lists, value casing, and identical duplicate modifiers can be
+  normalized locally; conflicting keys, ambiguous delimiters, malformed
+  entity/type pairs, and invalid values still enter bounded provider recovery.
+  Local normalization never invents a citation or identity and is recorded as
+  a notice.
+- Provider-attempt audit schema v5 separates physical failure events from
+  unique failed, recovered, and unresolved logical obligations. It preserves
+  exact malformed, transport, parser, validation, normalization, and partial
+  output counts even when bounded attempt details are pruned.
+- Provider transport failures now retain bounded, content-free recovery
+  lineage, including obligation, tier, request kind, failure class, recovering
+  attempt, and final impact. Legacy schema-v4 exports migrate with an explicit
+  limitation when their already-pruned lineage cannot be reconstructed.
+- Equivalent-request accounting is now shared by provider reconciliation and
+  performance diagnostics. Transport retries and restored in-flight attempts
+  are explicitly permitted, repartition children carry a source-range change
+  dimension, and unexplained equivalent transmissions make reconciliation
+  inconsistent instead of being hidden by an unrelated Short-Term counter.
+- Automatic stabilization now reports every literal pass, its mutation count,
+  the convergence pass, dependency edges, and the stable final verification
+  pass. The legacy `automatic_stabilization_second_pass_writes` field now
+  describes literal pass 2 rather than silently containing the last pass.
+- Canonical narrative alias rewriting now reaches a bounded internal fixed
+  point in one reconciliation call, preventing a newly exposed deterministic
+  alias from requiring another full stabilization pass while retaining
+  multi-pass verification as a safety net.
+- Recovered Session parse failures are described as historical and recovered,
+  yielding `completed_recovered_errors` rather than current generation-quality
+  attention when no obligation remains unresolved. Candidate-level citation
+  exhaustion remains a safe-rejection notice and never persists ungrounded
+  data.
+
+### Tests
+
+- Added modifier subtype, privacy, normalization, prompt-grammar, failure-scope,
+  provider-lineage, pruning, equivalent-request, restored-attempt,
+  repartition-dimension, three-pass stabilization, narrative fixed-point,
+  recovered-Session wording, provenance rejection, and supplied-run accounting
+  regression coverage.
+
 ## [0.9.59] - 2026-10-19
 
 ### Fixed

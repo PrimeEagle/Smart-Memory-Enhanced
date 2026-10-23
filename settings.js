@@ -216,8 +216,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.59',
-  build_fingerprint: 'sme-v0.9.59-canonical-parser-accounting-r1',
+  extension_version: '0.9.60',
+  build_fingerprint: 'sme-v0.9.60-provider-accounting-stabilization-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -634,6 +634,9 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         changed_components: comparison.changed_components,
         changed_paths: comparison.paths,
         source_operations: [...new Set(writes.map((write) => write.source_operation).filter(Boolean))],
+        write_accounting: passResult.integrity_audit?.automatic_stabilization_second_pass_writes ?? {
+          total: 0, records: [], semantic_uncounted_writes: 0, accounting_reconciled: true,
+        },
         unresolved_signature: unresolvedSignature,
       };
     };
@@ -657,6 +660,8 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       repairs = secondPass.integrity_audit?.entity_link_repairs ?? {};
       stabilizationPasses.push(summarizeStabilizationPass(passNumber, durableStateBeforeSecondPass, durableStateAfterSecondPass, secondPass));
     }
+    const literalSecondPass = stabilizationPasses.find((pass) => pass.pass_number === 2) ?? null;
+    const finalVerificationPass = stabilizationPasses.at(-1) ?? null;
     // The canonical idempotence verdict is about the final verification pass,
     // not whether earlier maintenance changed the graph. Preserve the complete
     // history above, but feed the authoritative derivation the final pass's
@@ -709,6 +714,15 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       revision_metadata_changed: revisionMetadataHash(metadataBeforeSecondPass) !== revisionMetadataHash(metadataAfterSecondPass),
       second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
       second_pass_physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
+      second_pass_compatibility_semantics: forceIdempotenceCheck
+        ? 'literal_pass_2_and_final_verification_pass'
+        : 'final_verification_pass_for_legacy_idempotence_consumers_not_literal_pass_2',
+      literal_second_pass_logical_mutations: literalSecondPass?.logical_mutations ?? null,
+      literal_second_pass_physical_mutations: literalSecondPass?.physical_mutations ?? null,
+      final_verification_pass_number: finalVerificationPass?.pass_number ?? null,
+      final_verification_pass_logical_mutations: finalVerificationPass?.logical_mutations ?? null,
+      final_verification_pass_physical_mutations: finalVerificationPass?.physical_mutations ?? null,
+      final_verification_pass_stable: finalVerificationPass ? isStablePass(finalVerificationPass) : false,
       second_pass_input_hash: finalVerificationComparison.first_hash,
       second_pass_output_hash: finalVerificationComparison.second_hash,
       recreated_after_prior_repair: repairs.recreated_after_prior_repair ?? 0,
@@ -721,8 +735,16 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       session_memory_change_summary: sessionMemoryChangeSummary,
       story_arc_change_summary: storyArcChangeSummary,
       card_local_memory_change_summary: cardLocalMemoryChangeSummary,
-      automatic_stabilization_second_pass_writes: secondPass.integrity_audit?.automatic_stabilization_second_pass_writes ?? {
+      automatic_stabilization_second_pass_writes: literalSecondPass?.write_accounting ?? {
         total: 0, records: [], semantic_uncounted_writes: 0, accounting_reconciled: true,
+      },
+      automatic_stabilization_second_pass_writes_compatibility_semantics:
+        'literal_pass_2_writes_retained_for_legacy_field_name',
+      literal_pass_2_writes: {
+        total_logical_mutations: literalSecondPass?.logical_mutations ?? null,
+        total_physical_mutations: literalSecondPass?.physical_mutations ?? null,
+        changed_paths: literalSecondPass?.changed_paths ?? [],
+        authoritative_pass_number: 2,
       },
       automatic_stabilization_component_hash_diff: {
         projection_version: durableComparison.projection_version,
@@ -815,6 +837,18 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       converged_on_pass: convergedOnPass,
       max_passes_reached: !convergedOnPass && stabilizationPasses.length >= maximumStabilizationPasses,
       passes: stabilizationPasses,
+      mutation_counts_by_pass: stabilizationPasses.map((pass) => ({
+        pass_number: pass.pass_number,
+        logical_mutations: pass.logical_mutations,
+        physical_mutations: pass.physical_mutations,
+      })),
+      final_verification_pass_mutations: {
+        pass_number: finalStabilizationPass?.pass_number ?? null,
+        logical_mutations: finalStabilizationPass?.logical_mutations ?? null,
+        physical_mutations: finalStabilizationPass?.physical_mutations ?? null,
+      },
+      non_final_pass_depended_on_prior_output: dependencyEdges.length > 0,
+      final_pass_stable: Boolean(finalStabilizationPass && isStablePass(finalStabilizationPass)),
     };
     if (!forceIdempotenceCheck) {
       const boundedVerdict = deriveAutomaticStabilizationResult(stabilizationPasses, maximumStabilizationPasses);
@@ -832,7 +866,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     result.idempotence.automatic_stabilization = !forceIdempotenceCheck;
     if (!forceIdempotenceCheck) {
       result.idempotence.summary = result.idempotence.idempotent
-        ? `Automatic stabilization converged: ${result.idempotence.second_pass_logical_mutations} second-pass mutations, ${result.idempotence.stale_references_after_second_pass} stale references, ${result.idempotence.recreated_after_prior_repair} recreated links.`
+        ? `Automatic stabilization converged on pass ${convergedOnPass}; the final verification pass produced ${finalStabilizationPass?.logical_mutations ?? 0} logical and ${finalStabilizationPass?.physical_mutations ?? 0} physical mutations, with ${result.idempotence.stale_references_after_second_pass} stale references and ${result.idempotence.recreated_after_prior_repair} recreated links.`
         : `Automatic stabilization needs attention: ${result.idempotence.attention_reasons.join(', ')}.`;
     }
     result.idempotence.hash_comparison = {
@@ -8181,6 +8215,7 @@ export function bindSettingsUI(ctrl) {
         runResult.arcExtraction.terminalOutcome = runResult.arcExtraction.terminal_outcome;
       }
       const qualityReasons = [];
+      const providerAttemptSummary = summarizeProviderAttemptAudit(catchUpContext.chatMetadata?.[META_KEY]);
       // Extraction coverage is independent of candidate quality: a window is
       // covered only when it completed itself or every deterministic child
       // window completed. This prevents a context-overflow split from being
@@ -8224,9 +8259,16 @@ export function bindSettingsUI(ctrl) {
         message: `${runResult.sessionExtraction.validated} validated, ${runResult.sessionExtraction.missingProvenance} quarantined for missing citations.`,
       });
       if (runResult.sessionExtraction.malformedOutput > 0) qualityReasons.push({
-        code: 'session_malformed_provider_output',
+        code: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0) === 0
+          ? 'session_malformed_provider_output_recovered' : 'session_malformed_provider_output',
         tier: 'session',
-        message: `${runResult.sessionExtraction.malformedOutput} session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} contained no parseable structured records.`,
+        severity: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0) === 0
+          ? 'historical_recovered' : 'attention',
+        state_scope: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0) === 0
+          ? 'historical_and_recovered' : 'current_terminal_unresolved',
+        message: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0) === 0
+          ? `${runResult.sessionExtraction.malformedOutput} initial Session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} ${runResult.sessionExtraction.malformedOutput === 1 ? 'was' : 'were'} unparseable; all affected obligations recovered automatically.`
+          : `${runResult.sessionExtraction.malformedOutput} Session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} contained no parseable structured records, and terminal generation obligations remain unresolved.`,
       });
       if (runResult.arcPipeline.classifiedResolved >= 2 && runResult.arcPipeline.persisted === 0) qualityReasons.push({
         code: 'resolved_arcs_without_persisted_summaries',
@@ -8316,6 +8358,15 @@ export function bindSettingsUI(ctrl) {
           ? `${citationPipeline.unaccounted_candidate_ids?.length ?? 0} citation-repair candidates lack a terminal disposition.`
           : `${repairs.repairAttempts ?? 0} citation-repair candidates but ${repairTerminalTotal} repair terminal outcomes.`,
       });
+      const exhaustedCitationCandidates = Number(repairs.citation_repair_adaptive_retry?.exhausted ?? 0);
+      if (exhaustedCitationCandidates > 0) qualityReasons.push({
+        code: 'session_candidate_provenance_safely_rejected',
+        tier: 'session', severity: 'notice', state_scope: 'safely_rejected_candidate',
+        count: exhaustedCitationCandidates,
+        parent_obligation_completed: true,
+        persisted_ungrounded_records: 0,
+        message: `${exhaustedCitationCandidates} Session candidate${exhaustedCitationCandidates === 1 ? '' : 's'} exhausted citation recovery and ${exhaustedCitationCandidates === 1 ? 'was' : 'were'} safely rejected; the parent extraction obligation completed and no ungrounded record was persisted.`,
+      });
       const committedProfilePhase = checkpoint.finalization?.completed_phases?.profile_generation;
       if (settings.profiles_enabled && runResult.profiles.profiles_attempted === 0 && committedProfilePhase) {
         runResult.profiles.profiles_attempted = committedProfilePhase.attempted ?? null;
@@ -8390,14 +8441,17 @@ export function bindSettingsUI(ctrl) {
         code: 'required_finalization_phase_incomplete', tier: 'shortterm',
         message: 'Short-Term finalization is incomplete; final integrity and completed-run quality were not evaluated.',
       });
-      const providerAttemptSummary = summarizeProviderAttemptAudit(catchUpContext.chatMetadata?.[META_KEY]);
-      if (Number(providerAttemptSummary?.terminally_unresolved_malformed_obligations ?? 0) > 0) qualityReasons.push({
+      if (Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count
+        ?? providerAttemptSummary?.terminally_unresolved_malformed_obligations ?? 0) > 0) qualityReasons.push({
         code: 'terminal_malformed_provider_obligations', tier: 'generation',
-        count: providerAttemptSummary.terminally_unresolved_malformed_obligations,
-        message: `${providerAttemptSummary.terminally_unresolved_malformed_obligations} provider obligation(s) ended without valid parsed output; source traversal remains safely checkpointed but generation coverage is incomplete.`,
+        count: providerAttemptSummary.failure_accounting?.terminal_unresolved_obligation_count
+          ?? providerAttemptSummary.terminally_unresolved_malformed_obligations,
+        state_scope: 'current_terminal_unresolved',
+        message: `${providerAttemptSummary.failure_accounting?.terminal_unresolved_obligation_count ?? providerAttemptSummary.terminally_unresolved_malformed_obligations} provider obligation(s) ended without valid parsed output; source traversal remains safely checkpointed but generation coverage is incomplete.`,
       });
-      const qualityDegradingReasons = qualityReasons.filter((reason) => reason.severity !== 'notice');
-      const qualityNotices = qualityReasons.filter((reason) => reason.severity === 'notice');
+      const qualityDegradingReasons = qualityReasons.filter((reason) => !['notice', 'historical_recovered'].includes(reason.severity));
+      const qualityNotices = qualityReasons.filter((reason) => ['notice', 'historical_recovered'].includes(reason.severity));
+      const historicalRecoveredGenerationFailures = qualityReasons.filter((reason) => reason.severity === 'historical_recovered');
       runResult.quality = {
         status: projectedOperationalStatus === 'completed'
           ? (qualityDegradingReasons.length ? 'degraded' : 'clean') : 'partial',
@@ -8408,7 +8462,10 @@ export function bindSettingsUI(ctrl) {
         final_integrity_status: finalIntegrityStatus,
         data_quality_status: qualityDegradingReasons.length ? 'attention' : 'clean',
         generation_quality_status: resumableFinalizationFailure ? 'not_evaluated'
-          : qualityDegradingReasons.length ? 'attention' : 'completed_clean',
+          : qualityDegradingReasons.length ? 'attention'
+            : historicalRecoveredGenerationFailures.length ? 'completed_recovered_errors' : 'completed_clean',
+        historical_recovered_generation_failures: historicalRecoveredGenerationFailures,
+        current_unresolved_generation_failure_count: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0),
         maintenance_actions: maintenanceActions,
         maintenance_actions_performed: maintenanceActions.entity_links_repaired,
         reasons: qualityReasons,

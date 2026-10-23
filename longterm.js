@@ -1122,7 +1122,12 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
         return added;
       }
-      finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'provider_failure', recoverable: false });
+      const providerStatus = Number(err?.status ?? err?.cause?.status);
+      finishProviderAttempt(providerMetadata, providerAttempt, {
+        terminal_outcome: 'provider_failure', recoverable: false,
+        failure_classification: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
+          : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure',
+      });
       healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase,
@@ -1181,7 +1186,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         && responseShape.structurally_rejected_record_count > 0 ? 'partial_valid_output' : null;
       const noticeReason = !parserCountConsistent ? 'parser_structural_analysis_mismatch'
         : partialReason ?? ((responseShape.prose_before_structure || responseShape.prose_after_structure)
-        ? 'prose_around_tagged_records' : null);
+        ? 'prose_around_tagged_records'
+          : responseShape.modifier_locally_normalizable_count > 0
+            ? 'local_normalization:canonical_modifiers' : null);
       finishProviderAttempt(providerMetadata, providerAttempt, {
         terminal_outcome: 'completed', malformed_reason: null, notice_reason: noticeReason,
         recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',

@@ -288,6 +288,18 @@ test('canonical roster: generated prose uses deterministic card-name replacement
   assert.deepEqual(result.replacements.map((entry) => entry.to), ['Paul Schmidt', 'Kyle Holland']);
 });
 
+test('one canonical narrative rewrite reaches a fixed point and remains idempotent', () => {
+  const roster = buildCanonicalCharacterRoster({
+    name1: 'Kyle Holland',
+    characters: [{ id: 'paul', name: 'Paul Schmidt', description: '' }],
+  });
+  const first = canonicalizeNarrativeNames('Paul Kawaguchi asks Kyle to wait.', roster);
+  const second = canonicalizeNarrativeNames(first.text, roster);
+  assert.equal(first.fixed_point_reached, true);
+  assert.equal(second.text, first.text);
+  assert.equal(second.replacements.length, 0);
+});
+
 test('contradictory card-like names do not receive a canonical storage ID', () => {
   const reference = buildStableEntityReference('Paul Kawaguchi', roster);
   assert.equal(reference.displayName, 'Paul Kawaguchi');

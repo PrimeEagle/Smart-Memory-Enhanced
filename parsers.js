@@ -50,6 +50,11 @@ import { MEMORY_TYPES, SESSION_TYPES, generateMemoryId } from './constants.js';
 import { sanitizeStructuredModelOutput } from './record-validation.js';
 
 const MODIFIER_KEYS = new Set(['entity', 'entities', 'source', 'sources', 'source_messages', 'source_indices', 'candidate_id', 'claim_hash', 'witnessed_by', 'score', 'expiration', 'expires', 'trigger', 'triggers']);
+const MODIFIER_KEY_ALIASES = Object.freeze({
+  entities: 'entity', source: 'sources', source_messages: 'sources', source_indices: 'sources',
+  expires: 'expiration', triggers: 'trigger',
+});
+const ENTITY_TYPES = new Set(['character', 'place', 'object', 'faction', 'concept']);
 const ENTITY_CONTROL_WORDS = new Set([...MEMORY_TYPES, ...SESSION_TYPES, 'arc', 'resolved', 'scene', 'session', 'permanent', 'none', 'source', 'sources', 'source_messages', 'source_indices', 'score', 'expiration', 'expires', 'entity', 'entities', 'witnessed_by', 'trigger', 'triggers']);
 const COLLECTIVE_ENTITY_NAMES = new Set(['all three', 'all four', 'both of them', 'the two of them', 'the couple', 'the group', 'everyone', 'everybody', 'the others', 'the trio', 'the family', 'the roommates', 'the partners']);
 const ROLE_PLACEHOLDER_ENTITY_NAMES = new Set(['supporting_character', 'supporting character', 'side_character', 'side character', 'character', 'person', 'npc', 'unknown character', 'minor character']);
@@ -82,11 +87,128 @@ export function isPlausibleEntityName(candidate) {
   return (name.match(/\d/g) ?? []).length / Math.max(name.length, 1) < 0.6;
 }
 
+/**
+ * Content-free structural analysis for a tagged record's modifier section.
+ * It deliberately separates safe canonicalization opportunities from syntax
+ * errors whose repair could change meaning. No values are exported here.
+ */
+export function analyzeBracketModifiers(rawModifiers = '') {
+  const raw = String(rawModifiers ?? '');
+  const body = raw.replace(/^\s*:/, '');
+  const rawTokens = body ? body.split(':') : [];
+  const failures = [];
+  const normalizations = [];
+  const fieldPositions = [];
+  const canonicalValues = new Map();
+  const positional = [];
+  const addFailure = (reason_code, token_index, field = null) => {
+    failures.push({ reason_code, token_index, field });
+    fieldPositions.push({ token_index, field, reason_code });
+  };
+  for (const [tokenIndex, untrimmed] of rawTokens.entries()) {
+    const token = untrimmed.trim();
+    if (!token) {
+      normalizations.push({ reason_code: 'duplicate_modifier_separator', token_index: tokenIndex });
+      continue;
+    }
+    const assignmentCount = (token.match(/=/g) ?? []).length;
+    if (assignmentCount > 1) {
+      addFailure('multiple_assignment_delimiters', tokenIndex);
+      continue;
+    }
+    if (assignmentCount === 0) {
+      if (/^[123]$/.test(token) || /^(scene|session|permanent)$/i.test(token)) {
+        positional.push({ value: token, token_index: tokenIndex });
+      } else addFailure('unknown_modifier_syntax', tokenIndex);
+      continue;
+    }
+    const [rawKey, ...valueParts] = token.split('=');
+    const keyText = rawKey.trim();
+    const valueText = valueParts.join('=').trim();
+    if (!keyText) { addFailure('missing_modifier_key', tokenIndex); continue; }
+    const lowerKey = keyText.toLowerCase();
+    if (!MODIFIER_KEYS.has(lowerKey)) { addFailure('unsupported_modifier_key', tokenIndex, lowerKey); continue; }
+    const key = MODIFIER_KEY_ALIASES[lowerKey] ?? lowerKey;
+    if (keyText !== key || lowerKey !== key) normalizations.push({ reason_code: 'canonicalize_modifier_key', token_index: tokenIndex, field: key });
+    if (!valueText) { addFailure('empty_modifier_value', tokenIndex, key); continue; }
+
+    let canonicalValue = valueText;
+    if (key === 'score') {
+      if (!/^[123]$/.test(valueText)) { addFailure('invalid_importance', tokenIndex, key); continue; }
+    } else if (key === 'expiration') {
+      if (!/^(scene|session|permanent)$/i.test(valueText)) { addFailure('invalid_expiration', tokenIndex, key); continue; }
+      canonicalValue = valueText.toLowerCase();
+      if (canonicalValue !== valueText) normalizations.push({ reason_code: 'canonicalize_modifier_value_case', token_index: tokenIndex, field: key });
+    } else if (key === 'sources') {
+      if (/^\d+(?:\s*;\s*\d+)+$/.test(valueText)) {
+        canonicalValue = valueText.split(';').map((part) => String(Number(part.trim()))).join(',');
+        normalizations.push({ reason_code: 'normalize_source_list_delimiter', token_index: tokenIndex, field: key });
+      } else if (!/^\d+(?:\s*,\s*\d+)*$/.test(valueText)) {
+        addFailure('invalid_source_index_or_delimiter', tokenIndex, key);
+        continue;
+      } else canonicalValue = valueText.split(',').map((part) => String(Number(part.trim()))).join(',');
+      if (canonicalValue !== valueText) normalizations.push({ reason_code: 'normalize_numeric_source_list', token_index: tokenIndex, field: key });
+    } else if (key === 'entity') {
+      if (valueText.includes(';')) { addFailure('invalid_entity_delimiter', tokenIndex, key); continue; }
+      const entities = valueText.split(',').map((part) => part.trim());
+      if (entities.some((entry) => !entry)) { addFailure('empty_entity_value', tokenIndex, key); continue; }
+      const malformedPair = entities.some((entry) => entry.includes('/')
+        && !ENTITY_TYPES.has(String(entry.split('/').at(-1)).trim().toLowerCase()));
+      if (malformedPair) { addFailure('malformed_entity_type_pair', tokenIndex, key); continue; }
+      canonicalValue = entities.join(',');
+    }
+    if (canonicalValues.has(key)) {
+      if (canonicalValues.get(key) === canonicalValue) {
+        normalizations.push({ reason_code: `remove_duplicate_${key}_modifier`, token_index: tokenIndex, field: key });
+        continue;
+      }
+      addFailure(key === 'entity' ? 'duplicate_entity_modifier'
+        : key === 'sources' ? 'duplicate_source_modifier' : 'duplicate_modifier_key', tokenIndex, key);
+      continue;
+    }
+    canonicalValues.set(key, canonicalValue);
+  }
+
+  for (const positionalToken of positional) {
+    const key = /^[123]$/.test(positionalToken.value) ? 'score' : 'expiration';
+    const value = key === 'expiration' ? positionalToken.value.toLowerCase() : positionalToken.value;
+    if (canonicalValues.has(key)) {
+      if (canonicalValues.get(key) === value) normalizations.push({ reason_code: `remove_duplicate_${key}_modifier`, token_index: positionalToken.token_index, field: key });
+      else addFailure('duplicate_modifier_key', positionalToken.token_index, key);
+    } else canonicalValues.set(key, value);
+  }
+  const canonicalOrder = ['score', 'expiration', 'entity', 'sources', 'candidate_id', 'claim_hash', 'witnessed_by', 'trigger'];
+  const canonicalTokens = canonicalOrder.filter((key) => canonicalValues.has(key)).map((key) => {
+    const value = canonicalValues.get(key);
+    return key === 'score' || key === 'expiration' ? value : `${key}=${value}`;
+  });
+  return {
+    valid: failures.length === 0 && normalizations.length === 0,
+    safely_normalizable: failures.length === 0 && normalizations.length > 0,
+    failures,
+    normalizations,
+    failure_reason_counts: failures.reduce((counts, item) => {
+      counts[item.reason_code] = (counts[item.reason_code] ?? 0) + 1;
+      return counts;
+    }, {}),
+    normalization_reason_counts: normalizations.reduce((counts, item) => {
+      counts[item.reason_code] = (counts[item.reason_code] ?? 0) + 1;
+      return counts;
+    }, {}),
+    field_positions: fieldPositions,
+    canonical_modifiers: canonicalTokens.join(':'),
+    canonical_values: Object.fromEntries(canonicalValues),
+    missing_source_citation: !canonicalValues.has('sources'),
+  };
+}
+
 /** Parses recognized bracket modifier fields without allowing sources to bleed into entity values. */
 export function parseBracketModifiers(rawModifiers = '') {
   const result = { score: undefined, expiration: undefined, candidateId: null, entityNames: [], sourceIndices: [], witnessedBy: [], triggers: [], unknownModifiers: [] };
+  const analysis = analyzeBracketModifiers(rawModifiers);
+  const source = analysis.failures.length === 0 ? analysis.canonical_modifiers : String(rawModifiers);
   const positional = [];
-  for (const token of String(rawModifiers).split(':').map((part) => part.trim()).filter(Boolean)) {
+  for (const token of source.split(':').map((part) => part.trim()).filter(Boolean)) {
     const keyed = token.match(/^([a-z_]+)\s*=\s*(.*)$/i);
     if (!keyed) { positional.push(token); continue; }
     const key = keyed[1].toLowerCase();
@@ -136,16 +258,27 @@ export function analyzeTaggedMemoryOutput(text, { tier = 'longterm' } = {}) {
     if (match) {
       candidateLineCount++;
       const content = match[3].trim();
-      if (content.length >= grammar.minimumContentLength) {
+      const modifierAnalysis = analyzeBracketModifiers(match[2]);
+      if (content.length >= grammar.minimumContentLength && modifierAnalysis.failures.length === 0) {
         accepted.push({
           line_index: lineIndex,
           type: match[1].toLowerCase(),
           modifiers: match[2],
           content,
           parsed_modifiers: parseBracketModifiers(match[2]),
+          modifier_diagnostics: modifierAnalysis,
         });
       } else {
-        rejected.push({ line_index: lineIndex, reason_code: 'content_too_short', recoverable_claim_content: false });
+        rejected.push({
+          line_index: lineIndex,
+          reason_code: content.length < grammar.minimumContentLength ? 'content_too_short' : 'invalid_modifier_syntax',
+          modifier_failure_subtypes: modifierAnalysis.failures.map((item) => item.reason_code),
+          modifier_normalization_subtypes: modifierAnalysis.normalizations.map((item) => item.reason_code),
+          modifier_field_positions: modifierAnalysis.field_positions,
+          modifier_safely_normalizable: modifierAnalysis.safely_normalizable,
+          modifier_missing_source_citation: modifierAnalysis.missing_source_citation,
+          recoverable_claim_content: content.length >= grammar.minimumContentLength,
+        });
       }
       continue;
     }

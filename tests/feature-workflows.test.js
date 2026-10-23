@@ -830,6 +830,11 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /unresolved_integrity_failures_after_second_pass === 0/);
   assert.match(settings, /maximumStabilizationPasses/);
   assert.match(settings, /automatic_stabilization_passes/);
+  assert.match(settings, /literal_second_pass_logical_mutations/);
+  assert.match(settings, /final_verification_pass_logical_mutations/);
+  assert.match(settings, /literal_pass_2_writes_retained_for_legacy_field_name/);
+  assert.match(settings, /Automatic stabilization converged on pass/);
+  assert.match(settings, /final verification pass produced/);
   assert.match(settings, /stabilization_dependency_trace/);
   assert.match(settings, /post_automatic_manual_maintenance_diff/);
   assert.match(settings, /post_automatic_manual_dependency_trace/);
@@ -873,6 +878,27 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   const idempotenceStart = settings.indexOf('async function runFinalIntegrityReconciliation');
   const idempotenceRunner = settings.slice(idempotenceStart, settings.indexOf('return result;', idempotenceStart) + 'return result;'.length);
   assert.doesNotMatch(idempotenceRunner, /generateMemoryExtract|detectSceneBreak|generateProfiles|extractAndStoreMemories/);
+});
+
+test('tagged extraction prompts use one canonical cited modifier grammar', () => {
+  const prompts = read('prompts.js');
+  assert.match(prompts, /\[type:score:expiration:entity=Name\/type:sources=0,2\]/);
+  assert.match(prompts, /sources field is mandatory/i);
+  assert.match(prompts, /one equals sign after each key/);
+  const sessionPrompt = prompts.slice(prompts.indexOf('export function buildSessionExtractionPrompt'), prompts.indexOf('// ---- Scene break detection'));
+  const longtermPrompt = prompts.slice(prompts.indexOf('export function buildExtractionPrompt'), prompts.indexOf('// ---- Supersession confirmation'));
+  assert.doesNotMatch(`${sessionPrompt}\n${longtermPrompt}`, /:source=/);
+});
+
+test('recovered Session failures are historical while exhausted candidates remain safe notices', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /session_malformed_provider_output_recovered/);
+  assert.match(settings, /all affected obligations recovered automatically/);
+  assert.match(settings, /severity: Number\(providerAttemptSummary.*historical_recovered/s);
+  assert.match(settings, /generation_quality_status: resumableFinalizationFailure/);
+  assert.match(settings, /completed_recovered_errors/);
+  assert.match(settings, /session_candidate_provenance_safely_rejected/);
+  assert.match(settings, /persisted_ungrounded_records: 0/);
 });
 
 test('chat load restores diagnostics export availability from persisted metadata', () => {

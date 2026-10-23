@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeTaggedMemoryOutput,
+  analyzeBracketModifiers,
   parseExtractionOutput,
   parseBracketModifiers,
   isPlausibleEntityName,
@@ -28,6 +29,28 @@ test('tagged lexical analysis and authoritative parsers agree exactly', () => {
   const session = '[detail:2:session:sources=2] Current session detail.';
   assert.equal(analyzeTaggedMemoryOutput(session, { tier: 'session' }).parser_accepted_record_count,
     parseSessionOutput(session).length);
+});
+
+test('modifier grammar separates safe normalization from ambiguous syntax without exposing values', () => {
+  const safe = analyzeBracketModifiers(':2:permanent:entities=Taylor/character:source=01;2');
+  assert.equal(safe.safely_normalizable, true);
+  assert.deepEqual(safe.failure_reason_counts, {});
+  assert.equal(safe.canonical_modifiers, '2:permanent:entity=Taylor/character:sources=1,2');
+  assert.equal(safe.missing_source_citation, false);
+
+  const ambiguous = analyzeBracketModifiers(':2:permanent:sources=1:sources=2');
+  assert.equal(ambiguous.safely_normalizable, false);
+  assert.equal(ambiguous.failure_reason_counts.duplicate_source_modifier, 1);
+  assert.equal(JSON.stringify(ambiguous.field_positions).includes('Taylor'), false);
+});
+
+test('tagged analysis reports invalid modifier subtypes and missing citations independently', () => {
+  const malformed = analyzeTaggedMemoryOutput('[fact:2:permanent:sources=1:sources=2] A durable claim.', { tier: 'longterm' });
+  assert.equal(malformed.parser_accepted_record_count, 0);
+  assert.deepEqual(malformed.rejected[0].modifier_failure_subtypes, ['duplicate_source_modifier']);
+  const uncited = analyzeTaggedMemoryOutput('[fact:2:permanent] A durable but uncited claim.', { tier: 'longterm' });
+  assert.equal(uncited.parser_accepted_record_count, 1);
+  assert.equal(uncited.accepted[0].modifier_diagnostics.missing_source_citation, true);
 });
 import { applyDirectProvenance } from '../grounding.js';
 
