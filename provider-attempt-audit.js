@@ -400,6 +400,7 @@ export function beginProviderAttempt(metadata, input = {}) {
     ? priorEquivalent.terminal_outcome === 'provider_failure' && (input.request_kind ?? 'original') === 'original'
       ? 'provider_transport_retry'
       : input.restored_in_flight === true ? 'restored_in_flight_attempt'
+        : input.resumed_pending_obligation === true ? 'checkpoint_pending_obligation_retry'
         : null
     : null;
   const changedRecoveryDimensions = [...new Set(input.changed_recovery_dimensions ?? [])];
@@ -449,6 +450,7 @@ export function beginProviderAttempt(metadata, input = {}) {
     equivalent_prior_attempt: Boolean(priorEquivalent),
     equivalent_retry_reason: equivalentRetryReason,
     equivalent_retry_permitted: Boolean(equivalentRetryReason),
+    resumed_pending_obligation: input.resumed_pending_obligation === true,
     changed_recovery_dimensions: changedRecoveryDimensions.slice(0, 8),
     recovery_of_attempt_id: input.recovery_of_attempt_id ?? null,
     repair_reason: input.repair_reason ?? null,

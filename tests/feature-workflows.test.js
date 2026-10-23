@@ -1947,3 +1947,17 @@ test('incomplete source tiers pause safely and block definitive final reconcilia
   assert.match(settings, /Memorize Chat paused safely because one memory tier is incomplete/);
   assert.match(settings, /ctrl\.catchUpStopReason = 'manual_cancel'/);
 });
+
+test('source-tier coverage becomes complete only after a terminal parse or persistence outcome', () => {
+  for (const file of ['longterm.js', 'session.js']) {
+    const source = read(file);
+    const requestStart = source.indexOf('response = await generateMemoryExtract(prompt');
+    const requestEnd = source.indexOf('} catch (err)', requestStart);
+    assert.doesNotMatch(source.slice(requestStart, requestEnd), /recordExtractionCoverage/);
+    const saveCall = file === 'longterm.js'
+      ? source.indexOf('saveCharacterMemories(characterName, [...finalActive, ...updatedRetired])')
+      : source.indexOf('await saveSessionMemories([...finalActive, ...updatedRetired])');
+    const durableCoverage = source.indexOf("recordCompletedCoverage('completed_and_persisted')", saveCall);
+    assert.ok(saveCall >= 0 && durableCoverage > saveCall);
+  }
+});

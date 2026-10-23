@@ -897,6 +897,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       preflight,
       request_sent: false,
     };
+    const recordCompletedCoverage = (providerOutcome = 'completed') => recordExtractionCoverage(coverageLedger, {
+      ...coverageBase,
+      request_sent: true,
+      provider_outcome: providerOutcome,
+      coverage_terminal_state: 'completed',
+      all_source_messages_covered: true,
+    });
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `longterm:${String(characterName).toLowerCase()}:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
@@ -926,6 +933,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       protocol_overhead: preflight.protocol_overhead_tokens,
       estimated_input_tokens: preflight.estimated_input_tokens,
       estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
+      resumed_pending_obligation: options._providerResumedPendingObligation === true,
       schema_version: 'longterm-tagged-v1',
       configuration_signature: providerConfigurationSignature({
         connection_profile_id: settings.connection_profile_id ?? null,
@@ -1102,13 +1110,6 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const providerAttempt = beginPhysicalAttempt();
     try {
       response = await generateMemoryExtract(prompt, { responseLength });
-      recordExtractionCoverage(coverageLedger, {
-        ...coverageBase,
-        request_sent: true,
-        provider_outcome: 'completed',
-        coverage_terminal_state: 'completed',
-        all_source_messages_covered: true,
-      });
     } catch (err) {
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
@@ -1143,6 +1144,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
+      recordCompletedCoverage('completed_no_candidates');
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
     }
@@ -1163,6 +1165,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         return recovery.added;
       }
       if (recovery.explicit_none) {
+        recordCompletedCoverage('completed_no_candidates_after_regeneration');
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
           provider_outcome: 'completed_no_candidates_after_regeneration', parser_outcome: 'explicit_none' });
         return 0;
@@ -1221,6 +1224,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       smLog(
         `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
       );
+      recordCompletedCoverage('completed_no_persistence_needed');
       healthFinish({ terminal_health: 'completed', persistence: 'not_needed', candidates: { accepted: 0, rejected_duplicate: parsed.length } });
       return 0;
     }
@@ -1239,6 +1243,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       validateGeneratedMemoryRecord(mem, activeMemories);
     }
     if (options.dryRun) {
+      recordCompletedCoverage('completed_dry_run');
       return {
         dryRun: true,
         parsed: parsed.length,
@@ -1561,6 +1566,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     // Save: final active set + all retired memories (history is preserved).
     saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
+    recordCompletedCoverage('completed_and_persisted');
 
     smLog(
       `[Smart Memory Enhanced] Saved ${added} new memories for "${characterName}". Active: ${finalActive.length}, Retired: ${updatedRetired.length}`,

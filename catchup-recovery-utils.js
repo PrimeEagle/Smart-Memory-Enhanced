@@ -177,6 +177,31 @@ export function recordCatchUpOwnerRange(manifest, owner, range, {
   return next;
 }
 
+/**
+ * Revokes a legacy owner completion only when newer durable provider evidence
+ * proves that the same owner/range still has a terminal unresolved obligation.
+ */
+export function invalidateCatchUpOwnerRange(manifest, owner, range, {
+  reasonCode = 'terminal_provider_obligation_unresolved', now = Date.now(),
+} = {}) {
+  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
+  const normalized = normalizeRange(range);
+  if (!normalized || !String(owner ?? '').trim()) return next;
+  const key = ownerObligationKey(owner, normalized);
+  const prior = next.owner_obligations.find((entry) => entry.key === key);
+  if (!prior) return next;
+  const entry = {
+    ...prior,
+    safely_committed: false,
+    terminal_outcome: 'pending',
+    reason_code: reasonCode,
+    updated_at: now,
+  };
+  next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
+    .slice(-MAX_OWNER_OBLIGATIONS);
+  return next;
+}
+
 /** Returns the durable state of one tier/range without exposing source text. */
 export function getCatchUpTierRangeStatus(manifest, tier, range) {
   const normalized = normalizeRange(range);
@@ -266,6 +291,7 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
           source_fingerprint: entry.source_fingerprint ?? null,
           safely_committed: entry.safely_committed === true,
           terminal_outcome: entry.terminal_outcome ?? (entry.safely_committed ? 'safely_committed' : 'pending'),
+          reason_code: entry.reason_code ?? null,
           updated_at: number(entry.updated_at) || null,
         };
       }).filter(Boolean).slice(-MAX_OWNER_OBLIGATIONS) : [],

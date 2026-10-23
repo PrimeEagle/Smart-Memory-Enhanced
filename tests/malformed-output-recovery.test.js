@@ -4,7 +4,9 @@ import { parseExtractionOutput, parseSessionOutput } from '../parsers.js';
 import {
   MALFORMED_RECOVERY_LIMITS,
   analyzeMalformedResponse,
+  buildChangedDimensionRegenerationPrompt,
   buildCompactFormatRepairPrompt,
+  buildStructuredJsonRegenerationPrompt,
   classifyTaggedResponseFailure,
   consumeMalformedRecoveryRequest,
   createMalformedRecoveryBudget,
@@ -146,6 +148,35 @@ test('response without a recoverable tagged claim skips compact repair and regen
   assert.equal(prompts.length, 1);
   assert.match(prompts[0], /ORIGINAL SOURCE PROMPT/);
   assert.deepEqual(audit.events[0].changed, ['minimal_output_prompt', 'deterministic_fresh_generation']);
+});
+
+test('recovery output contracts follow the original prompt so local models cannot override them', () => {
+  const original = 'ORIGINAL PROMPT\nReturn a legacy shape.';
+  const tagged = buildChangedDimensionRegenerationPrompt(original, { tier: 'longterm' });
+  const json = buildStructuredJsonRegenerationPrompt(original, { tier: 'session' });
+  assert.ok(tagged.indexOf('ORIGINAL PROMPT') < tagged.indexOf('RECOVERY MODE — FINAL OUTPUT CONTRACT'));
+  assert.ok(json.indexOf('ORIGINAL PROMPT') < json.indexOf('FINAL MINIMUM-WINDOW RECOVERY — JSON ONLY'));
+  assert.match(json, /sources is mandatory/);
+});
+
+test('minimum-window recovery changes representation to cited JSON before pausing the run', async () => {
+  const audit = auditHarness();
+  const replies = [
+    '[fact:2:permanent:unsupported=value:sources=1] Still malformed output.',
+    '[{"type":"fact","content":"A cited recovered claim.","importance":2,"expiration":"permanent","entities":[],"sources":[1]}]',
+  ];
+  const result = await recoverMalformedTaggedOutput({
+    response: 'bad', tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => replies.shift(), originalPrompt: 'numbered source', responseLength: 100,
+    originalAttempt: { attempt_id: 'original' }, beginAttempt: audit.beginAttempt,
+    finishAttempt: audit.finishAttempt, splitWindow: async () => ({ completed: false,
+      reason: 'minimum_malformed_recovery_window_reached' }),
+  });
+  assert.equal(result.stage, 'structured_json_regeneration');
+  assert.equal(result.records.length, 1);
+  assert.deepEqual(result.records[0].source_message_indices, [1]);
+  assert.equal(audit.events.at(-1).requestKind, 'structured_json_regeneration');
+  assert.deepEqual(audit.events.at(-1).changed, ['structured_json_schema', 'minimum_window_terminal_rescue']);
 });
 
 test('compact repair is reserved for malformed tagged records with usable claim content', () => {

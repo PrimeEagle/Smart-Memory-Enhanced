@@ -1,12 +1,13 @@
 /** Privacy-safe structural recovery for tagged Long-Term and Session output. */
 import { analyzeBracketModifiers, analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
 
-export const MALFORMED_RECOVERY_SCHEMA_VERSION = 2;
+export const MALFORMED_RECOVERY_SCHEMA_VERSION = 3;
 
 export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   local_normalization_paths: 5,
   provider_repair_attempts: 1,
   changed_dimension_regenerations: 1,
+  structured_json_regenerations: 1,
   maximum_split_depth: 2,
   minimum_child_messages: 5,
   maximum_additional_provider_requests: 20,
@@ -255,7 +256,26 @@ export function buildCompactFormatRepairPrompt(response, { tier = 'longterm' } =
 
 export function buildChangedDimensionRegenerationPrompt(originalPrompt, { tier = 'longterm' } = {}) {
   const types = taggedTypes(tier);
-  return `RECOVERY MODE — MINIMAL CANONICAL OUTPUT\nReturn only complete tagged lines. No JSON, markdown, analysis, preface, or trailing commentary. Use only these types: ${types.join(', ')}. Use exactly this modifier order and spelling: [type:importance:expiration:entity=Name/type:sources=0,1]. Omit entity when none is grounded, but sources is mandatory. Use commas only inside entity and sources lists. Every record must cite source indices from the supplied numbered messages. If there are no supported records, output exactly NONE.\n\n${originalPrompt}`;
+  // Keep the recovery contract last. Local models commonly weight the final
+  // instruction most strongly; prepending this override allowed the original
+  // prompt body to supersede the very schema change recovery was meant to make.
+  return `${originalPrompt}\n\nRECOVERY MODE — FINAL OUTPUT CONTRACT\nReturn only complete tagged lines. No JSON, markdown, analysis, preface, or trailing commentary. Use only these types: ${types.join(', ')}. Use exactly this modifier order and spelling: [type:importance:expiration:entity=Name/type:sources=0,1]. Omit entity when none is grounded, but sources is mandatory. Use commas only inside entity and sources lists. Every record must cite source indices from the supplied numbered messages. If there are no supported records, output exactly NONE.`;
+}
+
+export function buildStructuredJsonRegenerationPrompt(originalPrompt, { tier = 'longterm' } = {}) {
+  const types = taggedTypes(tier);
+  const expiration = tier === 'session' ? 'session' : 'permanent';
+  return `${originalPrompt}\n\nFINAL MINIMUM-WINDOW RECOVERY — JSON ONLY\nThe tagged-line attempts could not be parsed. Return only a JSON array, with no markdown, analysis, preface, or trailing text. Each item must use exactly these keys: {"type":"${types[0]}","content":"supported claim","importance":2,"expiration":"${expiration}","entities":["Name"],"sources":[0]}. Allowed type values: ${types.join(', ')}. importance must be 1, 2, or 3. sources is mandatory and must contain only indices from the supplied numbered messages. entities may be an empty array. Do not add claims. If no supported record exists, return exactly [].`;
+}
+
+function isExplicitEmptyStructuredResponse(response) {
+  const text = String(response ?? '').trim();
+  if (text === '[]') return true;
+  try {
+    const parsed = JSON.parse(text);
+    return Boolean(parsed && !Array.isArray(parsed)
+      && ['memories', 'records', 'items', 'results'].some((key) => Array.isArray(parsed[key]) && parsed[key].length === 0));
+  } catch { return false; }
 }
 
 export function partitionMalformedSourceWindow(messages, { minimumChildMessages = MALFORMED_RECOVERY_LIMITS.minimum_child_messages } = {}) {
@@ -439,14 +459,65 @@ export async function recoverMalformedTaggedOutput({
     }
   }
 
+  let splitResult = null;
   if (splitWindow && splitDepth < MALFORMED_RECOVERY_LIMITS.maximum_split_depth) {
-    const splitResult = await splitWindow({
+    splitResult = await splitWindow({
       budget, nextDepth: splitDepth + 1, reason: lastReason,
       parentAttemptId: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
     });
     if (splitResult?.completed) {
       markMalformedRecoverySuccess(budget, 'malformed_source_repartition');
       return { repartitioned: true, added: Number(splitResult.added ?? 0), stage: 'malformed_source_repartition', budget, original_reason: originalReason };
+    }
+  }
+  // Once deterministic repartition reaches its minimum useful source window,
+  // change the output representation rather than replaying the same failed
+  // tagged request forever on every Resume. JSON is converted through the
+  // ordinary parser and still requires source citations; it cannot invent or
+  // bypass provenance.
+  if (!splitResult?.completed) {
+    const jsonBudget = consumeMalformedRecoveryRequest(budget, 'structured_json_regeneration');
+    if (jsonBudget.allowed) {
+      const attempt = beginAttempt('structured_json_regeneration', ['structured_json_schema', 'minimum_window_terminal_rescue'], {
+        recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
+        repair_reason: lastReason, recovery_stage: 'structured_json_regeneration',
+        expected_output_format: `${tier}_json_records_v1`,
+      });
+      let jsonResponse;
+      try {
+        jsonResponse = await generate(buildStructuredJsonRegenerationPrompt(originalPrompt, { tier }), {
+          responseLength, task: `${tier}-malformed-structured-json-regeneration`,
+        });
+      } catch (error) {
+        finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: true,
+          recovery_stage: 'structured_json_regeneration', final_disposition: 'structured_json_provider_failure' });
+        jsonResponse = null;
+        lastProviderError = error;
+      }
+      if (jsonResponse !== null) {
+        lastProviderError = null;
+        if (isExplicitEmptyStructuredResponse(jsonResponse)) {
+          finishAttempt(attempt, { terminal_outcome: 'completed_no_candidates', recoverable: true,
+            recovery_stage: 'structured_json_regeneration', final_recovery_stage: 'structured_json_regeneration' });
+          markMalformedRecoverySuccess(budget, 'structured_json_regeneration');
+          return { records: [], explicit_none: true, stage: 'structured_json_regeneration', budget, original_reason: originalReason };
+        }
+        const normalized = normalizeTaggedMemoryOutput(jsonResponse, { tier, parse });
+        if (normalized.records.length) {
+          finishAttempt(attempt, { terminal_outcome: 'completed', recoverable: true,
+            recovery_stage: 'structured_json_regeneration', final_recovery_stage: 'structured_json_regeneration',
+            response_text: jsonResponse, parser_paths_attempted: ['supported_json_conversion'],
+            local_normalization_paths_attempted: normalized.paths_attempted.map((item) => item.path) });
+          markMalformedRecoverySuccess(budget, 'structured_json_regeneration');
+          return { records: normalized.records, stage: 'structured_json_regeneration', budget, original_reason: originalReason };
+        }
+        lastReason = classifyTaggedResponseFailure(jsonResponse, { tier });
+        finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed', malformed_reason: lastReason,
+          recoverable: false, recovery_stage: 'structured_json_regeneration', response_text: jsonResponse,
+          parser_paths_attempted: ['supported_json_conversion'],
+          local_normalization_paths_attempted: normalized.paths_attempted.map((item) => item.path),
+          smaller_window_retry_followed: false });
+      }
     }
   }
   throw terminalMalformedError(tier, lastReason, 'bounded_recovery_exhausted', budget, lastProviderError);

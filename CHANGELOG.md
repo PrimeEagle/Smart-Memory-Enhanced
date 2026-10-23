@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.61] - 2026-10-23
+
+### Fixed
+
+- Malformed-output changed-dimension instructions now follow the original
+  extraction prompt, preventing the original output contract from overriding
+  recovery on instruction-order-sensitive local models.
+- Minimum-size Long-Term and Session source windows now receive one bounded,
+  citation-required structured-JSON rescue after tagged output and deterministic
+  repartition are exhausted. The result still passes through the ordinary
+  parser and provenance gates; an unsupported response remains safely paused.
+- Extraction coverage is no longer marked complete merely because the provider
+  returned a response. Long-Term and Session ranges become complete only after
+  an explicit no-candidate result, a validated no-write outcome, or successful
+  persistence, eliminating contradictory completed/unresolved child records.
+- Retrying a still-pending checkpoint obligation is explicitly identified as a
+  permitted resume request in provider-attempt diagnostics instead of an
+  unexplained equivalent transmission.
+- Resume restores now revoke legacy owner-range completion markers when the
+  provider audit proves that the same Long-Term obligation is still terminally
+  unresolved, preventing a false safely-committed range from blocking recovery.
+
+### Tests
+
+- Added recovery-instruction ordering, minimum-window structured rescue,
+  post-persistence coverage, and pending-checkpoint retry regression coverage.
+
 ## [0.9.60] - 2026-10-23
 
 ### Fixed

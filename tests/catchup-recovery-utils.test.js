@@ -9,6 +9,7 @@ import {
   getCatchUpTierRangeStatus,
   getCatchUpOwnerRangeStatus,
   recordCatchUpOwnerRange,
+  invalidateCatchUpOwnerRange,
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
@@ -79,6 +80,20 @@ test('completed Long-Term owners survive manifest normalization and skip sibling
   assert.equal(getCatchUpOwnerRangeStatus(manifest, 'Aster Graves', range), null);
   assert.equal(getCatchUpOwnerRangeStatus(manifest, 'Alex Mercer', range)?.source_fingerprint, 'fnv1a-alex');
   assert.equal(summarizeCatchUpRunManifest(manifest).longterm_owner_obligation_count, 1);
+});
+
+test('a terminal provider obligation revokes only its legacy false-positive owner completion', () => {
+  const range = { start_offset: 20, end_offset: 39, source_start_index: 20, source_end_index: 39 };
+  let manifest = ensureCatchUpRunManifest({ run_id: 'run-owner-repair', source_message_count: 100 });
+  manifest = recordCatchUpOwnerRange(manifest, 'Lillian Kraft', range, { safelyCommitted: true });
+  manifest = recordCatchUpOwnerRange(manifest, 'Alex Mercer', range, { safelyCommitted: true });
+  manifest = invalidateCatchUpOwnerRange(manifest, 'Lillian Kraft', range);
+  const lillian = getCatchUpOwnerRangeStatus(manifest, 'Lillian Kraft', range);
+  assert.equal(lillian.safely_committed, false);
+  assert.equal(lillian.terminal_outcome, 'pending');
+  assert.equal(lillian.reason_code, 'terminal_provider_obligation_unresolved');
+  assert.equal(getCatchUpOwnerRangeStatus(manifest, 'Alex Mercer', range).safely_committed, true);
+  assert.equal(getCatchUpOwnerRangeStatus(ensureCatchUpRunManifest({ run_id: 'none' }), 'Unknown', range), null);
 });
 
 const checkpoint = {

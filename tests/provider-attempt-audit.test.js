@@ -362,6 +362,24 @@ test('restored attempts and repartition children carry explicit permitted dimens
   assert.equal(summary.reconciliation.equivalent_request_accounting_consistent, true);
 });
 
+test('checkpoint resume explicitly permits retrying one still-pending obligation', () => {
+  const metadata = { active_catchup_run_id: 'run-resume' };
+  const input = {
+    tier: 'longterm', owner: 'Lillian Kraft', logical_obligation_id: 'longterm:lillian:20-39',
+    request_kind: 'repartition_child', source_fingerprint: 'child', effective_context_limit: 10240,
+    reserved_output_tokens: 600, schema_version: 'longterm-tagged-v1',
+  };
+  const first = beginProviderAttempt(metadata, input);
+  finishProviderAttempt(metadata, first, { terminal_outcome: 'provider_response_malformed', malformed_reason: 'malformed_tag' });
+  const resumed = beginProviderAttempt(metadata, { ...input, resumed_pending_obligation: true });
+  finishProviderAttempt(metadata, resumed, { terminal_outcome: 'completed' });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(resumed.equivalent_prior_attempt, true);
+  assert.equal(resumed.equivalent_retry_permitted, true);
+  assert.equal(resumed.equivalent_retry_reason, 'checkpoint_pending_obligation_retry');
+  assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 0);
+});
+
 test('bounded provider-failure lineage never replaces its exact aggregate', () => {
   const metadata = { active_catchup_run_id: 'run-provider-lineage-bound' };
   for (let index = 0; index < 65; index++) {

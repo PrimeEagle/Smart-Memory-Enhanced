@@ -502,6 +502,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       preflight,
       request_sent: false,
     };
+    const recordCompletedCoverage = (providerOutcome = 'completed') => recordExtractionCoverage(coverageLedger, {
+      ...coverageBase,
+      request_sent: true,
+      provider_outcome: providerOutcome,
+      coverage_terminal_state: 'completed',
+      all_source_messages_covered: true,
+    });
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `session:chat:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
@@ -531,6 +538,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       protocol_overhead: preflight.protocol_overhead_tokens,
       estimated_input_tokens: preflight.estimated_input_tokens,
       estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
+      resumed_pending_obligation: options._providerResumedPendingObligation === true,
       schema_version: 'session-tagged-v1',
       configuration_signature: providerConfigurationSignature({
         connection_profile_id: settings.connection_profile_id ?? null,
@@ -705,13 +713,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       providerRequestSent = true;
       response = await generateMemoryExtract(prompt, { responseLength });
       providerResponseReceived = true;
-      recordExtractionCoverage(coverageLedger, {
-        ...coverageBase,
-        request_sent: true,
-        provider_outcome: 'completed',
-        coverage_terminal_state: 'completed',
-        all_source_messages_covered: true,
-      });
     } catch (err) {
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
@@ -751,6 +752,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
+      recordCompletedCoverage('completed_no_candidates');
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
@@ -797,6 +799,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return recovery.added;
       }
       if (recovery.explicit_none) {
+        recordCompletedCoverage('completed_no_candidates_after_regeneration');
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
           provider_outcome: 'completed_no_candidates_after_regeneration', parser_outcome: 'explicit_none' });
         return 0;
@@ -1373,6 +1376,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (abortCheck?.()) return 0;
     persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
+    recordCompletedCoverage('completed_and_persisted');
     healthFinish({
       terminal_health: 'completed', persistence: 'saved',
       candidates: {

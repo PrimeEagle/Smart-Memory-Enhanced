@@ -90,6 +90,7 @@ import {
   isCatchUpTierRangeSafelyCovered,
   getCatchUpOwnerRangeStatus,
   recordCatchUpOwnerRange,
+  invalidateCatchUpOwnerRange,
   invalidatePrematureFinalization,
 } from './catchup-recovery-utils.js';
 import {
@@ -216,8 +217,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.60',
-  build_fingerprint: 'sme-v0.9.60-provider-accounting-stabilization-r1',
+  extension_version: '0.9.61',
+  build_fingerprint: 'sme-v0.9.61-minimum-window-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5583,6 +5584,23 @@ export function bindSettingsUI(ctrl) {
         updateActivePageMarker(checkpoint, 'source_extraction', 'in_flight');
 
         if (replayLongterm) {
+          const unresolvedLongtermObligations = (summarizeProviderAttemptAudit(
+            catchUpContext.chatMetadata?.[META_KEY],
+          )?.terminal_unresolved_obligations ?? []).filter((obligation) => obligation?.tier === 'longterm');
+          const ownerHasUnresolvedProviderObligation = (owner) => unresolvedLongtermObligations.some((obligation) => {
+            if (String(obligation?.owner ?? '').trim().toLowerCase() !== String(owner ?? '').trim().toLowerCase()) return false;
+            const sourceRange = obligation.source_range;
+            if (!Number.isInteger(sourceRange?.start) || !Number.isInteger(sourceRange?.end)) return false;
+            return sourceRange.start <= currentRange.source_end_index && sourceRange.end >= currentRange.source_start_index;
+          });
+          // v0.9.60 could record response receipt as completed before parsing.
+          // Revoke that legacy false-positive when the durable provider audit
+          // proves the same owner/range is still terminally unresolved.
+          for (const name of catchUpCharacterNames) {
+            if (ownerHasUnresolvedProviderObligation(name)) {
+              checkpoint.run_manifest = invalidateCatchUpOwnerRange(checkpoint.run_manifest, name, currentRange);
+            }
+          }
           // v0.9.48 and earlier exported owner-level coverage without retaining
           // it in the recovery manifest. Migrate any safely completed sibling
           // from the last attempt before deciding which owners need replay.
@@ -5593,7 +5611,8 @@ export function bindSettingsUI(ctrl) {
               || !['completed', 'repartitioned_completed'].includes(record?.coverage_terminal_state)
               || record?.original_range?.start !== currentRange.source_start_index
               || record?.original_range?.end !== currentRange.source_end_index
-              || !record?.owner) continue;
+              || !record?.owner
+              || ownerHasUnresolvedProviderObligation(record.owner)) continue;
             checkpoint.run_manifest = recordCatchUpOwnerRange(checkpoint.run_manifest, record.owner, currentRange, {
               safelyCommitted: true,
               sourceFingerprint: record.source_fingerprint ?? null,
@@ -5601,7 +5620,8 @@ export function bindSettingsUI(ctrl) {
             });
           }
           for (const name of catchUpCharacterNames) {
-            if (getCatchUpOwnerRangeStatus(checkpoint.run_manifest, name, currentRange)?.safely_committed === true) continue;
+            const priorOwnerStatus = getCatchUpOwnerRangeStatus(checkpoint.run_manifest, name, currentRange);
+            if (priorOwnerStatus?.safely_committed === true) continue;
             // Historical group rebuilds intentionally give every current card
             // the full chunk. Older chats may predate the group split or carry
             // incorrect speaker attribution, so author filtering would hide
@@ -5617,6 +5637,7 @@ export function bindSettingsUI(ctrl) {
               liveHealth: createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'),
               _contextOverflowCompletedChildren: completedOverflowChildren,
               _onContextOverflowChildCommitted: commitOverflowChild,
+              _providerResumedPendingObligation: Boolean(resumableCheckpoint && priorOwnerStatus),
             }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
               if (err?.sme_context_overflow_checkpoint_failure) {
@@ -5660,6 +5681,7 @@ export function bindSettingsUI(ctrl) {
             liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
             _contextOverflowCompletedChildren: completedOverflowChildren,
             _onContextOverflowChildCommitted: commitOverflowChild,
+            _providerResumedPendingObligation: Boolean(resumableCheckpoint && priorSessionObligation),
           }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
             if (err?.sme_context_overflow_checkpoint_failure) {
