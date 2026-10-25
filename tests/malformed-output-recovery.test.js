@@ -1,15 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { parseExtractionOutput, parseSessionOutput } from '../parsers.js';
 import {
   MALFORMED_RECOVERY_LIMITS,
   analyzeMalformedResponse,
   buildChangedDimensionRegenerationPrompt,
   buildCompactFormatRepairPrompt,
+  buildMinimalRecordRegenerationPrompt,
   buildStructuredJsonRegenerationPrompt,
   classifyTaggedResponseFailure,
   consumeMalformedRecoveryRequest,
   createMalformedRecoveryBudget,
+  detectRecoveryResponseFormat,
   malformedChildCoverageComplete,
   normalizeTaggedMemoryOutput,
   partitionMalformedSourceWindow,
@@ -157,6 +160,9 @@ test('recovery output contracts follow the original prompt so local models canno
   assert.ok(tagged.indexOf('ORIGINAL PROMPT') < tagged.indexOf('RECOVERY MODE — FINAL OUTPUT CONTRACT'));
   assert.ok(json.indexOf('ORIGINAL PROMPT') < json.indexOf('FINAL MINIMUM-WINDOW RECOVERY — JSON ONLY'));
   assert.match(json, /sources is mandatory/);
+  const minimal = buildMinimalRecordRegenerationPrompt(original, { tier: 'session' });
+  assert.match(minimal, /exactly one complete supported record/i);
+  assert.match(minimal, /sources=0/);
 });
 
 test('minimum-window recovery changes representation to cited JSON before pausing the run', async () => {
@@ -177,6 +183,116 @@ test('minimum-window recovery changes representation to cited JSON before pausin
   assert.deepEqual(result.records[0].source_message_indices, [1]);
   assert.equal(audit.events.at(-1).requestKind, 'structured_json_regeneration');
   assert.deepEqual(audit.events.at(-1).changed, ['structured_json_schema', 'minimum_window_terminal_rescue']);
+});
+
+test('JSON rescue accepts fully valid tagged fallback without weakening strict parsing', async () => {
+  const audit = auditHarness();
+  const replies = ['bad', validLongterm];
+  const result = await recoverMalformedTaggedOutput({
+    response: 'bad', tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => replies.shift(), originalPrompt: 'numbered source', responseLength: 100,
+    originalAttempt: { attempt_id: 'original' }, beginAttempt: audit.beginAttempt,
+    finishAttempt: audit.finishAttempt, splitWindow: async () => ({ completed: false }),
+  });
+  assert.equal(result.stage, 'structured_json_regeneration');
+  assert.equal(result.records.length, 1);
+  assert.equal(result.response_contract_violated, true);
+  const event = audit.events.at(-1).finished;
+  assert.equal(event.requested_output_format, 'longterm_json_records_v1');
+  assert.equal(event.actual_output_format, 'tagged_lines');
+  assert.equal(event.parser_selected, 'strict_tagged_fallback_after_json_contract_violation');
+  assert.equal(event.output_contract_followed, false);
+  assert.equal(detectRecoveryResponseFormat(validLongterm, { tier: 'longterm' }), 'tagged_lines');
+});
+
+test('partial tagged output from JSON rescue preserves valid records and retries only unresolved output', async () => {
+  const audit = auditHarness();
+  const partial = `${validSession}\n[detail:2:session:unknown=value:sources=0] Broken fragment.`;
+  const replies = ['still bad', partial, 'NONE'];
+  const result = await recoverMalformedTaggedOutput({
+    response: 'bad', tier: 'session', parse: parseSessionOutput,
+    generate: async () => replies.shift(), originalPrompt: 'numbered source', responseLength: 100,
+    originalAttempt: { attempt_id: 'original' }, beginAttempt: audit.beginAttempt,
+    finishAttempt: audit.finishAttempt, splitWindow: async () => ({ completed: false }),
+  });
+  assert.equal(result.stage, 'minimal_record_regeneration');
+  assert.equal(result.records.length, 1);
+  const jsonAttempt = audit.events.find((event) => event.requestKind === 'structured_json_regeneration').finished;
+  assert.equal(jsonAttempt.terminal_outcome, 'partial_output_pending');
+  assert.equal(jsonAttempt.accepted_candidate_count, 1);
+  assert.equal(jsonAttempt.rejected_candidate_count, 1);
+  assert.equal(jsonAttempt.missing_required_results, true);
+  const minimalAttempt = audit.events.at(-1).finished;
+  assert.equal(minimalAttempt.obligation_closure_reason, 'explicit_no_additional_supported_record');
+  assert.equal(minimalAttempt.accepted_partial_output_persisted, true);
+});
+
+test('resume skips exhausted intermediate recovery stages and selects the new minimal contract', async () => {
+  const audit = auditHarness();
+  const prompts = [];
+  const original = {
+    attempt_id: 'original', resumed_pending_obligation: true,
+    prior_recovery_stages_attempted: ['strict_generation', 'changed_dimension_regeneration', 'structured_json_regeneration'],
+  };
+  const result = await recoverMalformedTaggedOutput({
+    response: 'bad', tier: 'longterm', parse: parseExtractionOutput,
+    generate: async (prompt) => { prompts.push(prompt); return validLongterm; },
+    originalPrompt: 'numbered source', responseLength: 100,
+    originalAttempt: original, beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    splitWindow: async () => ({ completed: false }),
+  });
+  assert.equal(result.stage, 'minimal_record_regeneration');
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /ONE SIMPLE RECORD/);
+  assert.equal(audit.events[0].requestKind, 'minimal_record_regeneration');
+});
+
+test('resume never repeats an already exhausted minimum-record recovery stage', async () => {
+  const audit = auditHarness();
+  let providerCalls = 0;
+  await assert.rejects(() => recoverMalformedTaggedOutput({
+    response: 'same malformed replay response', tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => { providerCalls += 1; return validLongterm; },
+    originalPrompt: 'numbered source', responseLength: 100,
+    originalAttempt: {
+      attempt_id: 'original', resumed_pending_obligation: true,
+      prior_recovery_stages_attempted: [
+        'strict_generation', 'changed_dimension_regeneration',
+        'structured_json_regeneration', 'minimal_record_regeneration',
+      ],
+    },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    splitWindow: async () => ({ completed: false }),
+  }), (error) => error?.code === 'SME_RECOVERY_PATH_EXHAUSTED' && error?.sme_recovery_blocked === true);
+  assert.equal(providerCalls, 0);
+  assert.equal(audit.events.length, 0);
+});
+
+test('sanitized v0.9.61 replay shape selects only the unresolved minimum-window recovery dimension', async () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/v0961-minimum-window-resume-loop.json', import.meta.url), 'utf8'));
+  assert.equal(fixture.safely_committed_count, 20);
+  assert.equal(fixture.safe_longterm_siblings.length, 5);
+  assert.deepEqual(fixture.unresolved_obligations.map((item) => item.tier), ['longterm', 'session']);
+  for (const obligation of fixture.unresolved_obligations) {
+    const audit = auditHarness();
+    const parse = obligation.tier === 'session' ? parseSessionOutput : parseExtractionOutput;
+    const valid = obligation.tier === 'session' ? validSession : validLongterm;
+    const prompts = [];
+    const result = await recoverMalformedTaggedOutput({
+      response: 'malformed replay response', tier: obligation.tier, parse,
+      generate: async (prompt) => { prompts.push(prompt); return valid; },
+      originalPrompt: 'sanitized numbered messages 38-39', responseLength: 100,
+      originalAttempt: {
+        attempt_id: `${obligation.tier}-resume`, resumed_pending_obligation: true,
+        prior_recovery_stages_attempted: obligation.stages,
+      },
+      beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+      splitWindow: async () => ({ completed: false }),
+    });
+    assert.equal(result.stage, 'minimal_record_regeneration');
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /ONE SIMPLE RECORD/);
+  }
 });
 
 test('compact repair is reserved for malformed tagged records with usable claim content', () => {

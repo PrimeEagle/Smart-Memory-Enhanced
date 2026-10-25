@@ -1940,7 +1940,8 @@ test('Session extraction imports chat identity and distinguishes pre-request int
 
 test('incomplete source tiers pause safely and block definitive final reconciliation', () => {
   const settings = read('settings.js');
-  assert.match(settings, /ctrl\.catchUpStopReason = 'tier_coverage_incomplete'/);
+  assert.match(settings, /const terminalReasonCode = recoveryBlocked/);
+  assert.match(settings, /ctrl\.catchUpStopReason = terminalReasonCode/);
   assert.match(settings, /runResult\.finalReconciliation\.attempted = \(ctrl\.catchUpCancelled \|\| resumableFinalizationFailure\) \? 0 : 1/);
   assert.match(settings, /blocked_by: 'source_extraction'/);
   assert.match(settings, /invalidatePrematureFinalization\(checkpoint\)/);
@@ -1960,4 +1961,17 @@ test('source-tier coverage becomes complete only after a terminal parse or persi
     const durableCoverage = source.indexOf("recordCompletedCoverage('completed_and_persisted')", saveCall);
     assert.ok(saveCall >= 0 && durableCoverage > saveCall);
   }
+});
+
+test('Memorize Chat exposes blocked recovery and central malformed-recovery diagnostics', () => {
+  const settings = read('settings.js');
+  assert.match(settings, /Blocked — recovery change required/);
+  assert.match(settings, /buildCentralMalformedRecoverySummary/);
+  assert.match(settings, /malformed_recovery: centralMalformedRecovery/);
+  assert.match(settings, /recovery_blocked = recoveryBlocked/);
+  assert.match(settings, /change_provider_configuration_or_install_updated_build/);
+  assert.match(settings, /ownerHasUnresolvedProviderObligation\(name\)/);
+  assert.match(settings, /item\.configuration_signature === currentConfigurationSignature\(item\.tier\)/);
+  assert.match(settings, /delete rawCheckpoint\.recovery_blocked/);
+  assert.match(settings, /configuration_signature: obligation\.configuration_signature/);
 });

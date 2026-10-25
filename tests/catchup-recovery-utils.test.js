@@ -277,6 +277,15 @@ test('checkpoint diagnostics distinguish missing, resumable, and invalidated rec
   assert.equal(invalid.resumable, false);
   assert.equal(invalid.status, 'invalidated_source_mismatch');
   assert.equal(invalid.reason_code, 'source_window_boundary_changed');
+  const blocked = summarizeCatchUpCheckpoint({ ...checkpoint, recovery_blocked: {
+    blocked: true, reason_code: 'recovery_change_required', unresolved_obligation_count: 2,
+    safe_progress_preserved: true, next_eligible_recovery_action: 'change_provider_configuration_or_install_updated_build',
+    obligations: [{ tier: 'session', source_range: { start: 38, end: 39 } }],
+  } });
+  assert.equal(blocked.resumable, false);
+  assert.equal(blocked.blocked, true);
+  assert.equal(blocked.unresolved_obligation_count, 2);
+  assert.equal(blocked.safe_progress_preserved, true);
 });
 
 test('checkpoint diagnostics retain completed finalization phases and the recovery settings snapshot', () => {

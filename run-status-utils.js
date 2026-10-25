@@ -153,6 +153,8 @@ export function deriveRunErrorAccounting(report = {}) {
 export function deriveRunStatus(report = {}) {
   const logical = report.logical_run ?? {};
   const recovery = report.catch_up_recovery ?? report.recovery ?? {};
+  const recoveryBlocked = recovery.blocked === true
+    || ['blocked', 'recovery_change_required'].includes(recovery.reason_code);
   const accounting = report.error_accounting ?? deriveRunErrorAccounting(report);
   const sourceCount = number(logical.source_window?.message_count
     ?? report.completion_evidence?.source_message_count);
@@ -184,10 +186,11 @@ export function deriveRunStatus(report = {}) {
   if (sourceComplete && finalizationCommitted && fatalCount === 0) {
     lifecycleStatus = 'completed';
     statusReasonCodes.push('full_source_coverage', 'finalization_committed');
-  } else if (recovery.resumable === true || (recovery.available === true && recovery.reason_code !== 'blocked')) {
+  } else if (!recoveryBlocked
+    && (recovery.resumable === true || recovery.available === true)) {
     lifecycleStatus = 'incomplete';
     statusReasonCodes.push('durable_resume_available');
-  } else if (recovery.available === true || legacyStatus === 'blocked') {
+  } else if (recoveryBlocked || recovery.available === true || legacyStatus === 'blocked') {
     lifecycleStatus = 'blocked';
     statusReasonCodes.push('durable_recovery_blocker');
   } else if (legacyStatus === 'cancelled') {
@@ -225,7 +228,9 @@ export function deriveRunStatus(report = {}) {
     outcomeStatus = 'incomplete_resumable'; severity = 'warning'; icon = 'circle-pause';
     label = 'Incomplete — resumable';
   } else if (lifecycleStatus === 'blocked') {
-    outcomeStatus = 'blocked'; severity = 'error'; icon = 'ban'; label = 'Blocked';
+    outcomeStatus = 'blocked'; severity = 'error'; icon = 'ban';
+    label = recovery.reason_code === 'recovery_change_required'
+      ? 'Blocked — recovery change required' : 'Blocked';
   } else if (lifecycleStatus === 'not_run') {
     outcomeStatus = 'not_run'; severity = 'informational'; icon = 'circle-info'; label = 'Not run';
   } else {

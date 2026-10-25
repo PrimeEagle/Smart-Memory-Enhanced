@@ -122,6 +122,7 @@ import {
 import {
   beginProviderAttempt,
   finishProviderAttempt,
+  markProviderPartialRecordsPersisted,
   providerConfigurationSignature,
 } from './provider-attempt-audit.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
@@ -1149,6 +1150,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       return 0;
     }
 
+    let recoveryPendingError = null;
+    let recoveryPendingObligationId = null;
     let parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
       const recovery = await recoverMalformedTaggedOutput({
@@ -1171,6 +1174,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         return 0;
       }
       parsed = recovery.records;
+      if (recovery.partial_unresolved) {
+        recoveryPendingError = recovery.terminal_error;
+        recoveryPendingObligationId = recovery.logical_obligation_id;
+      }
       healthUpdate({ provider_outcome: `completed_after_${recovery.stage}`, parser_outcome: `parsed_after_${recovery.stage}` });
     } else {
       const responseShape = analyzeMalformedResponse(response, { tier: 'longterm' });
@@ -1224,6 +1231,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       smLog(
         `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
       );
+      if (recoveryPendingError) {
+        markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, parsed.length);
+        recordExtractionCoverage(coverageLedger, { ...coverageBase,
+          provider_outcome: 'partial_valid_records_preserved_no_new_write',
+          coverage_terminal_state: 'partial_records_preserved_obligation_pending',
+          accepted_partial_record_count: parsed.length,
+        });
+        throw recoveryPendingError;
+      }
       recordCompletedCoverage('completed_no_persistence_needed');
       healthFinish({ terminal_health: 'completed', persistence: 'not_needed', candidates: { accepted: 0, rejected_duplicate: parsed.length } });
       return 0;
@@ -1566,6 +1582,16 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     // Save: final active set + all retired memories (history is preserved).
     saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
+    if (recoveryPendingError) {
+      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, added);
+      recordExtractionCoverage(coverageLedger, { ...coverageBase,
+        provider_outcome: 'partial_valid_records_persisted_obligation_pending',
+        coverage_terminal_state: 'partial_records_persisted_obligation_pending',
+        accepted_partial_record_count: added,
+      });
+      recoveryPendingError.sme_partial_records_persisted = true;
+      throw recoveryPendingError;
+    }
     recordCompletedCoverage('completed_and_persisted');
 
     smLog(
@@ -1584,7 +1610,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       terminal_health: malformedExhausted ? 'provider_response_malformed' : 'provider_failure',
       provider_outcome: malformedExhausted ? 'bounded_malformed_recovery_exhausted' : 'provider_failure',
       parser_outcome: malformedExhausted ? 'bounded_recovery_exhausted' : undefined,
-      persistence: 'preserved',
+      persistence: err?.sme_partial_records_persisted ? 'partial_valid_records_saved_obligation_pending' : 'preserved',
       attention_reason_codes: [malformedExhausted ? 'unparseable_provider_response' : 'extraction_or_persistence_failure'],
     });
     console.error('[Smart Memory Enhanced] Memory extraction failed:', err);

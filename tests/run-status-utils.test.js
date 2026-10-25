@@ -79,6 +79,10 @@ test('incomplete resumable, blocked, fatal, and notice-only states have determin
   const blocked = deriveRunStatus({ catch_up_recovery: { available: true, resumable: false, reason_code: 'blocked' } });
   assert.equal(blocked.lifecycle_status, 'blocked');
   assert.equal(blocked.recovery_reason_code, 'blocked');
+  const recoveryChange = deriveRunStatus({ catch_up_recovery: {
+    available: true, resumable: false, reason_code: 'recovery_change_required', blocked: true,
+  } });
+  assert.equal(recoveryChange.label, 'Blocked — recovery change required');
   const failed = deriveRunStatus({ status: 'failed', fatal_run_error_count: 1 });
   assert.equal(failed.lifecycle_status, 'failed');
   const notices = deriveRunStatus(completed({ quality: { final_integrity_status: 'clean', notices: [{ code: 'safe' }] } }));

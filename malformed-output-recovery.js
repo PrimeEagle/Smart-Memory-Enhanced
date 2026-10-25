@@ -1,13 +1,14 @@
 /** Privacy-safe structural recovery for tagged Long-Term and Session output. */
 import { analyzeBracketModifiers, analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
 
-export const MALFORMED_RECOVERY_SCHEMA_VERSION = 3;
+export const MALFORMED_RECOVERY_SCHEMA_VERSION = 4;
 
 export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   local_normalization_paths: 5,
   provider_repair_attempts: 1,
   changed_dimension_regenerations: 1,
   structured_json_regenerations: 1,
+  minimal_record_regenerations: 1,
   maximum_split_depth: 2,
   minimum_child_messages: 5,
   maximum_additional_provider_requests: 20,
@@ -189,7 +190,9 @@ function canonicalJsonRecord(record, tier) {
 
 function jsonRecords(response, tier) {
   let parsed;
-  try { parsed = JSON.parse(String(response ?? '').trim()); } catch { return { lines: [], supported: false }; }
+  try { parsed = JSON.parse(String(response ?? '').trim()); } catch {
+    return { lines: [], supported: false, valid_json: false, candidate_count: 0, rejected_count: 0 };
+  }
   const collectionKey = ['memories', 'records', 'items', 'results'].find((key) => Array.isArray(parsed?.[key]));
   const recognizedContainer = Array.isArray(parsed) || Boolean(collectionKey)
     || Boolean(parsed && typeof parsed === 'object');
@@ -197,7 +200,13 @@ function jsonRecords(response, tier) {
     : collectionKey ? parsed[collectionKey]
       : parsed && typeof parsed === 'object' ? [parsed] : [];
   const lines = candidates.map((record) => canonicalJsonRecord(record, tier)).filter(Boolean);
-  return { lines, supported: recognizedContainer && lines.length === candidates.length };
+  return {
+    lines,
+    supported: recognizedContainer && lines.length === candidates.length,
+    valid_json: true,
+    candidate_count: candidates.length,
+    rejected_count: Math.max(0, candidates.length - lines.length),
+  };
 }
 
 /** Conservative normalization. Success requires the ordinary parser to accept the result. */
@@ -268,6 +277,22 @@ export function buildStructuredJsonRegenerationPrompt(originalPrompt, { tier = '
   return `${originalPrompt}\n\nFINAL MINIMUM-WINDOW RECOVERY — JSON ONLY\nThe tagged-line attempts could not be parsed. Return only a JSON array, with no markdown, analysis, preface, or trailing text. Each item must use exactly these keys: {"type":"${types[0]}","content":"supported claim","importance":2,"expiration":"${expiration}","entities":["Name"],"sources":[0]}. Allowed type values: ${types.join(', ')}. importance must be 1, 2, or 3. sources is mandatory and must contain only indices from the supplied numbered messages. entities may be an empty array. Do not add claims. If no supported record exists, return exactly [].`;
 }
 
+export function buildMinimalRecordRegenerationPrompt(originalPrompt, { tier = 'longterm' } = {}) {
+  const types = taggedTypes(tier);
+  const expiration = tier === 'session' ? 'session' : 'permanent';
+  return `${originalPrompt}\n\nFINAL MINIMUM-WINDOW RECOVERY — ONE SIMPLE RECORD\nReturn exactly one complete supported record, or exactly NONE when the supplied messages support no record. Do not return JSON, markdown, analysis, optional entity modifiers, or more than one record. Use exactly: [type:importance:${expiration}:sources=0] supported claim. Allowed type values: ${types.join(', ')}. importance must be 1, 2, or 3. sources is mandatory and must contain only indices from the supplied numbered messages. This is a new minimal contract; do not repeat a malformed multi-record answer.`;
+}
+
+export function detectRecoveryResponseFormat(response, { tier = 'longterm' } = {}) {
+  const text = String(response ?? '').trim();
+  const json = jsonRecords(text, tier);
+  if (json.valid_json) return 'json';
+  const shape = analyzeMalformedResponse(text, { tier });
+  if (shape.tagged_line_candidate_count > 0) return 'tagged_lines';
+  if (text.toUpperCase() === 'NONE') return 'none';
+  return text ? 'unknown_text' : 'empty';
+}
+
 function isExplicitEmptyStructuredResponse(response) {
   const text = String(response ?? '').trim();
   if (text === '[]') return true;
@@ -332,13 +357,27 @@ function terminalMalformedError(tier, reason, stage, budget, cause = null) {
 export async function recoverMalformedTaggedOutput({
   response, tier, parse, generate, originalPrompt, responseLength,
   originalAttempt, beginAttempt, finishAttempt, splitWindow = null,
-  budget = createMalformedRecoveryBudget(), splitDepth = 0,
+  budget = createMalformedRecoveryBudget(), splitDepth = 0, resumeState = null,
 } = {}) {
+  const effectiveResumeState = resumeState ?? (originalAttempt?.resumed_pending_obligation === true
+    && (originalAttempt?.prior_recovery_stages_attempted ?? []).length
+    ? {
+      resume_unresolved_obligation: true,
+      recovery_stages_attempted: originalAttempt.prior_recovery_stages_attempted,
+      last_malformed_reason: originalAttempt.repair_reason ?? null,
+    } : null);
+  const priorStages = new Set(effectiveResumeState?.recovery_stages_attempted ?? []);
+  const resumedLadder = effectiveResumeState?.resume_unresolved_obligation === true
+    && (response === null || response === undefined);
   const parserPaths = ['strict_expected_format'];
-  const originalReason = classifyTaggedResponseFailure(response, { tier });
+  const originalReason = resumedLadder
+    ? effectiveResumeState?.last_malformed_reason ?? 'resumed_unresolved_obligation'
+    : classifyTaggedResponseFailure(response, { tier });
   const recoveryRoute = routeMalformedTaggedRecovery(response, { tier, reason: originalReason });
-  const local = normalizeTaggedMemoryOutput(response, { tier, parse });
-  if (local.succeeded) {
+  const local = resumedLadder
+    ? { succeeded: false, records: [], paths_attempted: [], structural: analyzeMalformedResponse('', { tier }) }
+    : normalizeTaggedMemoryOutput(response, { tier, parse });
+  if (!resumedLadder && local.succeeded) {
     finishAttempt(originalAttempt, {
       terminal_outcome: 'completed', malformed_reason: null,
       notice_reason: `local_normalization:${originalReason}`, recoverable: true,
@@ -350,19 +389,26 @@ export async function recoverMalformedTaggedOutput({
     markMalformedRecoverySuccess(budget, 'local_normalization');
     return { records: local.records, stage: 'local_normalization', budget, original_reason: originalReason };
   }
-  finishAttempt(originalAttempt, {
-    terminal_outcome: 'provider_response_malformed', malformed_reason: originalReason, recoverable: true,
-    recovery_stage: 'strict_generation', response_text: response,
-    parser_paths_attempted: parserPaths,
-    local_normalization_paths_attempted: local.paths_attempted.map((item) => item.path),
-    recovery_route: recoveryRoute.route,
-    avoided_repair_reason: recoveryRoute.avoided_repair_reason,
-  });
+  if (!resumedLadder && originalAttempt) {
+    finishAttempt(originalAttempt, {
+      terminal_outcome: 'provider_response_malformed', malformed_reason: originalReason, recoverable: true,
+      recovery_stage: 'strict_generation', response_text: response,
+      parser_paths_attempted: parserPaths,
+      local_normalization_paths_attempted: local.paths_attempted.map((item) => item.path),
+      recovery_route: recoveryRoute.route,
+      avoided_repair_reason: recoveryRoute.avoided_repair_reason,
+      requested_output_format: `${tier}_tagged_lines_v1`,
+      actual_output_format: detectRecoveryResponseFormat(response, { tier }),
+      parser_selected: 'strict_tagged_then_local_normalization',
+      output_contract_followed: detectRecoveryResponseFormat(response, { tier }) === 'tagged_lines',
+    });
+  }
 
   let lastReason = originalReason;
-  let lastFailedAttempt = originalAttempt;
+  let lastFailedAttempt = originalAttempt ?? null;
   let lastProviderError = null;
-  const repairBudget = recoveryRoute.compact_repair_eligible
+  let acceptedPartialRecords = [];
+  const repairBudget = recoveryRoute.compact_repair_eligible && !priorStages.has('compact_response_repair')
     ? consumeMalformedRecoveryRequest(budget, 'compact_response_repair')
     : { allowed: false, reason: recoveryRoute.avoided_repair_reason };
   if (repairBudget.allowed) {
@@ -408,7 +454,9 @@ export async function recoverMalformedTaggedOutput({
     }
   }
 
-  const regenerationBudget = consumeMalformedRecoveryRequest(budget, 'changed_dimension_regeneration');
+  const regenerationBudget = priorStages.has('changed_dimension_regeneration')
+    ? { allowed: false, reason: 'stage_already_exhausted_before_resume' }
+    : consumeMalformedRecoveryRequest(budget, 'changed_dimension_regeneration');
   if (regenerationBudget.allowed) {
     const attempt = beginAttempt('changed_dimension_regeneration', ['minimal_output_prompt', 'deterministic_fresh_generation'], {
       recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null, repair_reason: lastReason,
@@ -460,7 +508,8 @@ export async function recoverMalformedTaggedOutput({
   }
 
   let splitResult = null;
-  if (splitWindow && splitDepth < MALFORMED_RECOVERY_LIMITS.maximum_split_depth) {
+  if (!priorStages.has('structured_json_regeneration')
+    && splitWindow && splitDepth < MALFORMED_RECOVERY_LIMITS.maximum_split_depth) {
     splitResult = await splitWindow({
       budget, nextDepth: splitDepth + 1, reason: lastReason,
       parentAttemptId: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
@@ -475,7 +524,7 @@ export async function recoverMalformedTaggedOutput({
   // tagged request forever on every Resume. JSON is converted through the
   // ordinary parser and still requires source citations; it cannot invent or
   // bypass provenance.
-  if (!splitResult?.completed) {
+  if (!splitResult?.completed && !priorStages.has('structured_json_regeneration')) {
     const jsonBudget = consumeMalformedRecoveryRequest(budget, 'structured_json_regeneration');
     if (jsonBudget.allowed) {
       const attempt = beginAttempt('structured_json_regeneration', ['structured_json_schema', 'minimum_window_terminal_rescue'], {
@@ -496,29 +545,174 @@ export async function recoverMalformedTaggedOutput({
       }
       if (jsonResponse !== null) {
         lastProviderError = null;
+        const actualFormat = detectRecoveryResponseFormat(jsonResponse, { tier });
         if (isExplicitEmptyStructuredResponse(jsonResponse)) {
           finishAttempt(attempt, { terminal_outcome: 'completed_no_candidates', recoverable: true,
-            recovery_stage: 'structured_json_regeneration', final_recovery_stage: 'structured_json_regeneration' });
+            recovery_stage: 'structured_json_regeneration', final_recovery_stage: 'structured_json_regeneration',
+            requested_output_format: `${tier}_json_records_v1`, actual_output_format: actualFormat,
+            parser_selected: 'strict_json', output_contract_followed: actualFormat === 'json',
+            strict_parse_result: 'explicit_empty_array', total_candidate_count: 0,
+            accepted_candidate_count: 0, rejected_candidate_count: 0 });
           markMalformedRecoverySuccess(budget, 'structured_json_regeneration');
           return { records: [], explicit_none: true, stage: 'structured_json_regeneration', budget, original_reason: originalReason };
         }
-        const normalized = normalizeTaggedMemoryOutput(jsonResponse, { tier, parse });
-        if (normalized.records.length) {
+        const json = jsonRecords(jsonResponse, tier);
+        let records = [];
+        let parserSelected = 'strict_json';
+        let normalized = null;
+        if (json.valid_json && json.supported) records = parse(json.lines.join('\n'));
+        if (!records.length && actualFormat === 'tagged_lines') {
+          parserSelected = 'strict_tagged_fallback_after_json_contract_violation';
+          records = parse(jsonResponse);
+        }
+        if (!records.length) {
+          normalized = normalizeTaggedMemoryOutput(jsonResponse, { tier, parse });
+          records = normalized.records;
+          if (records.length) parserSelected = 'local_normalization_fallback';
+        }
+        const responseShape = analyzeMalformedResponse(jsonResponse, { tier });
+        const rejectedCount = actualFormat === 'json'
+          ? json.rejected_count : responseShape.structurally_rejected_record_count;
+        if (records.length && rejectedCount === 0) {
           finishAttempt(attempt, { terminal_outcome: 'completed', recoverable: true,
             recovery_stage: 'structured_json_regeneration', final_recovery_stage: 'structured_json_regeneration',
-            response_text: jsonResponse, parser_paths_attempted: ['supported_json_conversion'],
-            local_normalization_paths_attempted: normalized.paths_attempted.map((item) => item.path) });
+            response_text: jsonResponse,
+            notice_reason: actualFormat === 'json' ? null : 'provider_output_contract_violated_but_strict_fallback_succeeded',
+            parser_paths_attempted: actualFormat === 'json'
+              ? ['strict_json', 'supported_json_conversion'] : ['strict_json', 'strict_tagged_fallback'],
+            local_normalization_paths_attempted: normalized?.paths_attempted?.map((item) => item.path) ?? [],
+            requested_output_format: `${tier}_json_records_v1`, actual_output_format: actualFormat,
+            parser_selected: parserSelected, output_contract_followed: actualFormat === 'json',
+            strict_parse_result: 'accepted', fallback_parse_result: actualFormat === 'json' ? null : 'accepted',
+            total_candidate_count: actualFormat === 'json' ? json.candidate_count : responseShape.structural_candidate_count,
+            accepted_candidate_count: records.length, rejected_candidate_count: 0,
+            accepted_partial_output_persisted: false, missing_required_results: false });
           markMalformedRecoverySuccess(budget, 'structured_json_regeneration');
-          return { records: normalized.records, stage: 'structured_json_regeneration', budget, original_reason: originalReason };
+          return { records, stage: 'structured_json_regeneration', budget, original_reason: originalReason,
+            response_contract_violated: actualFormat !== 'json' };
         }
-        lastReason = classifyTaggedResponseFailure(jsonResponse, { tier });
-        finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed', malformed_reason: lastReason,
-          recoverable: false, recovery_stage: 'structured_json_regeneration', response_text: jsonResponse,
-          parser_paths_attempted: ['supported_json_conversion'],
-          local_normalization_paths_attempted: normalized.paths_attempted.map((item) => item.path),
-          smaller_window_retry_followed: false });
+        if (records.length) {
+          acceptedPartialRecords = records;
+          lastReason = 'partial_valid_output';
+          finishAttempt(attempt, { terminal_outcome: 'partial_output_pending', malformed_reason: lastReason,
+            notice_reason: 'partial_valid_output', recoverable: true,
+            recovery_stage: 'structured_json_regeneration', response_text: jsonResponse,
+            parser_paths_attempted: actualFormat === 'json'
+              ? ['strict_json', 'supported_json_conversion'] : ['strict_json', 'strict_tagged_fallback'],
+            local_normalization_paths_attempted: normalized?.paths_attempted?.map((item) => item.path) ?? [],
+            requested_output_format: `${tier}_json_records_v1`, actual_output_format: actualFormat,
+            parser_selected: parserSelected, output_contract_followed: actualFormat === 'json',
+            strict_parse_result: 'partial', fallback_parse_result: actualFormat === 'json' ? null : 'partial',
+            total_candidate_count: actualFormat === 'json' ? json.candidate_count : responseShape.structural_candidate_count,
+            accepted_candidate_count: records.length, rejected_candidate_count: rejectedCount,
+            rejection_reasons: Object.keys(responseShape.modifier_failure_subtype_counts ?? {}),
+            accepted_partial_output_persisted: false, missing_required_results: true,
+            obligation_closure_reason: 'minimal_record_fallback_required' });
+          lastFailedAttempt = attempt;
+        } else {
+          lastReason = actualFormat === 'json' ? 'invalid_or_unsupported_json_schema'
+            : classifyTaggedResponseFailure(jsonResponse, { tier });
+          finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed', malformed_reason: lastReason,
+            recoverable: true, recovery_stage: 'structured_json_regeneration', response_text: jsonResponse,
+            parser_paths_attempted: actualFormat === 'json'
+              ? ['strict_json', 'supported_json_conversion'] : ['strict_json', 'strict_tagged_fallback'],
+            local_normalization_paths_attempted: normalized?.paths_attempted?.map((item) => item.path) ?? [],
+            smaller_window_retry_followed: false,
+            requested_output_format: `${tier}_json_records_v1`, actual_output_format: actualFormat,
+            parser_selected: parserSelected, output_contract_followed: actualFormat === 'json',
+            strict_parse_result: 'rejected', fallback_parse_result: actualFormat === 'json' ? null : 'rejected',
+            total_candidate_count: actualFormat === 'json' ? json.candidate_count : responseShape.structural_candidate_count,
+            accepted_candidate_count: 0, rejected_candidate_count: rejectedCount,
+            missing_required_results: true, obligation_closure_reason: 'minimal_record_fallback_required' });
+          lastFailedAttempt = attempt;
+        }
       }
     }
   }
-  throw terminalMalformedError(tier, lastReason, 'bounded_recovery_exhausted', budget, lastProviderError);
+
+  if (priorStages.has('minimal_record_regeneration')) {
+    const blocked = terminalMalformedError(tier, lastReason, 'repeated_terminal_signature', budget, lastProviderError);
+    blocked.code = 'SME_RECOVERY_PATH_EXHAUSTED';
+    blocked.sme_recovery_blocked = true;
+    throw blocked;
+  }
+  const minimalBudget = consumeMalformedRecoveryRequest(budget, 'minimal_record_regeneration');
+  if (minimalBudget.allowed) {
+    const attempt = beginAttempt('minimal_record_regeneration',
+      ['single_record_contract', 'optional_modifiers_removed', 'minimum_window_changed_recovery_dimension'], {
+        recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
+        repair_reason: lastReason, recovery_stage: 'minimal_record_regeneration',
+        expected_output_format: `${tier}_minimal_tagged_record_v1`,
+      });
+    let minimalResponse;
+    try {
+      minimalResponse = await generate(buildMinimalRecordRegenerationPrompt(originalPrompt, { tier }), {
+        responseLength: Math.min(Number(responseLength) || 300, 300),
+        task: `${tier}-malformed-minimal-record-regeneration`,
+      });
+    } catch (error) {
+      finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: false,
+        recovery_stage: 'minimal_record_regeneration', final_disposition: 'minimal_record_provider_failure',
+        recovery_ladder_terminal: true, accepted_candidate_count: acceptedPartialRecords.length });
+      lastProviderError = error;
+      minimalResponse = null;
+    }
+    if (minimalResponse !== null) {
+      const actualFormat = detectRecoveryResponseFormat(minimalResponse, { tier });
+      if (String(minimalResponse).trim().toUpperCase() === 'NONE') {
+        finishAttempt(attempt, { terminal_outcome: acceptedPartialRecords.length ? 'completed' : 'completed_no_candidates',
+          notice_reason: acceptedPartialRecords.length ? 'partial_valid_output_completed_by_explicit_no_additional_record' : null,
+          recoverable: true, recovery_stage: 'minimal_record_regeneration',
+          final_recovery_stage: 'minimal_record_regeneration', requested_output_format: `${tier}_minimal_tagged_record_v1`,
+          actual_output_format: actualFormat, parser_selected: 'exact_none', output_contract_followed: true,
+          strict_parse_result: 'explicit_none', accepted_candidate_count: acceptedPartialRecords.length,
+          rejected_candidate_count: 0, missing_required_results: false,
+          accepted_partial_output_persisted: acceptedPartialRecords.length > 0,
+          obligation_closure_reason: 'explicit_no_additional_supported_record' });
+        markMalformedRecoverySuccess(budget, 'minimal_record_regeneration');
+        return acceptedPartialRecords.length
+          ? { records: acceptedPartialRecords, stage: 'minimal_record_regeneration', budget, original_reason: originalReason }
+          : { records: [], explicit_none: true, stage: 'minimal_record_regeneration', budget, original_reason: originalReason };
+      }
+      const shape = analyzeMalformedResponse(minimalResponse, { tier });
+      const minimalRecords = parse(minimalResponse);
+      if (minimalRecords.length) {
+        const unique = [...acceptedPartialRecords, ...minimalRecords].filter((record, index, all) =>
+          all.findIndex((item) => item.type === record.type && item.content === record.content
+            && JSON.stringify(item.source_message_indices ?? []) === JSON.stringify(record.source_message_indices ?? [])) === index);
+        finishAttempt(attempt, { terminal_outcome: 'completed', recoverable: true,
+          notice_reason: shape.structurally_rejected_record_count > 0 ? 'partial_valid_output' : null,
+          recovery_stage: 'minimal_record_regeneration', final_recovery_stage: 'minimal_record_regeneration',
+          response_text: minimalResponse, parser_paths_attempted: ['strict_minimal_tagged_record'],
+          requested_output_format: `${tier}_minimal_tagged_record_v1`, actual_output_format: actualFormat,
+          parser_selected: 'strict_tagged', output_contract_followed: actualFormat === 'tagged_lines',
+          strict_parse_result: shape.structurally_rejected_record_count > 0 ? 'partial_accepted' : 'accepted',
+          total_candidate_count: shape.structural_candidate_count,
+          accepted_candidate_count: unique.length, rejected_candidate_count: shape.structurally_rejected_record_count,
+          accepted_partial_output_persisted: acceptedPartialRecords.length > 0,
+          missing_required_results: false, obligation_closure_reason: 'minimal_record_contract_satisfied' });
+        markMalformedRecoverySuccess(budget, 'minimal_record_regeneration');
+        return { records: unique, stage: 'minimal_record_regeneration', budget, original_reason: originalReason };
+      }
+      lastReason = classifyTaggedResponseFailure(minimalResponse, { tier });
+      finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed', malformed_reason: lastReason,
+        recoverable: false, recovery_stage: 'minimal_record_regeneration', response_text: minimalResponse,
+        parser_paths_attempted: ['strict_minimal_tagged_record'], recovery_ladder_terminal: true,
+        requested_output_format: `${tier}_minimal_tagged_record_v1`, actual_output_format: actualFormat,
+        parser_selected: 'strict_tagged', output_contract_followed: actualFormat === 'tagged_lines',
+        strict_parse_result: 'rejected', total_candidate_count: shape.structural_candidate_count,
+        accepted_candidate_count: acceptedPartialRecords.length,
+        rejected_candidate_count: shape.structurally_rejected_record_count,
+        accepted_partial_output_persisted: false, missing_required_results: true,
+        obligation_closure_reason: 'bounded_minimal_record_fallback_exhausted' });
+    }
+  }
+  const terminal = terminalMalformedError(tier, lastReason, 'bounded_recovery_exhausted', budget, lastProviderError);
+  if (acceptedPartialRecords.length) {
+    terminal.sme_accepted_partial_records = acceptedPartialRecords;
+    return { records: acceptedPartialRecords, stage: 'partial_records_preserved_pending', budget,
+      original_reason: originalReason, partial_unresolved: true, terminal_error: terminal,
+      logical_obligation_id: lastFailedAttempt?.logical_obligation_id ?? originalAttempt?.logical_obligation_id ?? null };
+  }
+  throw terminal;
 }

@@ -217,8 +217,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.61',
-  build_fingerprint: 'sme-v0.9.61-minimum-window-recovery-r1',
+  extension_version: '0.9.62',
+  build_fingerprint: 'sme-v0.9.62-recovery-loop-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2264,10 +2264,46 @@ export function bindSettingsUI(ctrl) {
       } else $status.hide().empty();
       return;
     }
+    let checkpointRecovery = summarizeCatchUpCheckpoint(checkpoint);
+    if (checkpointRecovery.blocked) {
+      const blockedObligations = checkpointRecovery.blocked_obligations ?? [];
+      const currentConfigurationSignature = (tier) => providerConfigurationSignature({
+        connection_profile_id: extension_settings[MODULE_NAME]?.connection_profile_id ?? null,
+        model: extension_settings[MODULE_NAME]?.openai_compat_model ?? extension_settings[MODULE_NAME]?.ollama_model ?? null,
+        source: extension_settings[MODULE_NAME]?.source ?? memory_sources.main,
+        response_length: tier === 'session'
+          ? extension_settings[MODULE_NAME]?.session_response_length ?? 500
+          : extension_settings[MODULE_NAME]?.longterm_response_length || 600,
+        context_length: extension_settings[MODULE_NAME]?.context_length ?? null,
+      });
+      const signaturesAreComparable = blockedObligations.length > 0
+        && blockedObligations.every((item) => item.configuration_signature);
+      const sameBlockedConfiguration = blockedObligations.some((item) =>
+        item.configuration_signature === currentConfigurationSignature(item.tier));
+      if (signaturesAreComparable && !sameBlockedConfiguration) {
+        // The terminal signature is scoped to the exact provider setup. A
+        // material configuration change makes one new bounded attempt useful,
+        // while preserving every safely committed sibling and source range.
+        delete rawCheckpoint.recovery_blocked;
+        delete checkpoint.recovery_blocked;
+        checkpointRecovery = summarizeCatchUpCheckpoint(checkpoint);
+        saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist recovery unblock after provider configuration change:`, error));
+      }
+    }
+    if (checkpointRecovery.blocked) {
+      const unresolved = checkpointRecovery.unresolved_obligation_count;
+      const affected = checkpointRecovery.blocked_obligations
+        .map((item) => `${item.tier}${item.owner ? `/${item.owner}` : ''} ${item.source_range?.start ?? '?'}–${item.source_range?.end ?? '?'}`)
+        .join(', ');
+      $resume.prop('disabled', true);
+      setResumeLabel('Recovery Change Required', 'The remaining obligations exhausted every available recovery strategy. Safe progress is preserved.');
+      $status.text(`Blocked — recovery change required. ${unresolved} unresolved extraction obligation${unresolved === 1 ? '' : 's'}${affected ? `: ${affected}` : ''}. Safe progress is preserved, but another identical Resume is not useful. Change the provider/model configuration or install an updated build.`).show();
+      return;
+    }
     const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
     const total = Number(checkpoint.source_message_count) || 0;
     const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
-    const finalization = summarizeCatchUpCheckpoint(checkpoint).finalization;
+    const finalization = checkpointRecovery.finalization;
     const resumeEligibility = evaluateShortTermResumeEligibility(checkpoint);
     checkpoint.finalization.shortterm_resume_eligibility = resumeEligibility;
     const operatorActionRequired = !resumeEligibility.eligible;
@@ -2781,6 +2817,55 @@ export function bindSettingsUI(ctrl) {
   // metadata must be rolled back. Export Diagnostics must still be useful in
   // that exact failure case.
   let latestExportDiagnostics = null;
+  const buildCentralMalformedRecoverySummary = (providerSummary, checkpointSummary, logicalRun) => {
+    const unresolved = providerSummary?.terminal_unresolved_obligations ?? [];
+    if (!providerSummary && !checkpointSummary?.available) return null;
+    const pendingRange = Object.values(logicalRun?.cumulative_tier_coverage ?? {})
+      .flatMap((tier) => tier?.pending_obligations ?? []).at(0) ?? null;
+    const safeOwners = (logicalRun?.longterm_owner_obligations ?? [])
+      .filter((item) => item.safely_committed === true
+        && (!pendingRange || (item.start_offset === pendingRange.start_offset && item.end_offset === pendingRange.end_offset)))
+      .map((item) => item.owner);
+    return {
+      schema_version: 1,
+      logical_run_id: logicalRun?.logical_run_id ?? null,
+      attempt_count: logicalRun?.attempt_count ?? null,
+      source_fingerprint: logicalRun?.source_window?.fingerprint ?? null,
+      last_committed_checkpoint: checkpointSummary?.safely_committed_offset ?? logicalRun?.cumulative_committed_count ?? 0,
+      current_parent_chunk: pendingRange ? {
+        start_offset: pendingRange.start_offset,
+        end_offset: pendingRange.end_offset,
+        source_start_index: pendingRange.source_start_index,
+        source_end_index: pendingRange.source_end_index,
+      } : null,
+      unresolved_obligation_count: unresolved.length,
+      unresolved_obligations: unresolved.map((item) => ({
+        root_obligation_id: item.root_obligation_id,
+        tier: item.tier,
+        owner: item.owner,
+        source_range: item.source_range,
+        source_fingerprint: item.source_fingerprint,
+        configuration_signature: item.configuration_signature,
+        stages_attempted: item.recovery_stages_attempted,
+        accepted_partial_record_count: item.accepted_partial_record_count,
+        rejected_fragment_count: item.rejected_fragment_count,
+        response_contract: item.last_response_contract,
+        repeated_failure_signature: item.last_terminal_signature,
+        terminal_signature_repeat_count: item.terminal_signature_repeat_count,
+        replay_count: item.retry_replay_count,
+        blocked: item.recovery_blocked,
+        next_eligible_recovery_action: item.next_eligible_recovery_action,
+      })),
+      skipped_safe_sibling_owners: [...new Set(safeOwners)],
+      safe_progress_preserved: checkpointSummary?.safe_progress_preserved
+        ?? (logicalRun?.cumulative_committed_count ?? 0) > 0,
+      resume_currently_useful: checkpointSummary?.resumable === true,
+      recovery_state: checkpointSummary?.blocked ? 'blocked_recovery_change_required'
+        : checkpointSummary?.resumable ? 'incomplete_resumable' : 'not_resumable',
+      recovery_reason_code: checkpointSummary?.reason_code ?? logicalRun?.terminal_reason_code ?? null,
+      equivalent_request_accounting: providerSummary?.equivalent_request_accounting ?? null,
+    };
+  };
   const getExportableDiagnostics = () => {
     const metadata = getContext().chatMetadata?.[META_KEY] ?? {};
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
@@ -2791,6 +2876,13 @@ export function bindSettingsUI(ctrl) {
         ...metadata.shortterm_compaction_checkpoint,
       } : null,
     };
+    const liveProviderSummary = summarizeProviderAttemptAudit(metadata);
+    const liveLogicalRun = recovery.logical_run ?? completedRun?.logical_run ?? null;
+    const centralMalformedRecovery = buildCentralMalformedRecoverySummary(
+      liveProviderSummary ?? completedRun?.provider_attempt_audit,
+      recovery,
+      liveLogicalRun,
+    );
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
@@ -2798,6 +2890,7 @@ export function bindSettingsUI(ctrl) {
         compaction_request_audit: completedRun.compaction_request_audit
           ? reconcileShortTermSegmentLedger(completedRun.compaction_request_audit) : null,
         live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
+        malformed_recovery: centralMalformedRecovery ?? completedRun.malformed_recovery ?? null,
         targeted_extraction_replay: metadata.targeted_extraction_replay
           ? { ...(completedRun.targeted_extraction_replay ?? {}),
             ...summarizeTargetedReplayCheckpoint(metadata.targeted_extraction_replay) }
@@ -2824,6 +2917,8 @@ export function bindSettingsUI(ctrl) {
       provider_calls_during_audit: 0,
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
+      provider_attempt_audit: liveProviderSummary,
+      malformed_recovery: centralMalformedRecovery,
       targeted_extraction_replay: metadata.targeted_extraction_replay
         ? summarizeTargetedReplayCheckpoint(metadata.targeted_extraction_replay) : null,
       runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(metadata.catch_up_checkpoint?.runtime_context_limits ?? {}) },
@@ -5637,7 +5732,8 @@ export function bindSettingsUI(ctrl) {
               liveHealth: createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'),
               _contextOverflowCompletedChildren: completedOverflowChildren,
               _onContextOverflowChildCommitted: commitOverflowChild,
-              _providerResumedPendingObligation: Boolean(resumableCheckpoint && priorOwnerStatus),
+              _providerResumedPendingObligation: Boolean(resumableCheckpoint
+                && (priorOwnerStatus || ownerHasUnresolvedProviderObligation(name))),
             }).catch((err) => {
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
               if (err?.sme_context_overflow_checkpoint_failure) {
@@ -5827,16 +5923,44 @@ export function bindSettingsUI(ctrl) {
             // Preserve the committed tier plus its durable pending obligation,
             // then stop at this boundary. Finalization must never transform
             // partial tier coverage into a completed rebuild.
+            const terminalProviderSummary = summarizeProviderAttemptAudit(catchUpContext.chatMetadata?.[META_KEY]);
+            const blockedObligations = (terminalProviderSummary?.terminal_unresolved_obligations ?? [])
+              .filter((obligation) => obligation.recovery_blocked === true);
+            const recoveryBlocked = blockedObligations.length > 0;
             checkpointForCommit.status = 'awaiting_manual_resume';
+            checkpointForCommit.recovery_blocked = recoveryBlocked ? {
+              schema_version: 1,
+              blocked: true,
+              reason_code: 'recovery_change_required',
+              unresolved_obligation_count: blockedObligations.length,
+              safe_progress_preserved: true,
+              next_eligible_recovery_action: 'change_provider_configuration_or_install_updated_build',
+              obligations: blockedObligations.map((obligation) => ({
+                root_obligation_id: obligation.root_obligation_id,
+                tier: obligation.tier,
+                owner: obligation.owner,
+                source_range: obligation.source_range,
+                source_fingerprint: obligation.source_fingerprint,
+                configuration_signature: obligation.configuration_signature,
+                recovery_stages_attempted: obligation.recovery_stages_attempted,
+                terminal_signature: obligation.last_terminal_signature,
+                terminal_signature_repeat_count: obligation.terminal_signature_repeat_count,
+              })).slice(-16),
+              blocked_at: Date.now(),
+            } : null;
+            const terminalReasonCode = recoveryBlocked
+              ? 'recovery_change_required' : 'tier_coverage_incomplete';
             checkpointForCommit.run_manifest = finalizeCatchUpRunManifest(checkpointForCommit.run_manifest, {
-              status: 'awaiting_manual_resume', reasonCode: 'tier_coverage_incomplete',
+              status: 'awaiting_manual_resume', reasonCode: terminalReasonCode,
               attemptMetrics: { retry_count: runResult.retriedRequests, provider_failure_count: runResult.providerFailures.length },
             });
             checkpointForCommit.updated_at = Date.now();
             await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
             ctrl.catchUpCancelled = true;
-            ctrl.catchUpStopReason = 'tier_coverage_incomplete';
-            setStatusMessage(`Source ingestion paused: Long-Term or Session coverage is incomplete for ${i}-${processed - 1}. Resume will replay only the pending tier work.`);
+            ctrl.catchUpStopReason = terminalReasonCode;
+            setStatusMessage(recoveryBlocked
+              ? `Source ingestion blocked: ${blockedObligations.length} extraction obligation${blockedObligations.length === 1 ? '' : 's'} exhausted every available recovery path for ${i}-${processed - 1}. Safe progress is preserved; change provider configuration or install an updated build before resuming.`
+              : `Source ingestion paused: Long-Term or Session coverage is incomplete for ${i}-${processed - 1}. Resume will replay only the pending tier work.`);
           } else {
             checkpointForCommit.next_source_offset = processed;
             if (replayRange) {
@@ -8609,9 +8733,20 @@ export function bindSettingsUI(ctrl) {
             ? reconcileShortTermSegmentLedger(runResult.compactionRequestAudit)
             : null,
         provider_attempt_audit: providerAttemptSummary,
+        malformed_recovery: buildCentralMalformedRecoverySummary(
+          providerAttemptSummary,
+          summarizeCatchUpCheckpoint(checkpoint),
+          logicalRunAtDiagnosticBuild,
+        ),
         automatic_malformed_recovery: (() => {
           const sweep = checkpoint.automatic_malformed_recovery ?? null;
-          if (!sweep) return null;
+          if (!sweep) return {
+            schema_version: 2,
+            status: 'not_started_before_source_pause',
+            reason_code: 'source_ingestion_paused_with_pending_obligations',
+            central_recovery_summary_available: true,
+            unresolved_obligation_count: Number(providerAttemptSummary?.terminally_unresolved_malformed_obligations ?? 0),
+          };
           const attemptedIds = new Set((sweep.targets ?? []).map((target) => target.root_obligation_id));
           const unresolvedIds = providerAttemptSummary?.terminal_unresolved_obligations
             ?.map((item) => item.root_obligation_id).filter(Boolean) ?? [];

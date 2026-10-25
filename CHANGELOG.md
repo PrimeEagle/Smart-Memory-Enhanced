@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.62] - 2026-10-25
+
+### Added
+
+- Provider-attempt audit schema v6 now persists recovery stages, replay counts,
+  requested versus actual response formats, selected parsers, accepted partial
+  record counts, rejected-fragment reasons, terminal failure signatures, and
+  the next eligible recovery action without exporting generated memory text.
+- Memorize Chat diagnostics now include one central malformed-recovery summary
+  even when source ingestion pauses before the automatic end-of-source sweep.
+  The summary reconciles pending obligations, safe sibling owners, checkpoint
+  progress, replay decisions, response-contract violations, and Resume utility.
+- The recovery panel and canonical run-status classifier distinguish
+  **Incomplete — resumable** from **Blocked — recovery change required**.
+
+### Fixed
+
+- Structured-JSON recovery now tries the requested JSON contract first, then
+  explicitly detects and strictly parses usable tagged output when a provider
+  ignores that contract. Citations, modifiers, provenance, validation, and
+  safety checks remain identical to ordinary extraction.
+- Mixed recovery responses preserve independently valid records while retaining
+  exact rejection evidence for malformed fragments. If the remaining output is
+  unresolved, valid records are persisted once without closing tier coverage.
+- Minimum-size source windows gain one bounded, materially different fallback
+  that requests a single citation-bearing record with optional modifiers
+  removed, or an exact `NONE` result. Resume skips exhausted intermediate
+  recovery stages instead of rebuilding the same ladder from its beginning.
+- Repeated identical terminal recovery signatures now disable ordinary Resume
+  while preserving the checkpoint and all safe work. A changed source or
+  provider configuration produces a different signature and permits a new
+  bounded attempt.
+- Successful Long-Term siblings remain reusable inside an uncommitted parent
+  chunk, while resumed provider accounting identifies only the unresolved
+  owner or Session obligation as a permitted checkpoint replay.
+
+### Tests
+
+- Added a sanitized v0.9.61 replay fixture plus strict JSON, tagged fallback,
+  mixed partial output, minimum-window fallback, durable partial persistence,
+  sibling reuse, replay accounting, loop blocking, configuration-change reset,
+  diagnostics, and UI-status regression coverage.
+
 ## [0.9.61] - 2026-10-23
 
 ### Fixed

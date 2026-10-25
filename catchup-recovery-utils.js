@@ -495,11 +495,19 @@ export function summarizeCatchUpRunManifest(manifest) {
 export function summarizeCatchUpCheckpoint(checkpoint) {
   if (!checkpoint || typeof checkpoint !== 'object') return { available: false, resumable: false, reason_code: 'no_checkpoint' };
   const normalized = normalizeCatchUpCheckpoint(checkpoint);
+  const blocked = checkpoint.recovery_blocked?.blocked === true;
   return {
     available: true,
-    resumable: Boolean(normalized),
+    resumable: Boolean(normalized) && !blocked,
+    blocked,
+    blocked_reason_code: checkpoint.recovery_blocked?.reason_code ?? null,
+    unresolved_obligation_count: Number(checkpoint.recovery_blocked?.unresolved_obligation_count ?? 0),
+    blocked_obligations: (checkpoint.recovery_blocked?.obligations ?? []).slice(-16),
+    safe_progress_preserved: checkpoint.recovery_blocked?.safe_progress_preserved ?? null,
+    next_eligible_recovery_action: checkpoint.recovery_blocked?.next_eligible_recovery_action ?? null,
     status: checkpoint.status ?? 'unknown',
-    reason_code: checkpoint.run_manifest?.terminal_reason_code ?? null,
+    reason_code: checkpoint.recovery_blocked?.reason_code
+      ?? checkpoint.run_manifest?.terminal_reason_code ?? null,
     source_message_count: Number(checkpoint.source_message_count ?? 0),
     safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
     context_overflow_recovery: {

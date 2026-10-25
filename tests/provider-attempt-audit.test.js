@@ -4,6 +4,7 @@ import {
   beginProviderAttempt,
   classifyMalformedProviderOutput,
   finishProviderAttempt,
+  markProviderPartialRecordsPersisted,
   migrateProviderAttemptAuditReport,
   PROVIDER_OBLIGATION_LIMIT,
   summarizeProviderAttemptAudit,
@@ -21,7 +22,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 5);
+  assert.equal(migrated.schema_version, 6);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -179,7 +180,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 5);
+  assert.equal(summary.schema_version, 6);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -378,6 +379,64 @@ test('checkpoint resume explicitly permits retrying one still-pending obligation
   assert.equal(resumed.equivalent_retry_permitted, true);
   assert.equal(resumed.equivalent_retry_reason, 'checkpoint_pending_obligation_retry');
   assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 0);
+  assert.equal(resumed.recovery_replay_count, 1);
+});
+
+test('repeated terminal recovery signature becomes blocked and exports response-contract evidence', () => {
+  const metadata = { active_catchup_run_id: 'run-loop' };
+  const input = {
+    tier: 'session', logical_obligation_id: 'session:chat:20-39:source',
+    request_kind: 'minimal_record_regeneration', source_fingerprint: 'source',
+    configuration_signature: 'config', changed_recovery_dimensions: ['single_record_contract'],
+  };
+  for (let index = 0; index < 2; index++) {
+    const attempt = beginProviderAttempt(metadata, { ...input, resumed_pending_obligation: index > 0 });
+    finishProviderAttempt(metadata, attempt, {
+      terminal_outcome: 'provider_response_malformed', malformed_reason: 'malformed_tag',
+      recovery_stage: 'minimal_record_regeneration', recovery_ladder_terminal: true,
+      requested_output_format: 'session_minimal_tagged_record_v1', actual_output_format: 'tagged_lines',
+      parser_selected: 'strict_tagged', output_contract_followed: true,
+      strict_parse_result: 'rejected', total_candidate_count: 2,
+      accepted_candidate_count: 1, rejected_candidate_count: 1,
+      rejection_reasons: ['unsupported_modifier_key'], missing_required_results: true,
+      accepted_partial_output_persisted: index > 0,
+    });
+  }
+  const unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(unresolved.terminal_signature_repeat_count, 2);
+  assert.equal(unresolved.recovery_blocked, true);
+  assert.equal(unresolved.next_eligible_recovery_action, 'change_provider_configuration_or_install_updated_build');
+  assert.equal(unresolved.retry_replay_count, 1);
+  assert.equal(unresolved.last_response_contract.requested_output_format, 'session_minimal_tagged_record_v1');
+  assert.equal(unresolved.last_response_contract.accepted_partial_output_persisted, true);
+
+  const changed = beginProviderAttempt(metadata, {
+    ...input, configuration_signature: 'changed-config', resumed_pending_obligation: true,
+  });
+  finishProviderAttempt(metadata, changed, {
+    terminal_outcome: 'provider_response_malformed', malformed_reason: 'malformed_tag',
+    recovery_stage: 'minimal_record_regeneration', recovery_ladder_terminal: true,
+    accepted_candidate_count: 0, rejected_candidate_count: 1,
+  });
+  const afterChange = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(afterChange.terminal_signature_repeat_count, 1);
+  assert.equal(afterChange.recovery_blocked, false);
+});
+
+test('valid partial records can be marked durable without falsely closing coverage', () => {
+  const metadata = { active_catchup_run_id: 'run-partial-persist' };
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'session:partial', request_kind: 'structured_json_regeneration',
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'partial_output_pending', malformed_reason: 'partial_valid_output',
+    accepted_candidate_count: 1, rejected_candidate_count: 1, missing_required_results: true,
+  });
+  assert.equal(markProviderPartialRecordsPersisted(metadata, 'session:partial', 1), true);
+  const unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(unresolved.accepted_partial_record_count, 1);
+  assert.equal(unresolved.last_response_contract.accepted_partial_output_persisted, true);
+  assert.equal(unresolved.final_disposition, 'partial_output_pending');
 });
 
 test('bounded provider-failure lineage never replaces its exact aggregate', () => {

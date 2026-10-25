@@ -104,6 +104,7 @@ import {
 import {
   beginProviderAttempt,
   finishProviderAttempt,
+  markProviderPartialRecordsPersisted,
   providerConfigurationSignature,
 } from './provider-attempt-audit.js';
 import {
@@ -782,6 +783,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           : 'context_identity_or_window_fallback',
       };
     }
+    let recoveryPendingError = null;
+    let recoveryPendingObligationId = null;
     let parsedCandidates = parseSessionOutput(response);
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
@@ -805,6 +808,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return 0;
       }
       parsedCandidates = recovery.records;
+      if (recovery.partial_unresolved) {
+        recoveryPendingError = recovery.terminal_error;
+        recoveryPendingObligationId = recovery.logical_obligation_id;
+      }
       healthUpdate({ provider_outcome: `completed_after_${recovery.stage}`, parser_outcome: `parsed_after_${recovery.stage}` });
     } else {
       const responseShape = analyzeMalformedResponse(response, { tier: 'session' });
@@ -1376,6 +1383,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (abortCheck?.()) return 0;
     persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
+    if (recoveryPendingError) {
+      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, added);
+      recordExtractionCoverage(coverageLedger, { ...coverageBase,
+        provider_outcome: 'partial_valid_records_persisted_obligation_pending',
+        coverage_terminal_state: 'partial_records_persisted_obligation_pending',
+        accepted_partial_record_count: added,
+      });
+      recoveryPendingError.sme_partial_records_persisted = true;
+      throw recoveryPendingError;
+    }
     recordCompletedCoverage('completed_and_persisted');
     healthFinish({
       terminal_health: 'completed', persistence: 'saved',
@@ -1391,9 +1408,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     return added;
   } catch (err) {
     const malformedExhausted = err?.code === 'SME_MALFORMED_PROVIDER_OUTPUT';
+    const partialRecordsPersisted = err?.sme_partial_records_persisted === true;
     const preRequestInternalFailure = !malformedExhausted && !providerRequestSent;
     const providerFailure = !malformedExhausted && providerRequestSent && !providerResponseReceived;
-    const persistenceFailure = !malformedExhausted && providerResponseReceived && persistenceStarted;
+    const persistenceFailure = !malformedExhausted && !partialRecordsPersisted
+      && providerResponseReceived && persistenceStarted;
     const processingFailure = !malformedExhausted && providerResponseReceived && !persistenceStarted;
     const terminalHealth = malformedExhausted ? 'provider_response_malformed'
       : preRequestInternalFailure ? 'internal_error'
@@ -1423,7 +1442,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             : providerResponseReceived ? 'response_received' : 'request_not_sent',
       parser_outcome: malformedExhausted ? 'bounded_recovery_exhausted'
         : processingFailure ? 'post_response_processing_failed' : undefined,
-      persistence: persistenceFailure ? 'failed' : 'preserved',
+      persistence: partialRecordsPersisted ? 'partial_valid_records_saved_obligation_pending'
+        : persistenceFailure ? 'failed' : 'preserved',
       attention_reason_codes: [attentionReason],
     });
     console.error('[Smart Memory Enhanced] Session extraction failed:', err);

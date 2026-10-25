@@ -1,0 +1,32 @@
+{
+  "extension_version": "0.9.61",
+  "build_fingerprint": "sme-v0.9.61-minimum-window-recovery-r1",
+  "logical_run_id": "sanitized-v0961-resume-loop",
+  "source_message_count": 9434,
+  "safely_committed_count": 20,
+  "parent_range": { "start": 20, "end": 39, "fingerprint": "fnv1a-eeb22053" },
+  "minimum_child_range": { "start": 38, "end": 39, "fingerprint": "fnv1a-18c24970" },
+  "safe_longterm_siblings": [
+    "Alex Mercer",
+    "Aster Graves",
+    "Lillian Kraft",
+    "Nyx Watson",
+    "Valerie Erikssen"
+  ],
+  "unresolved_obligations": [
+    {
+      "tier": "longterm",
+      "owner": "Lisette Dumont",
+      "root_obligation_id": "longterm:lisette dumont:20-39:fnv1a-eeb22053",
+      "stages": ["strict_generation", "changed_dimension_regeneration", "structured_json_regeneration"]
+    },
+    {
+      "tier": "session",
+      "owner": null,
+      "root_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "stages": ["strict_generation", "changed_dimension_regeneration", "structured_json_regeneration"]
+    }
+  ],
+  "json_request_actual_format": "tagged_lines",
+  "session_candidate_shape": { "accepted": 1, "rejected": 1 }
+}
