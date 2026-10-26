@@ -8,6 +8,7 @@ import {
   buildChangedDimensionRegenerationPrompt,
   buildCompactFormatRepairPrompt,
   buildMinimalRecordRegenerationPrompt,
+  buildSingleSourceUnitRegenerationPrompt,
   buildStructuredJsonRegenerationPrompt,
   classifyTaggedResponseFailure,
   consumeMalformedRecoveryRequest,
@@ -19,6 +20,7 @@ import {
   recoverMalformedTaggedOutput,
   routeMalformedTaggedRecovery,
 } from '../malformed-output-recovery.js';
+import { deriveRecoveryStageEligibility } from '../recovery-stage-eligibility.js';
 
 const validLongterm = '[fact:2:permanent:sources=0] The garden gate is locked.';
 const validSession = '[detail:2:session:sources=0] The garden gate is currently locked.';
@@ -372,8 +374,106 @@ test('bounded terminal failure is explicit when every recovery stage is exhauste
     generate: async () => 'bad', originalPrompt: 'source', responseLength: 100,
     originalAttempt: { attempt_id: 'original' }, beginAttempt: audit.beginAttempt,
     finishAttempt: audit.finishAttempt, splitDepth: MALFORMED_RECOVERY_LIMITS.maximum_split_depth,
-  }), (error) => error.code === 'SME_MALFORMED_PROVIDER_OUTPUT'
+  }), (error) => error.code === 'SME_RECOVERY_PATH_EXHAUSTED'
+    && error.sme_recovery_blocked === true
     && error.sme_request_diagnostics.recovery_stage_exhausted === 'bounded_recovery_exhausted');
+});
+
+test('post-minimal eligibility advances only to the one-source-unit contract', () => {
+  const eligibility = deriveRecoveryStageEligibility({
+    recovery_stages_attempted: ['minimal_record_regeneration'],
+    exhausted_stages: ['minimal_record_regeneration'],
+    unresolved_semantic_units: ['65', '66'],
+  });
+  assert.equal(eligibility.blocked, false);
+  assert.equal(eligibility.eligible_action, 'single_source_unit_regeneration');
+  assert.equal(eligibility.replay_permission, 'changed_recovery_dimension');
+});
+
+test('sanitized v0.9.62 Nyx window ignores sibling partials and advances beyond exhausted minimal', () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL(
+    './fixtures/v0962-nyx-terminal-recovery-window.json', import.meta.url), 'utf8'));
+  const eligibility = deriveRecoveryStageEligibility({
+    recovery_stages_attempted: fixture.recovery_stages_attempted,
+    exhausted_stages: fixture.exhausted_stages,
+    accepted_partial_record_count: fixture.accepted_partial_record_count_for_child,
+    unresolved_semantic_units: ['65', '66', '67', '68', '69'],
+  });
+  assert.equal(fixture.root_obligation_id, 'longterm:nyx watson:60-79:fnv1a-11a50c71');
+  assert.equal(fixture.child_source_fingerprint, 'fnv1a-5fba3507');
+  assert.equal(eligibility.eligible_action, 'single_source_unit_regeneration');
+  assert.equal(eligibility.accepted_partial_record_count, 0);
+  assert.notEqual(eligibility.accepted_partial_record_count,
+    fixture.successful_sibling_range.accepted_partial_record_count);
+});
+
+test('single-source fallback stages one valid record and one explicit NONE without replaying minimal', async () => {
+  const audit = auditHarness();
+  const staged = [];
+  const prompts = [];
+  const responses = [validLongterm, 'NONE'];
+  const result = await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async (prompt) => { prompts.push(prompt); return responses.shift(); },
+    originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'longterm:nyx:60-79:root' },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    resumeState: {
+      recovery_stages_attempted: ['minimal_record_regeneration'],
+      exhausted_stages: ['minimal_record_regeneration'],
+    },
+    owner: 'Nyx Watson',
+    sourceUnits: [
+      { unit_key: '65', citation_index: 5, text: 'Nyx: The garden gate is locked.' },
+      { unit_key: '66', citation_index: 6, text: 'Alex: Okay.' },
+    ],
+    stagePartialRecords: async (records, details) => staged.push({ records, details }),
+  });
+  assert.equal(prompts.length, 2, JSON.stringify({ result, events: audit.events, staged }));
+  assert.match(prompts[0], /only the source message below is in scope/i);
+  assert.equal(result.stage, 'single_source_unit_regeneration');
+  assert.equal(result.records.length, 1);
+  assert.deepEqual(result.records[0].source_message_indices, [5]);
+  assert.deepEqual(staged.map((item) => item.details.source_unit_key), ['65', '66']);
+  assert.equal(staged[1].details.explicit_none, true);
+  assert.equal(audit.events.every((event) => event.requestKind === 'single_source_unit_regeneration'), true);
+});
+
+test('single-source fallback skips already staged units and records actionable rejection reasons', async () => {
+  const audit = auditHarness();
+  let calls = 0;
+  const result = await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => { calls++; return '[fact:2:permanent] Missing citation.'; },
+    originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'longterm:nyx:60-79:root' },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    resumeState: {
+      recovery_stages_attempted: ['minimal_record_regeneration'],
+      exhausted_stages: ['minimal_record_regeneration'],
+      staged_partial_records: [parseExtractionOutput(validLongterm)[0]],
+      completed_source_units: ['65'], accepted_partial_record_count: 1,
+    },
+    sourceUnits: [
+      { unit_key: '65', citation_index: 0, text: 'Nyx: Prior staged unit.' },
+      { unit_key: '66', citation_index: 1, text: 'Nyx: Remaining unit.' },
+    ],
+  });
+  assert.equal(result.partial_unresolved, true, JSON.stringify({ result, events: audit.events }));
+  assert.equal(result.terminal_error.code, 'SME_RECOVERY_PATH_EXHAUSTED');
+  assert.equal(calls, 1);
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].recovery.source_unit_key, '66');
+  assert.ok(audit.events[0].finished.rejection_reasons.length > 0);
+  assert.ok(audit.events[0].finished.candidate_rejections[0].candidate_fingerprint.startsWith('fnv1a-'));
+});
+
+test('single-source prompt is owner-scoped and contains no neighboring messages', () => {
+  const prompt = buildSingleSourceUnitRegenerationPrompt(
+    { unit_key: '65', text: 'Nyx: One bounded message.' }, { tier: 'longterm', owner: 'Nyx Watson' });
+  assert.match(prompt, /Nyx Watson/);
+  assert.match(prompt, /sources=0/);
+  assert.doesNotMatch(prompt, /message 64|message 66/i);
 });
 
 test('request and wall-time caps stop additional recovery work deterministically', () => {

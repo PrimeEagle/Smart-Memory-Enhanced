@@ -105,8 +105,12 @@ import {
   beginProviderAttempt,
   finishProviderAttempt,
   markProviderPartialRecordsPersisted,
+  markProviderStagedRecoveryCompleted,
   providerConfigurationSignature,
+  readProviderRecoveryWindowState,
+  stageProviderPartialRecovery,
 } from './provider-attempt-audit.js';
+import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import {
   analyzeMalformedResponse,
   createMalformedRecoveryBudget,
@@ -513,6 +517,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `session:chat:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const providerConfigSignature = providerConfigurationSignature({
+      connection_profile_id: settings.connection_profile_id ?? null,
+      model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+      source: settings.source ?? null,
+      response_length: responseLength,
+      context_length: settings.context_length ?? null,
+    });
     const beginPhysicalAttempt = (requestKind = options._providerRequestKind
       ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
       ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
@@ -523,6 +534,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       request_kind: requestKind,
       changed_recovery_dimensions: changedDimensions,
       recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
+      source_unit_key: recovery.source_unit_key ?? null,
       repair_reason: recovery.repair_reason ?? null,
       recovery_stage: recovery.recovery_stage ?? null,
       expected_output_format: recovery.expected_output_format ?? 'session_tagged_lines_v1',
@@ -541,13 +553,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
       resumed_pending_obligation: options._providerResumedPendingObligation === true,
       schema_version: 'session-tagged-v1',
-      configuration_signature: providerConfigurationSignature({
-        connection_profile_id: settings.connection_profile_id ?? null,
-        model: settings.openai_compat_model ?? settings.ollama_model ?? null,
-        source: settings.source ?? null,
-        response_length: responseLength,
-        context_length: settings.context_length ?? null,
-      }),
+      configuration_signature: providerConfigSignature,
     });
     const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
@@ -709,11 +715,26 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     }
 
     let response;
-    const providerAttempt = beginPhysicalAttempt();
+    const storedRecoveryState = readProviderRecoveryWindowState(
+      providerMetadata, rootObligationId, coverageBase.source_fingerprint);
+    const resumeRecoveryState = storedRecoveryState?.configuration_signature === providerConfigSignature
+      ? storedRecoveryState : null;
+    const resumeEligibility = resumeRecoveryState
+      ? deriveRecoveryStageEligibility(resumeRecoveryState) : null;
+    const bypassEquivalentRootReplay = resumeEligibility?.blocked === true
+      || resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
+    const providerAttempt = bypassEquivalentRootReplay ? {
+      attempt_id: null,
+      logical_obligation_id: rootObligationId,
+      resumed_pending_obligation: true,
+      prior_window_recovery_state: resumeRecoveryState,
+    } : beginPhysicalAttempt();
     try {
-      providerRequestSent = true;
-      response = await generateMemoryExtract(prompt, { responseLength });
-      providerResponseReceived = true;
+      if (!bypassEquivalentRootReplay) {
+        providerRequestSent = true;
+        response = await generateMemoryExtract(prompt, { responseLength });
+        providerResponseReceived = true;
+      }
     } catch (err) {
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
@@ -785,6 +806,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     }
     let recoveryPendingError = null;
     let recoveryPendingObligationId = null;
+    let stagedRecoveryObligationId = null;
     let parsedCandidates = parseSessionOutput(response);
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
@@ -795,6 +817,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         finishAttempt: (attempt, patch) => finishProviderAttempt(providerMetadata, attempt, patch),
         splitWindow: splitMalformedWindow, budget: malformedRecoveryBudget,
         splitDepth: malformedRecoveryDepth,
+        resumeState: resumeRecoveryState,
+        sourceUnits: sourceMessages.map((message, index) => ({
+          unit_key: String(message.__sme_original_index ?? range.start + index),
+          citation_index: index,
+          text: `${message.name ?? 'Unknown'}: ${message.mes ?? ''}`,
+        })),
+        stagePartialRecords: async (records, details) => {
+          stageProviderPartialRecovery(providerMetadata, rootObligationId, coverageBase.source_fingerprint,
+            records, { ...details, source_range: { start: range.start, end: range.end, message_count: range.message_count } });
+          await saveChatMetadata(getContext());
+        },
       });
       if (recovery.repartitioned) {
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved',
@@ -802,12 +835,19 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return recovery.added;
       }
       if (recovery.explicit_none) {
+        if (recovery.logical_obligation_id) {
+          markProviderStagedRecoveryCompleted(providerMetadata, recovery.logical_obligation_id,
+            coverageBase.source_fingerprint, 0);
+          await saveChatMetadata(getContext());
+        }
         recordCompletedCoverage('completed_no_candidates_after_regeneration');
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
           provider_outcome: 'completed_no_candidates_after_regeneration', parser_outcome: 'explicit_none' });
         return 0;
       }
       parsedCandidates = recovery.records;
+      stagedRecoveryObligationId = recovery.staged_partial_record_count
+        ? recovery.logical_obligation_id ?? rootObligationId : null;
       if (recovery.partial_unresolved) {
         recoveryPendingError = recovery.terminal_error;
         recoveryPendingObligationId = recovery.logical_obligation_id;
@@ -1383,8 +1423,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (abortCheck?.()) return 0;
     persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
+    if (stagedRecoveryObligationId) {
+      markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
+        coverageBase.source_fingerprint, added);
+      await saveChatMetadata(getContext());
+    }
     if (recoveryPendingError) {
-      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, added);
+      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, added,
+        coverageBase.source_fingerprint);
+      await saveChatMetadata(getContext());
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
         coverage_terminal_state: 'partial_records_persisted_obligation_pending',
@@ -1407,7 +1454,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     });
     return added;
   } catch (err) {
-    const malformedExhausted = err?.code === 'SME_MALFORMED_PROVIDER_OUTPUT';
+    const malformedExhausted = ['SME_MALFORMED_PROVIDER_OUTPUT', 'SME_RECOVERY_PATH_EXHAUSTED'].includes(err?.code);
     const partialRecordsPersisted = err?.sme_partial_records_persisted === true;
     const preRequestInternalFailure = !malformedExhausted && !providerRequestSent;
     const providerFailure = !malformedExhausted && providerRequestSent && !providerResponseReceived;

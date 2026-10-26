@@ -1,0 +1,36 @@
+{
+  "fixture_version": 1,
+  "extension_version": "0.9.62",
+  "root_obligation_id": "longterm:nyx watson:60-79:fnv1a-11a50c71",
+  "child_source_range": {
+    "start": 65,
+    "end": 69,
+    "message_count": 5
+  },
+  "child_source_fingerprint": "fnv1a-5fba3507",
+  "configuration_signature": "fnv1a-e735d208",
+  "terminal_signature": "fnv1a-ce629ffd",
+  "recovery_stages_attempted": [
+    "compact_response_repair",
+    "changed_dimension_regeneration",
+    "malformed_source_repartition",
+    "structured_json_regeneration",
+    "minimal_record_regeneration"
+  ],
+  "exhausted_stages": [
+    "compact_response_repair",
+    "changed_dimension_regeneration",
+    "malformed_source_repartition",
+    "structured_json_regeneration",
+    "minimal_record_regeneration"
+  ],
+  "accepted_partial_record_count_for_child": 0,
+  "successful_sibling_range": {
+    "start": 60,
+    "end": 64,
+    "accepted_partial_record_count": 2
+  },
+  "reported_next_action": "minimal_record_regeneration",
+  "reported_rejected_candidate_count": 2,
+  "reported_rejection_reasons": []
+}

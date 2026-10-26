@@ -13,8 +13,30 @@ import {
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
+  reconcileCatchUpRecoverySummary,
   invalidatePrematureFinalization,
 } from '../catchup-recovery-utils.js';
+
+test('provider obligations authoritatively correct stale checkpoint recovery presentation', () => {
+  const checkpoint = { available: true, resumable: true, unresolved_obligation_count: 0,
+    safely_committed_offset: 60 };
+  const pending = reconcileCatchUpRecoverySummary(checkpoint, {
+    terminal_unresolved_obligations: [{ root_obligation_id: 'longterm:nyx:60-79:root',
+      tier: 'longterm', owner: 'Nyx Watson', recovery_blocked: false,
+      next_eligible_recovery_action: 'single_source_unit_regeneration' }],
+  });
+  assert.equal(pending.unresolved_obligation_count, 1);
+  assert.equal(pending.resumable, true);
+  assert.equal(pending.next_eligible_recovery_action, 'single_source_unit_regeneration');
+  const blocked = reconcileCatchUpRecoverySummary(checkpoint, {
+    terminal_unresolved_obligations: [{ root_obligation_id: 'longterm:nyx:60-79:root',
+      tier: 'longterm', owner: 'Nyx Watson', recovery_blocked: true,
+      next_eligible_recovery_action: 'change_provider_configuration_or_install_updated_build' }],
+  });
+  assert.equal(blocked.blocked, true);
+  assert.equal(blocked.resumable, false);
+  assert.equal(blocked.blocked_obligation_count, 1);
+});
 
 test('incomplete tier coverage invalidates premature finalization before resume', () => {
   let manifest = ensureCatchUpRunManifest({ run_id: 'run-incomplete', source_message_count: 9434 });

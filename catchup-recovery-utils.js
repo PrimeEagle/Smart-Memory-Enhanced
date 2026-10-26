@@ -551,3 +551,39 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     logical_run: summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null),
   };
 }
+
+/** Reconciles checkpoint presentation with the authoritative provider obligations. */
+export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSummary) {
+  const base = { ...(checkpointSummary ?? { available: false, resumable: false }) };
+  const unresolved = providerSummary?.terminal_unresolved_obligations ?? [];
+  if (!unresolved.length) return base;
+  const blocked = unresolved.filter((item) => item.recovery_blocked === true
+    || item.recovery_eligibility?.blocked === true);
+  const resumable = unresolved.filter((item) => !blocked.includes(item)
+    && Boolean(item.next_eligible_recovery_action));
+  return {
+    ...base,
+    unresolved_obligation_count: unresolved.length,
+    blocked_obligation_count: blocked.length,
+    blocked_obligations: blocked.map((item) => ({
+      root_obligation_id: item.root_obligation_id, tier: item.tier, owner: item.owner,
+      source_range: item.source_range, source_fingerprint: item.source_fingerprint,
+      configuration_signature: item.configuration_signature,
+      recovery_stages_attempted: item.recovery_stages_attempted,
+      exhausted_recovery_stages: item.exhausted_recovery_stages,
+      terminal_signature: item.last_terminal_signature,
+      terminal_signature_repeat_count: item.terminal_signature_repeat_count,
+      next_eligible_recovery_action: item.next_eligible_recovery_action,
+    })),
+    unresolved_obligations: unresolved,
+    blocked: blocked.length > 0 && resumable.length === 0,
+    resumable: Boolean(base.available) && resumable.length > 0,
+    resume_can_make_progress: resumable.length > 0,
+    next_eligible_recovery_action: resumable[0]?.next_eligible_recovery_action ?? null,
+    reason_code: blocked.length > 0 && resumable.length === 0
+      ? 'recovery_change_required' : 'tier_coverage_incomplete',
+    blocked_reason_code: blocked.length > 0 && resumable.length === 0
+      ? 'all_recovery_stages_exhausted_for_unchanged_inputs' : null,
+    safe_progress_preserved: Number(base.safely_committed_offset ?? 0) > 0,
+  };
+}

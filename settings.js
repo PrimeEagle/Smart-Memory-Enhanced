@@ -86,6 +86,7 @@ import {
   finalizeCatchUpRunManifest,
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
+  reconcileCatchUpRecoverySummary,
   getCatchUpTierRangeStatus,
   isCatchUpTierRangeSafelyCovered,
   getCatchUpOwnerRangeStatus,
@@ -217,8 +218,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.62',
-  build_fingerprint: 'sme-v0.9.62-recovery-loop-r1',
+  extension_version: '0.9.63',
+  build_fingerprint: 'sme-v0.9.63-single-source-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2264,7 +2265,10 @@ export function bindSettingsUI(ctrl) {
       } else $status.hide().empty();
       return;
     }
-    let checkpointRecovery = summarizeCatchUpCheckpoint(checkpoint);
+    let checkpointRecovery = reconcileCatchUpRecoverySummary(
+      summarizeCatchUpCheckpoint(checkpoint),
+      summarizeProviderAttemptAudit(getContext().chatMetadata?.[META_KEY]),
+    );
     if (checkpointRecovery.blocked) {
       const blockedObligations = checkpointRecovery.blocked_obligations ?? [];
       const currentConfigurationSignature = (tier) => providerConfigurationSignature({
@@ -2286,7 +2290,12 @@ export function bindSettingsUI(ctrl) {
         // while preserving every safely committed sibling and source range.
         delete rawCheckpoint.recovery_blocked;
         delete checkpoint.recovery_blocked;
-        checkpointRecovery = summarizeCatchUpCheckpoint(checkpoint);
+        checkpointRecovery = {
+          ...checkpointRecovery, blocked: false, resumable: true,
+          resume_can_make_progress: true, blocked_reason_code: null,
+          next_eligible_recovery_action: 'changed_configuration_retry',
+          reason_code: 'provider_configuration_changed',
+        };
         saveChatMetadata(getContext()).catch((error) => console.warn(`[${MODULE_NAME}] Could not persist recovery unblock after provider configuration change:`, error));
       }
     }
@@ -2336,6 +2345,9 @@ export function bindSettingsUI(ctrl) {
     }
     const reconstructingSuccessor = resumeEligibility.decision === 'reconstruct_successor_from_committed_boundary';
     const resumePresentation = deriveShortTermResumePresentation(resumeEligibility, running);
+    const providerRecoveryText = checkpointRecovery.next_eligible_recovery_action === 'single_source_unit_regeneration'
+      ? ' Remaining malformed output will be retried one source message at a time; each validated result is saved before the next message.'
+      : '';
     $resume.prop('disabled', resumePresentation.disabled);
     setResumeLabel(
       resumePresentation.label,
@@ -2348,12 +2360,12 @@ export function bindSettingsUI(ctrl) {
           : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
     );
     $status.text(running
-      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}`
+      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}${providerRecoveryText}`
       : operatorActionRequired
         ? `Short-Term finalization cannot ordinarily resume (${resumeEligibility.decision.replaceAll('_', ' ')}: ${resumeEligibility.reason.replaceAll('_', ' ')}). Completed extraction and phase checkpoints remain preserved.`
       : reconstructingSuccessor
         ? `Short-Term progress is safely committed. Resume will reconstruct the missing successor plan at the committed boundary without regenerating the prior segment.${finalizationText}`
-        : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.${finalizationText}`).show();
+        : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.${finalizationText}${providerRecoveryText}`).show();
     if (autoResume && !operatorActionRequired && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
@@ -2839,6 +2851,7 @@ export function bindSettingsUI(ctrl) {
         source_end_index: pendingRange.source_end_index,
       } : null,
       unresolved_obligation_count: unresolved.length,
+      blocked_obligation_count: unresolved.filter((item) => item.recovery_blocked === true).length,
       unresolved_obligations: unresolved.map((item) => ({
         root_obligation_id: item.root_obligation_id,
         tier: item.tier,
@@ -2847,14 +2860,19 @@ export function bindSettingsUI(ctrl) {
         source_fingerprint: item.source_fingerprint,
         configuration_signature: item.configuration_signature,
         stages_attempted: item.recovery_stages_attempted,
+        exhausted_stages: item.exhausted_recovery_stages,
         accepted_partial_record_count: item.accepted_partial_record_count,
+        staged_partial_record_count: item.staged_partial_record_count,
+        missing_semantic_unit_count: item.missing_semantic_unit_count,
         rejected_fragment_count: item.rejected_fragment_count,
+        candidate_rejections: item.candidate_rejections,
         response_contract: item.last_response_contract,
         repeated_failure_signature: item.last_terminal_signature,
         terminal_signature_repeat_count: item.terminal_signature_repeat_count,
         replay_count: item.retry_replay_count,
         blocked: item.recovery_blocked,
         next_eligible_recovery_action: item.next_eligible_recovery_action,
+        recovery_eligibility: item.recovery_eligibility,
       })),
       skipped_safe_sibling_owners: [...new Set(safeOwners)],
       safe_progress_preserved: checkpointSummary?.safe_progress_preserved
@@ -2870,13 +2888,15 @@ export function bindSettingsUI(ctrl) {
     const metadata = getContext().chatMetadata?.[META_KEY] ?? {};
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
     const liveMemoryHealth = metadata.live_memory_health ? exportLiveMemoryHealth(metadata) : null;
+    const liveProviderSummary = summarizeProviderAttemptAudit(metadata);
     const recovery = {
-      ...summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint),
+      ...reconcileCatchUpRecoverySummary(
+        summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint), liveProviderSummary,
+      ),
       shortterm_compaction_checkpoint: metadata.shortterm_compaction_checkpoint ? {
         ...metadata.shortterm_compaction_checkpoint,
       } : null,
     };
-    const liveProviderSummary = summarizeProviderAttemptAudit(metadata);
     const liveLogicalRun = recovery.logical_run ?? completedRun?.logical_run ?? null;
     const centralMalformedRecovery = buildCentralMalformedRecoverySummary(
       liveProviderSummary ?? completedRun?.provider_attempt_audit,
@@ -8735,7 +8755,7 @@ export function bindSettingsUI(ctrl) {
         provider_attempt_audit: providerAttemptSummary,
         malformed_recovery: buildCentralMalformedRecoverySummary(
           providerAttemptSummary,
-          summarizeCatchUpCheckpoint(checkpoint),
+          reconcileCatchUpRecoverySummary(summarizeCatchUpCheckpoint(checkpoint), providerAttemptSummary),
           logicalRunAtDiagnosticBuild,
         ),
         automatic_malformed_recovery: (() => {

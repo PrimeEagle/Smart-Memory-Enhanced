@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.63] - 2026-10-26
+
+### Added
+
+- Malformed Long-Term and Session output now has a final bounded recovery
+  dimension that requests exactly one citation-bearing record, or exact
+  `NONE`, from one source message at a time. Each accepted unit is durably
+  staged before the next request, so a restart skips completed units.
+- Recovery diagnostics now retain content-free per-candidate rejection
+  evidence, exact missing semantic units, staged partial counts, exhausted
+  stages, the authoritative next eligible action, and blocked-loop status.
+- Provider-attempt audit schema v7 separates one-message regeneration requests
+  and successes from minimal-record regeneration and migrates unexplained
+  same-signature checkpoint replays into their explicit permitted category.
+
+### Fixed
+
+- Resume no longer replays an equivalent root or minimum-record request after
+  that source window has exhausted it. It advances to the one-message contract,
+  while changed provider configuration starts a fresh bounded recovery epoch.
+- Provider recovery state is now scoped to the exact child source fingerprint;
+  accepted records and exhausted stages from a successful sibling can no
+  longer contaminate the failing child window.
+- Valid partial records and per-message `NONE` decisions remain pending until
+  canonical persistence succeeds, then close the root obligation exactly once.
+  Restarts deduplicate staged records and preserve all previously committed
+  sibling and source progress.
+- Checkpoint, provider-audit, export, and recovery-panel status now derive from
+  the same unresolved obligations. Resume is offered only when a new recovery
+  action can make progress; an exhausted identical path is shown as requiring
+  a provider/configuration or build change.
+
+### Tests
+
+- Added regression coverage for authoritative stage eligibility, post-minimal
+  one-message recovery, exact `NONE`, durable staging and restore, duplicate
+  prevention, actionable rejection reasons, configuration-epoch reset, and
+  checkpoint/provider diagnostic reconciliation.
+
 ## [0.9.62] - 2026-10-25
 
 ### Added

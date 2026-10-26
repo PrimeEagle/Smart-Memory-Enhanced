@@ -1,7 +1,8 @@
 /** Privacy-safe structural recovery for tagged Long-Term and Session output. */
 import { analyzeBracketModifiers, analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
+import { deriveRecoveryStageEligibility, RECOVERY_STAGE_ORDER } from './recovery-stage-eligibility.js';
 
-export const MALFORMED_RECOVERY_SCHEMA_VERSION = 4;
+export const MALFORMED_RECOVERY_SCHEMA_VERSION = 5;
 
 export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   local_normalization_paths: 5,
@@ -9,6 +10,7 @@ export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   changed_dimension_regenerations: 1,
   structured_json_regenerations: 1,
   minimal_record_regenerations: 1,
+  single_source_unit_regenerations_per_unit: 1,
   maximum_split_depth: 2,
   minimum_child_messages: 5,
   maximum_additional_provider_requests: 20,
@@ -33,6 +35,15 @@ const classifyCharacter = (character) => {
 };
 
 const responseLines = (response) => String(response ?? '').replace(/\r\n?/g, '\n').split('\n');
+
+const safeFingerprint = (value) => {
+  let hash = 2166136261;
+  for (const character of String(value ?? '')) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16)}`;
+};
 
 /** Returns content-free shape data suitable for exported diagnostics. */
 export function analyzeMalformedResponse(response, { tier = 'longterm', finishReason = null,
@@ -145,6 +156,52 @@ export function classifyTaggedResponseFailure(response, options = {}) {
     return 'malformed_tag';
   }
   return 'missing_tagged_records';
+}
+
+/** Content-free, per-candidate evidence for every structurally rejected line. */
+export function buildCandidateRejectionEvidence(response, { tier = 'longterm', minimalContract = false } = {}) {
+  const lexical = analyzeTaggedMemoryOutput(String(response ?? ''), { tier });
+  const candidateCount = lexical.structural_candidate_count;
+  const byLine = new Map(lexical.rejected.map((item) => [item.line_index, item]));
+  const candidates = responseLines(response)
+    .map((line, lineIndex) => ({ line, lineIndex }))
+    .filter(({ line }) => /^\s*(?:[-*+]\s*)?\[/.test(line));
+  if (!candidates.length) {
+    try {
+      const parsed = JSON.parse(String(response ?? '').trim());
+      const collection = Array.isArray(parsed) ? parsed
+        : ['memories', 'records', 'items', 'results'].map((key) => parsed?.[key]).find(Array.isArray)
+          ?? (parsed && typeof parsed === 'object' ? [parsed] : []);
+      return collection.map((candidate, candidateIndex) => ({
+        candidate_index: candidateIndex,
+        candidate_fingerprint: safeFingerprint(JSON.stringify(candidate)),
+        parser_path: 'strict_json', structural_validation: 'rejected',
+        semantic_validation: 'not_reached', citation_validation: 'not_reached',
+        deduplication_result: 'not_reached', disposition: 'rejected',
+        reason_codes: ['invalid_or_unsupported_json_schema'],
+      }));
+    } catch { /* not JSON */ }
+  }
+  return candidates.map(({ line, lineIndex }, candidateIndex) => {
+    const rejected = byLine.get(lineIndex);
+    const reasons = new Set(rejected?.modifier_failure_subtypes ?? []);
+    if (rejected?.reason_code) reasons.add(rejected.reason_code);
+    if (rejected?.modifier_missing_source_citation) reasons.add('missing_source_citation');
+    if (minimalContract && candidateCount !== 1) reasons.add('minimal_record_contract_requires_exactly_one_candidate');
+    if (!rejected && minimalContract && candidateCount === 1) reasons.add('failed_minimal_record_contract_validation');
+    if (!reasons.size) reasons.add(classifyTaggedResponseFailure(line, { tier }));
+    return {
+      candidate_index: candidateIndex,
+      candidate_fingerprint: safeFingerprint(line.trim()),
+      parser_path: minimalContract ? 'strict_minimal_tagged_record' : 'strict_tagged',
+      structural_validation: rejected ? 'rejected' : 'accepted_structure',
+      semantic_validation: 'not_reached',
+      citation_validation: rejected?.modifier_missing_source_citation ? 'missing' : 'not_reached',
+      deduplication_result: 'not_reached',
+      disposition: 'rejected',
+      reason_codes: [...reasons],
+    };
+  });
 }
 
 /** Selects the cheapest safe recovery stage from content-free response shape. */
@@ -283,6 +340,13 @@ export function buildMinimalRecordRegenerationPrompt(originalPrompt, { tier = 'l
   return `${originalPrompt}\n\nFINAL MINIMUM-WINDOW RECOVERY — ONE SIMPLE RECORD\nReturn exactly one complete supported record, or exactly NONE when the supplied messages support no record. Do not return JSON, markdown, analysis, optional entity modifiers, or more than one record. Use exactly: [type:importance:${expiration}:sources=0] supported claim. Allowed type values: ${types.join(', ')}. importance must be 1, 2, or 3. sources is mandatory and must contain only indices from the supplied numbered messages. This is a new minimal contract; do not repeat a malformed multi-record answer.`;
 }
 
+export function buildSingleSourceUnitRegenerationPrompt(sourceUnit, { tier = 'longterm', owner = null } = {}) {
+  const types = taggedTypes(tier);
+  const expiration = tier === 'session' ? 'session' : 'permanent';
+  const ownerRule = owner ? ` The record must describe durable memory for ${owner}; do not describe another owner's private memory.` : '';
+  return `SINGLE-SOURCE RECOVERY\nOnly the source message below is in scope. Return exactly one supported record or exactly NONE. No JSON, markdown, prose, optional modifiers, or multiple records.${ownerRule}\nUse exactly: [type:importance:${expiration}:sources=0] supported claim\nAllowed types: ${types.join(', ')}. The citation must be sources=0.\n\n[0] ${String(sourceUnit?.text ?? '').trim()}`;
+}
+
 export function detectRecoveryResponseFormat(response, { tier = 'longterm' } = {}) {
   const text = String(response ?? '').trim();
   const json = jsonRecords(text, tier);
@@ -358,17 +422,26 @@ export async function recoverMalformedTaggedOutput({
   response, tier, parse, generate, originalPrompt, responseLength,
   originalAttempt, beginAttempt, finishAttempt, splitWindow = null,
   budget = createMalformedRecoveryBudget(), splitDepth = 0, resumeState = null,
+  sourceUnits = [], owner = null, stagePartialRecords = null,
 } = {}) {
-  const effectiveResumeState = resumeState ?? (originalAttempt?.resumed_pending_obligation === true
+  const effectiveResumeState = resumeState ?? originalAttempt?.prior_window_recovery_state
+    ?? (originalAttempt?.resumed_pending_obligation === true
     && (originalAttempt?.prior_recovery_stages_attempted ?? []).length
     ? {
       resume_unresolved_obligation: true,
       recovery_stages_attempted: originalAttempt.prior_recovery_stages_attempted,
       last_malformed_reason: originalAttempt.repair_reason ?? null,
     } : null);
-  const priorStages = new Set(effectiveResumeState?.recovery_stages_attempted ?? []);
-  const resumedLadder = effectiveResumeState?.resume_unresolved_obligation === true
-    && (response === null || response === undefined);
+  const reportedPriorStages = [...new Set(effectiveResumeState?.recovery_stages_attempted ?? [])];
+  const furthestPriorStage = reportedPriorStages.reduce((maximum, stage) =>
+    Math.max(maximum, RECOVERY_STAGE_ORDER.indexOf(stage)), -1);
+  const priorStages = new Set([
+    ...reportedPriorStages,
+    ...RECOVERY_STAGE_ORDER.slice(0, Math.max(0, furthestPriorStage + 1)),
+  ]);
+  const resumedLadder = Boolean(effectiveResumeState
+    && (effectiveResumeState.resume_unresolved_obligation === true || priorStages.size > 0)
+    && (response === null || response === undefined));
   const parserPaths = ['strict_expected_format'];
   const originalReason = resumedLadder
     ? effectiveResumeState?.last_malformed_reason ?? 'resumed_unresolved_obligation'
@@ -407,7 +480,8 @@ export async function recoverMalformedTaggedOutput({
   let lastReason = originalReason;
   let lastFailedAttempt = originalAttempt ?? null;
   let lastProviderError = null;
-  let acceptedPartialRecords = [];
+  let acceptedPartialRecords = [...(effectiveResumeState?.staged_partial_records ?? [])];
+  const stagedCompletedUnitKeys = new Set(effectiveResumeState?.completed_source_units ?? []);
   const repairBudget = recoveryRoute.compact_repair_eligible && !priorStages.has('compact_response_repair')
     ? consumeMalformedRecoveryRequest(budget, 'compact_response_repair')
     : { allowed: false, reason: recoveryRoute.avoided_repair_reason };
@@ -571,6 +645,7 @@ export async function recoverMalformedTaggedOutput({
           if (records.length) parserSelected = 'local_normalization_fallback';
         }
         const responseShape = analyzeMalformedResponse(jsonResponse, { tier });
+        const candidateRejections = buildCandidateRejectionEvidence(jsonResponse, { tier });
         const rejectedCount = actualFormat === 'json'
           ? json.rejected_count : responseShape.structurally_rejected_record_count;
         if (records.length && rejectedCount === 0) {
@@ -593,6 +668,22 @@ export async function recoverMalformedTaggedOutput({
         }
         if (records.length) {
           acceptedPartialRecords = records;
+          if (stagePartialRecords) {
+            const recordsByUnit = new Map();
+            for (const record of records) {
+              for (const citationIndex of record.source_message_indices ?? []) {
+                const sourceUnit = sourceUnits.find((item) => Number(item.citation_index) === Number(citationIndex));
+                if (!sourceUnit) continue;
+                const unitKey = String(sourceUnit.unit_key);
+                recordsByUnit.set(unitKey, [...(recordsByUnit.get(unitKey) ?? []), record]);
+              }
+            }
+            for (const [sourceUnitKey, unitRecords] of recordsByUnit) {
+              await stagePartialRecords(unitRecords, { source_unit_key: sourceUnitKey, explicit_none: false,
+                producing_attempt_id: attempt?.attempt_id, recovery_stage: 'structured_json_regeneration' });
+              stagedCompletedUnitKeys.add(sourceUnitKey);
+            }
+          }
           lastReason = 'partial_valid_output';
           finishAttempt(attempt, { terminal_outcome: 'partial_output_pending', malformed_reason: lastReason,
             notice_reason: 'partial_valid_output', recoverable: true,
@@ -605,7 +696,8 @@ export async function recoverMalformedTaggedOutput({
             strict_parse_result: 'partial', fallback_parse_result: actualFormat === 'json' ? null : 'partial',
             total_candidate_count: actualFormat === 'json' ? json.candidate_count : responseShape.structural_candidate_count,
             accepted_candidate_count: records.length, rejected_candidate_count: rejectedCount,
-            rejection_reasons: Object.keys(responseShape.modifier_failure_subtype_counts ?? {}),
+            rejection_reasons: [...new Set(candidateRejections.flatMap((item) => item.reason_codes))],
+            candidate_rejections: candidateRejections,
             accepted_partial_output_persisted: false, missing_required_results: true,
             obligation_closure_reason: 'minimal_record_fallback_required' });
           lastFailedAttempt = attempt;
@@ -623,6 +715,8 @@ export async function recoverMalformedTaggedOutput({
             strict_parse_result: 'rejected', fallback_parse_result: actualFormat === 'json' ? null : 'rejected',
             total_candidate_count: actualFormat === 'json' ? json.candidate_count : responseShape.structural_candidate_count,
             accepted_candidate_count: 0, rejected_candidate_count: rejectedCount,
+            rejection_reasons: [...new Set(candidateRejections.flatMap((item) => item.reason_codes))],
+            candidate_rejections: candidateRejections,
             missing_required_results: true, obligation_closure_reason: 'minimal_record_fallback_required' });
           lastFailedAttempt = attempt;
         }
@@ -630,13 +724,9 @@ export async function recoverMalformedTaggedOutput({
     }
   }
 
-  if (priorStages.has('minimal_record_regeneration')) {
-    const blocked = terminalMalformedError(tier, lastReason, 'repeated_terminal_signature', budget, lastProviderError);
-    blocked.code = 'SME_RECOVERY_PATH_EXHAUSTED';
-    blocked.sme_recovery_blocked = true;
-    throw blocked;
-  }
-  const minimalBudget = consumeMalformedRecoveryRequest(budget, 'minimal_record_regeneration');
+  const minimalBudget = priorStages.has('minimal_record_regeneration')
+    ? { allowed: false, reason: 'stage_already_exhausted_for_source_window' }
+    : consumeMalformedRecoveryRequest(budget, 'minimal_record_regeneration');
   if (minimalBudget.allowed) {
     const attempt = beginAttempt('minimal_record_regeneration',
       ['single_record_contract', 'optional_modifiers_removed', 'minimum_window_changed_recovery_dimension'], {
@@ -695,6 +785,7 @@ export async function recoverMalformedTaggedOutput({
         return { records: unique, stage: 'minimal_record_regeneration', budget, original_reason: originalReason };
       }
       lastReason = classifyTaggedResponseFailure(minimalResponse, { tier });
+      const candidateRejections = buildCandidateRejectionEvidence(minimalResponse, { tier, minimalContract: true });
       finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed', malformed_reason: lastReason,
         recoverable: false, recovery_stage: 'minimal_record_regeneration', response_text: minimalResponse,
         parser_paths_attempted: ['strict_minimal_tagged_record'], recovery_ladder_terminal: true,
@@ -703,11 +794,151 @@ export async function recoverMalformedTaggedOutput({
         strict_parse_result: 'rejected', total_candidate_count: shape.structural_candidate_count,
         accepted_candidate_count: acceptedPartialRecords.length,
         rejected_candidate_count: shape.structurally_rejected_record_count,
+        rejection_reasons: [...new Set(candidateRejections.flatMap((item) => item.reason_codes))],
+        candidate_rejections: candidateRejections,
         accepted_partial_output_persisted: false, missing_required_results: true,
         obligation_closure_reason: 'bounded_minimal_record_fallback_exhausted' });
     }
   }
+
+  const completedUnitKeys = stagedCompletedUnitKeys;
+  const unresolvedUnits = (sourceUnits ?? []).filter((unit) => !completedUnitKeys.has(String(unit.unit_key)));
+  if ((sourceUnits ?? []).length > 0 && unresolvedUnits.length === 0) {
+    return { records: acceptedPartialRecords, explicit_none: acceptedPartialRecords.length === 0,
+      stage: 'single_source_unit_regeneration', budget, original_reason: originalReason,
+      logical_obligation_id: originalAttempt?.logical_obligation_id ?? null,
+      staged_partial_record_count: acceptedPartialRecords.length };
+  }
+  const eligibility = deriveRecoveryStageEligibility({
+    attempted_stages: [...priorStages, ...(minimalBudget.allowed ? ['minimal_record_regeneration'] : [])],
+    exhausted_stages: [...priorStages, ...(minimalBudget.allowed ? ['minimal_record_regeneration'] : [])],
+    accepted_partial_record_count: acceptedPartialRecords.length,
+    unresolved_semantic_units: unresolvedUnits.map((unit) => String(unit.unit_key)),
+  });
+  if (eligibility.eligible_action === 'single_source_unit_regeneration' && unresolvedUnits.length) {
+    for (const unit of unresolvedUnits) {
+      const allowance = consumeMalformedRecoveryRequest(budget, 'single_source_unit_regeneration');
+      if (!allowance.allowed) break;
+      const attempt = beginAttempt('single_source_unit_regeneration', eligibility.changed_dimensions, {
+        recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
+        repair_reason: lastReason, recovery_stage: 'single_source_unit_regeneration',
+        expected_output_format: `${tier}_single_source_unit_v1`,
+        source_unit_key: String(unit.unit_key),
+      });
+      let unitResponse;
+      try {
+        unitResponse = await generate(buildSingleSourceUnitRegenerationPrompt(unit, { tier, owner }), {
+          responseLength: Math.min(Number(responseLength) || 180, 180),
+          task: `${tier}-malformed-single-source-unit-regeneration`,
+        });
+      } catch (error) {
+        finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: false,
+          recovery_stage: 'single_source_unit_regeneration', recovery_ladder_terminal: true,
+          missing_required_results: true, obligation_closure_reason: 'single_source_unit_provider_failure' });
+        lastProviderError = error;
+        break;
+      }
+      const actualFormat = detectRecoveryResponseFormat(unitResponse, { tier });
+      if (String(unitResponse ?? '').trim().toUpperCase() === 'NONE') {
+        const unresolvedAfterUnit = unresolvedUnits
+          .filter((item) => String(item.unit_key) !== String(unit.unit_key)
+            && !completedUnitKeys.has(String(item.unit_key)))
+          .map((item) => String(item.unit_key));
+        finishAttempt(attempt, { terminal_outcome: 'partial_output_pending', recoverable: true,
+          source_unit_completed: true,
+          recovery_stage: 'single_source_unit_regeneration', final_recovery_stage: 'single_source_unit_regeneration',
+          requested_output_format: `${tier}_single_source_unit_v1`, actual_output_format: actualFormat,
+          parser_selected: 'exact_none', output_contract_followed: true, strict_parse_result: 'explicit_none',
+          total_candidate_count: 0, accepted_candidate_count: 0, rejected_candidate_count: 0,
+          missing_required_results: false, obligation_closure_reason: 'source_unit_explicit_none',
+          unresolved_semantic_units: unresolvedAfterUnit,
+          source_unit_key: String(unit.unit_key) });
+        await stagePartialRecords?.([], { source_unit_key: String(unit.unit_key), explicit_none: true,
+          producing_attempt_id: attempt?.attempt_id, recovery_stage: 'single_source_unit_regeneration',
+          unresolved_semantic_units: unresolvedAfterUnit });
+        completedUnitKeys.add(String(unit.unit_key));
+        continue;
+      }
+      const shape = analyzeMalformedResponse(unitResponse, { tier });
+      const records = parse(unitResponse);
+      const citationValid = records.length === 1
+        && records[0].source_message_indices?.length === 1
+        && records[0].source_message_indices[0] === 0;
+      if (records.length === 1 && shape.structural_candidate_count === 1 && citationValid) {
+        const unresolvedAfterUnit = unresolvedUnits
+          .filter((item) => String(item.unit_key) !== String(unit.unit_key)
+            && !completedUnitKeys.has(String(item.unit_key)))
+          .map((item) => String(item.unit_key));
+        records[0].source_message_indices = [Number(unit.citation_index)];
+        const combined = [...acceptedPartialRecords, ...records];
+        acceptedPartialRecords = combined.filter((record, index, all) => all.findIndex((item) =>
+          item.type === record.type && item.content === record.content
+          && JSON.stringify(item.source_message_indices ?? []) === JSON.stringify(record.source_message_indices ?? [])) === index);
+        finishAttempt(attempt, { terminal_outcome: 'partial_output_pending', recoverable: true,
+          source_unit_completed: true,
+          recovery_stage: 'single_source_unit_regeneration', final_recovery_stage: 'single_source_unit_regeneration',
+          requested_output_format: `${tier}_single_source_unit_v1`, actual_output_format: actualFormat,
+          parser_selected: 'strict_single_source_tagged', output_contract_followed: actualFormat === 'tagged_lines',
+          strict_parse_result: 'accepted', total_candidate_count: 1, accepted_candidate_count: 1,
+          rejected_candidate_count: 0, missing_required_results: false,
+          accepted_partial_output_persisted: true, obligation_closure_reason: 'source_unit_record_staged',
+          unresolved_semantic_units: unresolvedAfterUnit,
+          source_unit_key: String(unit.unit_key) });
+        await stagePartialRecords?.(records, { source_unit_key: String(unit.unit_key), explicit_none: false,
+          producing_attempt_id: attempt?.attempt_id, recovery_stage: 'single_source_unit_regeneration',
+          unresolved_semantic_units: unresolvedAfterUnit });
+        completedUnitKeys.add(String(unit.unit_key));
+        continue;
+      }
+      const candidateRejections = buildCandidateRejectionEvidence(unitResponse, { tier, minimalContract: true });
+      const extraReasons = [];
+      if (records.length !== 1) extraReasons.push('single_source_unit_requires_exactly_one_record');
+      if (!citationValid) extraReasons.push('single_source_unit_requires_exact_local_citation');
+      const rejectionReasons = [...new Set([
+        ...candidateRejections.flatMap((item) => item.reason_codes), ...extraReasons,
+      ])];
+      if (!candidateRejections.length) candidateRejections.push({
+        candidate_index: 0, candidate_fingerprint: safeFingerprint(String(unitResponse ?? '').trim()),
+        parser_path: 'strict_single_source_tagged', structural_validation: 'rejected',
+        semantic_validation: 'not_reached', citation_validation: 'not_reached',
+        deduplication_result: 'not_reached', disposition: 'rejected',
+        reason_codes: rejectionReasons.length ? rejectionReasons : ['unparseable_single_source_unit_response'],
+      });
+      finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed',
+        malformed_reason: classifyTaggedResponseFailure(unitResponse, { tier }), recoverable: false,
+        recovery_stage: 'single_source_unit_regeneration', response_text: unitResponse,
+        recovery_ladder_terminal: true, requested_output_format: `${tier}_single_source_unit_v1`,
+        actual_output_format: actualFormat, parser_selected: 'strict_single_source_tagged',
+        output_contract_followed: actualFormat === 'tagged_lines', strict_parse_result: 'rejected',
+        total_candidate_count: shape.structural_candidate_count, accepted_candidate_count: 0,
+        rejected_candidate_count: Math.max(1, shape.structurally_rejected_record_count),
+        rejection_reasons: rejectionReasons, candidate_rejections: candidateRejections,
+        missing_required_results: true, accepted_partial_output_persisted: acceptedPartialRecords.length > 0,
+        obligation_closure_reason: 'single_source_unit_fallback_exhausted',
+        unresolved_semantic_units: unresolvedUnits
+          .filter((item) => !completedUnitKeys.has(String(item.unit_key))).map((item) => String(item.unit_key)),
+        source_unit_key: String(unit.unit_key) });
+      lastReason = classifyTaggedResponseFailure(unitResponse, { tier });
+      lastFailedAttempt = attempt;
+      break;
+    }
+    if (completedUnitKeys.size === (sourceUnits ?? []).length) {
+      markMalformedRecoverySuccess(budget, 'single_source_unit_regeneration');
+      return { records: acceptedPartialRecords, explicit_none: acceptedPartialRecords.length === 0,
+        stage: 'single_source_unit_regeneration', budget, original_reason: originalReason,
+        logical_obligation_id: originalAttempt?.logical_obligation_id ?? null,
+        staged_partial_record_count: acceptedPartialRecords.length };
+    }
+  }
   const terminal = terminalMalformedError(tier, lastReason, 'bounded_recovery_exhausted', budget, lastProviderError);
+  terminal.sme_recovery_blocked = deriveRecoveryStageEligibility({
+    attempted_stages: [...priorStages, 'minimal_record_regeneration', 'single_source_unit_regeneration'],
+    exhausted_stages: [...priorStages, 'minimal_record_regeneration', 'single_source_unit_regeneration'],
+    unresolved_semantic_units: (sourceUnits ?? []).filter((unit) => !completedUnitKeys.has(String(unit.unit_key)))
+      .map((unit) => String(unit.unit_key)),
+    accepted_partial_record_count: acceptedPartialRecords.length,
+  }).blocked;
+  if (terminal.sme_recovery_blocked) terminal.code = 'SME_RECOVERY_PATH_EXHAUSTED';
   if (acceptedPartialRecords.length) {
     terminal.sme_accepted_partial_records = acceptedPartialRecords;
     return { records: acceptedPartialRecords, stage: 'partial_records_preserved_pending', budget,

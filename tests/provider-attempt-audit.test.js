@@ -5,8 +5,11 @@ import {
   classifyMalformedProviderOutput,
   finishProviderAttempt,
   markProviderPartialRecordsPersisted,
+  markProviderStagedRecoveryCompleted,
   migrateProviderAttemptAuditReport,
   PROVIDER_OBLIGATION_LIMIT,
+  readProviderRecoveryWindowState,
+  stageProviderPartialRecovery,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
 
@@ -22,7 +25,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 6);
+  assert.equal(migrated.schema_version, 7);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -138,7 +141,7 @@ test('schema-three strict partial accounting migrates to notices once', () => {
   assert.equal(summary.legacy_accounting_migration.partial_obligations_reclassified_as_notices, 1);
 });
 
-test('bounded malformed retries expose unresolved churn and identical retry loops', () => {
+test('bounded malformed retries classify a pending-obligation replay explicitly', () => {
   const metadata = { active_catchup_run_id: 'run-b' };
   for (let index = 0; index < 2; index++) {
     const attempt = beginProviderAttempt(metadata, {
@@ -156,7 +159,8 @@ test('bounded malformed retries expose unresolved churn and identical retry loop
   assert.equal(summary.coverage.source_traversal_and_generation_are_distinct, true);
   assert.equal(summary.coverage.terminal_failed_obligations, 1);
   assert.equal(summary.reconciliation.malformed_obligations_reconcile, true);
-  assert.equal(summary.equivalent_retries_without_changed_dimension, 1);
+  assert.equal(summary.equivalent_retries_without_changed_dimension, 0);
+  assert.equal(summary.equivalent_request_accounting.reason_counts.checkpoint_pending_obligation_retry, 1);
   assert.equal(summary.accounting_reconciled, true);
 });
 
@@ -180,7 +184,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 6);
+  assert.equal(summary.schema_version, 7);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -307,7 +311,7 @@ test('physical failures, unique failed obligations, and recovery reconcile at th
   assert.equal(summary.reconciliation.consistent, true);
 });
 
-test('same-signature transport retry is permitted while unchanged malformed repetition remains inconsistent', () => {
+test('same-signature transport and pending-obligation replays are both explicitly permitted', () => {
   const metadata = { active_catchup_run_id: 'run-equivalence' };
   const failed = beginProviderAttempt(metadata, {
     tier: 'longterm', logical_obligation_id: 'transport-root', request_kind: 'original', request_signature: 'same',
@@ -334,9 +338,10 @@ test('same-signature transport retry is permitted while unchanged malformed repe
   });
   finishProviderAttempt(metadata, unchanged, { terminal_outcome: 'completed' });
   summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 1);
-  assert.equal(summary.equivalent_request_accounting.consistent, false);
-  assert.equal(summary.reconciliation.consistent, false);
+  assert.equal(summary.equivalent_request_accounting.unexplained_equivalent_requests, 0);
+  assert.equal(summary.equivalent_request_accounting.reason_counts.checkpoint_pending_obligation_retry, 1);
+  assert.equal(summary.equivalent_request_accounting.consistent, true);
+  assert.equal(summary.reconciliation.consistent, true);
 });
 
 test('restored attempts and repartition children carry explicit permitted dimensions', () => {
@@ -382,16 +387,15 @@ test('checkpoint resume explicitly permits retrying one still-pending obligation
   assert.equal(resumed.recovery_replay_count, 1);
 });
 
-test('repeated terminal recovery signature becomes blocked and exports response-contract evidence', () => {
+test('an exhausted minimal stage selects the new unit fallback, whose exhaustion becomes blocked', () => {
   const metadata = { active_catchup_run_id: 'run-loop' };
   const input = {
     tier: 'session', logical_obligation_id: 'session:chat:20-39:source',
     request_kind: 'minimal_record_regeneration', source_fingerprint: 'source',
     configuration_signature: 'config', changed_recovery_dimensions: ['single_record_contract'],
   };
-  for (let index = 0; index < 2; index++) {
-    const attempt = beginProviderAttempt(metadata, { ...input, resumed_pending_obligation: index > 0 });
-    finishProviderAttempt(metadata, attempt, {
+  const minimal = beginProviderAttempt(metadata, input);
+  finishProviderAttempt(metadata, minimal, {
       terminal_outcome: 'provider_response_malformed', malformed_reason: 'malformed_tag',
       recovery_stage: 'minimal_record_regeneration', recovery_ladder_terminal: true,
       requested_output_format: 'session_minimal_tagged_record_v1', actual_output_format: 'tagged_lines',
@@ -399,16 +403,31 @@ test('repeated terminal recovery signature becomes blocked and exports response-
       strict_parse_result: 'rejected', total_candidate_count: 2,
       accepted_candidate_count: 1, rejected_candidate_count: 1,
       rejection_reasons: ['unsupported_modifier_key'], missing_required_results: true,
-      accepted_partial_output_persisted: index > 0,
-    });
-  }
-  const unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
-  assert.equal(unresolved.terminal_signature_repeat_count, 2);
+      accepted_partial_output_persisted: true,
+  });
+  let unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(unresolved.recovery_blocked, false);
+  assert.equal(unresolved.next_eligible_recovery_action, 'single_source_unit_regeneration');
+
+  const unit = beginProviderAttempt(metadata, {
+    ...input, request_kind: 'single_source_unit_regeneration',
+    recovery_stage: 'single_source_unit_regeneration', source_unit_key: '20',
+    expected_output_format: 'session_single_source_unit_v1',
+    changed_recovery_dimensions: ['source_unit', 'single_record_contract'],
+  });
+  finishProviderAttempt(metadata, unit, {
+    terminal_outcome: 'provider_response_malformed', malformed_reason: 'malformed_tag',
+    recovery_stage: 'single_source_unit_regeneration', recovery_ladder_terminal: true,
+    accepted_candidate_count: 0, rejected_candidate_count: 1,
+    rejection_reasons: ['malformed_tag'], missing_required_results: true,
+  });
+  unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(unresolved.terminal_signature_repeat_count, 1);
   assert.equal(unresolved.recovery_blocked, true);
   assert.equal(unresolved.next_eligible_recovery_action, 'change_provider_configuration_or_install_updated_build');
-  assert.equal(unresolved.retry_replay_count, 1);
-  assert.equal(unresolved.last_response_contract.requested_output_format, 'session_minimal_tagged_record_v1');
-  assert.equal(unresolved.last_response_contract.accepted_partial_output_persisted, true);
+  assert.equal(unresolved.retry_replay_count, 0);
+  assert.equal(unresolved.last_response_contract.requested_output_format, 'session_single_source_unit_v1');
+  assert.deepEqual(unresolved.last_response_contract.rejection_reasons, ['malformed_tag']);
 
   const changed = beginProviderAttempt(metadata, {
     ...input, configuration_signature: 'changed-config', resumed_pending_obligation: true,
@@ -437,6 +456,37 @@ test('valid partial records can be marked durable without falsely closing covera
   assert.equal(unresolved.accepted_partial_record_count, 1);
   assert.equal(unresolved.last_response_contract.accepted_partial_output_persisted, true);
   assert.equal(unresolved.final_disposition, 'partial_output_pending');
+});
+
+test('single-source partial records survive restore, deduplicate, and close only after canonical persistence', () => {
+  const metadata = { active_catchup_run_id: 'run-durable-unit' };
+  const obligationId = 'longterm:nyx watson:60-79:fnv1a-11a50c71';
+  const sourceFingerprint = 'fnv1a-5fba3507';
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'longterm', owner: 'Nyx Watson', logical_obligation_id: obligationId,
+    request_kind: 'single_source_unit_regeneration', recovery_stage: 'single_source_unit_regeneration',
+    source_fingerprint: sourceFingerprint, source_unit_key: '65', configuration_signature: 'fnv1a-e735d208',
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'partial_output_pending', source_unit_completed: true,
+    recovery_stage: 'single_source_unit_regeneration', accepted_candidate_count: 1,
+  });
+  const record = { type: 'fact', content: 'A supported unit.', source_message_indices: [5] };
+  assert.equal(stageProviderPartialRecovery(metadata, obligationId, sourceFingerprint, [record], {
+    source_unit_key: '65', producing_attempt_id: attempt.attempt_id,
+    recovery_stage: 'single_source_unit_regeneration', owner: 'Nyx Watson', tier: 'longterm',
+  }), true);
+  stageProviderPartialRecovery(metadata, obligationId, sourceFingerprint, [record], {
+    source_unit_key: '65', producing_attempt_id: attempt.attempt_id,
+    recovery_stage: 'single_source_unit_regeneration', owner: 'Nyx Watson', tier: 'longterm',
+  });
+  const restored = readProviderRecoveryWindowState(metadata, obligationId, sourceFingerprint);
+  assert.equal(restored.resume_unresolved_obligation, true);
+  assert.equal(restored.staged_partial_records.length, 1);
+  assert.deepEqual(restored.completed_source_units, ['65']);
+  assert.equal(summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations.length, 1);
+  assert.equal(markProviderStagedRecoveryCompleted(metadata, obligationId, sourceFingerprint, 1), true);
+  assert.equal(summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations.length, 0);
 });
 
 test('bounded provider-failure lineage never replaces its exact aggregate', () => {
