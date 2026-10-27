@@ -800,7 +800,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', true\)/);
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', false\)/);
   assert.match(settings, /renderIdempotenceResult\(savedResult\);\s*\$\('#sme_export_diagnostics'\)\.prop\('disabled', !getExportableDiagnostics\(\)\);/s);
-  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*try \{\s*\$\('#sme_cancel_catch_up'\)\.hide\(\)/s);
+  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*try \{\s*\$\('#sme_cancel_catch_up'\)\.hide\(\)/s);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);
@@ -1676,6 +1676,10 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /Incomplete Memorize Chat run available:/);
   assert.match(shortTermRecovery, /Resumed Automatically/);
   assert.match(settings, /Resumed automatically — processing continues/);
+  assert.match(settings, /let catchUpUiRunning = false/);
+  assert.match(settings, /if \(catchUpUiRunning \|\| !status \|\| status\.lifecycle_status === 'not_run'\)/);
+  assert.match(settings, /ctrl\.compactionRunning = true;\s*catchUpUiRunning = true;[\s\S]*refreshRunOutcomeUI\(\)/);
+  assert.match(settings, /ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;/);
   assert.match(settings, /after the same transaction succeeds/);
   assert.match(settings, /delete catchUpContext\.chatMetadata\[META_KEY\]\.catch_up_checkpoint/);
   assert.match(settings, /sme:chat-changed\.sme-catchup-recovery/);

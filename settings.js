@@ -218,8 +218,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.64',
-  build_fingerprint: 'sme-v0.9.64-per-unit-recovery-r1',
+  extension_version: '0.9.65',
+  build_fingerprint: 'sme-v0.9.65-active-resume-outcome-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -1992,6 +1992,11 @@ export function bindSettingsUI(ctrl) {
   const s = extension_settings[MODULE_NAME];
   const autoResumeAttemptedRunIds = new Set();
   const healthRestartReconciledRunIds = new Set();
+  // This is narrower than extractionRunning/compactionRunning, which are also
+  // used by real-time and manual tier operations. Outcome cards describe the
+  // terminal state of Memorize Chat and must not show a saved pre-resume
+  // checkpoint while that same logical run is active again.
+  let catchUpUiRunning = false;
   const pageInstanceId = globalThis.crypto?.randomUUID?.() ?? `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const pageRunScope = (context = getContext()) => context?.chatId
     ? `${context?.groupId ?? 'single'}:${context.chatId}` : context?.groupId ?? context?.characterId ?? null;
@@ -2964,7 +2969,7 @@ export function bindSettingsUI(ctrl) {
     const $summary = $('#sme_run_outcome_summary');
     const $headerStatus = $('#sme_status');
     const $headerCount = $('#sme_catch_up_error_count');
-    if (!status || status.lifecycle_status === 'not_run') {
+    if (catchUpUiRunning || !status || status.lifecycle_status === 'not_run') {
       $summary
         .hide().empty()
         .removeAttr('aria-label')
@@ -5047,6 +5052,7 @@ export function bindSettingsUI(ctrl) {
     // extractionRunning is set.
     ctrl.extractionRunning = true;
     ctrl.compactionRunning = true;
+    catchUpUiRunning = true;
     ctrl.catchUpCancelled = false;
     ctrl.catchUpStopReason = null;
     $('#sme_resume_catch_up').prop('disabled', true);
@@ -5054,6 +5060,10 @@ export function bindSettingsUI(ctrl) {
     // its unavailable state visible instead of relying only on a click-time
     // warning.
     $('#sme_run_idempotence_check').prop('disabled', true);
+    // The persisted report remains exportable, but it is historical while the
+    // logical run is active. Clear its terminal/recovery presentation now so
+    // a resumed run cannot simultaneously appear "Incomplete — resumable".
+    refreshRunOutcomeUI();
     setCanonicalRuntimeContextSnapshot(canonicalRuntimeContext);
     // A run ID is written before extraction so every entity link resolved by
     // a tier can distinguish this run from legacy/mirrored data at final
@@ -9294,6 +9304,7 @@ export function bindSettingsUI(ctrl) {
       // strand the UI on Cancel or leave the local idempotence guard locked.
       ctrl.extractionRunning = false;
       ctrl.compactionRunning = false;
+      catchUpUiRunning = false;
       ctrl.catchUpCancelled = false;
       ctrl.catchUpStopReason = null;
       try {

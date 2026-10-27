@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.65] - 2026-10-27
+
+### Fixed
+
+- Starting or resuming Memorize Chat now clears stale terminal, blocked, and
+  “Incomplete — resumable” outcome cards while the run is active. The saved
+  diagnostic history remains exportable, and the card is derived again from
+  the current result after the run stops.
+
 ## [0.9.64] - 2026-10-27
 
 ### Added
