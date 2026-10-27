@@ -343,7 +343,11 @@ export function buildMinimalRecordRegenerationPrompt(originalPrompt, { tier = 'l
 export function buildSingleSourceUnitRegenerationPrompt(sourceUnit, { tier = 'longterm', owner = null } = {}) {
   const types = taggedTypes(tier);
   const ownerRule = owner ? ` The record must describe durable memory for ${owner}; do not describe another owner's private memory.` : '';
-  return `SINGLE-SOURCE RECOVERY\nOnly the source message below is in scope.${ownerRule}\nReturn exactly one line in one of these forms:\nRECORD|type|0|supported claim\nNONE\nAllowed type values: ${types.join(', ')}. The third field must be 0. Do not output brackets, modifiers, JSON, markdown, analysis, prose, or multiple records.\n\n[0] ${String(sourceUnit?.text ?? '').trim()}`;
+  // Keep untrusted chat text inside an explicit bounded section and put the
+  // recovery contract last. Local models weight the prompt tail heavily; when
+  // the source message followed the contract they could answer the chat prose
+  // conversationally instead of emitting RECORD or NONE.
+  return `SINGLE-SOURCE RECOVERY\nOnly the source message below is in scope.${ownerRule}\n\nSOURCE MESSAGE START\n[0] ${String(sourceUnit?.text ?? '').trim()}\nSOURCE MESSAGE END\n\nFINAL OUTPUT CONTRACT\nReturn exactly one line in one of these forms:\nRECORD|type|0|supported claim\nNONE\nAllowed type values: ${types.join(', ')}. The third field must be 0. Do not output brackets, modifiers, JSON, markdown, analysis, prose, or multiple records.`;
 }
 
 /** Deterministic v2 single-unit parser plus a narrowly bounded legacy-tag normalizer. */

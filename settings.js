@@ -218,8 +218,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.65',
-  build_fingerprint: 'sme-v0.9.65-active-resume-outcome-r1',
+  extension_version: '0.9.66',
+  build_fingerprint: 'sme-v0.9.66-recovery-contract-tail-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,

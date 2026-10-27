@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.66] - 2026-10-27
+
+### Fixed
+
+- Single-source malformed-output recovery now places bounded source text before
+  the final `RECORD|type|0|claim`/`NONE` contract. Local models can no longer
+  treat a trailing chat message as the final instruction and answer it with
+  conversational prose. Recovery implementation v3 reopens only unresolved v2
+  source units while preserving their already staged siblings.
+- Persisting accumulated partial records no longer overwrites the latest
+  provider response's candidate counts. Per-response accounting remains
+  reconciled, and the accumulated durable count is reported separately.
+
 ## [0.9.65] - 2026-10-27
 
 ### Fixed

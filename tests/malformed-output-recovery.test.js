@@ -475,6 +475,8 @@ test('single-source prompt is owner-scoped and contains no neighboring messages'
   assert.match(prompt, /Nyx Watson/);
   assert.match(prompt, /RECORD\|type\|0\|supported claim/);
   assert.doesNotMatch(prompt, /message 64|message 66/i);
+  assert.ok(prompt.indexOf('Nyx: One bounded message.') < prompt.indexOf('FINAL OUTPUT CONTRACT'));
+  assert.match(prompt, /Do not output brackets, modifiers, JSON, markdown, analysis, prose, or multiple records\.$/);
 });
 
 test('single-source pipe contract reconstructs canonical records locally', () => {

@@ -449,12 +449,17 @@ test('valid partial records can be marked durable without falsely closing covera
   });
   finishProviderAttempt(metadata, attempt, {
     terminal_outcome: 'partial_output_pending', malformed_reason: 'partial_valid_output',
-    accepted_candidate_count: 1, rejected_candidate_count: 1, missing_required_results: true,
+    total_candidate_count: 2, accepted_candidate_count: 1, rejected_candidate_count: 1,
+    missing_required_results: true,
   });
-  assert.equal(markProviderPartialRecordsPersisted(metadata, 'session:partial', 1), true);
+  assert.equal(markProviderPartialRecordsPersisted(metadata, 'session:partial', 3), true);
   const unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
   assert.equal(unresolved.accepted_partial_record_count, 1);
   assert.equal(unresolved.last_response_contract.accepted_partial_output_persisted, true);
+  assert.equal(unresolved.last_response_contract.total_candidate_count, 2);
+  assert.equal(unresolved.last_response_contract.accepted_candidate_count, 1);
+  assert.equal(unresolved.last_response_contract.rejected_candidate_count, 1);
+  assert.equal(unresolved.last_response_contract.durable_partial_record_count, 3);
   assert.equal(unresolved.final_disposition, 'partial_output_pending');
 });
 
@@ -557,7 +562,7 @@ test('schema-eight migration reopens an exhausted v0.9.63 unit window exactly on
     unresolved_semantic_units: ['80', '81', '82', '83', '84'], source_unit_key: '80',
   });
   const window = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
-  assert.equal(window.recovery_implementation_version, 2);
+  assert.equal(window.recovery_implementation_version, 3);
   assert.equal(window.unit_obligations['80'].disposition, 'blocked_validation');
   assert.equal(window.unit_obligations['80'].candidate_accounting_consistent, true);
   unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];

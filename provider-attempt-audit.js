@@ -1118,7 +1118,11 @@ export function markProviderPartialRecordsPersisted(metadata, logicalObligationI
   obligation.last_response_contract = {
     ...(obligation.last_response_contract ?? {}),
     accepted_partial_output_persisted: true,
-    accepted_candidate_count: Math.max(count(obligation.last_response_contract?.accepted_candidate_count), count(acceptedCount)),
+    // Candidate counts describe one physical response and must remain
+    // internally reconciled. Durable staged records accumulate across several
+    // source-unit responses, so expose that total separately.
+    durable_partial_record_count: Math.max(
+      count(obligation.last_response_contract?.durable_partial_record_count), count(acceptedCount)),
     missing_required_results: true,
     obligation_closure_reason: 'valid_partial_records_persisted_obligation_remains_open',
   };
