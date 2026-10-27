@@ -218,8 +218,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.63',
-  build_fingerprint: 'sme-v0.9.63-single-source-recovery-r1',
+  extension_version: '0.9.64',
+  build_fingerprint: 'sme-v0.9.64-per-unit-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2143,7 +2143,8 @@ export function bindSettingsUI(ctrl) {
     catchUpSettingsSnapshotQueued = false;
     const context = getContext();
     const checkpoint = context?.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
-    if (!checkpoint || !['in_progress', 'awaiting_manual_resume'].includes(checkpoint.status)) return;
+    if (!checkpoint || !['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required']
+      .includes(checkpoint.status)) return;
     const now = Date.now();
     const snapshot = snapshotMemorizeRunSettings(extension_settings[MODULE_NAME]);
     checkpoint.run_settings_snapshot = snapshot;
@@ -2269,6 +2270,17 @@ export function bindSettingsUI(ctrl) {
       summarizeCatchUpCheckpoint(checkpoint),
       summarizeProviderAttemptAudit(getContext().chatMetadata?.[META_KEY]),
     );
+    if (rawCheckpoint?.status === 'blocked_recovery_change_required'
+      && checkpointRecovery.resumable && !checkpointRecovery.blocked) {
+      rawCheckpoint.status = 'awaiting_manual_resume';
+      checkpoint.status = 'awaiting_manual_resume';
+      delete rawCheckpoint.recovery_blocked;
+      delete checkpoint.recovery_blocked;
+      rawCheckpoint.updated_at = Date.now();
+      checkpointRecovery = { ...checkpointRecovery, status: 'awaiting_manual_resume' };
+      saveChatMetadata(getContext()).catch((error) => console.warn(
+        `[${MODULE_NAME}] Could not persist updated-build recovery eligibility:`, error));
+    }
     if (checkpointRecovery.blocked) {
       const blockedObligations = checkpointRecovery.blocked_obligations ?? [];
       const currentConfigurationSignature = (tier) => providerConfigurationSignature({
@@ -2466,6 +2478,7 @@ export function bindSettingsUI(ctrl) {
       'fresh_start_postcondition_audit', 'live_memory_health',
       'page_run_lifecycle',
       'shortterm_compaction_checkpoint',
+      'targeted_extraction_replay',
     ]) delete metadata[key];
     return {
       identity_reviews_removed: reviewQueue.length - remainingReviewQueue.length,
@@ -2952,7 +2965,12 @@ export function bindSettingsUI(ctrl) {
     const $headerStatus = $('#sme_status');
     const $headerCount = $('#sme_catch_up_error_count');
     if (!status || status.lifecycle_status === 'not_run') {
-      $summary.hide().empty().removeClass('sme_outcome_success sme_outcome_warning sme_outcome_error sme_outcome_info');
+      $summary
+        .hide().empty()
+        .removeAttr('aria-label')
+        .removeClass('sme_outcome_success sme_outcome_warning sme_outcome_error sme_outcome_info');
+      $headerStatus.removeClass('sme_status_warning sme_status_error');
+      $headerCount.removeClass('sme_catch_up_errors_many').hide().text('');
       return;
     }
     const className = status.severity === 'success' ? 'sme_outcome_success'
@@ -3632,7 +3650,6 @@ export function bindSettingsUI(ctrl) {
         );
       return;
     }
-
     modelTestRunning = true;
     $btn.html('<i class="fa-solid fa-circle-stop"></i> <span>Stop Testing</span>');
     $result
@@ -5947,7 +5964,8 @@ export function bindSettingsUI(ctrl) {
             const blockedObligations = (terminalProviderSummary?.terminal_unresolved_obligations ?? [])
               .filter((obligation) => obligation.recovery_blocked === true);
             const recoveryBlocked = blockedObligations.length > 0;
-            checkpointForCommit.status = 'awaiting_manual_resume';
+            checkpointForCommit.status = recoveryBlocked
+              ? 'blocked_recovery_change_required' : 'awaiting_manual_resume';
             checkpointForCommit.recovery_blocked = recoveryBlocked ? {
               schema_version: 1,
               blocked: true,
@@ -5971,7 +5989,8 @@ export function bindSettingsUI(ctrl) {
             const terminalReasonCode = recoveryBlocked
               ? 'recovery_change_required' : 'tier_coverage_incomplete';
             checkpointForCommit.run_manifest = finalizeCatchUpRunManifest(checkpointForCommit.run_manifest, {
-              status: 'awaiting_manual_resume', reasonCode: terminalReasonCode,
+              status: recoveryBlocked ? 'blocked_recovery_change_required' : 'awaiting_manual_resume',
+              reasonCode: terminalReasonCode,
               attemptMetrics: { retry_count: runResult.retriedRequests, provider_failure_count: runResult.providerFailures.length },
             });
             checkpointForCommit.updated_at = Date.now();
@@ -9036,14 +9055,18 @@ export function bindSettingsUI(ctrl) {
       const terminalCheckpoint = catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
       if (ctrl.catchUpCancelled || resumableFinalizationFailure) {
         if (terminalCheckpoint) {
-          terminalCheckpoint.status = 'awaiting_manual_resume';
+          const recoveryChangeRequired = terminalCheckpoint.recovery_blocked?.blocked === true
+            || ctrl.catchUpStopReason === 'recovery_change_required';
+          terminalCheckpoint.status = recoveryChangeRequired
+            ? 'blocked_recovery_change_required' : 'awaiting_manual_resume';
           const terminalReasonCode = resumableFinalizationFailure
             ? 'finalization_phase_failed'
             : terminalCheckpoint.run_manifest?.terminal_reason_code === 'tier_coverage_incomplete'
               ? 'tier_coverage_incomplete'
               : ctrl.catchUpStopReason ?? 'manual_cancel';
           terminalCheckpoint.run_manifest = finalizeCatchUpRunManifest(terminalCheckpoint.run_manifest, {
-            status: 'awaiting_manual_resume', reasonCode: terminalReasonCode,
+            status: recoveryChangeRequired ? 'blocked_recovery_change_required' : 'awaiting_manual_resume',
+            reasonCode: terminalReasonCode,
             attemptMetrics: {
               retry_count: runResult.retriedRequests,
               provider_failure_count: runResult.providerFailures.length,
@@ -9383,6 +9406,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.sceneBufferLastIndex = -1;
     setCatchUpErrorCount(0);
     refreshCatchUpRecoveryUI();
+    refreshTargetedReplayUI();
     setStatusMessage('Chat context cleared.');
   });
 
@@ -9505,6 +9529,10 @@ export function bindSettingsUI(ctrl) {
       toastr.error('Could not save Fresh Start. Nothing was cleared.', 'Smart Memory Enhanced');
       return;
     }
+    // The persisted reset succeeded, so discard the prior run's in-memory
+    // export snapshot as well. Otherwise the outcome renderer can resurrect
+    // a stale blocked/error card even though its chat metadata was removed.
+    latestExportDiagnostics = null;
     // Character-scoped stores live in extension settings. Do not schedule that
     // separate persistence write until the chat transaction has committed.
     if (freshStartCharacterNames.length) saveSettingsDebounced();
@@ -9543,6 +9571,7 @@ export function bindSettingsUI(ctrl) {
     ctrl.sceneBufferLastIndex = -1;
     setCatchUpErrorCount(0);
     refreshCatchUpRecoveryUI();
+    refreshTargetedReplayUI();
     // The completed reset audit is exportable even before the next Memorize
     // Chat run, so users can verify the clean starting point first.
     $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics());
@@ -9962,9 +9991,9 @@ export function bindSettingsUI(ctrl) {
           evaluated_scene_history_hash: exportedResult.scene_history_hashes?.after_second_pass?.semantic_history_hash ?? null,
           evaluated_at: Date.now(),
           idempotence_result_lifecycle: lifecycle,
-          result_scope: ['in_progress', 'awaiting_manual_resume'].includes(context.chatMetadata[META_KEY]?.catch_up_checkpoint?.status)
+          result_scope: ['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required'].includes(context.chatMetadata[META_KEY]?.catch_up_checkpoint?.status)
             ? 'partial_state_idempotence_only' : 'completed_state_idempotence',
-          certifies_memorize_chat_completion: !['in_progress', 'awaiting_manual_resume'].includes(context.chatMetadata[META_KEY]?.catch_up_checkpoint?.status),
+          certifies_memorize_chat_completion: !['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required'].includes(context.chatMetadata[META_KEY]?.catch_up_checkpoint?.status),
         });
         context.chatMetadata[META_KEY].developer_idempotence_check = finalResult;
         if (exportReport && typeof exportReport === 'object') {

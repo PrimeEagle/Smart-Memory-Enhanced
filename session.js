@@ -535,6 +535,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       changed_recovery_dimensions: changedDimensions,
       recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
       source_unit_key: recovery.source_unit_key ?? null,
+      target_source_unit: recovery.target_source_unit ?? recovery.source_unit_key ?? null,
+      target_source_fingerprint: recovery.target_source_fingerprint ?? null,
+      context_source_range: recovery.context_source_range ?? null,
+      context_message_count: recovery.context_message_count ?? null,
+      permitted_citation_indexes: recovery.permitted_citation_indexes ?? [],
+      context_only_messages_eligible: recovery.context_only_messages_eligible ?? null,
       repair_reason: recovery.repair_reason ?? null,
       recovery_stage: recovery.recovery_stage ?? null,
       expected_output_format: recovery.expected_output_format ?? 'session_tagged_lines_v1',
@@ -818,11 +824,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         splitWindow: splitMalformedWindow, budget: malformedRecoveryBudget,
         splitDepth: malformedRecoveryDepth,
         resumeState: resumeRecoveryState,
-        sourceUnits: sourceMessages.map((message, index) => ({
-          unit_key: String(message.__sme_original_index ?? range.start + index),
-          citation_index: index,
-          text: `${message.name ?? 'Unknown'}: ${message.mes ?? ''}`,
-        })),
+        sourceUnits: sourceMessages.map((message, index) => {
+          const sourceIndex = message.__sme_original_index ?? range.start + index;
+          return {
+            unit_key: String(sourceIndex), citation_index: index,
+            text: `${message.name ?? 'Unknown'}: ${message.mes ?? ''}`,
+            source_fingerprint: sourceWindowFingerprint([message]),
+            context_source_range: { start: sourceIndex, end: sourceIndex, message_count: 1 },
+            context_message_count: 1,
+          };
+        }),
         stagePartialRecords: async (records, details) => {
           stageProviderPartialRecovery(providerMetadata, rootObligationId, coverageBase.source_fingerprint,
             records, { ...details, source_range: { start: range.start, end: range.end, message_count: range.message_count } });

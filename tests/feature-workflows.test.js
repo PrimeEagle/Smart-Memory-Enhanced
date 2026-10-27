@@ -1370,6 +1370,8 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /await clearProfiles\(memberName\)/);
   assert.match(freshStart, /clearCharacterDurableDataForFreshStart\(memberName\)/);
   assert.match(freshStart, /clearFreshStartRunMetadata\(context, freshStartCharacterNames\)/);
+  assert.match(freshStart, /latestExportDiagnostics = null/);
+  assert.match(freshStart, /refreshTargetedReplayUI\(\);/);
   assert.match(freshStart, /updateLiveMemoryHealthUI\(\);/);
   assert.match(freshStart, /updateContinuityHealthUI\(\);/);
   assert.match(freshStart, /fresh_start_postcondition_audit/);
@@ -1382,6 +1384,9 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(settings, /'entity_redirects'/);
   assert.match(settings, /'developer_idempotence_check'/);
   assert.match(settings, /'live_memory_health'/);
+  assert.match(settings, /'targeted_extraction_replay'/);
+  assert.match(settings, /removeAttr\('aria-label'\)/);
+  assert.match(settings, /\$headerStatus\.removeClass\('sme_status_warning sme_status_error'\)/);
   assert.match(settings, /remainingReviewQueue/);
   assert.doesNotMatch(freshStart, /group\.disabled_members/);
   assert.match(freshStart, /clearChatLocalCharacterData\(context\);/);
@@ -1794,7 +1799,7 @@ test('context-limited empty compaction partitions input and refuses exhausted eq
   assert.match(settings, /no provider request because plan validation failed/);
   assert.match(settings, /requiredFinalizationComplete/);
   assert.match(settings, /status: 'blocked_by_upstream_phase'/);
-  assert.match(settings, /result_scope: \['in_progress', 'awaiting_manual_resume'\]/);
+  assert.match(settings, /result_scope: \['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required'\]/);
 });
 
 test('persisted Short-Term recovery plans control effective provider input and export distinct adaptation evidence', () => {

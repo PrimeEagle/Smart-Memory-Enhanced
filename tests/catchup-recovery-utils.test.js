@@ -310,6 +310,27 @@ test('checkpoint diagnostics distinguish missing, resumable, and invalidated rec
   assert.equal(blocked.safe_progress_preserved, true);
 });
 
+test('blocked recovery checkpoints remain durable while updated-build eligibility can reopen resume', () => {
+  const blockedCheckpoint = {
+    ...checkpoint,
+    status: 'blocked_recovery_change_required',
+    recovery_blocked: { blocked: true, reason_code: 'recovery_change_required' },
+  };
+  assert.equal(normalizeCatchUpCheckpoint(blockedCheckpoint)?.status,
+    'blocked_recovery_change_required');
+  const reconciled = reconcileCatchUpRecoverySummary(
+    summarizeCatchUpCheckpoint(blockedCheckpoint),
+    { terminal_unresolved_obligations: [{
+      root_obligation_id: 'root', tier: 'longterm', owner: 'Lillian Kraft',
+      recovery_blocked: false,
+      next_eligible_recovery_action: 'single_source_unit_regeneration',
+    }] },
+  );
+  assert.equal(reconciled.blocked, false);
+  assert.equal(reconciled.resumable, true);
+  assert.equal(reconciled.next_eligible_recovery_action, 'single_source_unit_regeneration');
+});
+
 test('checkpoint diagnostics retain completed finalization phases and the recovery settings snapshot', () => {
   const summary = summarizeCatchUpCheckpoint({
     ...checkpoint,

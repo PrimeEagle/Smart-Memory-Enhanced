@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.64] - 2026-10-27
+
+### Added
+
+- Provider-attempt audit schema v8 records each one-message recovery unit as an
+  independent durable obligation, including its target fingerprint, bounded
+  context range, permitted and observed citations, normalization decision,
+  candidate accounting, and final record/no-update/blocked disposition.
+- Diagnostics compare the persisted pre-v2 malformed-response/request baseline
+  with requests observed under recovery implementation v2, while labeling the
+  result as operational telemetry rather than a controlled provider A/B test.
+- Single-source recovery now requests a small delimiter contract
+  (`RECORD|type|0|claim` or exact `NONE`) and reconstructs the ordinary
+  citation-bearing tagged record locally before it reaches canonical storage.
+- Recovery implementation versioning reopens v0.9.63 terminal windows once for
+  the materially changed recovery path without discarding committed siblings
+  or restarting earlier stages.
+
+### Fixed
+
+- Fresh Start now clears the cached run-outcome snapshot, blocked/error card,
+  header warning state, unresolved-error badge, recovery text, and targeted
+  replay controls after the reset transaction commits. A prior run's
+  “Blocked — recovery change required” result can no longer remain visible or
+  reappear from in-memory diagnostics after its persisted state is removed.
+- A malformed response for one source unit no longer aborts units that follow
+  it. Later children are attempted independently, and valid records plus exact
+  `NONE` decisions are saved before the root remains blocked on any failures.
+- Exact one-record and local-citation diagnostics now derive from structural
+  candidate evidence rather than the accepted-record array. A candidate with
+  one valid local citation and only unknown optional syntax no longer reports
+  false cardinality or missing-citation failures.
+- Unknown optional modifier syntax is removed only when type, importance,
+  expiration, claim, and the exact `sources=0` citation are already valid.
+  Required fields, ambiguous values, multiple candidates, and missing or wrong
+  citations are never inferred or repaired.
+- Checkpoint, manifest, export, and recovery-panel lifecycle now persist
+  `blocked_recovery_change_required` consistently. Installing this build
+  converts an eligible old blocked checkpoint back to a resumable state.
+
+### Tests
+
+- Added regressions for the supplied Lillian 80–84 failure shape, per-unit
+  continuation, exact candidate accounting, safe and unsafe modifier handling,
+  pipe-contract reconstruction, durable unit outcomes, and one-time v0.9.63
+  recovery reopening.
+
 ## [0.9.63] - 2026-10-26
 
 ### Added

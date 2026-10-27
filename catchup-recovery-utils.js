@@ -1,6 +1,7 @@
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
 export function normalizeCatchUpCheckpoint(checkpoint) {
-  if (!checkpoint || !['in_progress', 'awaiting_manual_resume'].includes(checkpoint.status)) return null;
+  if (!checkpoint || !['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required']
+    .includes(checkpoint.status)) return null;
   const total = Number(checkpoint.source_message_count);
   const offset = Number(checkpoint.next_source_offset);
   if (!Number.isInteger(total) || total < 0 || !Number.isInteger(offset) || offset < 0 || offset > total) return null;

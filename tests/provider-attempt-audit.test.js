@@ -25,7 +25,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 7);
+  assert.equal(migrated.schema_version, 8);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -184,7 +184,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 7);
+  assert.equal(summary.schema_version, 8);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -511,4 +511,64 @@ test('bounded provider-failure lineage never replaces its exact aggregate', () =
   assert.equal(summary.provider_failure_lineage.details_pruned_or_legacy, true);
   assert.equal(summary.failure_accounting.unique_failed_obligation_count, 1);
   assert.equal(summary.failure_accounting.recovered_failed_obligation_count, 1);
+});
+
+test('schema-eight migration reopens an exhausted v0.9.63 unit window exactly once', () => {
+  const metadata = { active_catchup_run_id: 'run-v063', live_memory_health: {
+    provider_attempt_audit: {
+      schema_version: 7, run_id: 'run-v063', sequence: 1, attempted: 1, running_count: 0,
+      logical_obligation_count: 1, terminal_counts: { provider_response_malformed: 1 },
+      malformed_reason_counts: { invalid_modifier_syntax: 1 }, request_kind_counts: {},
+      repair_reason_counts: {}, changed_recovery_dimension_counts: {}, runtime_context_lookup_counts: {},
+      obligations: { root: {
+        logical_obligation_id: 'root', tier: 'longterm', owner: 'Lillian Kraft',
+        terminal_outcome: 'provider_response_malformed', malformed_count: 1,
+        root_source_fingerprint: 'root-fingerprint', last_source_fingerprint: 'root-fingerprint',
+        recovery_windows: { 'root-fingerprint': {
+          source_fingerprint: 'root-fingerprint',
+          recovery_stages_attempted: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+          exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+          unresolved_semantic_units: ['80', '81', '82', '83', '84'], completed_source_units: [],
+          staged_partial_records: [], candidate_rejections: [],
+        } },
+      } }, recent_attempts: [],
+    },
+  } };
+  const restored = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
+  assert.equal(restored.implementation_version_changed, true);
+  let unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(unresolved.recovery_blocked, false);
+  assert.equal(unresolved.next_eligible_recovery_action, 'single_source_unit_regeneration');
+
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'longterm', logical_obligation_id: 'root', source_fingerprint: 'root-fingerprint',
+    request_kind: 'single_source_unit_regeneration', recovery_stage: 'single_source_unit_regeneration',
+    source_unit_key: '80', target_source_unit: '80', target_source_fingerprint: 'unit-80',
+    context_source_range: { start: 80, end: 84, message_count: 5 }, context_message_count: 5,
+    permitted_citation_indexes: [0], context_only_messages_eligible: false,
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'provider_response_malformed', malformed_reason: 'invalid_modifier_syntax',
+    recovery_stage: 'single_source_unit_regeneration', recovery_ladder_terminal: true,
+    total_candidate_count: 1, accepted_candidate_count: 0, rejected_candidate_count: 1,
+    cardinality_followed: true, citation_requirement_followed: true,
+    target_source_unit: '80', target_source_fingerprint: 'unit-80',
+    actual_citation_indexes: [0], accepted_record_cites_target: false,
+    unresolved_semantic_units: ['80', '81', '82', '83', '84'], source_unit_key: '80',
+  });
+  const window = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
+  assert.equal(window.recovery_implementation_version, 2);
+  assert.equal(window.unit_obligations['80'].disposition, 'blocked_validation');
+  assert.equal(window.unit_obligations['80'].candidate_accounting_consistent, true);
+  unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
+  assert.equal(unresolved.recovery_blocked, false);
+  assert.deepEqual(unresolved.recovery_eligibility.unattempted_semantic_units, ['81', '82', '83', '84']);
+  const comparison = summarizeProviderAttemptAudit(metadata).malformed_output_amplification_comparison;
+  assert.deepEqual(comparison.pre_v2, {
+    physical_requests: 1, malformed_responses: 1, malformed_response_rate: 1,
+    extra_requests: 0,
+  });
+  assert.equal(comparison.v2_and_later.physical_requests, 1);
+  assert.equal(comparison.v2_and_later.malformed_responses, 1);
+  assert.equal(comparison.v2_and_later.malformed_response_rate, 1);
 });

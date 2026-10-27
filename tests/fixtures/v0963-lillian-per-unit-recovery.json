@@ -1,0 +1,25 @@
+{
+  "source_build": "0.9.63",
+  "root_obligation_id": "longterm:lillian kraft:80-99:fnv1a-b86f4be8",
+  "child_source_range": {
+    "start": 80,
+    "end": 84,
+    "message_count": 5,
+    "source_fingerprint": "fnv1a-6a1ff517"
+  },
+  "configuration_signature": "fnv1a-e735d208",
+  "terminal_signature": "fnv1a-986195d0",
+  "safely_committed_offset": 80,
+  "target_units": ["80", "81", "82", "83", "84"],
+  "observed_first_unit": {
+    "source_unit_key": "80",
+    "structural_candidate_count": 1,
+    "citation_requirement_followed": true,
+    "actual_citation_indexes": [0],
+    "modifier_failure": "unknown_modifier_syntax",
+    "accepted_candidate_count": 0,
+    "rejected_candidate_count": 1
+  },
+  "unattempted_units": ["81", "82", "83", "84"],
+  "raw_provider_output_included": false
+}

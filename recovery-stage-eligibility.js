@@ -9,6 +9,8 @@ export const RECOVERY_STAGE_ORDER = Object.freeze([
   'single_source_unit_regeneration',
 ]);
 
+export const RECOVERY_IMPLEMENTATION_VERSION = 2;
+
 const unique = (values = []) => [...new Set(values.filter(Boolean))];
 
 /**
@@ -42,6 +44,46 @@ export function deriveRecoveryStageEligibility(state = {}) {
       exhausted_stages: exhaustedStages,
       accepted_partial_record_count: acceptedPartialCount,
       unresolved_semantic_units: unresolvedUnits,
+    };
+  }
+  if (state.implementation_version_changed === true
+    && exhaustedStages.includes('single_source_unit_regeneration')
+    && unresolvedUnits.length > 0) {
+    return {
+      schema_version: 2,
+      blocked: false,
+      eligible_action: 'single_source_unit_regeneration',
+      reason_code: 'updated_recovery_implementation_available',
+      changed_dimensions: ['recovery_implementation_version', 'single_source_pipe_contract',
+        'per_unit_failure_isolation', 'optional_modifier_normalization'],
+      expected_progress: `resolve_${unresolvedUnits.length}_remaining_source_units`,
+      replay_permission: 'updated_implementation_changed_recovery_dimension',
+      attempted_stages: attemptedStages,
+      exhausted_stages: exhaustedStages,
+      accepted_partial_record_count: acceptedPartialCount,
+      unresolved_semantic_units: unresolvedUnits,
+    };
+  }
+  const unitOutcomes = Array.isArray(state.unit_outcomes) ? state.unit_outcomes : [];
+  const terminalUnitKeys = new Set(unitOutcomes
+    .filter((item) => ['record_staged', 'validated_no_update', 'blocked_provider_failure', 'blocked_validation']
+      .includes(item?.disposition))
+    .map((item) => String(item.source_unit_key)));
+  const unattemptedUnits = unresolvedUnits.filter((unitKey) => !terminalUnitKeys.has(String(unitKey)));
+  if (exhaustedStages.includes('single_source_unit_regeneration') && unattemptedUnits.length > 0) {
+    return {
+      schema_version: 2,
+      blocked: false,
+      eligible_action: 'single_source_unit_regeneration',
+      reason_code: 'unattempted_source_units_remain',
+      changed_dimensions: ['source_unit'],
+      expected_progress: `attempt_${unattemptedUnits.length}_remaining_source_units`,
+      replay_permission: 'per_unit_obligation_not_attempted',
+      attempted_stages: attemptedStages,
+      exhausted_stages: exhaustedStages,
+      accepted_partial_record_count: acceptedPartialCount,
+      unresolved_semantic_units: unresolvedUnits,
+      unattempted_semantic_units: unattemptedUnits,
     };
   }
   return {

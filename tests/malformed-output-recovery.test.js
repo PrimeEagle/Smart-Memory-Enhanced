@@ -17,6 +17,7 @@ import {
   malformedChildCoverageComplete,
   normalizeTaggedMemoryOutput,
   partitionMalformedSourceWindow,
+  parseSingleSourceUnitResponse,
   recoverMalformedTaggedOutput,
   routeMalformedTaggedRecovery,
 } from '../malformed-output-recovery.js';
@@ -472,8 +473,100 @@ test('single-source prompt is owner-scoped and contains no neighboring messages'
   const prompt = buildSingleSourceUnitRegenerationPrompt(
     { unit_key: '65', text: 'Nyx: One bounded message.' }, { tier: 'longterm', owner: 'Nyx Watson' });
   assert.match(prompt, /Nyx Watson/);
-  assert.match(prompt, /sources=0/);
+  assert.match(prompt, /RECORD\|type\|0\|supported claim/);
   assert.doesNotMatch(prompt, /message 64|message 66/i);
+});
+
+test('single-source pipe contract reconstructs canonical records locally', () => {
+  const result = parseSingleSourceUnitResponse('RECORD|fact|0|The garden gate is locked.', {
+    tier: 'longterm', parse: parseExtractionOutput,
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(result.parser_path, 'single_source_pipe_v2');
+  assert.deepEqual(result.records[0].source_message_indices, [0]);
+  assert.equal(result.contract.citation_requirement_followed, true);
+});
+
+test('safe optional modifier removal cannot invent or repair required citation evidence', () => {
+  const safe = parseSingleSourceUnitResponse(
+    '[fact:2:permanent:sources=0:optional-note] The garden gate is locked.',
+    { tier: 'longterm', parse: parseExtractionOutput });
+  assert.equal(safe.accepted, true);
+  assert.equal(safe.normalization_result, 'accepted_after_safe_optional_modifier_removal');
+  assert.deepEqual(safe.records[0].source_message_indices, [0]);
+
+  const unsafe = parseSingleSourceUnitResponse(
+    '[fact:2:permanent:optional-note] The garden gate is locked.',
+    { tier: 'longterm', parse: parseExtractionOutput });
+  assert.equal(unsafe.accepted, false);
+  assert.equal(unsafe.contract.cardinality_followed, true);
+  assert.equal(unsafe.contract.citation_requirement_followed, false);
+  assert.deepEqual(unsafe.reason_codes.sort(), [
+    'single_source_unit_requires_exact_local_citation', 'unknown_modifier_syntax',
+  ]);
+});
+
+test('one blocked source unit does not prevent later siblings from completing', async () => {
+  const audit = auditHarness();
+  const responses = [
+    '[fact:2:permanent] Missing citation.',
+    'NONE',
+    'RECORD|fact|0|The final sibling is independently supported.',
+    'NONE',
+    'RECORD|event|0|The fifth unit contains a supported durable event.',
+  ];
+  const staged = [];
+  const result = await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => responses.shift(), originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'longterm:lillian:80-84:root' },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    resumeState: { recovery_stages_attempted: ['minimal_record_regeneration'],
+      exhausted_stages: ['minimal_record_regeneration'] },
+    sourceUnits: [
+      { unit_key: '80', citation_index: 0, text: 'Lillian: First.', source_fingerprint: 'unit-80',
+        context_source_range: { start: 80, end: 80, message_count: 1 }, context_message_count: 1 },
+      { unit_key: '81', citation_index: 1, text: 'Lillian: Second.', source_fingerprint: 'unit-81',
+        context_source_range: { start: 81, end: 81, message_count: 1 }, context_message_count: 1 },
+      { unit_key: '82', citation_index: 2, text: 'Lillian: Third.', source_fingerprint: 'unit-82',
+        context_source_range: { start: 82, end: 82, message_count: 1 }, context_message_count: 1 },
+      { unit_key: '83', citation_index: 3, text: 'Lillian: Fourth.', source_fingerprint: 'unit-83',
+        context_source_range: { start: 83, end: 83, message_count: 1 }, context_message_count: 1 },
+      { unit_key: '84', citation_index: 4, text: 'Lillian: Fifth.', source_fingerprint: 'unit-84',
+        context_source_range: { start: 84, end: 84, message_count: 1 }, context_message_count: 1 },
+    ],
+    stagePartialRecords: async (records, details) => staged.push({ records, details }),
+  });
+  assert.equal(audit.events.length, 5);
+  assert.deepEqual(audit.events.map((event) => event.recovery.source_unit_key), ['80', '81', '82', '83', '84']);
+  assert.deepEqual(audit.events[0].recovery.context_source_range,
+    { start: 80, end: 80, message_count: 1 });
+  assert.equal(audit.events[0].recovery.context_message_count, 1);
+  assert.equal(audit.events[0].recovery.context_only_messages_eligible, false);
+  assert.equal(result.partial_unresolved, true);
+  assert.deepEqual(result.blocked_source_units, ['80']);
+  assert.deepEqual(result.validated_no_update_source_units, ['81', '83']);
+  assert.equal(result.records.length, 2);
+  assert.deepEqual(result.records[0].source_message_indices, [2]);
+  assert.deepEqual(result.records[1].source_message_indices, [4]);
+  assert.deepEqual(staged.map((item) => item.details.source_unit_key), ['81', '82', '83', '84']);
+  assert.equal(audit.events[0].finished.rejection_reasons
+    .includes('single_source_unit_requires_exactly_one_record'), false);
+});
+
+test('sanitized v0.9.63 Lillian fixture preserves exact candidate and citation evidence', () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL(
+    './fixtures/v0963-lillian-per-unit-recovery.json', import.meta.url), 'utf8'));
+  assert.equal(fixture.root_obligation_id, 'longterm:lillian kraft:80-99:fnv1a-b86f4be8');
+  assert.equal(fixture.child_source_range.source_fingerprint, 'fnv1a-6a1ff517');
+  assert.equal(fixture.observed_first_unit.structural_candidate_count, 1);
+  assert.equal(fixture.observed_first_unit.citation_requirement_followed, true);
+  assert.deepEqual(fixture.observed_first_unit.actual_citation_indexes, [0]);
+  assert.equal(fixture.observed_first_unit.accepted_candidate_count
+    + fixture.observed_first_unit.rejected_candidate_count,
+  fixture.observed_first_unit.structural_candidate_count);
+  assert.deepEqual(fixture.unattempted_units, ['81', '82', '83', '84']);
+  assert.equal(fixture.raw_provider_output_included, false);
 });
 
 test('request and wall-time caps stop additional recovery work deterministically', () => {
