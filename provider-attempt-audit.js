@@ -2,7 +2,7 @@
 import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION } from './recovery-stage-eligibility.js';
 
-export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 8;
+export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 9;
 export const PROVIDER_ATTEMPT_EVENT_LIMIT = 160;
 // Large enough to retain every root obligation in the supplied 9,434-message
 // replay while remaining explicitly bounded for arbitrarily large chats.
@@ -92,6 +92,12 @@ function migrateLegacyAudit(audit) {
     baseline_malformed_physical_responses: Object.values(audit.malformed_reason_counts ?? {})
       .reduce((sum, value) => sum + count(value), 0),
     baseline_extra_requests: Math.max(0, count(audit.attempted) - count(audit.logical_obligation_count)),
+  };
+  audit.schema_v9_migration = {
+    source_schema_version: sourceSchemaVersion,
+    owner_applicability_evidence_available: false,
+    response_fragment_accounting_available: false,
+    single_source_success_scopes_reconstructed_from_durable_unit_obligations: true,
   };
   for (const obligation of Object.values(audit.obligations ?? {})) {
     obligation.recovery_implementation_version ??= 1;
@@ -596,6 +602,8 @@ export function beginProviderAttempt(metadata, input = {}) {
     context_message_count: input.context_message_count ?? null,
     permitted_citation_indexes: [...(input.permitted_citation_indexes ?? [])],
     context_only_messages_eligible: input.context_only_messages_eligible ?? null,
+    applicability_decision: input.applicability_decision ?? null,
+    provider_capability_path: input.provider_capability_path ?? null,
     repair_reason: input.repair_reason ?? null,
     recovery_stage: input.recovery_stage ?? (input.request_kind === 'original' ? 'strict_generation' : input.request_kind),
     expected_output_format: input.expected_output_format ?? `${input.tier ?? 'unknown'}_tagged_lines_v1`,
@@ -705,6 +713,15 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
     === event.accepted_candidate_count + event.rejected_candidate_count;
   event.rejection_reasons = [...new Set(patch.rejection_reasons ?? [])].slice(0, 16);
   event.candidate_rejections = (patch.candidate_rejections ?? []).slice(0, 32);
+  event.response_fragment_count = count(patch.response_fragment_count);
+  event.tagged_candidate_count = count(patch.tagged_candidate_count);
+  event.pipe_candidate_count = count(patch.pipe_candidate_count);
+  event.parsed_core_field_count = count(patch.parsed_core_field_count);
+  event.conversational_prose_detected = patch.conversational_prose_detected === true;
+  event.applicability_decision = patch.applicability_decision ?? event.applicability_decision ?? null;
+  event.provider_capability_path = patch.provider_capability_path ?? event.provider_capability_path ?? null;
+  event.contract_enforcement_retry_scheduled = patch.contract_enforcement_retry_scheduled === true;
+  event.contract_enforcement_retry_performed = patch.contract_enforcement_retry_performed === true;
   event.source_unit_key = patch.source_unit_key ?? event.source_unit_key ?? null;
   event.target_source_unit = patch.target_source_unit ?? event.target_source_unit ?? event.source_unit_key ?? null;
   event.target_source_fingerprint = patch.target_source_fingerprint ?? event.target_source_fingerprint ?? null;
@@ -804,6 +821,9 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
         normalization_result: event.normalization_result,
         candidate_accounting_consistent: event.candidate_accounting_consistent,
         rejection_reasons: event.rejection_reasons,
+        applicability_decision: event.applicability_decision,
+        provider_capability_path: event.provider_capability_path,
+        recovery_implementation_version: event.recovery_implementation_version,
       };
     }
     if (event.unresolved_semantic_units.length || event.source_unit_completed === true) {
@@ -843,6 +863,15 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
       rejected_candidate_count: event.rejected_candidate_count,
       rejection_reasons: event.rejection_reasons,
       candidate_rejections: event.candidate_rejections,
+      response_fragment_count: event.response_fragment_count,
+      tagged_candidate_count: event.tagged_candidate_count,
+      pipe_candidate_count: event.pipe_candidate_count,
+      parsed_core_field_count: event.parsed_core_field_count,
+      conversational_prose_detected: event.conversational_prose_detected,
+      applicability_decision: event.applicability_decision,
+      provider_capability_path: event.provider_capability_path,
+      contract_enforcement_retry_scheduled: event.contract_enforcement_retry_scheduled,
+      contract_enforcement_retry_performed: event.contract_enforcement_retry_performed,
       missing_required_results: event.missing_required_results,
       accepted_partial_output_persisted: event.accepted_partial_output_persisted,
       obligation_closure_reason: event.obligation_closure_reason,
@@ -1071,8 +1100,16 @@ export function stageProviderPartialRecovery(metadata, logicalObligationId, sour
     disposition: details.explicit_none === true ? 'validated_no_update' : 'record_staged',
     producing_attempt_id: details.producing_attempt_id ?? null,
     normalization_result: details.normalization_result ?? 'not_needed',
+    applicability_decision: details.applicability_decision ?? null,
+    local_no_update_reason: details.local_no_update_reason ?? null,
+    recovery_implementation_version: Number(details.recovery_implementation_version
+      ?? RECOVERY_IMPLEMENTATION_VERSION),
     updated_at: Date.now(),
   };
+  window.recovery_implementation_version = Math.max(
+    Number(window.recovery_implementation_version ?? 1),
+    Number(details.recovery_implementation_version ?? RECOVERY_IMPLEMENTATION_VERSION),
+  );
   return true;
 }
 
@@ -1095,6 +1132,7 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
     implementation_version_changed: Number(window.recovery_implementation_version ?? 1)
       < RECOVERY_IMPLEMENTATION_VERSION,
     accepted_partial_record_count: count(window.accepted_partial_record_count),
+    durable_partial_record_count: count(window.accepted_partial_record_count),
     last_malformed_reason: window.last_malformed_reason ?? null,
   };
 }
@@ -1379,10 +1417,37 @@ export function summarizeProviderAttemptAudit(metadata) {
     recovery_success_rate: uniqueMalformed ? recoveredMalformed / uniqueMalformed : 1,
     malformed_recovery_performance: (() => {
       const attemptCounts = malformed.map((item) => count(item.total_attempts ?? item.physical_attempt_count)).sort((a, b) => a - b);
+      const durableUnitOutcomes = obligations.flatMap((item) => Object.values(item.recovery_windows ?? {})
+        .flatMap((window) => Object.values(window.unit_obligations ?? {})));
+      const completedUnitOutcomes = durableUnitOutcomes.filter((item) =>
+        ['record_staged', 'validated_no_update'].includes(item.disposition));
+      const physicalUnitSuccesses = completedUnitOutcomes.filter((item) =>
+        item.producing_attempt_id);
+      const locallyAvoidedUnitRequests = completedUnitOutcomes.filter((item) =>
+        !item.producing_attempt_id && item.disposition === 'validated_no_update'
+        && item.applicability_decision?.local_no_update_validated === true);
+      const applicabilityDecisionCounts = durableUnitOutcomes.reduce((counts, item) => {
+        const decision = item.applicability_decision?.classification;
+        if (decision) counts[decision] = count(counts[decision]) + 1;
+        return counts;
+      }, {});
+      const fullyRecoveredRoots = obligations.filter((item) =>
+        SUCCESSFUL_TERMINAL_OUTCOMES.has(item.terminal_outcome)
+        && Object.values(item.recovery_windows ?? {}).some((window) =>
+          Object.keys(window.unit_obligations ?? {}).length > 0));
       return {
         requests_added_by_stage: { ...audit.recovery_stage_request_counts },
         single_source_unit_regeneration_requests:
           count(audit.recovery_stage_request_counts?.single_source_unit_regeneration),
+        successful_physical_single_source_unit_requests: physicalUnitSuccesses.length,
+        successfully_completed_source_units: completedUnitOutcomes.length,
+        fully_recovered_root_obligations: fullyRecoveredRoots.length,
+        locally_avoided_single_source_provider_requests: locallyAvoidedUnitRequests.length,
+        applicability_decision_counts: applicabilityDecisionCounts,
+        contract_enforcement_requests:
+          count(audit.recovery_stage_request_counts?.single_source_contract_enforcement),
+        legacy_single_source_unit_regeneration_successes_meaning:
+          'fully_recovered_root_obligations_by_terminal_stage',
         single_source_unit_regeneration_successes:
           count(audit.recoveries_by_stage?.single_source_unit_regeneration),
         obligations_recovered_by_stage: obligationsRecoveredByStage,
@@ -1421,8 +1486,9 @@ export function summarizeProviderAttemptAudit(metadata) {
       const afterMalformed = count(audit.malformed_counts_by_recovery_implementation?.[RECOVERY_IMPLEMENTATION_VERSION]);
       return {
         comparison_basis: migrated
-          ? 'persisted_pre_v2_baseline_vs_recovery_implementation_v2_requests'
-          : 'recovery_implementation_v2_requests_only',
+          ? 'persisted_pre_v2_baseline_vs_current_recovery_implementation_requests'
+          : 'current_recovery_implementation_requests_only',
+        current_recovery_implementation_version: RECOVERY_IMPLEMENTATION_VERSION,
         pre_v2: {
           physical_requests: beforeRequests,
           malformed_responses: beforeMalformed,
@@ -1464,7 +1530,17 @@ export function summarizeProviderAttemptAudit(metadata) {
       longest_requests: [...(audit.longest_requests ?? [])],
       longest_request_detail_limit: 16,
       exact_cumulative_timing: audit.performance_totals_exact === true,
-      provider_structured_output_capability: 'not_exposed_by_current_memory_adapter_tagged_line_fallback_used',
+      provider_capability_path_counts: recentAttempts.reduce((counts, attempt) => {
+        const path = attempt.provider_capability_path;
+        if (path) counts[path] = count(counts[path]) + 1;
+        return counts;
+      }, {}),
+      provider_structured_output_capability: recentAttempts.some((attempt) =>
+        String(attempt.provider_capability_path ?? '').includes('native_json_schema'))
+        ? 'native_json_schema_observed'
+        : recentAttempts.some((attempt) => attempt.provider_capability_path)
+          ? 'role_or_bounded_envelope_fallback_observed'
+          : 'not_observed_or_legacy_attempts',
       avoidable_overhead_estimate: {
         request_count: count(audit.request_kind_counts?.format_repair) + unexplainedEquivalentRequests,
         definition: 'format-repair and unchanged-equivalent retries; diagnostic estimate only',

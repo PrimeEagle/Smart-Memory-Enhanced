@@ -25,7 +25,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 8);
+  assert.equal(migrated.schema_version, 9);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -184,7 +184,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 8);
+  assert.equal(summary.schema_version, 9);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -489,9 +489,15 @@ test('single-source partial records survive restore, deduplicate, and close only
   assert.equal(restored.resume_unresolved_obligation, true);
   assert.equal(restored.staged_partial_records.length, 1);
   assert.deepEqual(restored.completed_source_units, ['65']);
-  assert.equal(summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations.length, 1);
+  let summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.terminal_unresolved_obligations.length, 1);
+  assert.equal(summary.malformed_recovery_performance.successful_physical_single_source_unit_requests, 1);
+  assert.equal(summary.malformed_recovery_performance.successfully_completed_source_units, 1);
+  assert.equal(summary.malformed_recovery_performance.fully_recovered_root_obligations, 0);
   assert.equal(markProviderStagedRecoveryCompleted(metadata, obligationId, sourceFingerprint, 1), true);
-  assert.equal(summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations.length, 0);
+  summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.terminal_unresolved_obligations.length, 0);
+  assert.equal(summary.malformed_recovery_performance.fully_recovered_root_obligations, 1);
 });
 
 test('bounded provider-failure lineage never replaces its exact aggregate', () => {
@@ -562,7 +568,7 @@ test('schema-eight migration reopens an exhausted v0.9.63 unit window exactly on
     unresolved_semantic_units: ['80', '81', '82', '83', '84'], source_unit_key: '80',
   });
   const window = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
-  assert.equal(window.recovery_implementation_version, 3);
+  assert.equal(window.recovery_implementation_version, 4);
   assert.equal(window.unit_obligations['80'].disposition, 'blocked_validation');
   assert.equal(window.unit_obligations['80'].candidate_accounting_consistent, true);
   unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];

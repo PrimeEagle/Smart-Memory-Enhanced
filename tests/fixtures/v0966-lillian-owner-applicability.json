@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source": "sanitized_v0.9.66_live_failure_shape",
+  "root_obligation_id": "longterm:lillian kraft:160-179:fnv1a-5654f879",
+  "child_range": { "start": 170, "end": 174 },
+  "owner": "Lillian Kraft",
+  "completed_source_units": ["171", "173"],
+  "unresolved_source_units": ["170", "172", "174"],
+  "units": [
+    { "index": 170, "speaker": "user", "is_user": true, "text": "We started as roommates. You initiated an intimate relationship, and I agreed." },
+    { "index": 171, "speaker": "Aster Graves", "is_user": false, "text": "Aster reacts while Lillian remains silent and watches the exchange." },
+    { "index": 172, "speaker": "user", "is_user": true, "text": "You have grown on me. I care about your happiness and your caring personality." },
+    { "index": 173, "speaker": "Aster Graves", "is_user": false, "text": "Aster listens while Lillian watches Aster with a proud expression." },
+    { "index": 174, "speaker": "user", "is_user": true, "text": "But... I pause nervously." }
+  ],
+  "expected": {
+    "170": "owner_irrelevant",
+    "171": "owner_relevant",
+    "172": "owner_irrelevant",
+    "173": "owner_relevant",
+    "174": "non_substantive_fragment"
+  },
+  "raw_provider_output_included": false
+}

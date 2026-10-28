@@ -9,7 +9,7 @@ export const RECOVERY_STAGE_ORDER = Object.freeze([
   'single_source_unit_regeneration',
 ]);
 
-export const RECOVERY_IMPLEMENTATION_VERSION = 3;
+export const RECOVERY_IMPLEMENTATION_VERSION = 4;
 
 const unique = (values = []) => [...new Set(values.filter(Boolean))];
 
@@ -21,6 +21,13 @@ export function deriveRecoveryStageEligibility(state = {}) {
   const attemptedStages = unique(state.attempted_stages ?? state.recovery_stages_attempted ?? []);
   const exhaustedStages = unique(state.exhausted_stages ?? attemptedStages);
   const unresolvedUnits = unique(state.unresolved_semantic_units ?? []);
+  const unitOutcomes = Array.isArray(state.unit_outcomes) ? state.unit_outcomes : [];
+  const unitOutcomeByKey = new Map(unitOutcomes.map((item) => [String(item?.source_unit_key), item]));
+  const unitsRequiringImplementationUpgrade = unresolvedUnits.filter((unitKey) => {
+    const outcome = unitOutcomeByKey.get(String(unitKey));
+    return outcome && String(outcome.disposition ?? '').startsWith('blocked_')
+      && Number(outcome.recovery_implementation_version ?? 3) < RECOVERY_IMPLEMENTATION_VERSION;
+  });
   const acceptedPartialCount = Number(state.accepted_partial_record_count ?? 0) || 0;
   const availableStages = unique(state.available_stages ?? RECOVERY_STAGE_ORDER);
   const furthestAttemptedIndex = attemptedStages.reduce((maximum, stage) =>
@@ -46,7 +53,7 @@ export function deriveRecoveryStageEligibility(state = {}) {
       unresolved_semantic_units: unresolvedUnits,
     };
   }
-  if (state.implementation_version_changed === true
+  if ((state.implementation_version_changed === true || unitsRequiringImplementationUpgrade.length > 0)
     && exhaustedStages.includes('single_source_unit_regeneration')
     && unresolvedUnits.length > 0) {
     return {
@@ -55,16 +62,18 @@ export function deriveRecoveryStageEligibility(state = {}) {
       eligible_action: 'single_source_unit_regeneration',
       reason_code: 'updated_recovery_implementation_available',
       changed_dimensions: ['recovery_implementation_version', 'single_source_pipe_contract',
-        'per_unit_failure_isolation', 'optional_modifier_normalization', 'contract_tail_placement'],
+        'owner_applicability_gate', 'fragment_validation', 'provider_role_separation',
+        'native_structured_output_when_supported', 'bounded_contract_enforcement_retry'],
       expected_progress: `resolve_${unresolvedUnits.length}_remaining_source_units`,
       replay_permission: 'updated_implementation_changed_recovery_dimension',
       attempted_stages: attemptedStages,
       exhausted_stages: exhaustedStages,
       accepted_partial_record_count: acceptedPartialCount,
       unresolved_semantic_units: unresolvedUnits,
+      implementation_upgrade_source_units: unitsRequiringImplementationUpgrade.length
+        ? unitsRequiringImplementationUpgrade : unresolvedUnits,
     };
   }
-  const unitOutcomes = Array.isArray(state.unit_outcomes) ? state.unit_outcomes : [];
   const terminalUnitKeys = new Set(unitOutcomes
     .filter((item) => ['record_staged', 'validated_no_update', 'blocked_provider_failure', 'blocked_validation']
       .includes(item?.disposition))

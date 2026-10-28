@@ -9,6 +9,7 @@ import {
   buildCompactFormatRepairPrompt,
   buildMinimalRecordRegenerationPrompt,
   buildSingleSourceUnitRegenerationPrompt,
+  buildSingleSourceProviderRequest,
   buildStructuredJsonRegenerationPrompt,
   classifyTaggedResponseFailure,
   consumeMalformedRecoveryRequest,
@@ -22,6 +23,7 @@ import {
   routeMalformedTaggedRecovery,
 } from '../malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility } from '../recovery-stage-eligibility.js';
+import { buildRecoverySourceUnits } from '../owner-applicability.js';
 
 const validLongterm = '[fact:2:permanent:sources=0] The garden gate is locked.';
 const validSession = '[detail:2:session:sources=0] The garden gate is currently locked.';
@@ -430,7 +432,7 @@ test('single-source fallback stages one valid record and one explicit NONE witho
     ],
     stagePartialRecords: async (records, details) => staged.push({ records, details }),
   });
-  assert.equal(prompts.length, 2, JSON.stringify({ result, events: audit.events, staged }));
+  assert.equal(prompts.length, 1, JSON.stringify({ result, events: audit.events, staged }));
   assert.match(prompts[0], /only the source message below is in scope/i);
   assert.equal(result.stage, 'single_source_unit_regeneration');
   assert.equal(result.records.length, 1);
@@ -438,6 +440,7 @@ test('single-source fallback stages one valid record and one explicit NONE witho
   assert.deepEqual(staged.map((item) => item.details.source_unit_key), ['65', '66']);
   assert.equal(staged[1].details.explicit_none, true);
   assert.equal(audit.events.every((event) => event.requestKind === 'single_source_unit_regeneration'), true);
+  assert.equal(staged[1].details.local_no_update_reason, 'non_substantive_fragment');
 });
 
 test('single-source fallback skips already staged units and records actionable rejection reasons', async () => {
@@ -487,6 +490,162 @@ test('single-source pipe contract reconstructs canonical records locally', () =>
   assert.equal(result.parser_path, 'single_source_pipe_v2');
   assert.deepEqual(result.records[0].source_message_indices, [0]);
   assert.equal(result.contract.citation_requirement_followed, true);
+});
+
+test('role-aware single-source request uses native schema while fallback remains bounded', () => {
+  const unit = { text: 'user: Untrusted dialogue.', unit_key: '170' };
+  const native = buildSingleSourceProviderRequest(unit, { tier: 'longterm', owner: 'Lillian Kraft',
+    capabilities: { system_role: true, native_json_schema: true, stop_sequences: true } });
+  assert.match(native.systemPrompt, /untrusted data/i);
+  assert.equal(native.providerConstraints.responseFormat.type, 'json_schema');
+  assert.deepEqual(native.providerConstraints.stop, ['\n\n']);
+  assert.doesNotMatch(native.systemPrompt, /Untrusted dialogue/);
+  const fallback = buildSingleSourceProviderRequest(unit, { tier: 'longterm', owner: 'Lillian Kraft',
+    capabilities: { system_role: false } });
+  assert.equal(fallback.systemPrompt, null);
+  assert.match(fallback.prompt, /SOURCE MESSAGE START/);
+  assert.ok(fallback.prompt.indexOf('Untrusted dialogue') < fallback.prompt.indexOf('FINAL OUTPUT CONTRACT'));
+});
+
+test('decision JSON reconstructs deterministic metadata locally', () => {
+  const none = parseSingleSourceUnitResponse('{"decision":"NONE"}', {
+    tier: 'longterm', parse: parseExtractionOutput });
+  assert.equal(none.accepted, true);
+  assert.equal(none.explicit_none, true);
+  const record = parseSingleSourceUnitResponse(
+    '{"decision":"RECORD","type":"fact","claim":"Lillian promised to return next week."}',
+    { tier: 'longterm', parse: parseExtractionOutput });
+  assert.equal(record.accepted, true);
+  assert.equal(record.records[0].importance, 2);
+  assert.equal(record.records[0].expiration, 'permanent');
+  assert.deepEqual(record.records[0].source_message_indices, [0]);
+});
+
+test('v0.9.66 Lillian replay reopens only unresolved units and preserves staged siblings', async () => {
+  const audit = auditHarness();
+  const staged = [];
+  let providerCalls = 0;
+  const messages = [
+    { name: 'user', is_user: true, mes: 'We started as roommates. You wanted sex, and I obliged.', __sme_original_index: 170 },
+    { name: 'Aster Graves', is_user: false, mes: 'Aster blushes. Lillian remains silent, watching.', __sme_original_index: 171 },
+    { name: 'user', is_user: true, mes: 'You have grown on me. I care about your happiness.', __sme_original_index: 172 },
+    { name: 'Aster Graves', is_user: false, mes: 'Aster listens. Lillian watches Aster proudly.', __sme_original_index: 173 },
+    { name: 'user', is_user: true, mes: '"But..." I pause, nervously.', __sme_original_index: 174 },
+  ];
+  const units = buildRecoverySourceUnits(messages, 170, () => 'source-fingerprint');
+  const priorOne = parseExtractionOutput('[event:2:permanent:sources=1] Lillian watched the exchange.')[0];
+  const priorTwo = parseExtractionOutput('[event:2:permanent:sources=3] Lillian watched Aster.')[0];
+  const result = await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => { providerCalls++; return 'unexpected'; },
+    originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'longterm:lillian:160-179:root' },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    owner: 'Lillian Kraft', providerCapabilities: { system_role: true, native_json_schema: true },
+    resumeState: {
+      recovery_stages_attempted: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+      exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+      recovery_implementation_version: 3, implementation_version_changed: true,
+      staged_partial_records: [priorOne, priorTwo], completed_source_units: ['171', '173'],
+      accepted_partial_record_count: 2, unresolved_semantic_units: ['170', '172', '174'],
+      unit_outcomes: [
+        { source_unit_key: '170', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+        { source_unit_key: '171', disposition: 'record_staged', recovery_implementation_version: 3 },
+        { source_unit_key: '172', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+        { source_unit_key: '173', disposition: 'record_staged', recovery_implementation_version: 3 },
+        { source_unit_key: '174', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+      ],
+    }, sourceUnits: units,
+    stagePartialRecords: async (records, details) => staged.push({ records, details }),
+  });
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(staged.map((item) => item.details.source_unit_key), ['170', '172', '174']);
+  assert.deepEqual(result.completed_source_units.sort(), ['170', '171', '172', '173', '174']);
+  assert.equal(result.records.length, 2);
+  assert.deepEqual(result.records.map((item) => item.source_message_indices[0]), [1, 3]);
+  assert.equal(audit.events.length, 0);
+});
+
+test('committed sibling unit records remain counted without duplicate re-persistence', async () => {
+  const audit = auditHarness();
+  const staged = [];
+  const units = buildRecoverySourceUnits([
+    { name: 'user', is_user: true, mes: 'You and I began as roommates.', __sme_original_index: 170 },
+    { name: 'Aster Graves', is_user: false, mes: 'Aster answers while Lillian watches.', __sme_original_index: 171 },
+    { name: 'user', is_user: true, mes: 'I care about your happiness.', __sme_original_index: 172 },
+    { name: 'Aster Graves', is_user: false, mes: 'Aster listens while Lillian watches.', __sme_original_index: 173 },
+    { name: 'user', is_user: true, mes: 'But... I pause nervously.', __sme_original_index: 174 },
+  ], 170, () => 'fingerprint');
+  const result = await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => { throw new Error('committed and locally closed units need no provider'); },
+    originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'root' },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt, owner: 'Lillian Kraft',
+    resumeState: {
+      recovery_stages_attempted: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+      exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+      implementation_version_changed: true, staged_partial_records: [],
+      completed_source_units: ['171', '173'], accepted_partial_record_count: 2,
+      unit_outcomes: [
+        { source_unit_key: '170', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+        { source_unit_key: '171', disposition: 'record_staged', recovery_implementation_version: 3 },
+        { source_unit_key: '172', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+        { source_unit_key: '173', disposition: 'record_staged', recovery_implementation_version: 3 },
+        { source_unit_key: '174', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+      ],
+    }, sourceUnits: units,
+    stagePartialRecords: async (records, details) => staged.push({ records, details }),
+  });
+  assert.equal(result.explicit_none, true);
+  assert.equal(result.records.length, 0);
+  assert.equal(result.durable_partial_record_count, 2);
+  assert.equal(staged.every((item) => item.records.length === 0), true);
+  assert.equal(audit.events.length, 0);
+});
+
+test('conversational prose receives one changed-dimension enforcement retry only', async () => {
+  const audit = auditHarness();
+  let calls = 0;
+  const result = await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => { calls++; return calls === 1 ? 'I think she is asking about the source.' : '{"decision":"NONE"}'; },
+    originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'root' },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    owner: 'Lillian Kraft', providerCapabilities: { system_role: true, native_json_schema: true },
+    resumeState: { recovery_stages_attempted: ['minimal_record_regeneration'], exhausted_stages: ['minimal_record_regeneration'] },
+    sourceUnits: [{ unit_key: '10', citation_index: 0, speaker: 'Narrator', raw_text: 'She made a promise.',
+      text: 'Narrator: She made a promise.', context_units: [] }],
+    stagePartialRecords: async () => {},
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.explicit_none, true);
+  assert.deepEqual(audit.events.map((event) => event.requestKind),
+    ['single_source_unit_regeneration', 'single_source_contract_enforcement']);
+  assert.equal(audit.events[0].finished.total_candidate_count, 0);
+  assert.equal(audit.events[0].finished.rejected_candidate_count, 0);
+  assert.equal(audit.events[0].finished.response_fragment_count, 1);
+  assert.equal(audit.events[0].finished.strict_parse_result, 'unclassified_response_fragment');
+  assert.equal(audit.events[1].changed.includes('bounded_single_enforcement_retry'), true);
+});
+
+test('interrupted v4 applicability migration remains resumable for only old blocked units', () => {
+  const eligibility = deriveRecoveryStageEligibility({
+    attempted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+    exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
+    unresolved_semantic_units: ['172', '174'], implementation_version_changed: false,
+    unit_outcomes: [
+      { source_unit_key: '170', disposition: 'validated_no_update', recovery_implementation_version: 4 },
+      { source_unit_key: '171', disposition: 'record_staged', recovery_implementation_version: 3 },
+      { source_unit_key: '172', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+      { source_unit_key: '173', disposition: 'record_staged', recovery_implementation_version: 3 },
+      { source_unit_key: '174', disposition: 'blocked_validation', recovery_implementation_version: 3 },
+    ],
+  });
+  assert.equal(eligibility.blocked, false);
+  assert.equal(eligibility.reason_code, 'updated_recovery_implementation_available');
+  assert.deepEqual(eligibility.implementation_upgrade_source_units, ['172', '174']);
 });
 
 test('safe optional modifier removal cannot invent or repair required citation evidence', () => {

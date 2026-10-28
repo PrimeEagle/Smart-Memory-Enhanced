@@ -315,6 +315,23 @@ function getSource() {
   return extension_settings[MODULE_NAME]?.source ?? memory_sources.main;
 }
 
+/** Provider features the memory adapter can actually preserve end-to-end. */
+export function getMemoryProviderCapabilities() {
+  const source = getSource();
+  return {
+    source,
+    system_role: [memory_sources.openai_compatible, memory_sources.ollama, memory_sources.webllm].includes(source),
+    native_json_schema: [memory_sources.openai_compatible, memory_sources.ollama].includes(source),
+    stop_sequences: [memory_sources.openai_compatible, memory_sources.ollama].includes(source),
+    assistant_prefill: false,
+    capability_source: source === memory_sources.connection_profile
+      ? 'connection_profile_service_does_not_expose_role_or_schema_controls'
+      : source === memory_sources.main
+        ? 'main_generate_raw_does_not_expose_structured_chat_controls'
+        : 'memory_adapter_supported',
+  };
+}
+
 const RUNTIME_CONTEXT_LIMIT_STORAGE_KEY = 'smart-memory-enhanced:runtime-context-limits:v1';
 const RUNTIME_CONTEXT_LIMIT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -744,7 +761,9 @@ async function readOpenAiStream(response, progress) {
  * @param {number} [numPredict] - Token generation limit passed as Ollama's num_predict option.
  * @returns {Promise<string>}
  */
-async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget(), { task = null } = {}) {
+async function generateOllama(prompt, priorMessages = [], numPredict = getGenerationBudget(), {
+  task = null, providerConstraints = null,
+} = {}) {
   const settings = extension_settings[MODULE_NAME];
   const url = getOllamaUrl();
   const model = settings?.ollama_model;
@@ -764,8 +783,10 @@ async function generateOllama(prompt, priorMessages = [], numPredict = getGenera
         model,
         messages,
         stream,
+        ...(providerConstraints?.jsonSchema ? { format: providerConstraints.jsonSchema } : {}),
         options: {
           num_predict: numPredict,
+          ...(providerConstraints?.stop?.length ? { stop: providerConstraints.stop } : {}),
         },
       }),
       signal: thisController.signal,
@@ -830,7 +851,7 @@ async function generateOpenAICompat(
   prompt,
   priorMessages = [],
   responseLength = getGenerationBudget(),
-  { task = null, onRequestDiagnostic = null } = {},
+  { task = null, onRequestDiagnostic = null, providerConstraints = null } = {},
 ) {
   const settings = extension_settings[MODULE_NAME];
   const baseUrl = (settings?.openai_compat_url || '').replace(/\/$/, '').replace(/\/v1$/, '');
@@ -857,6 +878,8 @@ async function generateOpenAICompat(
         chat_completion_source: 'custom', custom_url: `${baseUrl}/v1`, messages,
         model: model || undefined, max_tokens: responseLength > 0 ? responseLength : undefined,
         stream: false,
+        ...(providerConstraints?.responseFormat ? { response_format: providerConstraints.responseFormat } : {}),
+        ...(providerConstraints?.stop?.length ? { stop: providerConstraints.stop } : {}),
       };
       if (apiKey) proxyBody.custom_include_headers = `Authorization: Bearer ${apiKey}`;
       return fetch('/api/backends/chat-completions/generate', {
@@ -879,6 +902,8 @@ async function generateOpenAICompat(
               messages,
               max_tokens: responseLength > 0 ? responseLength : undefined,
               stream,
+              ...(providerConstraints?.responseFormat ? { response_format: providerConstraints.responseFormat } : {}),
+              ...(providerConstraints?.stop?.length ? { stop: providerConstraints.stop } : {}),
             }),
             signal: thisController.signal,
           });
@@ -1052,27 +1077,40 @@ async function generateOpenAICompat(
  * @param {number} [options.responseLength=600] - Max tokens to generate
  * @returns {Promise<string>} The raw model response
  */
-export async function generateMemoryExtract(prompt, { responseLength = 600, task = null } = {}) {
+export async function generateMemoryExtract(prompt, {
+  responseLength = 600, task = null, systemPrompt = null,
+  providerConstraints = null, onRequestDiagnostic = null,
+} = {}) {
   try {
     return await queueMemoryRequest(() =>
       retryTransientMemoryOperation(async () => {
       const source = getSource();
+      const capabilities = getMemoryProviderCapabilities();
+      const priorMessages = systemPrompt && capabilities.system_role
+        ? [{ role: 'system', content: String(systemPrompt) }] : [];
+      const effectivePrompt = systemPrompt && !capabilities.system_role
+        ? `${String(systemPrompt)}\n\n${String(prompt)}` : prompt;
       let raw;
 
   if (source === memory_sources.ollama) {
-    raw = await generateOllama(prompt, [], responseLength, { task });
+    raw = await generateOllama(effectivePrompt, priorMessages, responseLength, {
+      task, providerConstraints: capabilities.native_json_schema ? providerConstraints : null,
+    });
   } else if (source === memory_sources.openai_compatible) {
-    raw = await generateOpenAICompat(prompt, [], responseLength, { task });
+    raw = await generateOpenAICompat(effectivePrompt, priorMessages, responseLength, {
+      task, onRequestDiagnostic,
+      providerConstraints: capabilities.native_json_schema ? providerConstraints : null,
+    });
   } else if (source === memory_sources.connection_profile) {
-    raw = await generateWithConnectionProfile(prompt, [], responseLength, { task });
+    raw = await generateWithConnectionProfile(effectivePrompt, [], responseLength, { task, onRequestDiagnostic });
   } else if (source === memory_sources.webllm) {
     if (!isWebLlmSupported()) {
       console.warn(
         `[${MODULE_NAME}] WebLLM source selected but WebLLM is not available, falling back to main`,
       );
-      raw = await generateRaw({ prompt, instruct: false, quietToLoud: false, responseLength });
+      raw = await generateRaw({ prompt: effectivePrompt, instruct: false, quietToLoud: false, responseLength });
     } else {
-      const messages = [{ role: 'user', content: prompt }];
+      const messages = [...priorMessages, { role: 'user', content: effectivePrompt }];
       const params = responseLength > 0 ? { max_tokens: responseLength } : {};
       raw = await generateWebLlmChatPrompt(messages, params);
     }
@@ -1083,7 +1121,7 @@ export async function generateMemoryExtract(prompt, { responseLength = 600, task
     // generateRaw parameter in SillyTavern. The parsers are also resilient -
     // they only match valid tagged lines and ignore everything else - so even
     // if this were silently ignored the output would still parse correctly.
-    raw = await generateRaw({ prompt, instruct: false, quietToLoud: false, responseLength });
+    raw = await generateRaw({ prompt: effectivePrompt, instruct: false, quietToLoud: false, responseLength });
   }
 
   // Main API path: ST already strips reasoning blocks in its own pipeline.

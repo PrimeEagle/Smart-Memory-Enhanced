@@ -55,7 +55,7 @@ import {
   saveSettingsDebounced,
   getCurrentChatId,
 } from '../../../../script.js';
-import { generateMemoryExtract, getMemoryRequestBudget } from './generate.js';
+import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestBudget } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
@@ -130,6 +130,7 @@ import {
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
+import { buildRecoverySourceUnits } from './owner-applicability.js';
 import {
   analyzeMalformedResponse,
   createMalformedRecoveryBudget,
@@ -936,6 +937,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       context_message_count: recovery.context_message_count ?? null,
       permitted_citation_indexes: recovery.permitted_citation_indexes ?? [],
       context_only_messages_eligible: recovery.context_only_messages_eligible ?? null,
+      applicability_decision: recovery.applicability_decision ?? null,
+      provider_capability_path: recovery.provider_capability_path ?? null,
       repair_reason: recovery.repair_reason ?? null,
       recovery_stage: recovery.recovery_stage ?? null,
       expected_output_format: recovery.expected_output_format ?? 'longterm_tagged_lines_v1',
@@ -1190,17 +1193,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         splitWindow: splitMalformedWindow, budget: malformedRecoveryBudget,
         splitDepth: malformedRecoveryDepth,
         owner: characterName,
+        providerCapabilities: getMemoryProviderCapabilities(),
         resumeState: resumeRecoveryState,
-        sourceUnits: sourceMessages.map((message, index) => {
-          const sourceIndex = message.__sme_original_index ?? range.start + index;
-          return {
-            unit_key: String(sourceIndex), citation_index: index,
-            text: `${message.name ?? 'Unknown'}: ${message.mes ?? ''}`,
-            source_fingerprint: sourceWindowFingerprint([message]),
-            context_source_range: { start: sourceIndex, end: sourceIndex, message_count: 1 },
-            context_message_count: 1,
-          };
-        }),
+        sourceUnits: buildRecoverySourceUnits(sourceMessages, range.start, sourceWindowFingerprint),
         stagePartialRecords: async (records, details) => {
           stageProviderPartialRecovery(providerMetadata, rootObligationId, coverageBase.source_fingerprint,
             records, { ...details, source_range: { start: range.start, end: range.end, message_count: range.message_count } });
@@ -1213,14 +1208,18 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         return recovery.added;
       }
       if (recovery.explicit_none) {
+        const durableRecoveredCount = Number(recovery.durable_partial_record_count ?? 0) || 0;
         if (recovery.logical_obligation_id) {
           markProviderStagedRecoveryCompleted(providerMetadata, recovery.logical_obligation_id,
-            coverageBase.source_fingerprint, 0);
+            coverageBase.source_fingerprint, durableRecoveredCount);
           await saveChatMetadata(getContext());
         }
-        recordCompletedCoverage('completed_no_candidates_after_regeneration');
+        recordCompletedCoverage(durableRecoveredCount > 0
+          ? 'completed_after_durable_partial_recovery' : 'completed_no_candidates_after_regeneration');
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
-          provider_outcome: 'completed_no_candidates_after_regeneration', parser_outcome: 'explicit_none' });
+          provider_outcome: durableRecoveredCount > 0
+            ? 'completed_after_durable_partial_recovery' : 'completed_no_candidates_after_regeneration',
+          parser_outcome: 'explicit_none', durable_recovered_record_count: durableRecoveredCount });
         return 0;
       }
       parsed = recovery.records;
