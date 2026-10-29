@@ -1,6 +1,6 @@
 import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
 
-export const RUN_STATUS_CLASSIFIER_VERSION = 3;
+export const RUN_STATUS_CLASSIFIER_VERSION = 4;
 
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const array = (value) => Array.isArray(value) ? value : [];
@@ -21,8 +21,10 @@ export function deriveRunErrorAccounting(report = {}) {
     ?? report.unresolved_error_count);
   const recovered = number(failure.recovered_failed_obligation_count
     ?? provider.recovered_malformed_obligations ?? report.recovered_error_count);
+  const operationalPauses = number(failure.operationally_paused_obligation_count
+    ?? provider.operational_pause_count ?? report.operational_pause_count);
   const uniqueFailed = number(failure.unique_failed_obligation_count
-    ?? provider.unique_malformed_obligations) || unresolved + recovered;
+    ?? provider.unique_malformed_obligations) || unresolved + recovered + operationalPauses;
   const observedTransportFailures = number(failure.provider_transport_failure_count
     ?? provider.terminal_counts?.provider_failure
     ?? logical.cumulative_request_counters?.provider_failure_count
@@ -82,6 +84,11 @@ export function deriveRunErrorAccounting(report = {}) {
       count: recovered, unit: 'unique_logical_obligations', scope: 'cumulative_provider_audit',
       includes_recovered: true, bounded: false, authoritative: true,
     },
+    operational_pauses: {
+      count: operationalPauses, unit: 'unique_logical_obligations', scope: 'current_operational_state',
+      includes_recovered: false, bounded: false, authoritative: true,
+      reasons: array(provider.operational_pauses).map((item) => item.reason_code).filter(Boolean),
+    },
     provider_transport_failures: {
       count: observedTransportFailures, unit: 'physical_request_events', scope: 'cumulative_provider_audit',
       includes_recovered: true, bounded: false, authoritative: true,
@@ -125,7 +132,7 @@ export function deriveRunErrorAccounting(report = {}) {
     reconciliation: {
       terminal_unresolved_subset_of_failed: unresolved <= uniqueFailed,
       recovered_plus_unresolved_equals_failed: providerAggregateCountsExact
-        ? recovered + unresolved === uniqueFailed : null,
+        ? recovered + operationalPauses + unresolved === uniqueFailed : null,
       recovered_and_unresolved_do_not_overlap: [...recoveredIds].every((id) => !unresolvedIds.has(id)),
       fatal_not_inferred_from_transient_provider_failures: fatalRunErrors === 0
         || Boolean(report.final_persistence_error || currentDetails.some((entry) => entry?.fatal === true)),
@@ -137,7 +144,7 @@ export function deriveRunErrorAccounting(report = {}) {
       malformed_transport_validation_reconcile: physicalCategoryAccountingAvailable
         ? cumulativeFailureObservations === categorizedPhysicalFailures : null,
       consistent: unresolved <= uniqueFailed
-        && (!providerAggregateCountsExact || recovered + unresolved === uniqueFailed)
+        && (!providerAggregateCountsExact || recovered + operationalPauses + unresolved === uniqueFailed)
         && unresolved >= retainedUnresolvedCount
         && (recovered === 0 || cumulativeFailureObservations > 0)
         && cumulativeFailureObservations >= uniqueFailed
@@ -180,6 +187,7 @@ export function deriveRunStatus(report = {}) {
   const noticeCount = number(accounting.quality_notices?.count);
   const displayedNoticeCount = noticeCount + (automaticMissedMutation ? 1 : 0);
   const fatalCount = number(accounting.fatal_run_level_errors?.count);
+  const operationalPauseCount = number(accounting.operational_pauses?.count);
   const legacyStatus = String(report.lifecycle_status ?? report.operational_status ?? report.status ?? '').toLowerCase();
   const statusReasonCodes = [];
   let lifecycleStatus;
@@ -226,7 +234,9 @@ export function deriveRunStatus(report = {}) {
     }
   } else if (lifecycleStatus === 'incomplete') {
     outcomeStatus = 'incomplete_resumable'; severity = 'warning'; icon = 'circle-pause';
-    label = 'Incomplete — resumable';
+    label = operationalPauseCount > 0
+      ? 'Incomplete — recovery budget reached; Resume available'
+      : 'Incomplete — resumable';
   } else if (lifecycleStatus === 'blocked') {
     outcomeStatus = 'blocked'; severity = 'error'; icon = 'ban';
     label = recovery.reason_code === 'recovery_change_required'
@@ -246,6 +256,7 @@ export function deriveRunStatus(report = {}) {
     icon,
     unresolved_error_count: unresolvedCount,
     recovered_error_count: recoveredCount,
+    operational_pause_count: operationalPauseCount,
     historical_failure_observation_count: historicalFailureObservationCount,
     notice_count: displayedNoticeCount,
     attention_required: automaticMissedMutation || unresolvedCount > 0 || integrityFailure,

@@ -5,10 +5,13 @@ import {
   classifyMalformedProviderOutput,
   finishProviderAttempt,
   markProviderPartialRecordsPersisted,
+  markProviderRecoveryBudgetPause,
+  markProviderRecoveryChildCompleted,
   markProviderStagedRecoveryCompleted,
   migrateProviderAttemptAuditReport,
   PROVIDER_OBLIGATION_LIMIT,
   readProviderRecoveryWindowState,
+  registerProviderRecoveryChildPlan,
   stageProviderPartialRecovery,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
@@ -25,7 +28,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 9);
+  assert.equal(migrated.schema_version, 10);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -184,7 +187,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 9);
+  assert.equal(summary.schema_version, 10);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);
@@ -212,7 +215,7 @@ test('bounded obligation detail preserves exact aggregate counts and unresolved 
   assert.equal(summary.terminally_unresolved_malformed_obligations, 1);
   assert.equal(summary.terminal_unresolved_obligations[0].root_obligation_id,
     `lt:${PROVIDER_OBLIGATION_LIMIT + 1}`);
-  assert.equal(summary.coverage.safely_checkpointed_obligations, PROVIDER_OBLIGATION_LIMIT + 2);
+  assert.equal(summary.coverage.safely_checkpointed_obligations, PROVIDER_OBLIGATION_LIMIT + 1);
   assert.match(summary.reconciliation.limitation, /archived cumulative counters remain authoritative/);
 });
 
@@ -568,7 +571,7 @@ test('schema-eight migration reopens an exhausted v0.9.63 unit window exactly on
     unresolved_semantic_units: ['80', '81', '82', '83', '84'], source_unit_key: '80',
   });
   const window = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
-  assert.equal(window.recovery_implementation_version, 4);
+  assert.equal(window.recovery_implementation_version, 5);
   assert.equal(window.unit_obligations['80'].disposition, 'blocked_validation');
   assert.equal(window.unit_obligations['80'].candidate_accounting_consistent, true);
   unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
@@ -582,4 +585,50 @@ test('schema-eight migration reopens an exhausted v0.9.63 unit window exactly on
   assert.equal(comparison.v2_and_later.physical_requests, 1);
   assert.equal(comparison.v2_and_later.malformed_responses, 1);
   assert.equal(comparison.v2_and_later.malformed_response_rate, 1);
+});
+
+test('Aster budget pause cannot close root until every repartition leaf is complete', () => {
+  const metadata = { active_catchup_run_id: 'aster-pause' };
+  const rootId = 'longterm:aster graves:600-619:fnv1a-a39ee667';
+  const original = beginProviderAttempt(metadata, {
+    tier: 'longterm', owner: 'Aster Graves', logical_obligation_id: rootId,
+    request_kind: 'original', source_range: { start: 600, end: 619, message_count: 20 },
+    root_source_range: { start: 600, end: 619, message_count: 20 },
+    source_fingerprint: 'fnv1a-a39ee667', root_source_fingerprint: 'fnv1a-a39ee667',
+    request_signature: 'aster-original',
+  });
+  finishProviderAttempt(metadata, original, {
+    terminal_outcome: 'provider_response_malformed', malformed_reason: 'malformed_tag',
+    recovery_stage: 'strict_generation', recoverable: true,
+  });
+  const children = [
+    { key: 'aster:600-604', source_range: { start: 600, end: 604 } },
+    { key: 'aster:605-609', source_range: { start: 605, end: 609 } },
+    { key: 'aster:610-614', source_range: { start: 610, end: 614 } },
+    { key: 'aster:615-619', source_range: { start: 615, end: 619 } },
+  ];
+  registerProviderRecoveryChildPlan(metadata, rootId, {
+    tier: 'longterm', owner: 'Aster Graves',
+    root_source_range: { start: 600, end: 619, message_count: 20 },
+    root_source_fingerprint: 'fnv1a-a39ee667', children,
+    completed_child_keys: children.slice(0, 3).map((item) => item.key),
+    budget: { maximum_additional_provider_requests: 20, additional_provider_requests: 20,
+      resume_epoch: 1, requests_by_stage: {}, requests_by_child: {} },
+  });
+  markProviderRecoveryBudgetPause(metadata, rootId, {
+    next_child_key: 'aster:615-619', unattempted_siblings: ['aster:615-619'],
+    progress_made: true,
+  });
+  let summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.recovered_malformed_obligations, 0);
+  assert.equal(summary.terminally_unresolved_malformed_obligations, 0);
+  assert.equal(summary.operational_pause_count, 1);
+  assert.equal(summary.operational_pauses[0].next_resumable_child, 'aster:615-619');
+  assert.equal(summary.coverage.valid_generation_obligations, 0);
+  assert.equal(summary.reconciliation.incomplete_child_coverage_not_classified_recovered, true);
+  markProviderRecoveryChildCompleted(metadata, rootId, 'aster:615-619');
+  summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.operational_pause_count, 0);
+  assert.equal(summary.recovered_malformed_obligations, 1);
+  assert.equal(summary.reconciliation.root_recovered_implies_every_expected_child_complete, true);
 });

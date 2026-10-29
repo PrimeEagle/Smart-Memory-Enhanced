@@ -9,7 +9,7 @@ export const RECOVERY_STAGE_ORDER = Object.freeze([
   'single_source_unit_regeneration',
 ]);
 
-export const RECOVERY_IMPLEMENTATION_VERSION = 4;
+export const RECOVERY_IMPLEMENTATION_VERSION = 5;
 
 const unique = (values = []) => [...new Set(values.filter(Boolean))];
 
@@ -63,7 +63,8 @@ export function deriveRecoveryStageEligibility(state = {}) {
       reason_code: 'updated_recovery_implementation_available',
       changed_dimensions: ['recovery_implementation_version', 'single_source_pipe_contract',
         'owner_applicability_gate', 'fragment_validation', 'provider_role_separation',
-        'native_structured_output_when_supported', 'bounded_contract_enforcement_retry'],
+        'native_structured_output_when_supported', 'bounded_contract_enforcement_retry',
+        'authoritative_child_coverage_manifest', 'resumable_recovery_budget_pause'],
       expected_progress: `resolve_${unresolvedUnits.length}_remaining_source_units`,
       replay_permission: 'updated_implementation_changed_recovery_dimension',
       attempted_stages: attemptedStages,

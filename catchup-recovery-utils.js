@@ -511,6 +511,12 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       ?? checkpoint.run_manifest?.terminal_reason_code ?? null,
     source_message_count: Number(checkpoint.source_message_count ?? 0),
     safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
+    operational_pause: checkpoint.operational_pause ?? null,
+    recovery_child_manifests: {
+      schema_version: Number(checkpoint.recovery_child_manifests?.schema_version ?? 0) || null,
+      roots: Object.values(checkpoint.recovery_child_manifests?.roots ?? {}).slice(-64),
+      root_count: Object.keys(checkpoint.recovery_child_manifests?.roots ?? {}).length,
+    },
     context_overflow_recovery: {
       schema_version: Number(checkpoint.context_overflow_recovery?.schema_version ?? 0) || null,
       completed_child_count: checkpoint.context_overflow_recovery?.completed_children?.length ?? 0,
@@ -557,7 +563,21 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
 export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSummary) {
   const base = { ...(checkpointSummary ?? { available: false, resumable: false }) };
   const unresolved = providerSummary?.terminal_unresolved_obligations ?? [];
-  if (!unresolved.length) return base;
+  const operationalPauses = providerSummary?.operational_pauses ?? [];
+  if (!unresolved.length && !operationalPauses.length) return base;
+  if (!unresolved.length && operationalPauses.length) return {
+    ...base,
+    available: true,
+    resumable: true,
+    blocked: false,
+    unresolved_obligation_count: 0,
+    operational_pause_count: operationalPauses.length,
+    operational_pauses: operationalPauses,
+    reason_code: operationalPauses[0]?.reason_code
+      ?? 'recovery_request_budget_reached_with_pending_children',
+    next_eligible_recovery_action: operationalPauses[0]?.next_resumable_child ?? null,
+    safe_progress_preserved: true,
+  };
   const blocked = unresolved.filter((item) => item.recovery_blocked === true
     || item.recovery_eligibility?.blocked === true);
   const resumable = unresolved.filter((item) => !blocked.includes(item)

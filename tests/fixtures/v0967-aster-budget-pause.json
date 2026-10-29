@@ -1,0 +1,19 @@
+{
+  "build": "sme-v0.9.67-owner-applicability-r1",
+  "root_obligation_id": "longterm:aster graves:600-619:fnv1a-a39ee667",
+  "root_source_range": { "start": 600, "end": 619, "message_count": 20 },
+  "root_source_fingerprint": "fnv1a-a39ee667",
+  "completed_children": [
+    { "key": "longterm:aster graves:600-604:fnv1a-a79a7b58", "start": 600, "end": 604 },
+    { "key": "longterm:aster graves:605-609:fnv1a-f3843456", "start": 605, "end": 609 },
+    { "key": "longterm:aster graves:610-614:fnv1a-e3a103b2", "start": 610, "end": 614 }
+  ],
+  "pending_child": {
+    "key": "longterm:aster graves:615-619:fnv1a-pending-sanitized",
+    "start": 615,
+    "end": 619
+  },
+  "additional_recovery_requests_consumed": 20,
+  "session_600_619_completed": true,
+  "other_longterm_owners_completed": 5
+}

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.68] - 2026-10-29
+
+### Added
+
+- Repartitioned malformed-output recovery now persists an authoritative child-
+  coverage manifest per root obligation. The manifest records expected and
+  completed leaf ranges, explicit no-updates, pending/blocked/unattempted
+  children, staged-record counts, per-child request use, budget epochs, and the
+  exact next resumable child.
+- Provider, checkpoint, and exported diagnostics now distinguish physical
+  request success, source-unit completion, child-range completion, root
+  recovery, parent-tier commitment, and operational recovery-budget pauses.
+
+### Fixed
+
+- Reaching a bounded recovery-request or wall-time budget before every sibling
+  child is attempted now creates a yellow resumable operational pause instead
+  of a terminal extraction error. A new Resume epoch receives a fresh bounded
+  budget without increasing the configured limit.
+- A successful child can no longer mark its parent root recovered, valid, or
+  safely checkpointed while another required child is absent. Exact leaf
+  coverage is required before root closure, with reconciliation failures
+  exported when provider, owner, tier, or checkpoint state disagrees.
+- Recovery implementation v5 reconstructs v0.9.67 child coverage from durable
+  completed-child evidence. For the preserved Aster 600–619 obligation it
+  retains 600–614, begins at 615–619, reuses the five completed Long-Term owner
+  siblings and completed Session tier, and does not duplicate staged records.
+- Current errors, operational pauses, recovered errors, historical malformed
+  observations, and fatal failures now have separate accounting and UI states.
+  Historical malformed responses remain exportable without making a safe
+  budget boundary appear as a current failure.
+
 ## [0.9.67] - 2026-10-28
 
 ### Added

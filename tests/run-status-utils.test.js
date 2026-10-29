@@ -95,6 +95,43 @@ test('incomplete resumable, blocked, fatal, and notice-only states have determin
   assert.equal(providerNotices.outcome_status, 'completed_with_notices');
 });
 
+test('recovery budget boundary is warning resumable state, not a current error', () => {
+  const report = {
+    status: 'incomplete',
+    catch_up_recovery: {
+      available: true, resumable: true,
+      reason_code: 'recovery_request_budget_reached_with_pending_children',
+    },
+    provider_attempt_audit: {
+      unique_malformed_obligations: 109,
+      recovered_malformed_obligations: 108,
+      terminally_unresolved_malformed_obligations: 0,
+      operational_pause_count: 1,
+      operational_pauses: [{ reason_code: 'recovery_request_budget_reached_with_pending_children' }],
+      terminal_unresolved_obligations: [],
+      obligation_aggregate_counts_exact: true,
+      failure_accounting: {
+        unique_failed_obligation_count: 109,
+        recovered_failed_obligation_count: 108,
+        operationally_paused_obligation_count: 1,
+        terminal_unresolved_obligation_count: 0,
+        physical_failure_observation_count: 395,
+        malformed_response_count: 395,
+        parser_structural_failure_count: 395,
+      },
+    },
+  };
+  const accounting = deriveRunErrorAccounting(report);
+  assert.equal(accounting.terminal_unresolved_obligations.count, 0);
+  assert.equal(accounting.operational_pauses.count, 1);
+  assert.equal(accounting.reconciliation.consistent, true);
+  const status = deriveRunStatus({ ...report, error_accounting: accounting });
+  assert.equal(status.lifecycle_status, 'incomplete');
+  assert.equal(status.severity, 'warning');
+  assert.equal(status.operational_pause_count, 1);
+  assert.equal(status.label, 'Incomplete — recovery budget reached; Resume available');
+});
+
 test('recovered failures canonically supply a missing historical observation count', () => {
   const corrected = deriveRunErrorAccounting(completed({ provider_attempt_audit: {
     unique_malformed_obligations: 2, recovered_malformed_obligations: 2,

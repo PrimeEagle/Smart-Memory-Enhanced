@@ -123,9 +123,12 @@ import {
   beginProviderAttempt,
   finishProviderAttempt,
   markProviderPartialRecordsPersisted,
+  markProviderRecoveryBudgetPause,
+  markProviderRecoveryChildCompleted,
   markProviderStagedRecoveryCompleted,
   providerConfigurationSignature,
   readProviderRecoveryWindowState,
+  registerProviderRecoveryChildPlan,
   stageProviderPartialRecovery,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
@@ -137,6 +140,7 @@ import {
   consumeMalformedRecoveryRequest,
   malformedChildCoverageComplete,
   partitionMalformedSourceWindow,
+  recoveryBudgetPauseError,
   recoverMalformedTaggedOutput,
 } from './malformed-output-recovery.js';
 
@@ -1070,13 +1074,58 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       if (!children.length) return { completed: false, reason: 'minimum_malformed_recovery_window_reached' };
       let added = 0;
       const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('longterm', characterName, child));
+      const completedChildKeysAtStart = [
+        ...(options._contextOverflowCompletedChildren ?? []),
+        ...(budget.split_children_committed ?? []),
+      ];
+      let childManifest = registerProviderRecoveryChildPlan(providerMetadata, rootObligationId, {
+        tier: 'longterm', owner: characterName,
+        root_source_range: options._providerRootSourceRange
+          ?? { start: range.start, end: range.end, message_count: range.message_count },
+        root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+        parent_child_key: options._recoveryManifestParentChildKey ?? null,
+        children: children.map((child) => {
+          const childRange = sourceRange(child);
+          return { key: extractionRecoveryChildKey('longterm', characterName, child),
+            source_range: childRange, source_fingerprint: sourceWindowFingerprint(child) };
+        }),
+        completed_child_keys: completedChildKeysAtStart,
+        budget,
+      });
+      await options._onRecoveryChildManifestUpdated?.(childManifest);
       for (const child of children) {
         const childRange = sourceRange(child);
         const childKey = extractionRecoveryChildKey('longterm', characterName, child);
         if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)
           || budget.split_children_committed.includes(childKey)) continue;
-        const allowance = consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition');
-        if (!allowance.allowed) return { completed: false, reason: allowance.reason };
+        const childPrefix = `longterm:${String(characterName).trim().toLowerCase()}:`;
+        const hasCompletedDescendant = completedChildKeysAtStart.some((key) => {
+          if (!String(key).startsWith(childPrefix) || key === childKey) return false;
+          const match = String(key).slice(childPrefix.length).match(/^(\d+)-(\d+):/);
+          return match && Number(match[1]) >= childRange.start && Number(match[2]) <= childRange.end;
+        });
+        const allowance = hasCompletedDescendant
+          ? { allowed: true, restored_descendant_resume: true }
+          : consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition', Date.now(), { child_key: childKey });
+        if (!allowance.allowed) {
+          const childIndex = expectedChildKeys.indexOf(childKey);
+          childManifest = markProviderRecoveryBudgetPause(providerMetadata, rootObligationId, {
+            reason_code: allowance.reason === 'recovery_wall_time_exhausted'
+              ? 'recovery_wall_time_budget_reached_with_pending_children'
+              : 'recovery_request_budget_reached_with_pending_children',
+            next_child_key: childKey,
+            child_active_when_budget_ended: null,
+            unattempted_siblings: expectedChildKeys.slice(childIndex),
+            progress_made: childIndex > 0 || completedChildKeysAtStart.length > 0,
+          });
+          await options._onRecoveryChildManifestUpdated?.(childManifest);
+          return { completed: false, paused: true,
+            reason: childManifest?.operational_pause?.reason_code
+              ?? 'recovery_request_budget_reached_with_pending_children',
+            next_resumable_child: childKey,
+            unattempted_siblings: expectedChildKeys.slice(childIndex),
+            progress_made: true };
+        }
         added += await extractAndStoreMemories(characterName, child, statusFn, {
           ...options,
           liveHealth: null,
@@ -1090,6 +1139,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           _providerParentAttemptId: parentAttemptId,
           _providerRequestKind: 'malformed_repartition_child',
           _providerChangedRecoveryDimensions: ['source_range', 'malformed_output_repartition'],
+          _recoveryManifestParentChildKey: childKey,
         });
         budget.split_children_committed.push(childKey);
         await options._onContextOverflowChildCommitted?.({
@@ -1099,6 +1149,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: nextDepth,
           split_reason: 'malformed_output_repartition', malformed_reason: reason,
         });
+        childManifest = markProviderRecoveryChildCompleted(providerMetadata, rootObligationId, childKey, {
+          recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
+        });
+        await options._onRecoveryChildManifestUpdated?.(childManifest);
       }
       const committedChildKeys = [
         ...(options._contextOverflowCompletedChildren ?? []),
@@ -1114,6 +1168,30 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       });
       return { completed: true, added };
     };
+
+    const completedRecoveryChildren = options._contextOverflowCompletedChildren ?? [];
+    const rootChildPrefix = `longterm:${String(characterName).trim().toLowerCase()}:`;
+    const hasRestoredMalformedDescendant = completedRecoveryChildren.some((key) => {
+      if (!String(key).startsWith(rootChildPrefix)) return false;
+      const match = String(key).slice(rootChildPrefix.length).match(/^(\d+)-(\d+):/);
+      return match && Number(match[1]) >= range.start && Number(match[2]) <= range.end
+        && (Number(match[1]) !== range.start || Number(match[2]) !== range.end);
+    });
+    if (hasRestoredMalformedDescendant) {
+      const resumed = await splitMalformedWindow({
+        budget: malformedRecoveryBudget, nextDepth: 1,
+        reason: 'resume_child_coverage_manifest', parentAttemptId: null,
+      });
+      if (resumed.completed) {
+        healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved',
+          provider_outcome: 'completed_after_restored_child_coverage', parser_outcome: 'repartitioned' });
+        return resumed.added;
+      }
+      if (resumed.paused) throw recoveryBudgetPauseError('longterm', malformedRecoveryBudget, {
+        reason_code: resumed.reason, next_resumable_child: resumed.next_resumable_child,
+        unattempted_siblings: resumed.unattempted_siblings, progress_made: resumed.progress_made,
+      });
+    }
 
     if (!preflight.fits) {
       healthUpdate({ provider_outcome: 'locally_prevented', preflight: { ...preflight, prevented: true, resized_or_repartitioned: true } });
@@ -1670,6 +1748,20 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     });
     return added;
   } catch (err) {
+    if (err?.code === 'SME_RECOVERY_BUDGET_PAUSE') {
+      err.sme_request_diagnostics ??= {};
+      err.sme_request_diagnostics.owner = characterName;
+      err.sme_request_diagnostics.root_obligation_id = rootObligationId;
+      err.sme_request_diagnostics.root_source_range = options._providerRootSourceRange
+        ?? { start: range.start, end: range.end, message_count: range.message_count };
+      healthFinish({
+        terminal_health: 'paused_resumable',
+        provider_outcome: 'recovery_request_budget_reached_with_pending_children',
+        parser_outcome: 'child_coverage_pending', persistence: 'partial_valid_records_saved',
+        attention_reason_codes: ['operational_recovery_budget_pause'],
+      });
+      throw err;
+    }
     const malformedExhausted = ['SME_MALFORMED_PROVIDER_OUTPUT', 'SME_RECOVERY_PATH_EXHAUSTED'].includes(err?.code);
     healthFinish({
       terminal_health: malformedExhausted ? 'provider_response_malformed' : 'provider_failure',

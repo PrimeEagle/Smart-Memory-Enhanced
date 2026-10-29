@@ -562,17 +562,46 @@ export function malformedChildCoverageComplete(expectedChildKeys, committedChild
 }
 
 export function createMalformedRecoveryBudget(prior = null, now = Date.now()) {
-  return prior ?? { schema_version: 1, started_at: now, additional_provider_requests: 0,
-    requests_by_stage: {}, recovered_by_stage: {}, split_children_committed: [] };
+  return prior ?? { schema_version: 2, started_at: now, additional_provider_requests: 0,
+    maximum_additional_provider_requests: MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests,
+    resume_epoch: 1, requests_by_stage: {}, requests_by_child: {},
+    recovered_by_stage: {}, split_children_committed: [] };
 }
 
-export function consumeMalformedRecoveryRequest(budget, stage, now = Date.now()) {
+export function consumeMalformedRecoveryRequest(budget, stage, now = Date.now(), details = {}) {
   if (!budget) return { allowed: false, reason: 'recovery_budget_missing' };
   if (now - Number(budget.started_at ?? now) > MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms) return { allowed: false, reason: 'recovery_wall_time_exhausted' };
   if (Number(budget.additional_provider_requests ?? 0) >= MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests) return { allowed: false, reason: 'recovery_request_limit_exhausted' };
   budget.additional_provider_requests = Number(budget.additional_provider_requests ?? 0) + 1;
   budget.requests_by_stage[stage] = Number(budget.requests_by_stage[stage] ?? 0) + 1;
+  if (details.child_key) budget.requests_by_child[details.child_key]
+    = Number(budget.requests_by_child[details.child_key] ?? 0) + 1;
   return { allowed: true, request_number: budget.additional_provider_requests };
+}
+
+export function recoveryBudgetPauseError(tier, budget, details = {}) {
+  const error = new Error(`${tier === 'session' ? 'Session' : 'Long-term'} recovery request budget reached; pending child work is safely resumable.`);
+  error.code = 'SME_RECOVERY_BUDGET_PAUSE';
+  error.sme_operational_pause = true;
+  error.sme_request_diagnostics = {
+    tier,
+    pause_reason: details.reason_code ?? 'recovery_request_budget_reached_with_pending_children',
+    budget_type: 'additional_provider_requests_per_root_resume_epoch',
+    initial_budget: Number(budget?.maximum_additional_provider_requests
+      ?? MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests),
+    consumed_requests: Number(budget?.additional_provider_requests ?? 0),
+    remaining_requests: Math.max(0, Number(budget?.maximum_additional_provider_requests
+      ?? MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests)
+      - Number(budget?.additional_provider_requests ?? 0)),
+    requests_by_stage: { ...(budget?.requests_by_stage ?? {}) },
+    requests_by_child: { ...(budget?.requests_by_child ?? {}) },
+    next_resumable_child: details.next_resumable_child ?? null,
+    unattempted_siblings: details.unattempted_siblings ?? [],
+    progress_made: details.progress_made === true,
+    fresh_budget_on_resume: true,
+    immediate_resume_expected_to_progress: Boolean(details.next_resumable_child),
+  };
+  return error;
 }
 
 export function markMalformedRecoverySuccess(budget, stage) {
@@ -774,6 +803,14 @@ export async function recoverMalformedTaggedOutput({
     if (splitResult?.completed) {
       markMalformedRecoverySuccess(budget, 'malformed_source_repartition');
       return { repartitioned: true, added: Number(splitResult.added ?? 0), stage: 'malformed_source_repartition', budget, original_reason: originalReason };
+    }
+    if (splitResult?.paused) {
+      throw recoveryBudgetPauseError(tier, budget, {
+        reason_code: splitResult.reason,
+        next_resumable_child: splitResult.next_resumable_child,
+        unattempted_siblings: splitResult.unattempted_siblings,
+        progress_made: splitResult.progress_made,
+      });
     }
   }
   // Once deterministic repartition reaches its minimum useful source window,

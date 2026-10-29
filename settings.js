@@ -218,8 +218,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.67',
-  build_fingerprint: 'sme-v0.9.67-owner-applicability-r1',
+  extension_version: '0.9.68',
+  build_fingerprint: 'sme-v0.9.68-recovery-child-coverage-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5103,6 +5103,7 @@ export function bindSettingsUI(ctrl) {
       extractionFailuresByTier: {},
       saveFailures: 0,
       providerFailures: [],
+      operationalPauses: [],
       errors: [],
       warnings: [],
       warningsSuppressed: 0,
@@ -5176,6 +5177,21 @@ export function bindSettingsUI(ctrl) {
         });
       }
       console.error(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
+    };
+    const recordCatchUpOperationalPause = (label, err, tier = null) => {
+      const pause = {
+        label, tier,
+        reason_code: err?.sme_request_diagnostics?.pause_reason
+          ?? 'recovery_request_budget_reached_with_pending_children',
+        ...(err?.sme_request_diagnostics ?? {}),
+        recorded_at: Date.now(),
+      };
+      runResult.operationalPauses = [
+        ...runResult.operationalPauses.filter((item) => item.reason_code !== pause.reason_code
+          || item.next_resumable_child !== pause.next_resumable_child), pause,
+      ].slice(-16);
+      checkpoint.operational_pause = pause;
+      console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, pause);
     };
     const recordCatchUpWarning = (label, err, tier = null) => {
       // Avoid turning a repeated optional-provider failure (such as AI scene
@@ -5712,6 +5728,15 @@ export function bindSettingsUI(ctrl) {
           await saveChatMetadata(catchUpContext);
           await checkpointCatchUpTransaction(chunkTransaction);
         };
+        checkpoint.recovery_child_manifests ??= { schema_version: 1, roots: {} };
+        checkpoint.recovery_child_manifests.roots ??= {};
+        const commitRecoveryChildManifest = async (manifest) => {
+          if (!manifest?.root_obligation_id) return;
+          checkpoint.recovery_child_manifests.roots[manifest.root_obligation_id] = manifest;
+          checkpoint.updated_at = Date.now();
+          await saveChatMetadata(catchUpContext);
+          await checkpointCatchUpTransaction(chunkTransaction);
+        };
         const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
         const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
         const priorLongtermObligation = getCatchUpTierRangeStatus(checkpoint.run_manifest, 'longterm', currentRange);
@@ -5779,9 +5804,16 @@ export function bindSettingsUI(ctrl) {
               liveHealth: createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'),
               _contextOverflowCompletedChildren: completedOverflowChildren,
               _onContextOverflowChildCommitted: commitOverflowChild,
+              _onRecoveryChildManifestUpdated: commitRecoveryChildManifest,
               _providerResumedPendingObligation: Boolean(resumableCheckpoint
                 && (priorOwnerStatus || ownerHasUnresolvedProviderObligation(name))),
             }).catch((err) => {
+              if (err?.code === 'SME_RECOVERY_BUDGET_PAUSE') {
+                err.sme_request_diagnostics ??= {};
+                err.sme_request_diagnostics.parent_chunk_range = { ...currentRange };
+                recordCatchUpOperationalPause('Long-Term recovery budget pause', err, 'long-term');
+                return;
+              }
               recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
               if (err?.sme_context_overflow_checkpoint_failure) {
                 ctrl.catchUpCancelled = true;
@@ -5824,6 +5856,7 @@ export function bindSettingsUI(ctrl) {
             liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
             _contextOverflowCompletedChildren: completedOverflowChildren,
             _onContextOverflowChildCommitted: commitOverflowChild,
+            _onRecoveryChildManifestUpdated: commitRecoveryChildManifest,
             _providerResumedPendingObligation: Boolean(resumableCheckpoint && priorSessionObligation),
           }).catch((err) => {
             recordCatchUpError('session extraction error (chunk)', err, 'session');
@@ -5996,8 +6029,10 @@ export function bindSettingsUI(ctrl) {
               })).slice(-16),
               blocked_at: Date.now(),
             } : null;
+            const operationalPauseReason = checkpointForCommit.operational_pause?.reason_code ?? null;
             const terminalReasonCode = recoveryBlocked
-              ? 'recovery_change_required' : 'tier_coverage_incomplete';
+              ? 'recovery_change_required'
+              : operationalPauseReason ?? 'tier_coverage_incomplete';
             checkpointForCommit.run_manifest = finalizeCatchUpRunManifest(checkpointForCommit.run_manifest, {
               status: recoveryBlocked ? 'blocked_recovery_change_required' : 'awaiting_manual_resume',
               reasonCode: terminalReasonCode,
@@ -6009,8 +6044,11 @@ export function bindSettingsUI(ctrl) {
             ctrl.catchUpStopReason = terminalReasonCode;
             setStatusMessage(recoveryBlocked
               ? `Source ingestion blocked: ${blockedObligations.length} extraction obligation${blockedObligations.length === 1 ? '' : 's'} exhausted every available recovery path for ${i}-${processed - 1}. Safe progress is preserved; change provider configuration or install an updated build before resuming.`
-              : `Source ingestion paused: Long-Term or Session coverage is incomplete for ${i}-${processed - 1}. Resume will replay only the pending tier work.`);
+              : operationalPauseReason === 'recovery_request_budget_reached_with_pending_children'
+                ? `Source ingestion paused safely at the recovery-request budget for ${i}-${processed - 1}. Resume continues with ${checkpointForCommit.operational_pause?.next_resumable_child ?? 'the exact pending child'}.`
+                : `Source ingestion paused: Long-Term or Session coverage is incomplete for ${i}-${processed - 1}. Resume will replay only the pending tier work.`);
           } else {
+            delete checkpointForCommit.operational_pause;
             checkpointForCommit.next_source_offset = processed;
             if (replayRange) {
               if (processed <= replayRange.end_offset) i = processed;
@@ -8860,6 +8898,25 @@ export function bindSettingsUI(ctrl) {
         retried_requests_scope: 'current_attempt',
         errors: catchUpErrorCount,
         error_details: runResult.errors,
+        operational_pauses: runResult.operationalPauses,
+        operational_pause_count: runResult.operationalPauses.length,
+        successful_tier_work_awaiting_parent_commit: checkpoint.operational_pause?.parent_chunk_range ? (() => {
+          const pendingRange = checkpoint.operational_pause.parent_chunk_range;
+          const sessionStatus = getCatchUpTierRangeStatus(checkpoint.run_manifest, 'session', pendingRange);
+          const longtermStatus = getCatchUpTierRangeStatus(checkpoint.run_manifest, 'longterm', pendingRange);
+          return {
+            parent_chunk_range: pendingRange,
+            session: {
+              safely_completed: sessionStatus?.safely_committed === true,
+              source_fingerprint: sessionStatus?.source_fingerprint ?? null,
+              reuse_on_resume: sessionStatus?.safely_committed === true,
+            },
+            longterm: {
+              safely_completed: longtermStatus?.safely_committed === true,
+              pending_owner: checkpoint.operational_pause.owner ?? 'Aster Graves',
+            },
+          };
+        })() : null,
         warnings: runResult.warnings,
         warnings_suppressed: runResult.warningsSuppressed,
         pre_run_state_audit: preRunFreshStartAudit ? {
@@ -8899,6 +8956,7 @@ export function bindSettingsUI(ctrl) {
         runtime_context: runResult.runtimeContext,
         runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(checkpoint.runtime_context_limits ?? {}) },
         context_overflow_recovery: checkpoint.context_overflow_recovery ?? null,
+        recovery_child_manifests: checkpoint.recovery_child_manifests ?? null,
         persona_audit_proof: checkpoint.persona_audit_proof ?? null,
         imported_persona_recovery: (() => {
           const recovery = runResult.runtimeContext?.active_persona?.imported_persona_recovery;
@@ -9246,6 +9304,8 @@ export function bindSettingsUI(ctrl) {
         runResult.status = automaticallyPaused ? 'paused_resumable' : 'cancelled';
         const pausedMessage = ctrl.catchUpStopReason === 'tier_coverage_incomplete'
           ? 'Memorize Chat paused safely because one memory tier is incomplete. Resume retries only the pending tier work.'
+          : ctrl.catchUpStopReason === 'recovery_request_budget_reached_with_pending_children'
+            ? 'Memorize Chat paused safely at a recovery-request budget boundary. Resume continues from the exact unattempted child with a fresh bounded budget.'
           : ctrl.catchUpStopReason === 'persistence_failure' || ctrl.catchUpStopReason === 'checkpoint_persistence_failure'
             ? 'Memorize Chat paused safely after a persistence failure. Resume continues from the last durable boundary.'
             : 'Catch-up cancelled. Partial results have been saved.';

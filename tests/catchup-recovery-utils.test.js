@@ -38,6 +38,25 @@ test('provider obligations authoritatively correct stale checkpoint recovery pre
   assert.equal(blocked.blocked_obligation_count, 1);
 });
 
+test('provider recovery-budget pause is resumable without becoming an unresolved error', () => {
+  const result = reconcileCatchUpRecoverySummary({
+    available: true, resumable: true, safely_committed_offset: 600,
+    reason_code: 'tier_coverage_incomplete',
+  }, {
+    terminal_unresolved_obligations: [],
+    operational_pauses: [{
+      root_obligation_id: 'longterm:aster graves:600-619:fnv1a-a39ee667',
+      reason_code: 'recovery_request_budget_reached_with_pending_children',
+      next_resumable_child: 'longterm:aster graves:615-619:pending',
+    }],
+  });
+  assert.equal(result.resumable, true);
+  assert.equal(result.blocked, false);
+  assert.equal(result.unresolved_obligation_count, 0);
+  assert.equal(result.operational_pause_count, 1);
+  assert.match(result.next_eligible_recovery_action, /615-619/);
+});
+
 test('incomplete tier coverage invalidates premature finalization before resume', () => {
   let manifest = ensureCatchUpRunManifest({ run_id: 'run-incomplete', source_message_count: 9434 });
   manifest = recordCatchUpOwnerRange(manifest, 'Alex Mercer', {
