@@ -1067,6 +1067,60 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
   return event;
 }
 
+/**
+ * Applies the downstream validator/persistence verdict to the same logical
+ * provider obligation.  Physical request completion is retained on the event,
+ * but it can no longer be mistaken for safe extraction completion.
+ */
+export function markProviderDownstreamOutcome(metadata, logicalObligationId, details = {}) {
+  if (!metadata || !logicalObligationId) return null;
+  const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
+  const obligation = audit.obligations?.[logicalObligationId];
+  if (!obligation) return null;
+  const attempt = [...(audit.recent_attempts ?? [])].reverse()
+    .find((item) => item.logical_obligation_id === logicalObligationId);
+  const validationAccepted = details.validation_accepted === true;
+  const explicitNoUpdate = details.explicit_no_update === true;
+  const persistenceCommitted = details.persistence_committed === true;
+  const safelyComplete = explicitNoUpdate || (validationAccepted && persistenceCommitted
+    && details.unresolved_semantic_requirements !== true);
+  const reasonCode = safelyComplete ? null : details.reason_code ?? 'downstream_validation_pending';
+  const terminalOutcome = safelyComplete
+    ? explicitNoUpdate ? 'completed_no_candidates' : 'completed'
+    : details.blocked === true ? 'validation_failure' : 'pending_recovery';
+  obligation.terminal_outcome = terminalOutcome;
+  obligation.final_disposition = safelyComplete
+    ? explicitNoUpdate ? 'validated_no_update' : 'downstream_validated_and_persisted'
+    : reasonCode;
+  obligation.downstream_validation_result = {
+    accepted_count: count(details.accepted_count),
+    rejected_count: count(details.rejected_count),
+    reason_code: reasonCode,
+    candidate_shape_repair_count: count(details.candidate_shape_repair_count),
+    unresolved_semantic_requirements: details.unresolved_semantic_requirements === true,
+    at: Date.now(),
+  };
+  obligation.persistence_result = explicitNoUpdate ? 'not_required_validated_no_update'
+    : persistenceCommitted ? 'committed' : 'not_committed';
+  obligation.checkpoint_eligible = safelyComplete;
+  obligation.recovery_blocked = details.blocked === true;
+  obligation.next_eligible_recovery_action = safelyComplete ? null
+    : details.next_eligible_action ?? (reasonCode === 'invalid_candidate_shape'
+      ? 'session_validation_repair_or_bounded_regeneration' : 'resume_exact_obligation');
+  if (!safelyComplete) {
+    obligation.validation_failure_count = count(obligation.validation_failure_count) + 1;
+    obligation.produced_no_update = false;
+  }
+  if (attempt) {
+    attempt.downstream_validation_result = obligation.downstream_validation_result;
+    attempt.persistence_result = obligation.persistence_result;
+    attempt.checkpoint_eligible = safelyComplete;
+    attempt.unresolved_semantic_requirements = details.unresolved_semantic_requirements === true;
+    attempt.downstream_terminal_outcome = terminalOutcome;
+  }
+  return obligation;
+}
+
 /** Durably stages valid records or NONE decisions for one exact source unit. */
 export function stageProviderPartialRecovery(metadata, logicalObligationId, sourceFingerprint, records = [], details = {}) {
   if (!metadata || !logicalObligationId || !sourceFingerprint) return false;
@@ -1295,7 +1349,10 @@ export function summarizeProviderAttemptAudit(metadata) {
   const unresolved = obligations.filter((item) =>
     !SUCCESSFUL_TERMINAL_OUTCOMES.has(item.terminal_outcome)
     && item.terminal_outcome !== 'operational_pause'
-    && (count(item.malformed_count) > 0 || item.terminal_outcome === 'partial_output_pending'));
+    && (count(item.malformed_count) > 0
+      || count(item.provider_failure_count) > 0
+      || count(item.validation_failure_count) > 0
+      || ['partial_output_pending', 'pending_recovery', 'validation_failure'].includes(item.terminal_outcome)));
   const terminalTotal = Object.values(audit.terminal_counts ?? {}).reduce((sum, value) => sum + count(value), 0);
   const planned = count(audit.logical_obligation_count) || obligations.length;
   const archived = audit.archived_obligation_counts ?? emptyArchivedObligationCounts(false);

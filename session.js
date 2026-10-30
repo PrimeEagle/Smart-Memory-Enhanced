@@ -104,6 +104,7 @@ import {
 import {
   beginProviderAttempt,
   finishProviderAttempt,
+  markProviderDownstreamOutcome,
   markProviderPartialRecordsPersisted,
   markProviderStagedRecoveryCompleted,
   providerConfigurationSignature,
@@ -120,6 +121,7 @@ import {
   partitionMalformedSourceWindow,
   recoverMalformedTaggedOutput,
 } from './malformed-output-recovery.js';
+import { repairSessionCandidateShapes } from './session-candidate-utils.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 
@@ -518,6 +520,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `session:chat:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const updateObligation = async (currentState, details = {}) => options._onObligationState?.({
+      obligation_id: rootObligationId,
+      tier: 'session', owner: null,
+      source_range: options._providerRootSourceRange
+        ?? { start: range.start, end: range.end, message_count: range.message_count },
+      source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+      current_state: currentState,
+      ...details,
+    });
     const providerConfigSignature = providerConfigurationSignature({
       connection_profile_id: settings.connection_profile_id ?? null,
       model: settings.openai_compat_model ?? settings.ollama_model ?? null,
@@ -662,6 +673,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         coverage_terminal_state: 'repartitioned_completed',
         all_source_messages_covered: true,
       });
+      markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
+        validation_accepted: true, persistence_committed: true, accepted_count: added,
+      });
+      await updateObligation('durably_committed', {
+        parser_result: 'repartitioned', downstream_validation_result: 'accepted',
+        persistence_result: 'committed_children', coverage_result: 'safely_committed',
+      });
       return added;
     };
     const malformedRecoveryDepth = Number(options._malformedRecoveryDepth ?? 0);
@@ -738,11 +756,19 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
     } : beginPhysicalAttempt();
+    await updateObligation('provider_running', {
+      provider_attempt_id: providerAttempt?.attempt_id ?? null,
+      exact_reason_code: 'provider_request_in_progress',
+    });
     try {
       if (!bypassEquivalentRootReplay) {
         providerRequestSent = true;
         response = await generateMemoryExtract(prompt, { responseLength });
         providerResponseReceived = true;
+        await updateObligation('provider_response_received', {
+          provider_attempt_id: providerAttempt?.attempt_id ?? null,
+          exact_reason_code: 'downstream_parser_pending',
+        });
       }
     } catch (err) {
       const overflow = classifyContextOverflow(err);
@@ -783,6 +809,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
+      markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
+      await updateObligation('explicit_no_update', {
+        parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
+        persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
+      });
       recordCompletedCoverage('completed_no_candidates');
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
@@ -816,6 +847,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let recoveryPendingError = null;
     let recoveryPendingObligationId = null;
     let stagedRecoveryObligationId = null;
+    let unresolvedPartialFragments = 0;
     let parsedCandidates = parseSessionOutput(response);
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
@@ -836,6 +868,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         },
       });
       if (recovery.repartitioned) {
+        markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
+          validation_accepted: true, persistence_committed: true, accepted_count: recovery.added,
+        });
+        await updateObligation('durably_committed', {
+          parser_result: 'repartitioned', downstream_validation_result: 'accepted',
+          persistence_result: 'committed_children', coverage_result: 'safely_committed',
+        });
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved',
           provider_outcome: 'completed_after_malformed_repartition', parser_outcome: 'repartitioned' });
         return recovery.added;
@@ -849,6 +888,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         }
         recordCompletedCoverage(durableRecoveredCount > 0
           ? 'completed_after_durable_partial_recovery' : 'completed_no_candidates_after_regeneration');
+        markProviderDownstreamOutcome(providerMetadata, rootObligationId, durableRecoveredCount > 0
+          ? { validation_accepted: true, persistence_committed: true, accepted_count: durableRecoveredCount }
+          : { explicit_no_update: true });
+        await updateObligation(durableRecoveredCount > 0 ? 'durably_committed' : 'explicit_no_update', {
+          parser_result: 'recovered_explicit_none',
+          downstream_validation_result: durableRecoveredCount > 0 ? 'accepted_staged_records' : 'validated_no_update',
+          persistence_result: durableRecoveredCount > 0 ? 'committed' : 'not_required_validated_no_update',
+          coverage_result: 'safely_committed',
+        });
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
           provider_outcome: durableRecoveredCount > 0
             ? 'completed_after_durable_partial_recovery' : 'completed_no_candidates_after_regeneration',
@@ -878,6 +926,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }
       const partialReason = responseShape.parser_accepted_record_count > 0
         && responseShape.structurally_rejected_record_count > 0 ? 'partial_valid_output' : null;
+      unresolvedPartialFragments = partialReason
+        ? Number(responseShape.structurally_rejected_record_count ?? 0) : 0;
       const noticeReason = !parserCountConsistent ? 'parser_structural_analysis_mismatch'
         : partialReason ?? ((responseShape.prose_before_structure || responseShape.prose_after_structure)
         ? 'prose_around_tagged_records'
@@ -888,8 +938,27 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',
         final_recovery_stage: partialReason ? 'strict_partial_valid_preserved' : providerAttempt?.recovery_stage ?? 'strict_generation',
         response_shape: responseShape, parser_count_consistent: parserCountConsistent,
+        total_candidate_count: Number(responseShape.structural_candidate_count ?? parsedCandidates.length),
+        accepted_candidate_count: parsedCandidates.length,
+        rejected_candidate_count: Number(responseShape.structurally_rejected_record_count ?? 0),
+        missing_required_results: unresolvedPartialFragments > 0,
+        unresolved_semantic_units: unresolvedPartialFragments > 0
+          ? ['provider_structurally_rejected_fragments'] : [],
         partial_output_policy: partialReason ? 'accept_complete_valid_records_and_reject_only_malformed_fragments' : null,
       });
+    }
+    await updateObligation(unresolvedPartialFragments > 0 ? 'parser_partial' : 'parser_accepted', {
+      provider_attempt_id: providerAttempt?.attempt_id ?? null,
+      parser_result: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
+      exact_reason_code: unresolvedPartialFragments > 0
+        ? 'partial_valid_output_has_unresolved_fragments' : 'downstream_validation_pending',
+      metrics: { parser_accepted_records: parsedCandidates.length, parser_rejected_fragments: unresolvedPartialFragments },
+    });
+    const shapeRepair = repairSessionCandidateShapes(parsedCandidates);
+    parsedCandidates = shapeRepair.records;
+    if (sessionDiagnostics && shapeRepair.repaired_count) {
+      sessionDiagnostics.localCandidateShapeRepairs = (sessionDiagnostics.localCandidateShapeRepairs ?? 0)
+        + shapeRepair.repaired_count;
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsedCandidates.length } });
     // Stable within-request IDs make citation repair an association task rather
@@ -1294,7 +1363,80 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovery_trace: claimHashRecoveryTrace.slice(-100),
       };
     }
-    if (incoming.length === 0) return 0;
+    if (incoming.length === 0) {
+      const invalidShapeCount = verificationDispositions.malformed_candidate + shapeRepair.rejected.length;
+      const pendingReason = invalidShapeCount > 0 ? 'invalid_candidate_shape'
+        : missingProvenance > 0 ? 'missing_provenance'
+          : unresolvedPartialFragments > 0 ? 'partial_valid_output_has_unresolved_fragments' : null;
+      if (!pendingReason) {
+        markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
+        await updateObligation('explicit_no_update', {
+          parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
+          downstream_validation_result: 'validated_duplicate_only_no_update',
+          persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
+          metrics: { rejected_duplicates: verificationDispositions.duplicate_same_pass + verificationDispositions.duplicate_existing },
+        });
+        recordCompletedCoverage('completed_validated_no_update');
+        healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
+          provider_outcome: 'completed_validated_no_update', parser_outcome: 'accepted',
+          candidates: { emitted: initiallyParsedCount, accepted: 0 } });
+        return 0;
+      }
+      markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
+        validation_accepted: false, persistence_committed: false,
+        rejected_count: Math.max(1, initiallyParsedCount), reason_code: pendingReason,
+        unresolved_semantic_requirements: true,
+        candidate_shape_repair_count: shapeRepair.repaired_count,
+        next_eligible_action: pendingReason === 'invalid_candidate_shape'
+          ? 'session_validation_repair_or_bounded_regeneration'
+          : pendingReason === 'missing_provenance'
+            ? 'citation_repair_or_bounded_regeneration'
+            : 'recover_unresolved_partial_output_fragments',
+      });
+      await updateObligation('pending_recovery', {
+        parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
+        downstream_validation_result: `rejected_${pendingReason}`,
+        persistence_result: 'not_committed', coverage_result: 'pending',
+        exact_reason_code: pendingReason,
+        next_eligible_action: pendingReason === 'invalid_candidate_shape'
+          ? 'session_validation_repair_or_bounded_regeneration'
+          : pendingReason === 'missing_provenance'
+            ? 'citation_repair_or_bounded_regeneration'
+            : 'recover_unresolved_partial_output_fragments',
+        metrics: { downstream_rejected_records: Math.max(1, initiallyParsedCount), local_shape_repairs: shapeRepair.repaired_count },
+      });
+      recordExtractionCoverage(coverageLedger, {
+        ...coverageBase, request_sent: true,
+        provider_outcome: 'downstream_validation_pending_recovery',
+        coverage_terminal_state: 'pending_recovery',
+        unresolved_reason: pendingReason,
+      });
+      const pendingError = new Error(`Session extraction requires recovery: ${pendingReason}`);
+      pendingError.code = 'SME_DOWNSTREAM_VALIDATION_PENDING';
+      pendingError.sme_failure_stage = 'downstream_validation';
+      pendingError.sme_obligation_id = rootObligationId;
+      pendingError.sme_reason_code = pendingReason;
+      pendingError.sme_operational_pause = true;
+      pendingError.sme_request_diagnostics = {
+        pause_reason: pendingReason,
+        root_obligation_id: rootObligationId,
+        tier: 'session',
+        source_range: { start: range.start, end: range.end, message_count: range.message_count },
+        next_eligible_recovery_action: pendingReason === 'invalid_candidate_shape'
+          ? 'session_validation_repair_or_bounded_regeneration'
+          : pendingReason === 'missing_provenance'
+            ? 'citation_repair_or_bounded_regeneration'
+            : 'recover_unresolved_partial_output_fragments',
+      };
+      throw pendingError;
+    }
+
+    await updateObligation('validation_accepted', {
+      parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
+      downstream_validation_result: 'accepted',
+      exact_reason_code: 'persistence_pending',
+      metrics: { downstream_valid_records: incoming.length, local_shape_repairs: shapeRepair.repaired_count },
+    });
 
     // Tag each new memory with the source message range so users can jump back
     // to the passage that prompted the extraction.
@@ -1450,6 +1592,52 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       recoveryPendingError.sme_partial_records_persisted = true;
       throw recoveryPendingError;
     }
+    if (unresolvedPartialFragments > 0) {
+      markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
+        validation_accepted: true, persistence_committed: true, accepted_count: added,
+        rejected_count: unresolvedPartialFragments, reason_code: 'partial_valid_output_has_unresolved_fragments',
+        unresolved_semantic_requirements: true,
+        candidate_shape_repair_count: shapeRepair.repaired_count,
+        next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      });
+      await updateObligation('pending_recovery', {
+        parser_result: 'partial', downstream_validation_result: 'accepted_partial_records',
+        persistence_result: 'partial_records_committed', coverage_result: 'pending',
+        exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
+        next_eligible_action: 'recover_unresolved_partial_output_fragments',
+        metrics: { persisted_records: added, unresolved_parser_fragments: unresolvedPartialFragments },
+      });
+      recordExtractionCoverage(coverageLedger, { ...coverageBase,
+        provider_outcome: 'partial_valid_records_persisted_obligation_pending',
+        coverage_terminal_state: 'partial_records_persisted_obligation_pending',
+        accepted_partial_record_count: added,
+        unresolved_fragment_count: unresolvedPartialFragments,
+      });
+      const partialError = new Error('Session extraction preserved valid records but unresolved provider fragments remain.');
+      partialError.code = 'SME_DOWNSTREAM_VALIDATION_PENDING';
+      partialError.sme_partial_records_persisted = true;
+      partialError.sme_failure_stage = 'partial_output_recovery';
+      partialError.sme_obligation_id = rootObligationId;
+      partialError.sme_reason_code = 'partial_valid_output_has_unresolved_fragments';
+      partialError.sme_operational_pause = true;
+      partialError.sme_request_diagnostics = {
+        pause_reason: 'partial_valid_output_has_unresolved_fragments',
+        root_obligation_id: rootObligationId,
+        tier: 'session',
+        source_range: { start: range.start, end: range.end, message_count: range.message_count },
+        next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments',
+      };
+      throw partialError;
+    }
+    markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
+      validation_accepted: true, persistence_committed: true, accepted_count: added,
+      candidate_shape_repair_count: shapeRepair.repaired_count,
+    });
+    await updateObligation('durably_committed', {
+      parser_result: 'accepted', downstream_validation_result: 'accepted',
+      persistence_result: 'committed', coverage_result: 'safely_committed',
+      metrics: { persisted_records: added, local_shape_repairs: shapeRepair.repaired_count },
+    });
     recordCompletedCoverage('completed_and_persisted');
     healthFinish({
       terminal_health: 'completed', persistence: 'saved',
@@ -1464,6 +1652,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     });
     return added;
   } catch (err) {
+    if (err?.sme_operational_pause === true) {
+      if (!err?.sme_live_health_finished) healthFinish({
+        terminal_health: 'operationally_paused',
+        provider_outcome: 'response_received',
+        parser_outcome: 'downstream_validation_pending',
+        persistence: err?.sme_partial_records_persisted ? 'partial_records_committed' : 'not_committed',
+        attention_reason_codes: [err?.sme_reason_code ?? 'downstream_validation_pending'],
+      });
+      throw err;
+    }
     const malformedExhausted = ['SME_MALFORMED_PROVIDER_OUTPUT', 'SME_RECOVERY_PATH_EXHAUSTED'].includes(err?.code);
     const partialRecordsPersisted = err?.sme_partial_records_persisted === true;
     const preRequestInternalFailure = !malformedExhausted && !providerRequestSent;

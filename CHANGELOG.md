@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.69] - 2026-10-30
+
+### Added
+
+- Memorize Chat now persists one authoritative obligation ledger spanning
+  provider attempts, parser outcomes, downstream validation, staging,
+  persistence, tier coverage, checkpoint eligibility, exact recovery action,
+  and classified controller exits. Provider, checkpoint, diagnostics, and the
+  recovery UI are projections of this shared state.
+- A deterministic offline replay harness and sanitized canary corpus cover the
+  historical malformed-output failures plus a complete 9,434-message control-
+  flow replay without live-provider latency.
+
+### Fixed
+
+- Session output can no longer be reported complete when its only parser-valid
+  record is rejected downstream. The preserved v0.9.68 Session 640–659 state
+  migrates to an exact pending obligation while its completed Long-Term owners
+  and the earlier 0–639 Session coverage remain safely reusable.
+- Partial provider output now tracks accepted records and rejected fragments
+  independently. Persisted partial records do not close the obligation until
+  every semantic requirement is recovered or explicitly validated as no-
+  update.
+- Representation-only Session shape defects are repaired locally by whitespace
+  canonicalization and lossless sentence-boundary partitioning. A genuinely
+  invalid shape pauses for bounded validation recovery instead of disappearing
+  into a generic tier-coverage gap.
+- Chunks and checkpoints advance only when every enabled applicable tier is
+  durably committed or explicitly validated as no-update. Pending Session work
+  is shown as `pending_session_recovery`, and every resumable controller exit
+  records an exact reason and next eligible action.
+- Operational downstream-validation pauses no longer inflate current provider,
+  persistence, or fatal error counts. Resume reopens only the exact pending
+  tier obligation and preserves already committed records and sibling owners.
+
 ## [0.9.68] - 2026-10-29
 
 ### Added

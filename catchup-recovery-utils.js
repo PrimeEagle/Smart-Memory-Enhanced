@@ -1,3 +1,9 @@
+import {
+  ensureMemorizeObligationLedger,
+  projectMemorizeObligationLedger,
+  transitionMemorizeObligation,
+} from './memorize-obligation-ledger.js';
+
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
 export function normalizeCatchUpCheckpoint(checkpoint) {
   if (!checkpoint || !['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required']
@@ -175,6 +181,21 @@ export function recordCatchUpOwnerRange(manifest, owner, range, {
   };
   next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
     .slice(-MAX_OWNER_OBLIGATIONS);
+  const sourceStart = normalized.source_start_index ?? normalized.start_offset;
+  const sourceEnd = normalized.source_end_index ?? normalized.end_offset;
+  const ledgerId = `longterm:${String(owner).trim().toLowerCase()}:${sourceStart}-${sourceEnd}:${entry.source_fingerprint ?? 'range-ledger'}`;
+  transitionMemorizeObligation(next.obligation_ledger, {
+    obligation_id: ledgerId, logical_run_id: next.logical_run_id,
+    tier: 'longterm', owner: String(owner),
+    source_range: { start: sourceStart, end: sourceEnd },
+    source_fingerprint: entry.source_fingerprint,
+  }, safelyCommitted ? {
+    current_state: 'durably_committed', downstream_validation_result: 'accepted',
+    persistence_result: 'committed', coverage_result: 'safely_committed', at: now,
+  } : {
+    current_state: 'pending_recovery', exact_reason_code: terminalOutcome,
+    next_eligible_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
+  });
   return next;
 }
 
@@ -200,6 +221,21 @@ export function invalidateCatchUpOwnerRange(manifest, owner, range, {
   };
   next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
     .slice(-MAX_OWNER_OBLIGATIONS);
+  const sourceStart = normalized.source_start_index ?? normalized.start_offset;
+  const sourceEnd = normalized.source_end_index ?? normalized.end_offset;
+  const matchingLedger = Object.values(next.obligation_ledger?.obligations ?? {}).find((item) =>
+    item.tier === 'longterm' && String(item.owner).toLowerCase() === String(owner).toLowerCase()
+    && Number(item.source_range?.start) === Number(sourceStart)
+    && Number(item.source_range?.end) === Number(sourceEnd));
+  transitionMemorizeObligation(next.obligation_ledger, {
+    obligation_id: matchingLedger?.obligation_id
+      ?? `longterm:${String(owner).trim().toLowerCase()}:${sourceStart}-${sourceEnd}:${entry.source_fingerprint ?? 'range-ledger'}`,
+    logical_run_id: next.logical_run_id, tier: 'longterm', owner: String(owner),
+    source_range: { start: sourceStart, end: sourceEnd }, source_fingerprint: entry.source_fingerprint,
+  }, {
+    current_state: 'pending_recovery', exact_reason_code: reasonCode,
+    next_eligible_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
+  });
   return next;
 }
 
@@ -241,7 +277,7 @@ function normalizeAttempt(attempt) {
 export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
   const prior = checkpoint?.run_manifest && typeof checkpoint.run_manifest === 'object' ? checkpoint.run_manifest : {};
   const sourceMessageCount = number(sourceWindow.source_message_count ?? prior.source_window?.message_count ?? checkpoint?.source_message_count, 0);
-  return {
+  const manifest = {
     schema_version: 3,
     logical_run_id: prior.logical_run_id ?? checkpoint?.run_id ?? null,
     source_window: {
@@ -300,6 +336,9 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
     terminal_status: prior.terminal_status ?? 'in_progress',
     terminal_reason_code: prior.terminal_reason_code ?? null,
   };
+  manifest.obligation_ledger = ensureMemorizeObligationLedger(
+    prior.obligation_ledger, manifest.logical_run_id);
+  return manifest;
 }
 
 /** Starts a new attempt without losing the committed coverage of earlier attempts. */
@@ -344,7 +383,7 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
   const sourceSafelyCommitted = enabledOutcomes.every(terminalTierOutcome);
   if (sourceSafelyCommitted) next.committed_ranges = mergeRanges([...next.committed_ranges, normalized]).slice(-MAX_COMMITTED_RANGES);
   const attempt = next.attempts.at(-1);
-  if (attempt) {
+  if (attempt && sourceSafelyCommitted) {
     attempt.current_attempt_ranges = mergeRanges([...(attempt.current_attempt_ranges ?? []), normalized]).slice(-MAX_COMMITTED_RANGES);
     attempt.current_attempt_range_count = attempt.current_attempt_ranges.length;
     if (Array.isArray(attempt.current_attempt_chunks)) {
@@ -380,6 +419,37 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
       checkpoint_boundary: normalized.end_offset,
     };
     next.tier_obligations = [...next.tier_obligations.filter((entry) => entry.key !== key), record].slice(-MAX_TIER_OBLIGATIONS);
+    const ledgerRange = {
+      start: normalized.source_start_index ?? normalized.start_offset,
+      end: normalized.source_end_index ?? normalized.end_offset,
+    };
+    const existingLedgerObligation = Object.values(next.obligation_ledger?.obligations ?? {}).find((entry) =>
+      entry?.tier === tier
+      && Number(entry?.source_range?.start) === Number(ledgerRange.start)
+      && Number(entry?.source_range?.end) === Number(ledgerRange.end));
+    const ledgerInput = {
+      obligation_id: existingLedgerObligation?.obligation_id
+        ?? `${tier}:chat:${ledgerRange.start}-${ledgerRange.end}:range-ledger`,
+      logical_run_id: next.logical_run_id,
+      tier, owner: existingLedgerObligation?.owner ?? null,
+      source_range: ledgerRange,
+      source_fingerprint: existingLedgerObligation?.source_fingerprint ?? null,
+    };
+    if (safelyCommitted) {
+      transitionMemorizeObligation(next.obligation_ledger, ledgerInput, {
+        current_state: outcome.not_applicable ? 'explicit_no_update' : 'durably_committed',
+        downstream_validation_result: outcome.not_applicable ? 'not_applicable' : 'accepted',
+        persistence_result: outcome.not_applicable ? 'not_required' : 'committed',
+        coverage_result: 'safely_committed',
+      });
+    } else if (!existingLedgerObligation?.exact_reason_code) {
+      transitionMemorizeObligation(next.obligation_ledger, ledgerInput, {
+        current_state: 'pending_recovery',
+        exact_reason_code: outcome.reason_code ?? 'not_safely_committed',
+        next_eligible_action: 'resume_exact_obligation',
+        coverage_result: 'pending',
+      });
+    }
     if (safelyCommitted && outcome.enabled) {
       next.tier_coverage[tier].committed_ranges = mergeRanges([
         ...next.tier_coverage[tier].committed_ranges,
@@ -451,6 +521,7 @@ export function summarizeCatchUpRunManifest(manifest) {
   });
   const allAttemptTimingAvailable = attempts.every((attempt) => attempt.duration_ms !== null);
   const allRequestCountersAvailable = attempts.every((attempt) => attempt.request_counters && Number.isFinite(Number(attempt.request_counters.retry_count)) && Number.isFinite(Number(attempt.request_counters.provider_failure_count)));
+  const obligationProjection = projectMemorizeObligationLedger(next.obligation_ledger);
   return {
     schema_version: next.schema_version,
     logical_run_id: next.logical_run_id,
@@ -489,6 +560,7 @@ export function summarizeCatchUpRunManifest(manifest) {
     terminal_status: next.terminal_status,
     terminal_reason_code: next.terminal_reason_code,
     checkpoint_transitions: next.checkpoint_transitions,
+    authoritative_obligation_ledger: obligationProjection,
   };
 }
 
@@ -497,6 +569,9 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
   if (!checkpoint || typeof checkpoint !== 'object') return { available: false, resumable: false, reason_code: 'no_checkpoint' };
   const normalized = normalizeCatchUpCheckpoint(checkpoint);
   const blocked = checkpoint.recovery_blocked?.blocked === true;
+  const obligationProjection = projectMemorizeObligationLedger(
+    checkpoint.run_manifest?.obligation_ledger);
+  const exactPending = obligationProjection.next_eligible_obligation;
   return {
     available: true,
     resumable: Boolean(normalized) && !blocked,
@@ -505,13 +580,17 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     unresolved_obligation_count: Number(checkpoint.recovery_blocked?.unresolved_obligation_count ?? 0),
     blocked_obligations: (checkpoint.recovery_blocked?.obligations ?? []).slice(-16),
     safe_progress_preserved: checkpoint.recovery_blocked?.safe_progress_preserved ?? null,
-    next_eligible_recovery_action: checkpoint.recovery_blocked?.next_eligible_recovery_action ?? null,
+    next_eligible_recovery_action: checkpoint.recovery_blocked?.next_eligible_recovery_action
+      ?? exactPending?.next_eligible_action ?? null,
     status: checkpoint.status ?? 'unknown',
     reason_code: checkpoint.recovery_blocked?.reason_code
+      ?? exactPending?.exact_reason_code
       ?? checkpoint.run_manifest?.terminal_reason_code ?? null,
     source_message_count: Number(checkpoint.source_message_count ?? 0),
     safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
     operational_pause: checkpoint.operational_pause ?? null,
+    authoritative_obligation_ledger: obligationProjection,
+    exact_pending_obligation: exactPending ?? null,
     recovery_child_manifests: {
       schema_version: Number(checkpoint.recovery_child_manifests?.schema_version ?? 0) || null,
       roots: Object.values(checkpoint.recovery_child_manifests?.roots ?? {}).slice(-64),

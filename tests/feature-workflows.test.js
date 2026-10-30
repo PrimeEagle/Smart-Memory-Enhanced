@@ -1665,8 +1665,9 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /recordCommittedCatchUpRange/);
   assert.match(settings, /getCatchUpTierRangeStatus/);
   assert.match(settings, /tier_coverage_incomplete/);
-  assert.match(settings, /Resume will replay only the pending tier work/);
-  assert.match(settings, /Source ingestion complete, but memory-tier coverage remains incomplete/);
+  assert.match(settings, /exactPendingObligation/);
+  assert.match(settings, /Next action:/);
+  assert.match(settings, /unknown_uncommitted_tier_obligation/);
   assert.match(settings, /const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest/);
   assert.match(settings, /chunks_scope: 'current_attempt'/);
   assert.match(settings, /scope: 'cumulative_logical_run_across_attempts'/);

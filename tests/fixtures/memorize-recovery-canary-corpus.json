@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "cases": [
+    "json_contract_ignored",
+    "mixed_partial_tagged_output",
+    "minimum_window_deadlock",
+    "lisette_38_39",
+    "session_partial_output_discard",
+    "nyx_65_69",
+    "lillian_80_84",
+    "lillian_170_174",
+    "aster_request_budget_600_619",
+    "session_downstream_rejection_640_659"
+  ]
+}
+
