@@ -50,7 +50,11 @@ test('provider response completion cannot bypass downstream validation', () => {
   assert.equal(attempt.checkpoint_eligible, false);
   assert.equal(obligation.terminal_outcome, 'pending_recovery');
   assert.equal(obligation.checkpoint_eligible, false);
-  assert.equal(summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0].root_obligation_id, sessionId);
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.terminal_unresolved_obligations[0].root_obligation_id, sessionId);
+  assert.equal(summary.reconciliation.authoritative_unresolved_count, 1);
+  assert.equal(summary.reconciliation.retained_unresolved_detail_count, 1);
+  assert.equal(summary.reconciliation.unresolved_count_consistent, true);
 });
 
 test('v0.9.68 contradiction migrates to the exact Session obligation only', () => {

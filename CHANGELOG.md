@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.70] - 2026-10-30
+
+### Added
+
+- Memorize Chat controller invocations now own an explicit runtime context for
+  their checkpoint, active transaction, page/attempt identity, current
+  obligation, primary failure, cleanup resources, and one durable exit record.
+- Transaction diagnostics distinguish active, committed, rolled-back,
+  commit-failed, and rollback-failed states and retain the owning chat, logical
+  run, attempt, page instance, phase, tier, owner, and source range.
+- A deterministic 0–19 partial-Session replay exercises the real button event
+  adapter, operational pause, cleanup, exact Session-only Resume, partial-record
+  deduplication, and checkpoint advancement without live provider calls.
+
+### Fixed
+
+- Operational pauses no longer throw `checkpoint is not defined`; the pause
+  recorder uses the controller-owned checkpoint and preserves the exact pending
+  Session obligation and recovery action.
+- Chunk transactions are settled on validation pauses, cancellation, commit
+  failure, unexpected exceptions, and handler cleanup. Settlement is
+  idempotent, so a failed attempt cannot leave Resume blocked by an orphaned
+  module-level transaction.
+- Finalization ETA and provider-progress cleanup handles are initialized before
+  the main controller try block. Cleanup failures are isolated and named, so
+  one warning cannot hide the primary failure or prevent later cleanup.
+- Resume presentation and exported diagnostics now account for active
+  transaction locks instead of advertising progress while the controller is
+  locked. Stale same-chat locks are rolled back only after the UI controller
+  proves that no handler is running.
+- Legacy tier coverage, safe-progress reporting, next recovery action, and
+  provider reconciliation now defer to the authoritative obligation ledger;
+  contradictory unresolved counts make reconciliation explicitly inconsistent.
+- The current Session partial-output path preserves its three committed records,
+  retries only unresolved fragments, reuses six committed Long-Term siblings,
+  and advances the chunk only after the Session obligation is durably complete.
+
 ## [0.9.69] - 2026-10-30
 
 ### Added

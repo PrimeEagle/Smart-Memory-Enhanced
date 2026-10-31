@@ -53,7 +53,7 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(epistemic, /saveChatMetadata\(context\)\.catch/);
   assert.match(scenes, /await saveChatMetadata\(context\)/);
   assert.match(compaction, /await saveChatMetadata\(context\)/);
-  assert.match(settings, /finalTransaction = beginCatchUpTransaction\(catchUpContext\)/);
+  assert.match(settings, /finalTransaction = beginRunTransaction\('finalization'\)/);
   assert.match(settings, /final persistence error/);
   assert.match(settings, /runStagedChatCleanup/);
   assert.match(settings, /Fresh Start persistence failed/);
@@ -336,7 +336,7 @@ test('final catch-up stage order builds scenes before one complete arc pass and 
   const arcStage = settings.indexOf('await extractArcs(allMessages, characterName');
   const profileStage = settings.indexOf('const profiles = await generateProfiles(name, () => ctrl.catchUpCancelled, {');
   const reconcileStage = settings.indexOf('await runFinalIntegrityReconciliation(characterName)');
-  const stagedCommit = settings.lastIndexOf('commitCatchUpTransaction(finalTransaction)');
+  const stagedCommit = settings.lastIndexOf('commitRunTransaction(finalTransaction)');
   assert.ok(sceneStage >= 0 && sceneStage < arcStage);
   assert.ok(arcStage < profileStage && profileStage < reconcileStage);
   assert.ok(reconcileStage < stagedCommit);
@@ -796,11 +796,12 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /if \(isCatchUpRunning\(\)\) return;/);
   assert.match(settings, /#sme_cancel_catch_up'\)\.hide\(\)\.prop\('disabled', false\)/);
   assert.match(settings, /Completion must become observable before optional runtime cleanup/);
-  assert.match(settings, /Catch-up control cleanup warning/);
+  assert.match(settings, /cleanupMemorizeRuntime\(controllerRuntime/);
+  assert.match(settings, /Cleanup warning \(\$\{warning\.resource_name\}/);
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', true\)/);
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', false\)/);
   assert.match(settings, /renderIdempotenceResult\(savedResult\);\s*\$\('#sme_export_diagnostics'\)\.prop\('disabled', !getExportableDiagnostics\(\)\);/s);
-  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*try \{\s*\$\('#sme_cancel_catch_up'\)\.hide\(\)/s);
+  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*const cleanupWarnings = await cleanupMemorizeRuntime\(controllerRuntime/s);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);
@@ -1094,7 +1095,7 @@ test('catch-up metadata writers cannot bypass staged saving', () => {
   assert.match(transaction, /function belongsToActiveTransaction\(context\)/);
   assert.match(transaction, /context\.chatMetadata === activeContext\.chatMetadata/);
   assert.match(transaction, /\(context\.chatId \?\? null\) === \(activeContext\.chatId \?\? null\)/);
-  assert.doesNotMatch(transaction, /\|\| activeTransaction/);
+  assert.doesNotMatch(transaction, /context === activeContext \|\| activeTransaction/);
   for (const file of writerFiles) {
     const source = read(file);
     assert.match(source, /saveChatMetadata/);
@@ -1612,7 +1613,7 @@ test('Memorize Chat cancellation aborts active memory work and preserves the pri
   assert.match(generate, /while \(requestQueue\.length\) requestQueue\.shift\(\)\.resolve\(''\)/);
   assert.match(generate, /if \(cancellationEpoch !== memoryCancellationEpoch\) return ''/);
   assert.match(settings, /abortCurrentMemoryGeneration\(\);\s*\/\/ Direct-fetch sources are aborted immediately/);
-  assert.match(settings, /if \(ctrl\.catchUpCancelled\) \{\s*rollbackCatchUpTransaction\(chunkTransaction\);\s*break;/);
+  assert.match(settings, /if \(ctrl\.catchUpCancelled\) \{\s*settleActiveRunTransaction\(ctrl\.catchUpStopReason \?\? 'chunk_cancelled'\);\s*break;/);
   assert.match(settings, /extractArcs\(allMessages, characterName, \(\) => ctrl\.catchUpCancelled/);
   assert.match(settings, /if \(!ctrl\.catchUpCancelled && settings\.compaction_enabled\)/);
   assert.match(settings, /generateProfiles\(name, \(\) => ctrl\.catchUpCancelled/);

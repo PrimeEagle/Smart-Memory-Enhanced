@@ -1,0 +1,133 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import {
+  bindMemorizeChatHandler,
+  bindMemorizeCheckpoint,
+  buildMemorizeControllerExit,
+  cleanupMemorizeRuntime,
+  createMemorizeControllerRuntime,
+  recordMemorizeOperationalPause,
+  registerMemorizeCleanup,
+  trackMemorizeTransaction,
+} from '../memorize-controller-runtime.js';
+import { projectMemorizeObligationLedger, recordMemorizeControllerExit } from '../memorize-obligation-ledger.js';
+import { replayPartialSessionResume } from '../memorize-replay-harness.js';
+
+const controllerFailureFixture = JSON.parse(readFileSync(
+  new URL('./fixtures/memorize-controller-0-19-failure.json', import.meta.url),
+  'utf8',
+));
+
+test('operational pause owns and updates the bound checkpoint without a scope error', () => {
+  const runtime = createMemorizeControllerRuntime();
+  const checkpoint = { next_source_offset: 0, run_manifest: { logical_run_id: 'run', total_attempt_count: 1 } };
+  bindMemorizeCheckpoint(runtime, checkpoint);
+  const runResult = { operationalPauses: [] };
+  const pause = recordMemorizeOperationalPause(runtime, runResult, 'Session pending', {
+    code: 'SME_DOWNSTREAM_VALIDATION_PENDING',
+    sme_request_diagnostics: { pause_reason: 'partial_valid_output_has_unresolved_fragments' },
+  }, 'session');
+  assert.equal(checkpoint.operational_pause, pause);
+  assert.equal(runResult.operationalPauses.length, 1);
+  assert.equal(pause.reason_code, 'partial_valid_output_has_unresolved_fragments');
+});
+
+test('cleanup is idempotent and one cleanup exception cannot stop later resources', async () => {
+  const runtime = createMemorizeControllerRuntime();
+  const calls = [];
+  registerMemorizeCleanup(runtime, 'first', () => { calls.push('first'); throw new Error('first failed'); });
+  registerMemorizeCleanup(runtime, 'second', () => calls.push('second'));
+  const first = await cleanupMemorizeRuntime(runtime);
+  const second = await cleanupMemorizeRuntime(runtime);
+  assert.deepEqual(calls, ['first', 'second']);
+  assert.equal(first[0].resource_name, 'first');
+  assert.equal(second.length, 0);
+});
+
+test('the real Memorize Chat event adapter executes its supplied button handler once', async () => {
+  let registered = null;
+  const button = { on(event, handler) { assert.equal(event, 'click'); registered = handler; } };
+  let invoked = 0;
+  const handler = bindMemorizeChatHandler(button, async () => { invoked += 1; });
+  assert.equal(registered, handler);
+  await registered();
+  assert.equal(invoked, 1);
+});
+
+test('0-19 partial Session path pauses safely, settles its transaction, and preserves siblings', async () => {
+  const result = await replayPartialSessionResume();
+  assert.equal(result.checkpoint.source_message_count, controllerFailureFixture.source_message_count);
+  assert.equal(result.beforeResume.next_eligible_obligation.obligation_id, controllerFailureFixture.session_obligation_id);
+  assert.deepEqual(
+    Object.values(result.ledger.obligations)
+      .filter((item) => item.tier === 'longterm')
+      .map((item) => item.owner),
+    controllerFailureFixture.committed_longterm_owners,
+  );
+  assert.equal(result.beforeResume.pending_obligation_count, 1);
+  assert.equal(result.beforeResume.next_eligible_obligation.tier, 'session');
+  assert.equal(result.beforeResume.next_eligible_obligation.metrics.parser_accepted_records, controllerFailureFixture.accepted_partial_record_count);
+  assert.equal(result.beforeResume.next_eligible_obligation.metrics.parser_rejected_fragments, controllerFailureFixture.rejected_fragment_count);
+  assert.equal(result.checkpoint.operational_pause.reason_code, controllerFailureFixture.reason_code);
+  assert.equal(result.beforeResume.next_eligible_obligation.next_eligible_action, controllerFailureFixture.next_action);
+  assert.equal(result.transaction.state, 'rolled_back');
+  assert.equal(result.leaked_transaction, false);
+  assert.equal(result.beforeResume.tier_coverage.longterm.safely_committed_obligation_count, 6);
+});
+
+test('Resume targets only unresolved Session fragments and never duplicates committed partial records', async () => {
+  const result = await replayPartialSessionResume();
+  assert.equal(result.providerRequests.filter((id) => id.startsWith('longterm:')).length, 6);
+  assert.deepEqual(result.providerRequests.slice(-1), ['session:chat:0-19:fnv1a-39c6c9f:fragment_repair']);
+  assert.equal(result.persisted_record_ids.filter((id) => id === 'session:one').length, 1);
+  assert.equal(result.duplicate_record_count, 0);
+  assert.equal(result.afterResume.pending_obligation_count, 0);
+  assert.equal(result.checkpoint.next_source_offset, 20);
+});
+
+test('checkpoint remains at zero until Session commits and advances only after recovery', async () => {
+  const failed = await replayPartialSessionResume({ commitFailure: true });
+  assert.equal(failed.checkpoint.next_source_offset, 0);
+  assert.equal(failed.afterResume.pending_obligation_count, 1);
+  assert.equal(failed.resumeResult.transaction.state, 'commit_failed_with_exact_state');
+  const completed = await replayPartialSessionResume();
+  assert.equal(completed.checkpoint.next_source_offset, 20);
+  assert.equal(completed.afterResume.tier_coverage.session.coverage_complete, true);
+});
+
+test('exception before optional cleanup initialization still yields one exit and no active transaction', async () => {
+  const result = await replayPartialSessionResume({ throwBeforeInitialization: true });
+  assert.equal(result.leaked_transaction, false);
+  assert.equal(result.beforeResume.controller_exits.length, 1);
+  assert.equal(result.beforeResume.last_controller_exit.classification, 'internal_exception');
+  assert.equal(result.beforeResume.last_controller_exit.normalized_exception_class, 'ReferenceError');
+});
+
+test('rollback failure is explicit, later cleanup still runs, and no active lock survives', async () => {
+  const result = await replayPartialSessionResume({ rollbackFailure: true, cleanupFailure: true });
+  assert.equal(result.transaction.state, 'rollback_failed_with_exact_state');
+  assert.equal(result.leaked_transaction, false);
+  assert.equal(result.cleanupWarnings.some((item) => item.resource_name === 'active_transaction'), true);
+  assert.equal(result.cleanupWarnings.some((item) => item.resource_name === 'provider_progress_listener'), true);
+  assert.equal(result.transactionHistory.includes('retry_listener_cleaned'), true);
+});
+
+test('controller exits deduplicate by invocation and cannot leave an exited attempt unaccounted', () => {
+  const runtime = createMemorizeControllerRuntime({ invocation_id: 'same', logical_run_id: 'run', attempt_number: 2 });
+  const ledger = { schema_version: 1, implementation_version: 1, normalization_complete: true,
+    logical_run_id: 'run', obligations: {}, controller_exits: [], created_at: 1, updated_at: 1 };
+  const exit = buildMemorizeControllerExit(runtime, { reason_code: 'manual_cancel', classification: 'manually_cancelled' });
+  recordMemorizeControllerExit(ledger, exit);
+  recordMemorizeControllerExit(ledger, exit);
+  assert.equal(projectMemorizeObligationLedger(ledger).controller_exits.length, 1);
+  assert.equal(projectMemorizeObligationLedger(ledger).last_controller_exit.attempt_number, 2);
+});
+
+test('overlapping transaction state is observable and therefore blocks a second invocation', () => {
+  const runtime = createMemorizeControllerRuntime();
+  trackMemorizeTransaction(runtime, { transaction_id: 'tx', state: 'active' }, { phase: 'source_extraction' });
+  const exit = buildMemorizeControllerExit(runtime, { reason_code: 'already_running', classification: 'blocked_nonresumable' });
+  assert.equal(exit.active_transaction_state, 'active');
+  assert.equal(exit.resumable, false);
+});

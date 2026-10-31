@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "logical_run_id": "c3deeb93-87e3-4389-9d8b-1b48d6fe0472",
+  "source_message_count": 9434,
+  "source_range": {
+    "start": 0,
+    "end": 19
+  },
+  "source_fingerprint": "fnv1a-39c6c9f",
+  "committed_longterm_owners": [
+    "Alex Mercer",
+    "Aster Graves",
+    "Lillian Kraft",
+    "Lisette Dumont",
+    "Nyx Watson",
+    "Valerie Erikssen"
+  ],
+  "session_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+  "accepted_partial_record_count": 3,
+  "rejected_fragment_count": 2,
+  "reason_code": "partial_valid_output_has_unresolved_fragments",
+  "next_action": "recover_unresolved_partial_output_fragments"
+}

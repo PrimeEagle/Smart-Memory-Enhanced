@@ -1763,8 +1763,9 @@ export function summarizeProviderAttemptAudit(metadata) {
       parser_and_structural_counts_agree: !recentAttempts.some((attempt) => attempt.parser_count_consistent === false),
       retained_unresolved_detail_is_internally_consistent: unresolved.slice(-64).length
         === Math.min(unresolved.length, 64),
-      authoritative_unresolved_count: terminalUnresolvedMalformed,
+      authoritative_unresolved_count: unresolved.length,
       retained_unresolved_detail_count: unresolved.slice(-64).length,
+      unresolved_count_consistent: Math.min(unresolved.length, 64) === unresolved.slice(-64).length,
       source_traversal_coverage_scope: 'checkpointed_source_ranges',
       valid_generation_coverage_scope: 'logical_obligations_with_valid_terminal_output',
       consistent: terminalTotal === count(audit.attempted) && count(audit.running_count) === 0
@@ -1772,7 +1773,8 @@ export function summarizeProviderAttemptAudit(metadata) {
         && physicalFailureObservationCount >= uniqueFailedObligations
         && (!aggregateCountsExact || recoveredFailedCount + pausedFailedCount
           + terminalUnresolvedFailedCount === uniqueFailedObligations)
-        && childCoverageManifests.every((manifest) => manifest.reconciliation.consistent),
+        && childCoverageManifests.every((manifest) => manifest.reconciliation.consistent)
+        && Math.min(unresolved.length, 64) === unresolved.slice(-64).length,
       limitation: obligationHistoryTruncated
         ? aggregateCountsExact
           ? 'obligation detail retention is bounded; archived cumulative counters remain authoritative'

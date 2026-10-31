@@ -13,8 +13,8 @@ export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 1;
 export const MEMORIZE_OBLIGATION_STATES = Object.freeze([
   'unattempted', 'provider_running', 'provider_response_received',
   'parser_accepted', 'parser_partial', 'parser_rejected',
-  'validation_accepted', 'validation_rejected', 'staged',
-  'explicit_no_update', 'pending_recovery', 'operationally_paused',
+  'validation_accepted', 'validation_partial', 'validation_rejected', 'staged',
+  'partial_records_committed', 'explicit_no_update', 'pending_recovery', 'operationally_paused',
   'blocked', 'durably_committed',
 ]);
 
@@ -157,12 +157,32 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
 
 export function recordMemorizeControllerExit(ledgerValue, input = {}) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
+  const invocationId = input.controller_invocation_id ?? null;
+  const existing = invocationId
+    ? ledger.controller_exits.find((item) => item.controller_invocation_id === invocationId)
+    : null;
+  if (existing) return existing;
   const reasonCode = input.reason_code ?? 'unknown_interruption';
   const record = {
     at: nowValue(input.at), reason_code: reasonCode,
     classification: input.classification ?? reasonCode,
     resumable: input.resumable !== false,
+    controller_invocation_id: invocationId,
+    logical_run_id: input.logical_run_id ?? ledger.logical_run_id,
+    attempt_number: input.attempt_number ?? null,
+    page_instance_id: input.page_instance_id ?? null,
+    phase: input.phase ?? null,
+    tier: input.tier ?? null,
+    owner: input.owner ?? null,
+    source_range: normalizeRange(input.source_range ?? {}) ?? null,
     obligation_id: input.obligation_id ?? null,
+    active_transaction_id: input.active_transaction_id ?? null,
+    active_transaction_state: input.active_transaction_state ?? null,
+    checkpoint_before: Number.isFinite(Number(input.checkpoint_before)) ? Number(input.checkpoint_before) : null,
+    checkpoint_after: Number.isFinite(Number(input.checkpoint_after)) ? Number(input.checkpoint_after) : null,
+    normalized_exception_class: input.normalized_exception_class ?? null,
+    bounded_message: input.bounded_message ?? null,
+    stack_fingerprint: input.stack_fingerprint ?? null,
     next_eligible_action: input.next_eligible_action ?? null,
     detail: input.detail ?? null,
   };

@@ -105,9 +105,22 @@ import {
   beginCatchUpTransaction,
   checkpointCatchUpTransaction,
   commitCatchUpTransaction,
+  getActiveCatchUpTransactionSnapshot,
+  recoverStaleCatchUpTransaction,
   rollbackCatchUpTransaction,
   saveChatMetadata,
 } from './catchup-transaction.js';
+import {
+  bindMemorizeChatHandler,
+  bindMemorizeCheckpoint,
+  buildMemorizeControllerExit,
+  captureMemorizePrimaryFailure,
+  cleanupMemorizeRuntime,
+  createMemorizeControllerRuntime,
+  recordMemorizeOperationalPause,
+  registerMemorizeCleanup,
+  trackMemorizeTransaction,
+} from './memorize-controller-runtime.js';
 import { runCompaction, injectSummary, loadAndInjectSummary, buildCompactionRequestSignature, SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION } from './compaction.js';
 import {
   extractAndStoreMemories,
@@ -225,8 +238,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.69',
-  build_fingerprint: 'sme-v0.9.69-authoritative-obligation-ledger-r1',
+  extension_version: '0.9.70',
+  build_fingerprint: 'sme-v0.9.70-controller-transaction-lifecycle-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2345,7 +2358,9 @@ export function bindSettingsUI(ctrl) {
     const finalizationText = finalization?.completed_phase_count
       ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${finalization.active_phase.replaceAll('_', ' ')}` : ''}.`
       : '';
-    const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning);
+    const activeTransaction = getActiveCatchUpTransactionSnapshot();
+    const transactionLocked = Boolean(activeTransaction);
+    const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning || transactionLocked);
     if (!running && checkpoint.status === 'in_progress' && pageRunScope()) {
       const metadata = getContext().chatMetadata?.[META_KEY];
       const priorMarker = readPageRunMarker(localStorage, pageRunScope());
@@ -2378,7 +2393,9 @@ export function bindSettingsUI(ctrl) {
     setResumeLabel(
       resumePresentation.label,
       running
-        ? 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
+        ? transactionLocked && !ctrl.extractionRunning && !ctrl.compactionRunning
+          ? `Resume is unavailable until stale transaction ${activeTransaction.transaction_id} is safely rolled back.`
+          : 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
         : operatorActionRequired
           ? `Resume is blocked: ${resumeEligibility.reason.replaceAll('_', ' ')}.`
         : reconstructingSuccessor
@@ -2386,7 +2403,9 @@ export function bindSettingsUI(ctrl) {
           : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
     );
     $status.text(running
-      ? `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}${providerRecoveryText}`
+      ? transactionLocked && !ctrl.extractionRunning && !ctrl.compactionRunning
+        ? `Resume temporarily unavailable: an in-memory transaction lock remains for ${activeTransaction.owner?.phase ?? 'unknown phase'}. Starting Resume will first audit and roll back that stale lock; no committed work will be discarded.`
+        : `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}${providerRecoveryText}`
       : operatorActionRequired
         ? `Short-Term finalization cannot ordinarily resume (${resumeEligibility.decision.replaceAll('_', ' ')}: ${resumeEligibility.reason.replaceAll('_', ' ')}). Completed extraction and phase checkpoints remain preserved.`
       : reconstructingSuccessor
@@ -2916,10 +2935,15 @@ export function bindSettingsUI(ctrl) {
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
     const liveMemoryHealth = metadata.live_memory_health ? exportLiveMemoryHealth(metadata) : null;
     const liveProviderSummary = summarizeProviderAttemptAudit(metadata);
+    const transactionState = getActiveCatchUpTransactionSnapshot();
+    const recoveryBase = reconcileCatchUpRecoverySummary(
+      summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint), liveProviderSummary,
+    );
     const recovery = {
-      ...reconcileCatchUpRecoverySummary(
-        summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint), liveProviderSummary,
-      ),
+      ...recoveryBase,
+      ...(transactionState ? { resumable: false, resume_can_make_progress: false } : {}),
+      transaction_state: transactionState,
+      transaction_resume_block_reason: transactionState ? 'active_transaction_must_settle' : null,
       shortterm_compaction_checkpoint: metadata.shortterm_compaction_checkpoint ? {
         ...metadata.shortterm_compaction_checkpoint,
       } : null,
@@ -2933,10 +2957,15 @@ export function bindSettingsUI(ctrl) {
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
       // This clone makes the export path strictly read-only.
+      const reconciledRecovery = {
+        ...recovery,
+        resumable: transactionState ? false : recovery.resumable,
+        resume_can_make_progress: transactionState ? false : recovery.resume_can_make_progress,
+      };
       return normalizeRunStatusReport({ ...completedRun, build_identity: SME_BUILD_IDENTITY,
         compaction_request_audit: completedRun.compaction_request_audit
           ? reconcileShortTermSegmentLedger(completedRun.compaction_request_audit) : null,
-        live_memory_health: liveMemoryHealth, catch_up_recovery: recovery,
+        live_memory_health: liveMemoryHealth, catch_up_recovery: reconciledRecovery,
         malformed_recovery: centralMalformedRecovery ?? completedRun.malformed_recovery ?? null,
         targeted_extraction_replay: metadata.targeted_extraction_replay
           ? { ...(completedRun.targeted_extraction_replay ?? {}),
@@ -4991,7 +5020,7 @@ export function bindSettingsUI(ctrl) {
     $('#sme_catch_up').data('smeResumeRequested', true).trigger('click');
   });
 
-  $('#sme_catch_up').on('click', async function () {
+  bindMemorizeChatHandler($('#sme_catch_up'), async function () {
     if (ctrl.extractionRunning || ctrl.compactionRunning) {
       toastr.warning('An extraction is already running.', 'Smart Memory Enhanced', { timeOut: 3000 });
       return;
@@ -5008,6 +5037,10 @@ export function bindSettingsUI(ctrl) {
     // extraction runs for every character, not just the one in the selector.
     // Solo chats collapse to a single-element array using the active character.
     const catchUpContext = getContext();
+    const staleTransactionRecovery = recoverStaleCatchUpTransaction(catchUpContext, {
+      controller_idle: !ctrl.extractionRunning && !ctrl.compactionRunning,
+      reason_code: 'prior_handler_exited_without_transaction_settlement',
+    });
     // Capture the *live* persona before any confirmation dialog or provider
     // call. Imported JSONL headers can contain placeholder persona fields, so
     // final reconciliation must never rediscover this from serialized chat
@@ -5160,8 +5193,77 @@ export function bindSettingsUI(ctrl) {
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
     };
+    const controllerRuntime = createMemorizeControllerRuntime({
+      invocation_id: `${catchUpRunId}:${Date.now()}:${resumeRequested ? 'resume' : 'initial'}`,
+      logical_run_id: catchUpRunId,
+      page_instance_id: pageInstanceId,
+      phase: 'initializing',
+    });
+    runResult.transactionRecovery = staleTransactionRecovery.recovered ? staleTransactionRecovery : null;
     let currentChunkFailed = false;
     let finalTransaction = null;
+    let finalizationEtaRefreshTimer = null;
+    let unsubscribeProgress = null;
+    let unsubscribeRetry = null;
+    const beginRunTransaction = (phase, detail = {}) => {
+      const transaction = trackMemorizeTransaction(
+        controllerRuntime,
+        beginCatchUpTransaction(catchUpContext, {
+        logical_run_id: controllerRuntime.logical_run_id,
+        attempt_number: controllerRuntime.attempt_number,
+        page_instance_id: pageInstanceId,
+        phase,
+        tier: detail.tier,
+        owner: detail.owner,
+        source_range: detail.source_range,
+        }),
+        { phase, ...detail },
+      );
+      if (controllerRuntime.checkpoint) {
+        controllerRuntime.checkpoint.transaction_lifecycle = {
+          schema_version: 1, transaction_id: transaction.transaction_id,
+          state: 'active', owner: structuredClone(transaction.owner),
+          started_at: transaction.started_at, updated_at: Date.now(),
+        };
+      }
+      return transaction;
+    };
+    const commitRunTransaction = async (transaction) => {
+      if (controllerRuntime.checkpoint) {
+        controllerRuntime.checkpoint.transaction_lifecycle = {
+          schema_version: 1, transaction_id: transaction?.transaction_id ?? null,
+          state: 'committed', owner: structuredClone(transaction?.owner ?? {}),
+          started_at: transaction?.started_at ?? null, updated_at: Date.now(),
+        };
+      }
+      return commitCatchUpTransaction(transaction);
+    };
+    const settleActiveRunTransaction = (reasonCode = 'controller_exit') => {
+      const transaction = controllerRuntime.active_transaction;
+      if (!transaction || transaction.state !== 'active') return transaction ?? null;
+      transaction.exact_reason_code = reasonCode;
+      const result = rollbackCatchUpTransaction(transaction);
+      const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+      if (checkpoint) checkpoint.transaction_lifecycle = {
+        schema_version: 1, transaction_id: transaction.transaction_id,
+        state: transaction.state, owner: structuredClone(transaction.owner ?? {}),
+        started_at: transaction.started_at ?? null, updated_at: Date.now(),
+        exact_reason_code: transaction.exact_reason_code ?? reasonCode,
+      };
+      return result;
+    };
+    const recordControllerExit = (input = {}) => {
+      const exit = buildMemorizeControllerExit(controllerRuntime, input);
+      exit.stack_fingerprint = exit.stack_fingerprint_input
+        ? diagnosticFingerprint(exit.stack_fingerprint_input.replace(/https?:\/\/\S+/g, '<url>')) : null;
+      delete exit.stack_fingerprint_input;
+      const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
+        ?? controllerRuntime.checkpoint;
+      if (!checkpoint?.run_manifest) return exit;
+      checkpoint.run_manifest.obligation_ledger = ensureMemorizeObligationLedger(
+        checkpoint.run_manifest.obligation_ledger, checkpoint.run_manifest.logical_run_id);
+      return recordMemorizeControllerExit(checkpoint.run_manifest.obligation_ledger, exit);
+    };
     // A provider failure in a resumable finalization phase is not a user
     // cancellation and must not be committed as phase completion. Keep the
     // checkpoint live so the next page instance can resume that exact phase.
@@ -5188,18 +5290,7 @@ export function bindSettingsUI(ctrl) {
       console.error(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
     };
     const recordCatchUpOperationalPause = (label, err, tier = null) => {
-      const pause = {
-        label, tier,
-        reason_code: err?.sme_request_diagnostics?.pause_reason
-          ?? 'recovery_request_budget_reached_with_pending_children',
-        ...(err?.sme_request_diagnostics ?? {}),
-        recorded_at: Date.now(),
-      };
-      runResult.operationalPauses = [
-        ...runResult.operationalPauses.filter((item) => item.reason_code !== pause.reason_code
-          || item.next_resumable_child !== pause.next_resumable_child), pause,
-      ].slice(-16);
-      checkpoint.operational_pause = pause;
+      const pause = recordMemorizeOperationalPause(controllerRuntime, runResult, label, err, tier);
       console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, pause);
     };
     const recordCatchUpWarning = (label, err, tier = null) => {
@@ -5226,7 +5317,7 @@ export function bindSettingsUI(ctrl) {
         recordCatchUpWarning(`${label} warning`, err, 'presentation');
       }
     };
-    const unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
+    unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
     setCatchUpErrorCount(0);
     if (historicalParticipantScope.mode === 'historical_group_roster') {
       const disabledLabel = historicalParticipantScope.currently_disabled_included.length
@@ -5236,6 +5327,33 @@ export function bindSettingsUI(ctrl) {
     }
     $('#sme_catch_up').hide();
     $('#sme_cancel_catch_up').show().prop('disabled', false);
+
+    registerMemorizeCleanup(controllerRuntime, 'active_transaction', () => {
+      settleActiveRunTransaction(controllerRuntime.primary_failure?.code ?? 'controller_handler_exit');
+    });
+    registerMemorizeCleanup(controllerRuntime, 'ui_controls', () => {
+      $('#sme_cancel_catch_up').hide().prop('disabled', false);
+      $('#sme_catch_up').show().prop('disabled', false);
+      $('#sme_run_idempotence_check').prop('disabled', false);
+      $('#sme_catch_up_eta').hide().empty();
+      refreshCatchUpRecoveryUI();
+      refreshTargetedReplayUI();
+    });
+    registerMemorizeCleanup(controllerRuntime, 'finalization_eta_interval', () => {
+      if (finalizationEtaRefreshTimer) window.clearInterval(finalizationEtaRefreshTimer);
+      finalizationEtaRefreshTimer = null;
+    });
+    registerMemorizeCleanup(controllerRuntime, 'canonical_runtime_snapshot', () => {
+      clearCanonicalRuntimeContextSnapshot();
+    });
+    registerMemorizeCleanup(controllerRuntime, 'retry_listener', () => {
+      unsubscribeRetry?.();
+      unsubscribeRetry = null;
+    });
+    registerMemorizeCleanup(controllerRuntime, 'provider_progress_listener', () => {
+      unsubscribeProgress?.();
+      unsubscribeProgress = null;
+    });
 
     try {
       const context = getContext();
@@ -5380,6 +5498,23 @@ export function bindSettingsUI(ctrl) {
         type: resumeAttemptType,
         resumeOffset,
       });
+      bindMemorizeCheckpoint(controllerRuntime, checkpoint);
+      if (resumableCheckpoint?.transaction_lifecycle?.state === 'active'
+        && getActiveCatchUpTransactionSnapshot() == null) {
+        checkpoint.transaction_lifecycle = {
+          ...resumableCheckpoint.transaction_lifecycle,
+          state: 'stale_in_memory_lock_recovered_after_restart',
+          terminal_disposition: 'rolled_back_to_last_durable_checkpoint',
+          exact_reason_code: 'page_instance_ended_without_in_memory_transaction',
+          recovered_by_page_instance_id: pageInstanceId,
+          updated_at: Date.now(),
+        };
+        runResult.transactionRecovery = {
+          recovered: true,
+          reason_code: 'page_instance_ended_without_in_memory_transaction',
+          transaction: structuredClone(checkpoint.transaction_lifecycle),
+        };
+      }
       checkpoint.status = 'in_progress';
       checkpoint.updated_at = Date.now();
       checkpoint.next_source_offset = resumeOffset;
@@ -5545,8 +5680,7 @@ export function bindSettingsUI(ctrl) {
         shortterm_progress: null,
         phase_durations: {},
       };
-      let finalizationEtaRefreshTimer = null;
-      const unsubscribeProgress = onMemoryRequestProgress((event) => {
+      unsubscribeProgress = onMemoryRequestProgress((event) => {
         if (!finalizationTiming.active_phase) return;
         if (event?.event === 'started') {
           finalizationTiming.active_request = {
@@ -5724,7 +5858,7 @@ export function bindSettingsUI(ctrl) {
         }
         const processed = Math.min(i + chunk.length, total);
         const pct = Math.round((processed / total) * 100);
-        const chunkTransaction = beginCatchUpTransaction(catchUpContext);
+        const chunkTransaction = beginRunTransaction('source_extraction');
         setStatusMessage(
           `Catching up... (${i}/${total} messages, ${Math.round((i / total) * 100)}%)`,
         );
@@ -5734,6 +5868,9 @@ export function bindSettingsUI(ctrl) {
           source_start_index: chunk[0]?.__sme_original_index ?? null,
           source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
         };
+        trackMemorizeTransaction(controllerRuntime, chunkTransaction, {
+          phase: 'source_extraction', source_range: { start: currentRange.source_start_index, end: currentRange.source_end_index },
+        });
         checkpoint.context_overflow_recovery ??= { schema_version: 1, completed_children: [] };
         checkpoint.context_overflow_recovery.completed_children ??= [];
         const completedOverflowChildren = checkpoint.context_overflow_recovery.completed_children
@@ -5759,6 +5896,10 @@ export function bindSettingsUI(ctrl) {
           await checkpointCatchUpTransaction(chunkTransaction);
         };
         const updateAuthoritativeObligation = async (transition) => {
+          trackMemorizeTransaction(controllerRuntime, controllerRuntime.active_transaction, {
+            phase: 'source_extraction', tier: transition.tier, owner: transition.owner,
+            source_range: transition.source_range, obligation_id: transition.obligation_id,
+          });
           checkpoint.run_manifest.obligation_ledger = ensureMemorizeObligationLedger(
             checkpoint.run_manifest.obligation_ledger, checkpoint.run_manifest.logical_run_id);
           transitionMemorizeObligation(checkpoint.run_manifest.obligation_ledger, {
@@ -5902,7 +6043,7 @@ export function bindSettingsUI(ctrl) {
           }
         }
         if (ctrl.catchUpCancelled) {
-          rollbackCatchUpTransaction(chunkTransaction);
+          settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
           break;
         }
         if (replaySession) {
@@ -5929,7 +6070,7 @@ export function bindSettingsUI(ctrl) {
             }
           });
           if (ctrl.catchUpCancelled) {
-            rollbackCatchUpTransaction(chunkTransaction);
+            settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
             break;
           }
           setStatusMessage(`Catching up... (${i}/${total} messages - consolidating session)`);
@@ -5944,7 +6085,7 @@ export function bindSettingsUI(ctrl) {
           });
         }
         if (ctrl.catchUpCancelled) {
-          rollbackCatchUpTransaction(chunkTransaction);
+          settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
           break;
         }
 
@@ -6022,7 +6163,7 @@ export function bindSettingsUI(ctrl) {
           checkpointForCommit.updated_at = Date.now();
         }
         try {
-          await retryTransientMemoryOperation(() => commitCatchUpTransaction(chunkTransaction));
+          await retryTransientMemoryOperation(() => commitRunTransaction(chunkTransaction));
           chunkCommitted = true;
           // The displayed recovery offset is intentionally refreshed only
           // after the same transaction succeeds. Live processing progress may
@@ -6103,7 +6244,7 @@ export function bindSettingsUI(ctrl) {
               ? 'recovery_change_required'
               : operationalPauseReason ?? exactPendingObligation?.exact_reason_code
                 ?? 'unknown_uncommitted_tier_obligation';
-            recordMemorizeControllerExit(checkpointForCommit.run_manifest.obligation_ledger, {
+            recordControllerExit({
               logical_run_id: checkpointForCommit.run_manifest.logical_run_id,
               reason_code: terminalReasonCode,
               classification: exactPendingObligation ? 'downstream_validation_pending' : 'unknown_interruption',
@@ -6280,7 +6421,7 @@ export function bindSettingsUI(ctrl) {
           status: 'awaiting_manual_resume', reasonCode: exitReason,
           attemptMetrics: { retry_count: runResult.retriedRequests, provider_failure_count: runResult.providerFailures.length },
         });
-        recordMemorizeControllerExit(checkpoint.run_manifest.obligation_ledger, {
+        recordControllerExit({
           logical_run_id: checkpoint.run_manifest.logical_run_id,
           reason_code: exitReason,
           classification: exactPending ? 'pending_obligation' : 'unknown_interruption',
@@ -6316,7 +6457,7 @@ export function bindSettingsUI(ctrl) {
       // This keeps the existing extraction checkpoint semantics while allowing
       // a crash during a later phase to resume without repeating already safe
       // consolidation, scene, arc, compaction, or profile work.
-      finalTransaction = beginCatchUpTransaction(catchUpContext);
+      finalTransaction = beginRunTransaction('finalization');
       const completedFinalizationPhases = checkpoint.finalization?.completed_phases ?? {};
       const hasCompletedFinalizationPhase = (key) => Boolean(completedFinalizationPhases[key]?.completed_at);
       const commitFinalizationPhase = async (key, phaseSummary = {}) => {
@@ -6347,8 +6488,8 @@ export function bindSettingsUI(ctrl) {
         // Save through the active transaction, then make this phase's full
         // durable state the new recovery boundary before the next phase.
         await saveChatMetadata(catchUpContext);
-        await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-        finalTransaction = beginCatchUpTransaction(catchUpContext);
+        await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+        finalTransaction = beginRunTransaction(key);
         updateActivePageMarker(checkpoint, key, 'idle');
       };
       const startFinalizationPhase = async (key) => {
@@ -6362,8 +6503,8 @@ export function bindSettingsUI(ctrl) {
         // Persist the active marker before entering a provider request. A
         // crash now has an explicit safe boundary: completed earlier phases
         // remain skipped, while only this unfinished phase is retried.
-        await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-        finalTransaction = beginCatchUpTransaction(catchUpContext);
+        await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+        finalTransaction = beginRunTransaction(key);
       };
       const skipFinalizationPhase = (label) => {
         updateFinalizationEta(label);
@@ -7240,8 +7381,8 @@ export function bindSettingsUI(ctrl) {
             // for the next pass so a crash resumes from the saved tail.
             try {
               await saveChatMetadata(catchUpContext);
-              await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-              finalTransaction = beginCatchUpTransaction(catchUpContext);
+              await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+              finalTransaction = beginRunTransaction('shortterm_extraction');
               if (successorPlan) {
               const restored = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint?.finalization?.shortterm_recovery_plan;
               const successorVerified = restored?.plan_id === successorPlan.plan_id
@@ -7267,8 +7408,8 @@ export function bindSettingsUI(ctrl) {
                 marker.successor_verified_at = restored.verified_at;
               }
               await saveChatMetadata(catchUpContext);
-              await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-              finalTransaction = beginCatchUpTransaction(catchUpContext);
+              await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+              finalTransaction = beginRunTransaction('shortterm_extraction');
               }
             } catch (error) {
               compactionRequestAudit.segment_attempt_ledger = (compactionRequestAudit.segment_attempt_ledger ?? []).map((entry) => (
@@ -7441,8 +7582,8 @@ export function bindSettingsUI(ctrl) {
             checkpoint.finalization.shortterm_recovery_plan = plan;
             checkpoint.updated_at = Date.now();
             await saveChatMetadata(catchUpContext);
-            await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-            finalTransaction = beginCatchUpTransaction(catchUpContext);
+            await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+            finalTransaction = beginRunTransaction('shortterm_extraction');
             const restored = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint?.finalization?.shortterm_recovery_plan;
             if (restored) restored.reloaded_at = Date.now();
             const verified = restored?.effective_request_signature === plan.effective_request_signature
@@ -7461,8 +7602,8 @@ export function bindSettingsUI(ctrl) {
             restored.reload_result = 'verified';
             restored.lifecycle_state = 'successor_reload_verified';
             await saveChatMetadata(catchUpContext);
-            await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-            finalTransaction = beginCatchUpTransaction(catchUpContext);
+            await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+            finalTransaction = beginRunTransaction('shortterm_extraction');
             return restored;
           };
           let persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
@@ -7515,8 +7656,8 @@ export function bindSettingsUI(ctrl) {
               };
               checkpoint.updated_at = migratedAt;
               await saveChatMetadata(catchUpContext);
-              await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-              finalTransaction = beginCatchUpTransaction(catchUpContext);
+              await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+              finalTransaction = beginRunTransaction('profile_generation');
               const restoredMarker = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint
                 ?.finalization?.shortterm_post_commit_recovery_marker;
               if (restoredMarker?.marker_id !== missingPlanProof.marker_id) {
@@ -7537,8 +7678,8 @@ export function bindSettingsUI(ctrl) {
                 checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_state = 'reload_verified';
                 checkpoint.finalization.shortterm_recovery_migration.successor_reconstruction_status = 'reload_verified';
                 await saveChatMetadata(catchUpContext);
-                await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
-                finalTransaction = beginCatchUpTransaction(catchUpContext);
+                await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
+                finalTransaction = beginRunTransaction('profile_generation');
               } else {
                 checkpoint.finalization.shortterm_recovery_migration.successor_reconstruction_status = 'tail_complete';
               }
@@ -9226,7 +9367,7 @@ export function bindSettingsUI(ctrl) {
             : terminalCheckpoint.run_manifest?.terminal_reason_code === 'tier_coverage_incomplete'
               ? 'tier_coverage_incomplete'
               : ctrl.catchUpStopReason ?? 'manual_cancel';
-          recordMemorizeControllerExit(terminalCheckpoint.run_manifest.obligation_ledger, {
+          recordControllerExit({
             logical_run_id: terminalCheckpoint.run_manifest.logical_run_id,
             reason_code: terminalReasonCode,
             classification: terminalReasonCode,
@@ -9264,7 +9405,7 @@ export function bindSettingsUI(ctrl) {
           diagnostics.coverage_attention_reason = coverageAttention ? 'cumulative_source_or_tier_coverage_incomplete' : null;
         }
       } else if (terminalCheckpoint) {
-        recordMemorizeControllerExit(terminalCheckpoint.run_manifest.obligation_ledger, {
+        recordControllerExit({
           logical_run_id: terminalCheckpoint.run_manifest.logical_run_id,
           reason_code: 'finalization_committed',
           classification: 'completed', resumable: false,
@@ -9391,7 +9532,7 @@ export function bindSettingsUI(ctrl) {
       Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
       latestExportDiagnostics = diagnostics;
       try {
-        await retryTransientMemoryOperation(() => commitCatchUpTransaction(finalTransaction));
+        await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
         if (!ctrl.catchUpCancelled && !resumableFinalizationFailure) clearPageRunMarker(localStorage, pageRunScope(catchUpContext), catchUpRunId);
       } catch (err) {
         recordCatchUpError('final persistence error', err, null, true);
@@ -9464,12 +9605,93 @@ export function bindSettingsUI(ctrl) {
       refreshRunOutcomeUI();
       $('#sme_export_diagnostics').prop('disabled', false);
     } catch (err) {
-      if (finalTransaction) rollbackCatchUpTransaction(finalTransaction);
+      captureMemorizePrimaryFailure(controllerRuntime, err);
+      try {
+        settleActiveRunTransaction(err?.code ?? 'internal_exception');
+      } catch (rollbackError) {
+        runResult.warnings.push({
+          label: 'active transaction rollback failure', tier: null,
+          message: String(rollbackError?.message ?? rollbackError).replace(/\s+/g, ' ').slice(0, 300),
+        });
+      }
       recordCatchUpError('run failure', err);
+      const failedCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+      if (failedCheckpoint?.run_manifest) {
+        const projection = projectMemorizeObligationLedger(failedCheckpoint.run_manifest.obligation_ledger);
+        const pending = projection.next_eligible_obligation;
+        const canResume = Boolean(pending?.next_eligible_action)
+          && getActiveCatchUpTransactionSnapshot() == null;
+        failedCheckpoint.status = canResume ? 'awaiting_manual_resume' : 'blocked_recovery_change_required';
+        failedCheckpoint.controller_failure = {
+          schema_version: 1,
+          phase: controllerRuntime.phase,
+          tier: controllerRuntime.tier,
+          owner: controllerRuntime.owner,
+          source_range: controllerRuntime.source_range,
+          obligation_id: controllerRuntime.obligation_id,
+          transaction_state: controllerRuntime.active_transaction ? {
+            transaction_id: controllerRuntime.active_transaction.transaction_id,
+            state: controllerRuntime.active_transaction.state,
+            terminal_disposition: controllerRuntime.active_transaction.terminal_disposition ?? null,
+          } : null,
+          normalized_exception_class: controllerRuntime.primary_failure?.normalized_exception_class ?? null,
+          code: controllerRuntime.primary_failure?.code ?? null,
+          bounded_message: controllerRuntime.primary_failure?.bounded_message ?? null,
+          stack_fingerprint: controllerRuntime.primary_failure?.stack_fingerprint_input
+            ? diagnosticFingerprint(controllerRuntime.primary_failure.stack_fingerprint_input.replace(/https?:\/\/\S+/g, '<url>')) : null,
+          recorded_at: Date.now(),
+        };
+        recordControllerExit({
+          reason_code: err?.code ?? 'internal_exception',
+          classification: err?.code === 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED'
+            ? 'transaction_commit_failure'
+            : err?.code === 'SME_CATCHUP_TRANSACTION_ROLLBACK_FAILED'
+              ? 'transaction_rollback_failure' : 'internal_exception',
+          resumable: canResume,
+          obligation_id: pending?.obligation_id ?? null,
+          next_eligible_action: canResume ? pending.next_eligible_action : null,
+        });
+        failedCheckpoint.run_manifest = finalizeCatchUpRunManifest(failedCheckpoint.run_manifest, {
+          status: failedCheckpoint.status,
+          reasonCode: err?.code ?? 'internal_exception',
+          attemptMetrics: {
+            retry_count: runResult.retriedRequests,
+            provider_failure_count: runResult.providerFailures.length,
+          },
+        });
+        failedCheckpoint.updated_at = Date.now();
+        try {
+          await saveChatMetadata(catchUpContext);
+        } catch (diagnosticSaveError) {
+          console.warn('[Smart Memory Enhanced] Controller-exit persistence warning:', diagnosticSaveError);
+        }
+      } else {
+        recordControllerExit({ reason_code: err?.code ?? 'internal_exception', classification: 'internal_exception', resumable: false });
+      }
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
-      if (resumeRequested) recordRuntimeEvidence('resume_handler_exited', { subsystem: 'memorize_chat_resume' });
+      if (!controllerRuntime.controller_exit) {
+        const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
+          ?? controllerRuntime.checkpoint;
+        const projection = projectMemorizeObligationLedger(checkpoint?.run_manifest?.obligation_ledger);
+        const pending = projection.next_eligible_obligation;
+        const manual = ctrl.catchUpStopReason === 'manual_cancel';
+        recordControllerExit({
+          reason_code: ctrl.catchUpStopReason ?? (pending?.exact_reason_code || 'handler_exited'),
+          classification: manual ? 'manually_cancelled'
+            : pending ? 'awaiting_actionable_recovery' : 'completed',
+          resumable: !manual && Boolean(pending?.next_eligible_action),
+          obligation_id: pending?.obligation_id ?? null,
+          next_eligible_action: pending?.next_eligible_action ?? null,
+        });
+      }
+      if (resumeRequested) recordRuntimeEvidence('resume_handler_exited', {
+        subsystem: 'memorize_chat_resume',
+        request_state: controllerRuntime.controller_exit?.classification ?? 'unknown_exit',
+        normalized_error_type: controllerRuntime.controller_exit?.normalized_exception_class ?? null,
+        stack_fingerprint: controllerRuntime.controller_exit?.stack_fingerprint ?? null,
+      });
       // Completion must become observable before optional runtime cleanup.
       // A cleanup helper can fail after a long successful run; it must never
       // strand the UI on Cancel or leave the local idempotence guard locked.
@@ -9478,35 +9700,20 @@ export function bindSettingsUI(ctrl) {
       catchUpUiRunning = false;
       ctrl.catchUpCancelled = false;
       ctrl.catchUpStopReason = null;
-      try {
-        $('#sme_cancel_catch_up').hide().prop('disabled', false);
-        $('#sme_catch_up').show().prop('disabled', false);
-        $('#sme_run_idempotence_check').prop('disabled', false);
-        $('#sme_catch_up_eta').hide().empty();
-        refreshCatchUpRecoveryUI();
-        refreshTargetedReplayUI();
-      } catch (cleanupErr) {
-        console.warn('[Smart Memory Enhanced] Catch-up control cleanup warning:', cleanupErr);
-      }
-      try {
-        if (finalizationEtaRefreshTimer) window.clearInterval(finalizationEtaRefreshTimer);
-      } catch (cleanupErr) {
-        console.warn('[Smart Memory Enhanced] Catch-up ETA cleanup warning:', cleanupErr);
-      }
-      try {
-        clearCanonicalRuntimeContextSnapshot();
-      } catch (cleanupErr) {
-        console.warn('[Smart Memory Enhanced] Canonical runtime cleanup warning:', cleanupErr);
-      }
-      try {
-        unsubscribeRetry();
-      } catch (cleanupErr) {
-        console.warn('[Smart Memory Enhanced] Retry listener cleanup warning:', cleanupErr);
-      }
-      try {
-        unsubscribeProgress();
-      } catch (cleanupErr) {
-        console.warn('[Smart Memory Enhanced] Provider-progress listener cleanup warning:', cleanupErr);
+      const cleanupWarnings = await cleanupMemorizeRuntime(controllerRuntime, (warning, cleanupErr) => {
+        console.warn(`[Smart Memory Enhanced] Cleanup warning (${warning.resource_name}/${warning.classification}):`, cleanupErr);
+      });
+      const cleanupCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
+      if (cleanupCheckpoint && cleanupWarnings.length) {
+        cleanupCheckpoint.cleanup_warnings = [
+          ...(cleanupCheckpoint.cleanup_warnings ?? []), ...cleanupWarnings,
+        ].slice(-16);
+        cleanupCheckpoint.updated_at = Date.now();
+        try {
+          await saveChatMetadata(catchUpContext);
+        } catch (cleanupPersistenceError) {
+          console.warn('[Smart Memory Enhanced] Cleanup-diagnostics persistence warning:', cleanupPersistenceError);
+        }
       }
     }
   });
