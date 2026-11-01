@@ -5,12 +5,15 @@ import {
   createMemorizeObligationLedger,
   migrateLegacyMemorizeObligations,
   projectMemorizeObligationLedger,
+  reconcileMemorizeProviderRuntime,
+  reconcileMemorizeRunningObligations,
   recordMemorizeControllerExit,
   transitionMemorizeObligation,
 } from '../memorize-obligation-ledger.js';
 import {
   buildAutomaticRecoveryFullChatReplay,
   buildFullChatReplay,
+  replayExhaustedSessionRecoveryResume,
   runMemorizeReplay,
 } from '../memorize-replay-harness.js';
 import { repairSessionCandidateShapes } from '../session-candidate-utils.js';
@@ -28,6 +31,55 @@ import {
 
 const sessionId = 'session:chat:640-659:fnv1a-4ee9852e';
 const sessionInput = { obligation_id: sessionId, logical_run_id: 'run', tier: 'session', source_range: { start: 640, end: 659 }, source_fingerprint: 'fnv1a-4ee9852e' };
+
+test('v0.9.71 stale provider-running state repairs to exact pending work and preserves partial persistence', () => {
+  const ledger = createMemorizeObligationLedger('run');
+  ledger.implementation_version = 2;
+  ledger.obligations[sessionId] = {
+    ...sessionInput, current_state: 'provider_running', checkpoint_eligible: false,
+    exact_reason_code: 'provider_request_in_progress', next_eligible_action: null,
+    persistence_result: 'not_committed', provider_attempt_lineage: ['provider-188', 'provider-192'],
+    metrics: { persisted_records: 1, unresolved_parser_fragments: 2,
+      producing_provider_attempt_id: 'provider-188' }, timestamps: {},
+  };
+  const repaired = reconcileMemorizeRunningObligations(ledger, { recent_attempts: [
+    { attempt_id: 'provider-192', logical_obligation_id: sessionId, terminal_outcome: 'provider_response_malformed' },
+  ] });
+  const obligation = repaired.ledger.obligations[sessionId];
+  assert.equal(repaired.repairs.length, 1);
+  assert.equal(obligation.current_state, 'pending_recovery');
+  assert.equal(obligation.next_eligible_action, 'recover_unresolved_partial_output_fragments');
+  assert.equal(obligation.persistence_result, 'partial_records_committed');
+  assert.equal(obligation.partial_record_persistence.persisted_record_count, 1);
+  assert.equal(projectMemorizeObligationLedger(repaired.ledger).invariants.valid, true);
+});
+
+test('provider-running requires a registered physical attempt and partial persistence never downgrades', () => {
+  const ledger = createMemorizeObligationLedger('run');
+  transitionMemorizeObligation(ledger, sessionInput, {
+    current_state: 'pending_recovery', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
+    next_eligible_action: 'recover_unresolved_partial_output_fragments',
+    persistence_result: 'partial_records_committed', metrics: { persisted_records: 1 },
+  });
+  const refused = transitionMemorizeObligation(ledger, sessionInput, {
+    current_state: 'provider_running', persistence_result: 'not_committed',
+  });
+  assert.equal(refused.current_state, 'pending_recovery');
+  assert.equal(refused.exact_reason_code, 'provider_attempt_registration_required');
+  assert.equal(refused.persistence_result, 'partial_records_committed');
+  assert.equal(refused.partial_record_persistence.persisted_record_count, 1);
+});
+
+test('provider runtime reconciliation identifies ledger/audit mismatches exactly', () => {
+  const ledger = createMemorizeObligationLedger('run');
+  transitionMemorizeObligation(ledger, sessionInput, {
+    current_state: 'provider_running', provider_attempt_id: 'provider-1',
+    exact_reason_code: 'provider_request_in_progress',
+  });
+  const result = reconcileMemorizeProviderRuntime(ledger, { recent_attempts: [] });
+  assert.equal(result.consistent, false);
+  assert.equal(result.violations.some((item) => item.code === 'ledger_provider_running_without_physical_attempt'), true);
+});
 
 test('Session 640-659 downstream rejection remains exact pending recovery', () => {
   const ledger = createMemorizeObligationLedger('run');
@@ -262,5 +314,36 @@ test('9,434-message replay automatically recovers frequent partial Session outpu
   assert.equal(script.providerMetrics.request_amplification, 8 / 7);
   assert.equal(script.providerMetrics.partial_valid_response_rate, 1 / 8);
   assert.equal(script.providerMetrics.fragment_recovery_success_rate, 1);
+});
+
+test('v0.9.71 exhaustion reload resumes only exact fragments and continues 100 to 120-139', () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL(
+    './fixtures/memorize-exhausted-session-100-119.json', import.meta.url), 'utf8'));
+  const result = replayExhaustedSessionRecoveryResume();
+  assert.equal(result.beforeRepair.running_obligation_count, 1);
+  assert.equal(result.afterRepair.running_obligation_count, 0);
+  assert.equal(result.afterRepair.actionable_pending_obligation_count, 1);
+  assert.equal(result.afterRepair.next_eligible_obligation.obligation_id, fixture.obligation_id);
+  assert.equal(result.afterRepair.next_eligible_obligation.partial_record_persistence.persisted_record_count, 1);
+  assert.equal(result.runtimeAfterRepair.consistent, true);
+  assert.equal(result.epoch.recovery_stage, fixture.resume_recovery_stage);
+  assert.equal(result.epoch.global_requests_consumed_before_epoch, 4);
+  assert.deepEqual(result.providerRequests.at(-2).fragment_ids, fixture.unresolved_fragment_ids);
+  assert.equal(result.providerRequests.at(-2).accepted_record_ids_excluded.length, 1);
+  assert.equal(result.longtermReplayCount, 0);
+  assert.equal(result.checkpoint, fixture.checkpoint_after_recovery);
+  assert.deepEqual(result.providerRequests.at(-1).source_range, fixture.next_source_range);
+  assert.equal(result.duplicateRecordCount, 0);
+  assert.equal(result.finalProjection.pending_obligation_count, 0);
+  assert.equal(result.finalProjection.invariants.valid, true);
+});
+
+test('9,434-message replay includes exhaustion, reload, focused Resume, and complete coverage', () => {
+  const result = replayExhaustedSessionRecoveryResume({ completeRemainingChat: true });
+  assert.equal(result.checkpoint, 9434);
+  assert.equal(result.finalProjection.pending_obligation_count, 0);
+  assert.equal(result.finalProjection.invariants.valid, true);
+  assert.equal(result.longtermReplayCount, 0);
+  assert.equal(result.duplicateRecordCount, 0);
 });
 

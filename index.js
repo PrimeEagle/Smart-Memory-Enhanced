@@ -132,6 +132,7 @@ import { classifyTurn, adaptiveBudgets } from './memory-utils.js';
 import { clearUnifiedSlot, maybeInjectUnified } from './unified-inject.js';
 import { registerSmartMemoryMacros } from './macros.js';
 import { smLog } from './logging.js';
+import { formatDiagnosticIdentifier } from './diagnostic-presentation-utils.js';
 import {
   isEpistemicEnabled,
   extractEpistemicKnowledge,
@@ -1119,7 +1120,7 @@ async function onCharacterMessageRendered(messageId, type) {
                 }
               }
             } else {
-              $result.addClass('sme_continuity_warn').text(`Continuity check unavailable: ${continuity.outcome.replaceAll('_', ' ')}.`).show();
+              $result.addClass('sme_continuity_warn').text(`Continuity check unavailable: ${formatDiagnosticIdentifier(continuity.outcome, 'unknown outcome')}.`).show();
             }
           })
           .catch((err) => {

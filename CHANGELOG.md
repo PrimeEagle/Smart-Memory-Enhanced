@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.72] - 2026-11-01
+
+### Added
+
+- Exhausted Session recovery now persists a new Resume epoch before dispatch,
+  selects a fragment-identity decision contract as a genuinely changed stage,
+  and prevents overlapping epochs while a registered physical request is
+  active.
+- Provider recovery diagnostics now separate the 20-request global ceiling
+  from per-epoch and per-stage allowances. Stage-ladder exhaustion reports the
+  remaining global allowance, eligible changed stages, elapsed wall time, and
+  exact pause reason without mislabeling four attempts as global exhaustion.
+- A sanitized replay fixture covers the supplied 9,434-message failure chain:
+  one accepted Session record, two rejected fragments, four exhausted stages,
+  reload, focused Resume, checkpoint 100 to 120, and immediate 120–139 work.
+
+### Fixed
+
+- Resume no longer marks an obligation `provider_running` before the physical
+  attempt is registered. Persisted v0.9.71 running states with no matching
+  provider request are repaired to exact pending work, and export diagnostics
+  report any ledger/provider runtime mismatch by obligation and attempt ID.
+- A verified committed partial Session record can no longer be downgraded by a
+  later recovery attempt. Root persistence, partial-record persistence, and
+  current-attempt persistence remain distinct; Resume verifies the durable
+  record and excludes it from fragment regeneration.
+- Null, missing, empty, malformed, and non-string diagnostic identifiers now
+  use one total presentation formatter across recovery, finalization,
+  continuity, and live-health UI. Presentation failures are nonfatal and
+  cannot abort or roll back Memorize Chat.
+- A later internal exception now supersedes a provisional recovery-pause exit
+  for the same invocation, preserving exactly one final controller outcome
+  with the actual exception and transaction state.
+- Resume availability, actionable work, paused, blocked, running, and terminal
+  counts now derive from the authoritative obligation ledger without the prior
+  contradictory resumable/blocked projections.
+- Fragment recovery asks the provider only for constrained semantic decisions
+  keyed by the two stable fragment IDs; supported type, importance, expiration,
+  and citation metadata are constructed and validated locally.
+
 ## [0.9.71] - 2026-11-01
 
 ### Added

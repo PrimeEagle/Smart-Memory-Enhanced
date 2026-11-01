@@ -1801,7 +1801,7 @@ test('context-limited empty compaction partitions input and refuses exhausted eq
   assert.match(settings, /resumed_after_phase_failure/);
   assert.match(settings, /operator_action_required/);
   assert.match(settings, /evaluateShortTermResumeEligibility/);
-  assert.match(settings, /Resume was not started \(\$\{resumeEligibility\.decision/);
+  assert.match(settings, /Resume was not started \(\$\{formatDiagnosticIdentifier\(resumeEligibility\.decision/);
   assert.match(settings, /no provider request because plan validation failed/);
   assert.match(settings, /requiredFinalizationComplete/);
   assert.match(settings, /status: 'blocked_by_upstream_phase'/);

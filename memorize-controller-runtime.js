@@ -111,10 +111,14 @@ export function captureMemorizePrimaryFailure(runtime, error) {
 }
 
 export function buildMemorizeControllerExit(runtime, input = {}) {
-  if (runtime.controller_exit) return runtime.controller_exit;
+  const exitPriority = (classification) => ({
+    completed: 10, awaiting_actionable_recovery: 20, downstream_validation_pending: 30,
+    operationally_paused: 30, manually_cancelled: 40,
+    transaction_commit_failure: 80, transaction_rollback_failure: 90, internal_exception: 100,
+  }[classification] ?? 50);
   const transaction = runtime.active_transaction;
   const failure = runtime.primary_failure;
-  runtime.controller_exit = {
+  const candidate = {
     controller_invocation_id: runtime.invocation_id,
     logical_run_id: runtime.logical_run_id,
     attempt_number: runtime.attempt_number,
@@ -125,7 +129,7 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
     source_range: input.source_range ?? runtime.source_range,
     obligation_id: input.obligation_id ?? runtime.obligation_id,
     active_transaction_id: transaction?.transaction_id ?? null,
-    active_transaction_state: transaction?.state ?? null,
+    active_transaction_state: transaction?.state ?? 'not_applicable',
     checkpoint_before: runtime.checkpoint_before,
     checkpoint_after: Number(runtime.checkpoint?.next_source_offset ?? runtime.checkpoint_before) || 0,
     reason_code: input.reason_code ?? failure?.code ?? 'unknown_interruption',
@@ -137,6 +141,11 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
     next_eligible_action: input.next_eligible_action ?? null,
     at: input.at ?? Date.now(),
   };
+  if (runtime.controller_exit
+    && exitPriority(candidate.classification) <= exitPriority(runtime.controller_exit.classification)) {
+    return runtime.controller_exit;
+  }
+  runtime.controller_exit = candidate;
   return runtime.controller_exit;
 }
 

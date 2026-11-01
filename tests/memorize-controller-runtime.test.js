@@ -131,6 +131,31 @@ test('controller exits deduplicate by invocation and cannot leave an exited atte
   assert.equal(projectMemorizeObligationLedger(ledger).last_controller_exit.attempt_number, 2);
 });
 
+test('a later internal exception atomically supersedes a provisional pause exit', () => {
+  const runtime = createMemorizeControllerRuntime({ invocation_id: 'priority', logical_run_id: 'run' });
+  const ledger = { schema_version: 1, implementation_version: 3, normalization_complete: true,
+    logical_run_id: 'run', obligations: {}, controller_exits: [], created_at: 1, updated_at: 1 };
+  const provisional = buildMemorizeControllerExit(runtime, {
+    classification: 'downstream_validation_pending', reason_code: 'recovery_stage_ladder_exhausted',
+    resumable: true, next_eligible_action: 'fragment_decision_regeneration',
+  });
+  recordMemorizeControllerExit(ledger, provisional);
+  const failure = new TypeError('presentation failed after pause');
+  failure.code = 'SME_INTERNAL_PRESENTATION_FAILURE';
+  // The real outer catch captures the primary failure before final exit construction.
+  runtime.primary_failure = { normalized_exception_class: failure.name, code: failure.code,
+    bounded_message: failure.message, stack_fingerprint_input: failure.stack };
+  const finalExit = buildMemorizeControllerExit(runtime, {
+    classification: 'internal_exception', reason_code: failure.code, resumable: true,
+    next_eligible_action: 'fragment_decision_regeneration',
+  });
+  recordMemorizeControllerExit(ledger, finalExit);
+  const projection = projectMemorizeObligationLedger(ledger);
+  assert.equal(projection.controller_exits.length, 1);
+  assert.equal(projection.last_controller_exit.classification, 'internal_exception');
+  assert.equal(projection.last_controller_exit.normalized_exception_class, 'TypeError');
+});
+
 test('overlapping transaction state is observable and therefore blocks a second invocation', () => {
   const runtime = createMemorizeControllerRuntime();
   trackMemorizeTransaction(runtime, { transaction_id: 'tx', state: 'active' }, { phase: 'source_extraction' });

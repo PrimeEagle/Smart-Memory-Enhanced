@@ -11,6 +11,7 @@ export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   changed_dimension_regenerations: 1,
   structured_json_regenerations: 1,
   minimal_record_regenerations: 1,
+  fragment_decision_regenerations: 1,
   single_source_unit_regenerations_per_unit: 1,
   single_source_contract_enforcements_per_unit: 1,
   maximum_split_depth: 2,
@@ -45,6 +46,55 @@ export function selectRejectedTaggedFragments(response, { tier = 'longterm' } = 
       raw,
     };
   }).filter((entry) => entry.raw);
+}
+
+export function buildFragmentDecisionRecoveryPrompt(originalPrompt, fragments = [], { tier = 'session' } = {}) {
+  const allowedTypes = [...taggedTypes(tier)].join(', ');
+  const payload = fragments.map((fragment) => ({
+    fragment_id: fragment.fragment_id,
+    rejected_claim: fragment.raw,
+    rejection_reasons: fragment.reason_codes ?? [],
+  }));
+  return `FRAGMENT DECISION RECOVERY\nAccepted sibling records are already durable and MUST NOT be repeated. Decide only the rejected fragments.\nAllowed types: ${allowedTypes}.\nReturn exactly one JSON object: {"decisions":[{"fragment_id":"...","disposition":"record|no_update","type":"...","claim":"...","source_indices":[0]}]}.\nFor record, copy only a supported claim and cite source indexes visible in the source excerpt. For no_update, omit claim/type/source_indices. Do not emit tags, modifiers, Markdown, or prose.\n\nSOURCE AND TASK\n${originalPrompt}\n\nREJECTED FRAGMENTS\n${JSON.stringify(payload)}`;
+}
+
+export function parseFragmentDecisionResponse(response, fragments = [], { tier = 'session', parse } = {}) {
+  const expected = new Set(fragments.map((fragment) => String(fragment.fragment_id)));
+  let parsed;
+  try {
+    const text = String(response ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    parsed = JSON.parse(text);
+  } catch {
+    return { valid: false, reason_code: 'fragment_decision_invalid_json', records: [], resolved_fragment_ids: [] };
+  }
+  if (!Array.isArray(parsed?.decisions)) {
+    return { valid: false, reason_code: 'fragment_decision_missing_decisions', records: [], resolved_fragment_ids: [] };
+  }
+  const seen = new Set();
+  const lines = [];
+  for (const decision of parsed.decisions) {
+    const id = String(decision?.fragment_id ?? '');
+    if (!expected.has(id) || seen.has(id)) return { valid: false, reason_code: 'fragment_decision_identity_mismatch', records: [], resolved_fragment_ids: [] };
+    seen.add(id);
+    if (decision.disposition === 'no_update') continue;
+    if (decision.disposition !== 'record' || !taggedTypes(tier).includes(decision.type)) {
+      return { valid: false, reason_code: 'fragment_decision_invalid_disposition_or_type', records: [], resolved_fragment_ids: [] };
+    }
+    const claim = String(decision.claim ?? '').trim();
+    const sources = [...new Set((decision.source_indices ?? []).map(Number)
+      .filter((value) => Number.isInteger(value) && value >= 0))];
+    if (claim.length <= 3 || sources.length === 0) {
+      return { valid: false, reason_code: 'fragment_decision_missing_claim_or_citation', records: [], resolved_fragment_ids: [] };
+    }
+    lines.push(`[${decision.type}:2:${tier === 'session' ? 'session' : 'permanent'}:sources=${sources.join(',')}] ${claim}`);
+  }
+  if (seen.size !== expected.size) return { valid: false, reason_code: 'fragment_decision_incomplete', records: [], resolved_fragment_ids: [] };
+  const records = typeof parse === 'function' ? parse(lines.join('\n')) : [];
+  if (lines.length > 0 && records.length !== lines.length) {
+    return { valid: false, reason_code: 'fragment_decision_local_construction_failed', records: [], resolved_fragment_ids: [] };
+  }
+  return { valid: true, reason_code: null, records, resolved_fragment_ids: [...seen],
+    explicit_none: lines.length === 0 };
 }
 
 const taggedTypes = (tier) => getTaggedMemoryGrammar(tier).types;
@@ -588,10 +638,48 @@ export function malformedChildCoverageComplete(expectedChildKeys, committedChild
 
 export function createMalformedRecoveryBudget(prior = null, now = Date.now()) {
   return prior ?? { schema_version: 2, started_at: now, additional_provider_requests: 0,
+    global_additional_provider_requests: 0,
     maximum_additional_provider_requests: MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests,
     maximum_wall_time_ms: MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms,
-    resume_epoch: 1, requests_by_stage: {}, requests_by_child: {},
+    resume_epoch: 1, requests_by_stage: {}, global_requests_by_stage: {}, requests_by_child: {},
     recovered_by_stage: {}, split_children_committed: [] };
+}
+
+export function summarizeMalformedRecoveryBudget(budget, {
+  eligible_changed_stages_remaining = [], pause_reason = null,
+} = {}) {
+  const epochConsumed = Number(budget?.additional_provider_requests ?? 0);
+  const consumed = Number(budget?.global_additional_provider_requests ?? epochConsumed);
+  const globalCeiling = Number(MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests);
+  const epochCeiling = Number(budget?.maximum_additional_provider_requests ?? globalCeiling);
+  const stageAllowance = {
+    compact_response_repair: MALFORMED_RECOVERY_LIMITS.provider_repair_attempts,
+    changed_dimension_regeneration: MALFORMED_RECOVERY_LIMITS.changed_dimension_regenerations,
+    structured_json_regeneration: MALFORMED_RECOVERY_LIMITS.structured_json_regenerations,
+    minimal_record_regeneration: MALFORMED_RECOVERY_LIMITS.minimal_record_regenerations,
+    fragment_decision_regeneration: MALFORMED_RECOVERY_LIMITS.fragment_decision_regenerations,
+  };
+  const stageConsumed = { ...(budget?.global_requests_by_stage ?? budget?.requests_by_stage ?? {}) };
+  return {
+    global_request_ceiling: globalCeiling,
+    global_requests_consumed: consumed,
+    global_requests_remaining: Math.max(0, globalCeiling - consumed),
+    epoch_request_ceiling: epochCeiling,
+    epoch_requests_consumed: epochConsumed,
+    epoch_requests_remaining: Math.max(0, epochCeiling - epochConsumed),
+    stage_allowance_by_stage: stageAllowance,
+    stage_requests_consumed: stageConsumed,
+    stage_requests_remaining: Object.fromEntries(Object.entries(stageAllowance)
+      .map(([stage, allowance]) => [stage, Math.max(0, allowance - Number(stageConsumed[stage] ?? 0))])),
+    eligible_changed_stages_remaining: [...eligible_changed_stages_remaining],
+    repeated_signature_limit: 2,
+    wall_time_limit_ms: Number(budget?.maximum_wall_time_ms ?? MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms),
+    elapsed_recovery_time_ms: Math.max(0, Date.now() - Number(budget?.started_at ?? Date.now())),
+    resume_epoch: Number(budget?.resume_epoch ?? 1),
+    fresh_budget_available_on_resume: true,
+    pause_reason: pause_reason ?? (eligible_changed_stages_remaining.length
+      ? 'recovery_epoch_request_ceiling_exhausted' : 'recovery_stage_ladder_exhausted'),
+  };
 }
 
 export function consumeMalformedRecoveryRequest(budget, stage, now = Date.now(), details = {}) {
@@ -603,7 +691,12 @@ export function consumeMalformedRecoveryRequest(budget, stage, now = Date.now(),
   if (now - Number(budget.started_at ?? now) > maximumWallTime) return { allowed: false, reason: 'recovery_wall_time_exhausted' };
   if (Number(budget.additional_provider_requests ?? 0) >= maximumRequests) return { allowed: false, reason: 'recovery_request_limit_exhausted' };
   budget.additional_provider_requests = Number(budget.additional_provider_requests ?? 0) + 1;
+  budget.global_additional_provider_requests
+    = Number(budget.global_additional_provider_requests ?? budget.additional_provider_requests - 1) + 1;
   budget.requests_by_stage[stage] = Number(budget.requests_by_stage[stage] ?? 0) + 1;
+  budget.global_requests_by_stage ??= {};
+  budget.global_requests_by_stage[stage]
+    = Number(budget.global_requests_by_stage[stage] ?? 0) + 1;
   if (details.child_key) budget.requests_by_child[details.child_key]
     = Number(budget.requests_by_child[details.child_key] ?? 0) + 1;
   return { allowed: true, request_number: budget.additional_provider_requests };
@@ -613,6 +706,10 @@ export function recoveryBudgetPauseError(tier, budget, details = {}) {
   const error = new Error(`${tier === 'session' ? 'Session' : 'Long-term'} recovery request budget reached; pending child work is safely resumable.`);
   error.code = 'SME_RECOVERY_BUDGET_PAUSE';
   error.sme_operational_pause = true;
+  const accounting = summarizeMalformedRecoveryBudget(budget, {
+    eligible_changed_stages_remaining: details.eligible_changed_stages_remaining ?? [],
+    pause_reason: details.reason_code,
+  });
   error.sme_request_diagnostics = {
     tier,
     pause_reason: details.reason_code ?? 'recovery_request_budget_reached_with_pending_children',
@@ -630,6 +727,7 @@ export function recoveryBudgetPauseError(tier, budget, details = {}) {
     progress_made: details.progress_made === true,
     fresh_budget_on_resume: true,
     immediate_resume_expected_to_progress: Boolean(details.next_resumable_child),
+    budget_accounting: accounting,
   };
   return error;
 }
@@ -661,6 +759,7 @@ export async function recoverMalformedTaggedOutput({
   originalAttempt, beginAttempt, finishAttempt, splitWindow = null,
   budget = createMalformedRecoveryBudget(), splitDepth = 0, resumeState = null,
   sourceUnits = [], owner = null, stagePartialRecords = null, providerCapabilities = {},
+  unresolvedFragments = [], onAttemptRegistered = null,
 } = {}) {
   const effectiveResumeState = resumeState ?? originalAttempt?.prior_window_recovery_state
     ?? (originalAttempt?.resumed_pending_obligation === true
@@ -732,6 +831,7 @@ export async function recoverMalformedTaggedOutput({
       recovery_of_attempt_id: originalAttempt?.attempt_id ?? null, repair_reason: originalReason,
       recovery_stage: 'compact_response_repair', expected_output_format: `${tier}_tagged_lines_v1`,
     });
+    await onAttemptRegistered?.(attempt, { recovery_stage: 'compact_response_repair' });
     let repairedResponse;
     try {
       repairedResponse = await generate(buildCompactFormatRepairPrompt(response, { tier }), {
@@ -778,6 +878,7 @@ export async function recoverMalformedTaggedOutput({
       recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null, repair_reason: lastReason,
       recovery_stage: 'changed_dimension_regeneration', expected_output_format: `${tier}_tagged_lines_v1`,
     });
+    await onAttemptRegistered?.(attempt, { recovery_stage: 'changed_dimension_regeneration' });
     let regeneratedResponse;
     try {
       regeneratedResponse = await generate(buildChangedDimensionRegenerationPrompt(originalPrompt, { tier }), {
@@ -856,6 +957,7 @@ export async function recoverMalformedTaggedOutput({
         repair_reason: lastReason, recovery_stage: 'structured_json_regeneration',
         expected_output_format: `${tier}_json_records_v1`,
       });
+      await onAttemptRegistered?.(attempt, { recovery_stage: 'structured_json_regeneration' });
       let jsonResponse;
       try {
         jsonResponse = await generate(buildStructuredJsonRegenerationPrompt(originalPrompt, { tier }), {
@@ -984,6 +1086,7 @@ export async function recoverMalformedTaggedOutput({
         repair_reason: lastReason, recovery_stage: 'minimal_record_regeneration',
         expected_output_format: `${tier}_minimal_tagged_record_v1`,
       });
+    await onAttemptRegistered?.(attempt, { recovery_stage: 'minimal_record_regeneration' });
     let minimalResponse;
     try {
       minimalResponse = await generate(buildMinimalRecordRegenerationPrompt(originalPrompt, { tier }), {
@@ -1048,6 +1151,66 @@ export async function recoverMalformedTaggedOutput({
         candidate_rejections: candidateRejections,
         accepted_partial_output_persisted: false, missing_required_results: true,
         obligation_closure_reason: 'bounded_minimal_record_fallback_exhausted' });
+    }
+  }
+
+  const fragmentDecisionEligible = unresolvedFragments.length > 0
+    && !priorStages.has('fragment_decision_regeneration');
+  if (fragmentDecisionEligible) {
+    const allowance = consumeMalformedRecoveryRequest(budget, 'fragment_decision_regeneration');
+    if (allowance.allowed) {
+      const attempt = beginAttempt('fragment_decision_regeneration',
+        ['fragment_identity', 'semantic_decision_json', 'deterministic_metadata_construction'], {
+          recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
+          repair_reason: lastReason, recovery_stage: 'fragment_decision_regeneration',
+          expected_output_format: `${tier}_fragment_decisions_v1`,
+        });
+      await onAttemptRegistered?.(attempt, { recovery_stage: 'fragment_decision_regeneration' });
+      let decisionResponse;
+      try {
+        decisionResponse = await generate(buildFragmentDecisionRecoveryPrompt(
+          originalPrompt, unresolvedFragments, { tier }), {
+          responseLength: Math.min(Number(responseLength) || 600, 600),
+          task: `${tier}-fragment-decision-regeneration`,
+        });
+      } catch (error) {
+        finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: true,
+          recovery_stage: 'fragment_decision_regeneration',
+          final_disposition: 'fragment_decision_provider_failure' });
+        lastProviderError = error;
+        decisionResponse = null;
+      }
+      if (decisionResponse !== null) {
+        const decision = parseFragmentDecisionResponse(decisionResponse, unresolvedFragments, { tier, parse });
+        if (decision.valid) {
+          finishAttempt(attempt, {
+            terminal_outcome: decision.records.length ? 'completed' : 'completed_no_candidates',
+            recoverable: true, recovery_stage: 'fragment_decision_regeneration',
+            final_recovery_stage: 'fragment_decision_regeneration',
+            requested_output_format: `${tier}_fragment_decisions_v1`, actual_output_format: 'json',
+            parser_selected: 'strict_fragment_decision_json_then_local_record_construction',
+            output_contract_followed: true, strict_parse_result: decision.explicit_none ? 'explicit_none' : 'accepted',
+            accepted_candidate_count: decision.records.length, rejected_candidate_count: 0,
+            accepted_partial_output_persisted: restoredDurablePartialCount > 0,
+            missing_required_results: false,
+          });
+          markMalformedRecoverySuccess(budget, 'fragment_decision_regeneration');
+          return { records: decision.records, explicit_none: decision.explicit_none,
+            resolved_fragment_ids: decision.resolved_fragment_ids,
+            stage: 'fragment_decision_regeneration', budget, original_reason: originalReason };
+        }
+        lastReason = decision.reason_code;
+        finishAttempt(attempt, { terminal_outcome: 'provider_response_malformed',
+          malformed_reason: lastReason, recoverable: false,
+          recovery_stage: 'fragment_decision_regeneration',
+          requested_output_format: `${tier}_fragment_decisions_v1`,
+          actual_output_format: detectRecoveryResponseFormat(decisionResponse, { tier }),
+          parser_selected: 'strict_fragment_decision_json', output_contract_followed: false,
+          strict_parse_result: 'rejected', accepted_candidate_count: 0,
+          rejected_candidate_count: unresolvedFragments.length, missing_required_results: true,
+          obligation_closure_reason: 'fragment_decision_contract_exhausted' });
+        lastFailedAttempt = attempt;
+      }
     }
   }
 
@@ -1125,6 +1288,7 @@ export async function recoverMalformedTaggedOutput({
         applicability_decision: applicability,
         provider_capability_path: requestPlan.capability_path,
       });
+      await onAttemptRegistered?.(attempt, { recovery_stage: 'single_source_unit_regeneration' });
       let unitResponse;
       try {
         unitResponse = await generate(requestPlan.prompt, {
@@ -1195,6 +1359,7 @@ export async function recoverMalformedTaggedOutput({
             permitted_citation_indexes: [0], context_only_messages_eligible: false,
             applicability_decision: applicability, provider_capability_path: requestPlan.capability_path,
           });
+          await onAttemptRegistered?.(attempt, { recovery_stage: 'single_source_contract_enforcement' });
           try {
             unitResponse = await generate(requestPlan.prompt, {
               responseLength: Math.min(Number(responseLength) || 80, 80),

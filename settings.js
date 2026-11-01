@@ -99,6 +99,8 @@ import {
   ensureMemorizeObligationLedger,
   migrateLegacyMemorizeObligations,
   projectMemorizeObligationLedger,
+  reconcileMemorizeRunningObligations,
+  reconcileMemorizeProviderRuntime,
   recordMemorizeControllerExit,
   transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
@@ -122,6 +124,7 @@ import {
   registerMemorizeCleanup,
   trackMemorizeTransaction,
 } from './memorize-controller-runtime.js';
+import { formatDiagnosticIdentifier, runNonfatalPresentation } from './diagnostic-presentation-utils.js';
 import { runCompaction, injectSummary, loadAndInjectSummary, buildCompactionRequestSignature, SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION } from './compaction.js';
 import {
   extractAndStoreMemories,
@@ -245,8 +248,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.71',
-  build_fingerprint: 'sme-v0.9.71-automatic-partial-recovery-r1',
+  extension_version: '0.9.72',
+  build_fingerprint: 'sme-v0.9.72-exhausted-resume-reconciliation-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2293,7 +2296,7 @@ export function bindSettingsUI(ctrl) {
       setResumeLabel('Resume Incomplete Run', 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.');
       const recovery = summarizeCatchUpCheckpoint(rawCheckpoint);
       if (recovery.available) {
-        const reason = recovery.reason_code ? ` Reason: ${recovery.reason_code.replaceAll('_', ' ')}.` : '';
+        const reason = recovery.reason_code ? ` Reason: ${formatDiagnosticIdentifier(recovery.reason_code, 'unknown reason')}.` : '';
         $status.text(`Incomplete Memorize Chat run cannot safely resume (${recovery.status ?? 'invalid checkpoint'}). Start a new run after inspecting diagnostics.${reason}`).show();
       } else $status.hide().empty();
       return;
@@ -2363,7 +2366,7 @@ export function bindSettingsUI(ctrl) {
     const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
     const rangeText = `${manifest.cumulative_range_count ?? 0} coalesced committed range${manifest.cumulative_range_count === 1 ? '' : 's'}`;
     const finalizationText = finalization?.completed_phase_count
-      ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${finalization.active_phase.replaceAll('_', ' ')}` : ''}.`
+      ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${formatDiagnosticIdentifier(finalization.active_phase, 'pending phase')}` : ''}.`
       : '';
     const activeTransaction = getActiveCatchUpTransactionSnapshot();
     const transactionLocked = Boolean(activeTransaction);
@@ -2394,7 +2397,7 @@ export function bindSettingsUI(ctrl) {
     const providerRecoveryText = checkpointRecovery.next_eligible_recovery_action === 'single_source_unit_regeneration'
       ? ' Remaining malformed output will be retried one source message at a time; each validated result is saved before the next message.'
       : checkpointRecovery.exact_pending_obligation
-        ? ` Pending ${checkpointRecovery.exact_pending_obligation.tier === 'session' ? 'Session' : 'Long-Term'} obligation ${checkpointRecovery.exact_pending_obligation.source_range?.start ?? '?'}–${checkpointRecovery.exact_pending_obligation.source_range?.end ?? '?'}: ${(checkpointRecovery.exact_pending_obligation.exact_reason_code ?? 'pending recovery').replaceAll('_', ' ')}. Next action: ${(checkpointRecovery.exact_pending_obligation.next_eligible_action ?? 'resume exact obligation').replaceAll('_', ' ')}.`
+        ? ` Pending ${checkpointRecovery.exact_pending_obligation.tier === 'session' ? 'Session' : 'Long-Term'} obligation ${checkpointRecovery.exact_pending_obligation.source_range?.start ?? '?'}–${checkpointRecovery.exact_pending_obligation.source_range?.end ?? '?'}: ${formatDiagnosticIdentifier(checkpointRecovery.exact_pending_obligation.exact_reason_code, 'pending recovery')}. Next action: ${formatDiagnosticIdentifier(checkpointRecovery.exact_pending_obligation.next_eligible_action, 'resume exact obligation')}.`
         : '';
     $resume.prop('disabled', resumePresentation.disabled);
     setResumeLabel(
@@ -2404,7 +2407,7 @@ export function bindSettingsUI(ctrl) {
           ? `Resume is unavailable until stale transaction ${activeTransaction.transaction_id} is safely rolled back.`
           : 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
         : operatorActionRequired
-          ? `Resume is blocked: ${resumeEligibility.reason.replaceAll('_', ' ')}.`
+          ? `Resume is blocked: ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}.`
         : reconstructingSuccessor
           ? 'Rebuild the missing successor plan from the safely committed Short-Term boundary without repeating the prior segment.'
           : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.',
@@ -2414,7 +2417,7 @@ export function bindSettingsUI(ctrl) {
         ? `Resume temporarily unavailable: an in-memory transaction lock remains for ${activeTransaction.owner?.phase ?? 'unknown phase'}. Starting Resume will first audit and roll back that stale lock; no committed work will be discarded.`
         : `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}${providerRecoveryText}`
       : operatorActionRequired
-        ? `Short-Term finalization cannot ordinarily resume (${resumeEligibility.decision.replaceAll('_', ' ')}: ${resumeEligibility.reason.replaceAll('_', ' ')}). Completed extraction and phase checkpoints remain preserved.`
+        ? `Short-Term finalization cannot ordinarily resume (${formatDiagnosticIdentifier(resumeEligibility.decision, 'blocked')}: ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}). Completed extraction and phase checkpoints remain preserved.`
       : reconstructingSuccessor
         ? `Short-Term progress is safely committed. Resume will reconstruct the missing successor plan at the committed boundary without regenerating the prior segment.${finalizationText}`
         : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.${finalizationText}${providerRecoveryText}`).show();
@@ -3042,7 +3045,7 @@ export function bindSettingsUI(ctrl) {
           ? `Processing and finalization completed with ${status.notice_count} safe quality notice${status.notice_count === 1 ? '' : 's'}.`
           : status.lifecycle_status === 'completed'
             ? `${Number(committed ?? source ?? 0).toLocaleString()} source messages were safely committed and finalization completed.`
-            : String(status.recovery_reason_code ?? status.status_reason_codes.join(', ')).replaceAll('_', ' ');
+            : formatDiagnosticIdentifier(status.recovery_reason_code ?? status.status_reason_codes.join(', '), 'status unavailable');
     $summary
       .removeClass('sme_outcome_success sme_outcome_warning sme_outcome_error sme_outcome_info')
       .addClass(className)
@@ -5060,8 +5063,8 @@ export function bindSettingsUI(ctrl) {
     }
     const resumeEligibility = resumableCheckpoint ? evaluateShortTermResumeEligibility(resumableCheckpoint, catchUpContext) : null;
     if (resumeRequested && resumeEligibility && !resumeEligibility.eligible) {
-      setStatusMessage(`Short-Term Resume blocked: ${resumeEligibility.reason.replaceAll('_', ' ')}.`);
-      toastr.warning(`Resume was not started (${resumeEligibility.decision.replaceAll('_', ' ')}). ${resumeEligibility.reason.replaceAll('_', ' ')}.`, 'Smart Memory Enhanced', { timeOut: 9000 });
+      setStatusMessage(`Short-Term Resume blocked: ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}.`);
+      toastr.warning(`Resume was not started (${formatDiagnosticIdentifier(resumeEligibility.decision, 'blocked')}). ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}.`, 'Smart Memory Enhanced', { timeOut: 9000 });
       refreshCatchUpRecoveryUI();
       return;
     }
@@ -5309,9 +5312,25 @@ export function bindSettingsUI(ctrl) {
           recovery_stage: requestDiagnostics.recovery_stage,
           consumed_requests: requestDiagnostics.consumed_requests,
           remaining_requests: requestDiagnostics.remaining_requests,
+          budget_accounting: requestDiagnostics.budget_accounting,
           fresh_budget_on_resume: requestDiagnostics.fresh_budget_on_resume,
         },
       );
+      const pausedObligationId = requestDiagnostics.root_obligation_id ?? err?.sme_obligation_id;
+      const pauseLedger = controllerRuntime?.checkpoint?.run_manifest?.obligation_ledger;
+      if (pauseLedger && pausedObligationId) transitionMemorizeObligation(pauseLedger, {
+        obligation_id: pausedObligationId,
+        logical_run_id: controllerRuntime.checkpoint.run_manifest.logical_run_id,
+      }, {
+        current_state: 'operationally_paused', exact_reason_code: pause.reason_code,
+        next_eligible_action: requestDiagnostics.next_eligible_recovery_action
+          ?? requestDiagnostics.recovery_intent ?? 'resume_exact_obligation',
+        recovery_intent: requestDiagnostics.recovery_intent
+          ?? 'recover_unresolved_partial_output_fragments',
+        recovery_stage: requestDiagnostics.recovery_stage ?? 'bounded_recovery_exhausted',
+        persistence_result: pause.accepted_records_preserved > 0
+          ? 'partial_records_committed' : undefined,
+      });
       console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, pause);
     };
     const recordCatchUpWarning = (label, err, tier = null) => {
@@ -5330,12 +5349,24 @@ export function bindSettingsUI(ctrl) {
       console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
     };
     const runNonfatalPresentationTask = async (label, task) => {
-      try {
-        await task();
-      } catch (err) {
-        // Prompt/UI refresh does not change durable memories. Never let it
-        // roll back a multi-hour extraction transaction.
+      const result = await runNonfatalPresentation(label, () => task(), (failure, err) => {
+        runResult.presentationFailures ??= [];
+        runResult.presentationFailures.push({ ...failure, recorded_at: Date.now() });
+        runResult.presentationFailures = runResult.presentationFailures.slice(-16);
         recordCatchUpWarning(`${label} warning`, err, 'presentation');
+      });
+      if (result?.value && typeof result.value.then === 'function') {
+        try { await result.value; } catch (err) {
+          const failure = {
+            category: 'nonfatal_presentation_failure', label,
+            normalized_exception_class: err?.name ?? 'Error',
+            bounded_message: String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 240),
+            recorded_at: Date.now(),
+          };
+          runResult.presentationFailures ??= [];
+          runResult.presentationFailures.push(failure);
+          recordCatchUpWarning(`${label} warning`, err, 'presentation');
+        }
       }
     };
     unsubscribeRetry = onMemoryRequestRetry(() => runResult.retriedRequests++);
@@ -5503,6 +5534,18 @@ export function bindSettingsUI(ctrl) {
             ?.catch_up_diagnostics?.sessionExtraction,
         },
       );
+      const runningReconciliation = reconcileMemorizeRunningObligations(
+        checkpoint.run_manifest.obligation_ledger,
+        catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
+      );
+      checkpoint.run_manifest.obligation_ledger = runningReconciliation.ledger;
+      if (runningReconciliation.repairs.length) {
+        checkpoint.runtime_obligation_repairs = [
+          ...(checkpoint.runtime_obligation_repairs ?? []), ...runningReconciliation.repairs,
+        ].slice(-16);
+        checkpoint.updated_at = Date.now();
+        await saveChatMetadata(catchUpContext);
+      }
       // v0.9.57 could run and commit final reconciliation after source-tier
       // ingestion paused. On resume, remove every premature finalization
       // marker so the definitive phases run only after complete tier coverage.
@@ -5998,12 +6041,6 @@ export function bindSettingsUI(ctrl) {
             if (nameChunk.length === 0) continue;
             const ownerSourceFingerprint = sourceWindowFingerprint(nameChunk);
             const ownerObligationId = `longterm:${String(name).trim().toLowerCase()}:${currentRange.source_start_index}-${currentRange.source_end_index}:${ownerSourceFingerprint}`;
-            await updateAuthoritativeObligation({
-              obligation_id: ownerObligationId, tier: 'longterm', owner: name,
-              source_range: { start: currentRange.source_start_index, end: currentRange.source_end_index },
-              source_fingerprint: ownerSourceFingerprint,
-              current_state: 'provider_running', exact_reason_code: 'provider_request_in_progress',
-            });
             setStatusMessage(
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
             );
@@ -6014,6 +6051,7 @@ export function bindSettingsUI(ctrl) {
               _onContextOverflowChildCommitted: commitOverflowChild,
               _onRecoveryChildManifestUpdated: commitRecoveryChildManifest,
               _onObligationState: updateAuthoritativeObligation,
+              _controllerAttemptNumber: checkpoint.run_manifest?.attempt_count ?? null,
               _providerResumedPendingObligation: Boolean(resumableCheckpoint
                 && (priorOwnerStatus || ownerHasUnresolvedProviderObligation(name))),
             }).catch((err) => {
@@ -6077,8 +6115,15 @@ export function bindSettingsUI(ctrl) {
             _onContextOverflowChildCommitted: commitOverflowChild,
             _onRecoveryChildManifestUpdated: commitRecoveryChildManifest,
             _onObligationState: updateAuthoritativeObligation,
+            _controllerAttemptNumber: checkpoint.run_manifest?.attempt_count ?? null,
             _providerResumedPendingObligation: Boolean(resumableCheckpoint && priorSessionObligation),
             _automaticPartialRecovery: true,
+            _onRecoveryEpochInitialized: async (epoch) => {
+              checkpoint.recovery_epoch = { ...epoch, status: 'initialized_before_dispatch' };
+              checkpoint.updated_at = Date.now();
+              await saveChatMetadata(catchUpContext);
+              await checkpointCatchUpTransaction(chunkTransaction);
+            },
             _onAutomaticRecoveryBoundary: async (detail) => {
               const recoveryElapsedMs = Math.max(0,
                 Date.now() - Number(detail.recovery_started_at ?? Date.now()));
@@ -6114,7 +6159,7 @@ export function bindSettingsUI(ctrl) {
               checkpoint.updated_at = Date.now();
               await saveChatMetadata(catchUpContext);
               await checkpointCatchUpTransaction(chunkTransaction);
-              setStatusMessage(`Automatically recovering Session ${detail.source_range.start}–${detail.source_range.end}: ${detail.recovery_stage.replaceAll('_', ' ')}; ${detail.unresolved_fragment_count} unresolved fragment${detail.unresolved_fragment_count === 1 ? '' : 's'}, ${detail.accepted_records_preserved} accepted record${detail.accepted_records_preserved === 1 ? '' : 's'} preserved; recovery request budget ${detail.request_budget_used}/${detail.request_budget_maximum} (${detail.request_budget_remaining} remaining), elapsed ${formatCatchUpDuration(detail.recovery_elapsed_ms)}.`);
+              setStatusMessage(`Automatically recovering Session ${detail.source_range.start}–${detail.source_range.end}: ${formatDiagnosticIdentifier(detail.recovery_stage, 'recovery stage pending')}; ${detail.unresolved_fragment_count} unresolved fragment${detail.unresolved_fragment_count === 1 ? '' : 's'}, ${detail.accepted_records_preserved} accepted record${detail.accepted_records_preserved === 1 ? '' : 's'} preserved; recovery request budget ${detail.request_budget_used}/${detail.request_budget_maximum} (${detail.request_budget_remaining} remaining), elapsed ${formatCatchUpDuration(detail.recovery_elapsed_ms)}.`);
             },
             _onAutomaticRecoveryCompleted: async (detail) => {
               runResult.automaticRecovery ??= {
@@ -6367,7 +6412,7 @@ export function bindSettingsUI(ctrl) {
               : operationalPauseReason === 'recovery_request_budget_reached_with_pending_children'
                 ? `Source ingestion paused safely at the recovery-request budget for ${i}-${processed - 1}. Resume continues with ${checkpointForCommit.operational_pause?.next_resumable_child ?? 'the exact pending child'}.`
                 : exactPendingObligation
-                  ? `Source ingestion paused: ${exactPendingObligation.tier === 'session' ? 'Session' : 'Long-Term'} ${exactPendingObligation.source_range.start}–${exactPendingObligation.source_range.end} requires ${exactPendingObligation.next_eligible_action.replaceAll('_', ' ')} (${terminalReasonCode.replaceAll('_', ' ')}).`
+                  ? `Source ingestion paused: ${exactPendingObligation.tier === 'session' ? 'Session' : 'Long-Term'} ${exactPendingObligation.source_range.start}–${exactPendingObligation.source_range.end} requires ${formatDiagnosticIdentifier(exactPendingObligation.next_eligible_action, 'a recovery change')} (${formatDiagnosticIdentifier(terminalReasonCode, 'pending recovery')}).`
                   : `Source ingestion paused with an unclassified tier obligation for ${i}-${processed - 1}; diagnostics recorded unknown_uncommitted_tier_obligation.`);
           } else {
             checkpointForCommit.committed_chunks = Number(checkpointForCommit.committed_chunks ?? 0) + 1;
@@ -6535,7 +6580,7 @@ export function bindSettingsUI(ctrl) {
         ctrl.catchUpCancelled = true;
         ctrl.catchUpStopReason = exitReason;
         setStatusMessage(exactPending
-          ? `Source ingestion paused for ${exactPending.tier} ${exactPending.source_range?.start ?? '?'}–${exactPending.source_range?.end ?? '?'}: ${exitReason.replaceAll('_', ' ')}. Next action: ${exactPending.next_eligible_action.replaceAll('_', ' ')}.`
+          ? `Source ingestion paused for ${exactPending.tier} ${exactPending.source_range?.start ?? '?'}–${exactPending.source_range?.end ?? '?'}: ${formatDiagnosticIdentifier(exitReason, 'pending recovery')}. Next action: ${formatDiagnosticIdentifier(exactPending.next_eligible_action, 'recovery change required')}.`
           : `Source ingestion stopped with incomplete coverage and no actionable obligation; diagnostics recorded unknown_uncommitted_tier_obligation.`);
       }
       // Tier coverage is a prerequisite, not a diagnostic afterthought. A
@@ -9178,6 +9223,10 @@ export function bindSettingsUI(ctrl) {
             ? reconcileShortTermSegmentLedger(runResult.compactionRequestAudit)
             : null,
         provider_attempt_audit: providerAttemptSummary,
+        provider_runtime_reconciliation: reconcileMemorizeProviderRuntime(
+          checkpoint.run_manifest?.obligation_ledger,
+          catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
+        ),
         malformed_recovery: buildCentralMalformedRecoverySummary(
           providerAttemptSummary,
           reconcileCatchUpRecoverySummary(summarizeCatchUpCheckpoint(checkpoint), providerAttemptSummary),
@@ -9740,6 +9789,17 @@ export function bindSettingsUI(ctrl) {
       recordCatchUpError('run failure', err);
       const failedCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
       if (failedCheckpoint?.run_manifest) {
+        const failedRunningReconciliation = reconcileMemorizeRunningObligations(
+          failedCheckpoint.run_manifest.obligation_ledger,
+          catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
+        );
+        failedCheckpoint.run_manifest.obligation_ledger = failedRunningReconciliation.ledger;
+        if (failedRunningReconciliation.repairs.length) {
+          failedCheckpoint.runtime_obligation_repairs = [
+            ...(failedCheckpoint.runtime_obligation_repairs ?? []),
+            ...failedRunningReconciliation.repairs,
+          ].slice(-16);
+        }
         const projection = projectMemorizeObligationLedger(failedCheckpoint.run_manifest.obligation_ledger);
         const pending = projection.next_eligible_obligation;
         const canResume = Boolean(pending?.next_eligible_action)
@@ -10731,7 +10791,7 @@ export function bindSettingsUI(ctrl) {
         $('#sme_continuity_result')
           .addClass('sme_continuity_warn')
           .removeClass('sme_continuity_clean')
-          .text(`Continuity check unavailable: ${continuity.outcome.replaceAll('_', ' ')}.`)
+          .text(`Continuity check unavailable: ${formatDiagnosticIdentifier(continuity.outcome, 'unknown outcome')}.`)
           .show();
         setStatusMessage('Continuity check needs attention.');
       }

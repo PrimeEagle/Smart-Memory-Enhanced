@@ -8,14 +8,14 @@
  */
 
 export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 1;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 2;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 3;
 
 export const MEMORIZE_OBLIGATION_STATES = Object.freeze([
   'unattempted', 'provider_running', 'provider_response_received',
   'parser_accepted', 'parser_partial', 'parser_rejected',
   'validation_accepted', 'validation_partial', 'validation_rejected', 'staged',
   'partial_records_committed', 'explicit_no_update', 'pending_recovery', 'operationally_paused',
-  'blocked', 'durably_committed',
+  'blocked', 'terminal_failed', 'durably_committed',
 ]);
 
 const SAFE_STATES = new Set(['durably_committed', 'explicit_no_update']);
@@ -91,6 +91,11 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
       parser_result: raw?.parser_result ?? null,
       downstream_validation_result: raw?.downstream_validation_result ?? null,
       persistence_result: raw?.persistence_result ?? null,
+      partial_record_persistence: raw?.partial_record_persistence ?? (Number(raw?.metrics?.persisted_records ?? 0) > 0 ? {
+        status: 'committed', persisted_record_count: Number(raw.metrics.persisted_records),
+        producing_provider_attempt_id: raw.metrics?.producing_provider_attempt_id ?? null,
+      } : null),
+      recovery_attempt_persistence_result: raw?.recovery_attempt_persistence_result ?? null,
       coverage_result: raw?.coverage_result ?? null,
       checkpoint_eligible: SAFE_STATES.has(state),
       current_state: state,
@@ -114,11 +119,22 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
   const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
   const id = stableId(input);
   const prior = ledger.obligations[id] ?? {};
-  const state = transition.current_state ?? input.current_state ?? prior.current_state ?? 'unattempted';
+  let state = transition.current_state ?? input.current_state ?? prior.current_state ?? 'unattempted';
   if (!MEMORIZE_OBLIGATION_STATES.includes(state)) throw new Error(`Unknown Memorize obligation state: ${state}`);
+  const providerAttemptRegistered = Boolean(transition.provider_attempt_id);
+  if (state === 'provider_running' && !providerAttemptRegistered) {
+    state = prior.current_state === 'provider_running' ? 'pending_recovery'
+      : prior.current_state ?? 'pending_recovery';
+  }
   const at = nowValue(transition.at);
   const reason = transition.exact_reason_code ?? transition.reason_code ?? prior.exact_reason_code ?? null;
   const range = normalizeRange(input.source_range ?? prior.source_range ?? input);
+  const durablePartialCount = Math.max(Number(prior.metrics?.persisted_records ?? 0),
+    Number(transition.metrics?.persisted_records ?? 0));
+  const requestedPersistence = transition.persistence_result ?? prior.persistence_result ?? null;
+  const persistenceResult = durablePartialCount > 0
+    && (!requestedPersistence || requestedPersistence === 'not_committed')
+    ? 'partial_records_committed' : requestedPersistence;
   const next = {
     ...prior,
     obligation_id: id,
@@ -136,11 +152,19 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
     ])].slice(-64),
     parser_result: transition.parser_result ?? prior.parser_result ?? null,
     downstream_validation_result: transition.downstream_validation_result ?? prior.downstream_validation_result ?? null,
-    persistence_result: transition.persistence_result ?? prior.persistence_result ?? null,
+    persistence_result: persistenceResult,
+    partial_record_persistence: durablePartialCount > 0 ? {
+      status: 'committed', persisted_record_count: durablePartialCount,
+      producing_provider_attempt_id: transition.metrics?.producing_provider_attempt_id
+        ?? prior.metrics?.producing_provider_attempt_id ?? null,
+    } : prior.partial_record_persistence ?? null,
+    recovery_attempt_persistence_result: transition.persistence_result ?? null,
     coverage_result: transition.coverage_result ?? prior.coverage_result ?? null,
     current_state: state,
     checkpoint_eligible: SAFE_STATES.has(state),
-    exact_reason_code: SAFE_STATES.has(state) ? null : reason,
+    exact_reason_code: SAFE_STATES.has(state) ? null
+      : transition.current_state === 'provider_running' && !providerAttemptRegistered
+        ? 'provider_attempt_registration_required' : reason,
     next_eligible_action: SAFE_STATES.has(state) ? null
       : transition.next_eligible_action ?? defaultNextAction(state, reason),
     recovery_intent: SAFE_STATES.has(state) ? null
@@ -163,13 +187,59 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
   return next;
 }
 
+/** Repairs persisted running states when no physical provider attempt is active. */
+export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit = null) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue);
+  const runningAttempts = new Map((providerAudit?.recent_attempts ?? [])
+    .filter((attempt) => attempt?.terminal_outcome === 'running' && attempt?.logical_obligation_id)
+    .map((attempt) => [attempt.logical_obligation_id, attempt]));
+  const repairs = [];
+  for (const obligation of Object.values(ledger.obligations)) {
+    if (obligation.current_state !== 'provider_running') continue;
+    const running = runningAttempts.get(obligation.obligation_id);
+    if (running) {
+      if (!obligation.provider_attempt_lineage.includes(running.attempt_id)) {
+        obligation.provider_attempt_lineage.push(running.attempt_id);
+      }
+      continue;
+    }
+    const persisted = Number(obligation.metrics?.persisted_records ?? 0);
+    obligation.current_state = 'pending_recovery';
+    obligation.checkpoint_eligible = false;
+    obligation.exact_reason_code = 'stale_provider_running_without_physical_attempt';
+    obligation.next_eligible_action = Number(obligation.metrics?.unresolved_parser_fragments ?? 0) > 0
+      ? 'recover_unresolved_partial_output_fragments'
+      : obligation.recovery_intent ?? 'resume_exact_obligation';
+    obligation.recovery_intent = obligation.next_eligible_action;
+    obligation.recovery_stage = 'resume_epoch_initialization';
+    if (persisted > 0) {
+      obligation.persistence_result = 'partial_records_committed';
+      obligation.partial_record_persistence = {
+        status: 'committed', persisted_record_count: persisted,
+        producing_provider_attempt_id: obligation.metrics?.producing_provider_attempt_id ?? null,
+      };
+    }
+    obligation.timestamps ??= {};
+    obligation.timestamps.reconciled_stale_provider_running_at = Date.now();
+    repairs.push({ obligation_id: obligation.obligation_id,
+      reason_code: obligation.exact_reason_code, persisted_records_preserved: persisted });
+  }
+  if (repairs.length) ledger.updated_at = Date.now();
+  return { ledger, repairs };
+}
+
 export function recordMemorizeControllerExit(ledgerValue, input = {}) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
   const invocationId = input.controller_invocation_id ?? null;
   const existing = invocationId
     ? ledger.controller_exits.find((item) => item.controller_invocation_id === invocationId)
     : null;
-  if (existing) return existing;
+  const exitPriority = (classification) => ({
+    completed: 10, awaiting_actionable_recovery: 20, downstream_validation_pending: 30,
+    operationally_paused: 30, manually_cancelled: 40,
+    transaction_commit_failure: 80, transaction_rollback_failure: 90, internal_exception: 100,
+  }[classification] ?? 50);
+  if (existing && exitPriority(input.classification) <= exitPriority(existing.classification)) return existing;
   const reasonCode = input.reason_code ?? 'unknown_interruption';
   const record = {
     at: nowValue(input.at), reason_code: reasonCode,
@@ -194,7 +264,10 @@ export function recordMemorizeControllerExit(ledgerValue, input = {}) {
     next_eligible_action: input.next_eligible_action ?? null,
     detail: input.detail ?? null,
   };
-  ledger.controller_exits = [...ledger.controller_exits, record].slice(-32);
+  ledger.controller_exits = [
+    ...ledger.controller_exits.filter((item) => item.controller_invocation_id !== invocationId),
+    record,
+  ].slice(-32);
   ledger.updated_at = record.at;
   return record;
 }
@@ -206,6 +279,10 @@ export function projectMemorizeObligationLedger(ledgerValue) {
   const pending = obligations.filter((item) => !item.checkpoint_eligible);
   const actionable = pending.filter((item) => ACTIONABLE_STATES.has(item.current_state)
     && item.exact_reason_code && item.next_eligible_action);
+  const running = pending.filter((item) => item.current_state === 'provider_running');
+  const paused = pending.filter((item) => item.current_state === 'operationally_paused');
+  const blocked = pending.filter((item) => item.current_state === 'blocked');
+  const terminalFailed = pending.filter((item) => item.current_state === 'terminal_failed');
   const byTier = Object.fromEntries([...new Set(obligations.map((item) => item.tier))].map((tier) => {
     const scoped = obligations.filter((item) => item.tier === tier);
     return [tier, {
@@ -242,6 +319,10 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     safely_committed_obligation_count: safe.length,
     pending_obligation_count: pending.length,
     actionable_pending_obligation_count: actionable.length,
+    operationally_paused_obligation_count: paused.length,
+    blocked_obligation_count: blocked.length,
+    running_obligation_count: running.length,
+    terminal_failed_obligation_count: terminalFailed.length,
     pending_obligations: pending,
     next_eligible_obligation: actionable[0] ?? null,
     tier_coverage: byTier,
@@ -249,6 +330,53 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     controller_exits: ledger.controller_exits,
     last_controller_exit: ledger.controller_exits.at(-1) ?? null,
     invariants: { valid: violations.length === 0, violations },
+  };
+}
+
+export function reconcileMemorizeProviderRuntime(ledgerValue, providerAudit = null) {
+  const projection = projectMemorizeObligationLedger(ledgerValue);
+  const runningAttempts = (providerAudit?.recent_attempts ?? [])
+    .filter((attempt) => attempt?.terminal_outcome === 'running');
+  const runningAttemptByObligation = new Map(runningAttempts
+    .filter((attempt) => attempt.logical_obligation_id)
+    .map((attempt) => [attempt.logical_obligation_id, attempt]));
+  const runningObligations = projection.pending_obligations
+    .filter((obligation) => obligation.current_state === 'provider_running');
+  const violations = [];
+  for (const obligation of runningObligations) {
+    if (!runningAttemptByObligation.has(obligation.obligation_id)) violations.push({
+      code: 'ledger_provider_running_without_physical_attempt', obligation_id: obligation.obligation_id,
+    });
+    else if (!obligation.provider_attempt_lineage?.includes(
+      runningAttemptByObligation.get(obligation.obligation_id)?.attempt_id)) violations.push({
+      code: 'ledger_provider_running_missing_attempt_lineage', obligation_id: obligation.obligation_id,
+      attempt_id: runningAttemptByObligation.get(obligation.obligation_id)?.attempt_id ?? null,
+    });
+  }
+  const normalizedLedger = ensureMemorizeObligationLedger(ledgerValue);
+  const obligationIds = new Set(Object.keys(normalizedLedger.obligations));
+  for (const attempt of runningAttempts) {
+    if (!obligationIds.has(attempt.logical_obligation_id)) violations.push({
+      code: 'running_physical_attempt_without_obligation', attempt_id: attempt.attempt_id,
+      obligation_id: attempt.logical_obligation_id ?? null,
+    });
+    else if (normalizedLedger.obligations[attempt.logical_obligation_id]?.current_state !== 'provider_running') {
+      violations.push({
+        code: 'running_physical_attempt_without_running_obligation', attempt_id: attempt.attempt_id,
+        obligation_id: attempt.logical_obligation_id,
+      });
+    }
+  }
+  if (runningObligations.length !== runningAttempts.length) violations.push({
+    code: 'ledger_provider_running_count_mismatch', ledger_running: runningObligations.length,
+    provider_running: runningAttempts.length,
+  });
+  return {
+    ledger_running_obligation_count: runningObligations.length,
+    provider_running_attempt_count: runningAttempts.length,
+    counts_reconcile: runningObligations.length === runningAttempts.length,
+    consistent: violations.length === 0,
+    violations,
   };
 }
 

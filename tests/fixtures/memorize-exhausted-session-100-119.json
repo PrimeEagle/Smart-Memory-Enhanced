@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "logical_run_id": "d55622f9-sanitized-replay",
+  "source_message_count": 9434,
+  "checkpoint_before_resume": 100,
+  "checkpoint_after_recovery": 120,
+  "obligation_id": "session:chat:100-119:fnv1a-7f2a4579",
+  "accepted_record_count": 1,
+  "unresolved_fragment_ids": [
+    "session-fragment-1-fnv1a-63243b78",
+    "session-fragment-2-fnv1a-8d7541e7"
+  ],
+  "automatic_recovery_stages": [
+    "compact_response_repair",
+    "changed_dimension_regeneration",
+    "structured_json_regeneration",
+    "minimal_record_regeneration"
+  ],
+  "resume_recovery_stage": "fragment_decision_regeneration",
+  "next_source_range": { "start": 120, "end": 139 }
+}

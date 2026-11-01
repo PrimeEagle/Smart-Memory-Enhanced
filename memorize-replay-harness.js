@@ -1,9 +1,19 @@
 import {
   createMemorizeObligationLedger,
   projectMemorizeObligationLedger,
+  reconcileMemorizeProviderRuntime,
+  reconcileMemorizeRunningObligations,
   recordMemorizeControllerExit,
   transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
+import {
+  beginProviderAttempt,
+  beginProviderRecoveryEpoch,
+  finishProviderAttempt,
+  markProviderPartialRecordsPersisted,
+  markProviderRejectedFragmentsRecovered,
+  stageProviderRejectedFragments,
+} from './provider-attempt-audit.js';
 import {
   bindMemorizeCheckpoint,
   buildMemorizeControllerExit,
@@ -114,6 +124,141 @@ export function buildAutomaticRecoveryFullChatReplay(messageCount = 9434, chunkS
       partial_valid_response_rate: automaticRecoveries / physicalProviderRequests,
       fragment_recovery_success_rate: 1,
     },
+  };
+}
+
+/**
+ * Sanitized replay of the v0.9.71 100-119 exhaustion/Resume defect.  This
+ * deliberately starts from the contradictory persisted state and exercises
+ * migration, exact fragment-only recovery, checkpoint advancement, and the
+ * immediate successor dispatch.
+ */
+export function replayExhaustedSessionRecoveryResume({ completeRemainingChat = false } = {}) {
+  const logicalRunId = 'd55622f9-sanitized-replay';
+  const fingerprint = 'fnv1a-7f2a4579';
+  const sessionId = `session:chat:100-119:${fingerprint}`;
+  const fragmentIds = ['session-fragment-1-fnv1a-63243b78', 'session-fragment-2-fnv1a-8d7541e7'];
+  const owners = ['alex', 'aster', 'lillian', 'lisette', 'nyx', 'valerie'];
+  const ledger = createMemorizeObligationLedger(logicalRunId, 1);
+  const acceptedRecordId = 'session:100-119:accepted-from-provider-188';
+  const records = new Set();
+  const providerRequests = [];
+  const committedLongterm = [];
+
+  // Five prior 20-message chunks account for 35 safe obligations.
+  for (let start = 0; start < 100; start += 20) {
+    const end = start + 19;
+    for (const owner of owners) {
+      const id = `longterm:${owner}:${start}-${end}:safe`;
+      transitionMemorizeObligation(ledger, { obligation_id: id, logical_run_id: logicalRunId,
+        tier: 'longterm', owner, source_range: { start, end } }, {
+        current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed',
+      });
+    }
+    const priorSession = `session:chat:${start}-${end}:safe`;
+    transitionMemorizeObligation(ledger, { obligation_id: priorSession, logical_run_id: logicalRunId,
+      tier: 'session', source_range: { start, end } }, {
+      current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed',
+    });
+  }
+  for (const owner of owners) {
+    const id = `longterm:${owner}:100-119:${fingerprint}`;
+    transitionMemorizeObligation(ledger, { obligation_id: id, logical_run_id: logicalRunId,
+      tier: 'longterm', owner, source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint }, {
+      current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed',
+    });
+    committedLongterm.push(id);
+  }
+  transitionMemorizeObligation(ledger, { obligation_id: sessionId, logical_run_id: logicalRunId,
+    tier: 'session', source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint }, {
+    current_state: 'pending_recovery', parser_result: 'one accepted, two rejected',
+    downstream_validation_result: 'accepted_partial_records', persistence_result: 'partial_records_committed',
+    coverage_result: 'pending', exact_reason_code: 'automatic_partial_recovery_exhausted',
+    next_eligible_action: 'recover_unresolved_partial_output_fragments',
+    recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'bounded_recovery_exhausted',
+    provider_attempt_lineage: ['provider-188', 'provider-189', 'provider-190', 'provider-191', 'provider-192'],
+    metrics: { parser_accepted_records: 1, persisted_records: 1, parser_rejected_fragments: 2,
+      unresolved_parser_fragments: 2, unresolved_fragment_ids: fragmentIds,
+      producing_provider_attempt_id: 'provider-188' },
+  });
+  records.add(acceptedRecordId);
+
+  const metadata = { active_catchup_run_id: logicalRunId };
+  const original = beginProviderAttempt(metadata, { logical_obligation_id: sessionId, tier: 'session',
+    request_kind: 'original', source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint });
+  finishProviderAttempt(metadata, original, { terminal_outcome: 'completed', notice_reason: 'partial_valid_output' });
+  markProviderPartialRecordsPersisted(metadata, sessionId, 1, fingerprint, [acceptedRecordId]);
+  stageProviderRejectedFragments(metadata, sessionId, fingerprint, fragmentIds.map((fragment_id, index) => ({
+    fragment_id, raw: `sanitized-malformed-fragment-${index + 1}`,
+    reason_codes: [index ? 'multiple_assignment_delimiters' : 'malformed_entity_type_pair'],
+  })), { producing_attempt_id: original.attempt_id });
+  for (const recovery_stage of ['compact_response_repair', 'changed_dimension_regeneration',
+    'structured_json_regeneration', 'minimal_record_regeneration']) {
+    const attempt = beginProviderAttempt(metadata, { logical_obligation_id: sessionId, tier: 'session',
+      request_kind: recovery_stage, recovery_stage, recovery_of_attempt_id: original.attempt_id,
+      source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint });
+    providerRequests.push({ recovery_stage, fragment_ids: [...fragmentIds], automatic: true });
+    finishProviderAttempt(metadata, attempt, { terminal_outcome: 'provider_response_malformed' });
+  }
+
+  // Persisted v0.9.71 corruption: no physical request is active.
+  Object.assign(ledger.obligations[sessionId], { current_state: 'provider_running',
+    exact_reason_code: 'provider_request_in_progress', next_eligible_action: null,
+    persistence_result: 'not_committed', checkpoint_eligible: false });
+  const beforeRepair = projectMemorizeObligationLedger(structuredClone(ledger));
+  const repaired = reconcileMemorizeRunningObligations(
+    ledger, metadata.live_memory_health.provider_attempt_audit);
+  const afterRepair = projectMemorizeObligationLedger(ledger);
+  const runtimeAfterRepair = reconcileMemorizeProviderRuntime(
+    ledger, metadata.live_memory_health.provider_attempt_audit);
+
+  const epoch = beginProviderRecoveryEpoch(metadata, sessionId, fingerprint, {
+    recovery_stage: 'fragment_decision_regeneration', unresolved_fragment_ids: fragmentIds,
+    accepted_records_preserved: 1, global_request_ceiling: 20, epoch_request_ceiling: 4,
+  });
+  const focused = beginProviderAttempt(metadata, { logical_obligation_id: sessionId, tier: 'session',
+    request_kind: 'fragment_decision_regeneration', recovery_stage: 'fragment_decision_regeneration',
+    recovery_of_attempt_id: original.attempt_id, resumed_pending_obligation: true,
+    source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint });
+  transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
+    current_state: 'provider_running', provider_attempt_id: focused.attempt_id,
+    exact_reason_code: 'provider_request_in_progress', recovery_stage: 'fragment_decision_regeneration',
+    persistence_result: 'not_committed', metrics: { persisted_records: 1 },
+  });
+  providerRequests.push({ recovery_stage: 'fragment_decision_regeneration',
+    fragment_ids: [...fragmentIds], accepted_record_ids_excluded: [acceptedRecordId], automatic: false });
+  finishProviderAttempt(metadata, focused, { terminal_outcome: 'completed', accepted_candidate_count: 1 });
+  markProviderRejectedFragmentsRecovered(metadata, sessionId, fingerprint, fragmentIds);
+  records.add('session:100-119:recovered-fragment');
+  transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
+    current_state: 'durably_committed', parser_result: 'fragment_decisions_resolved',
+    downstream_validation_result: 'accepted', persistence_result: 'committed_without_duplicate_partial_records',
+    coverage_result: 'safely_committed', metrics: { persisted_records: 1, recovered_fragment_count: 1 },
+  });
+  let checkpoint = 120;
+  providerRequests.push({ recovery_stage: 'strict_generation', source_range: { start: 120, end: 139 },
+    next_chunk_started: true });
+
+  if (completeRemainingChat) {
+    for (let start = 120; start < 9434; start += 20) {
+      const end = Math.min(9433, start + 19);
+      for (const owner of owners) transitionMemorizeObligation(ledger, {
+        obligation_id: `longterm:${owner}:${start}-${end}:remaining`, logical_run_id: logicalRunId,
+        tier: 'longterm', owner, source_range: { start, end },
+      }, { current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed' });
+      transitionMemorizeObligation(ledger, {
+        obligation_id: `session:chat:${start}-${end}:remaining`, logical_run_id: logicalRunId,
+        tier: 'session', source_range: { start, end },
+      }, { current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed' });
+    }
+    checkpoint = 9434;
+  }
+  const finalProjection = projectMemorizeObligationLedger(ledger);
+  return { ledger, metadata, sessionId, fragmentIds, epoch, checkpoint, records: [...records],
+    providerRequests, committedLongterm, beforeRepair, afterRepair, runtimeAfterRepair, finalProjection,
+    longtermReplayCount: providerRequests.filter((item) => item.source_range?.start === 100
+      && item.recovery_stage === 'strict_generation').length,
+    duplicateRecordCount: [...records].length - new Set(records).size,
   };
 }
 

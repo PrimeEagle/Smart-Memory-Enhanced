@@ -917,6 +917,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `longterm:${String(characterName).toLowerCase()}:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const updateObligation = async (currentState, details = {}) => options._onObligationState?.({
+      obligation_id: rootObligationId, tier: 'longterm', owner: characterName,
+      source_range: { start: range.start, end: range.end, message_count: range.message_count },
+      source_fingerprint: coverageBase.source_fingerprint, current_state: currentState, ...details,
+    });
     const providerConfigSignature = providerConfigurationSignature({
       connection_profile_id: settings.connection_profile_id ?? null,
       model: settings.openai_compat_model ?? settings.ollama_model ?? null,
@@ -928,6 +933,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
       ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
       tier: 'longterm', owner: characterName, logical_obligation_id: rootObligationId,
+      controller_attempt_number: options._controllerAttemptNumber ?? null,
       chat_id: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
       parent_attempt_id: options._providerParentAttemptId ?? null,
       repartition_parent_id: options._contextOverflowParentRangeId ?? null,
@@ -1215,6 +1221,14 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
     } : beginPhysicalAttempt();
+    if (!bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
+      await updateObligation('provider_running', {
+        provider_attempt_id: providerAttempt.attempt_id,
+        exact_reason_code: 'provider_request_in_progress',
+        recovery_intent: providerAttempt.recovery_intent,
+        recovery_stage: providerAttempt.recovery_stage,
+      });
+    }
     try {
       if (!bypassEquivalentRootReplay) {
         response = await generateMemoryExtract(prompt, { responseLength });
@@ -1274,6 +1288,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         providerCapabilities: getMemoryProviderCapabilities(),
         resumeState: resumeRecoveryState,
         sourceUnits: buildRecoverySourceUnits(sourceMessages, range.start, sourceWindowFingerprint),
+        onAttemptRegistered: async (attempt, detail = {}) => {
+          if (!attempt?.attempt_id) throw new Error('Provider recovery attempt registration failed.');
+          await updateObligation('provider_running', {
+            provider_attempt_id: attempt.attempt_id,
+            exact_reason_code: 'provider_request_in_progress',
+            recovery_intent: 'recover_unresolved_partial_output_fragments',
+            recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
+          });
+        },
         stagePartialRecords: async (records, details) => {
           stageProviderPartialRecovery(providerMetadata, rootObligationId, coverageBase.source_fingerprint,
             records, { ...details, source_range: { start: range.start, end: range.end, message_count: range.message_count } });

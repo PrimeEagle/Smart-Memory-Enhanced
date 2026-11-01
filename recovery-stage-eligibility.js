@@ -6,6 +6,7 @@ export const RECOVERY_STAGE_ORDER = Object.freeze([
   'malformed_source_repartition',
   'structured_json_regeneration',
   'minimal_record_regeneration',
+  'fragment_decision_regeneration',
   'single_source_unit_regeneration',
 ]);
 
@@ -29,7 +30,13 @@ export function deriveRecoveryStageEligibility(state = {}) {
       && Number(outcome.recovery_implementation_version ?? 3) < RECOVERY_IMPLEMENTATION_VERSION;
   });
   const acceptedPartialCount = Number(state.accepted_partial_record_count ?? 0) || 0;
-  const availableStages = unique(state.available_stages ?? RECOVERY_STAGE_ORDER);
+  // Fragment-decision recovery is meaningful only when the durable recovery
+  // window still contains exact rejected fragment identities.  Do not insert
+  // it into older Long-Term/unit ladders merely because the implementation
+  // knows the stage name.
+  const availableStages = unique(state.available_stages ?? RECOVERY_STAGE_ORDER)
+    .filter((stage) => stage !== 'fragment_decision_regeneration'
+      || state.has_unresolved_fragments === true);
   const furthestAttemptedIndex = attemptedStages.reduce((maximum, stage) =>
     Math.max(maximum, availableStages.indexOf(stage)), -1);
   const nextUntried = availableStages.find((stage, index) =>
@@ -40,10 +47,14 @@ export function deriveRecoveryStageEligibility(state = {}) {
       blocked: false,
       eligible_action: nextUntried,
       reason_code: nextUntried === 'single_source_unit_regeneration'
-        ? 'post_minimal_single_unit_fallback_available' : 'untried_recovery_stage_available',
+        ? 'post_minimal_single_unit_fallback_available'
+        : nextUntried === 'fragment_decision_regeneration'
+          ? 'unresolved_fragment_decision_contract_available' : 'untried_recovery_stage_available',
       changed_dimensions: nextUntried === 'single_source_unit_regeneration'
         ? ['source_unit', 'single_record_contract', 'owner_tier_scope', 'mandatory_local_citation']
-        : [nextUntried],
+        : nextUntried === 'fragment_decision_regeneration'
+          ? ['fragment_identity', 'semantic_decision_json', 'deterministic_metadata_construction']
+          : [nextUntried],
       expected_progress: unresolvedUnits.length
         ? `resolve_${unresolvedUnits.length}_remaining_source_units` : 'resolve_current_source_window',
       replay_permission: 'changed_recovery_dimension',

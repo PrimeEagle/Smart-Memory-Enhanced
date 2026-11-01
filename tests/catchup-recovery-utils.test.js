@@ -17,6 +17,29 @@ import {
   deriveFinalizationAvailability,
   invalidatePrematureFinalization,
 } from '../catchup-recovery-utils.js';
+import { createMemorizeObligationLedger } from '../memorize-obligation-ledger.js';
+
+test('Resume presentation cannot claim resumable when pending work has no safe action', () => {
+  const ledger = createMemorizeObligationLedger('run');
+  ledger.obligations['session:chat:100-119:test'] = {
+    obligation_id: 'session:chat:100-119:test', logical_run_id: 'run', tier: 'session', owner: null,
+    source_range: { start: 100, end: 119, message_count: 20 }, provider_attempt_lineage: [],
+    current_state: 'provider_running', checkpoint_eligible: false,
+    exact_reason_code: 'provider_request_in_progress', next_eligible_action: null,
+    timestamps: {}, metrics: {}, schema_version: 1, implementation_version: 2,
+  };
+  const summary = summarizeCatchUpCheckpoint({
+    schema_version: 1, status: 'awaiting_manual_resume', next_source_offset: 100,
+    source_message_count: 9434, source_fingerprint: 'source',
+    run_manifest: { logical_run_id: 'run', obligation_ledger: ledger },
+  });
+  assert.equal(summary.pending_obligation_count, 1);
+  assert.equal(summary.running_obligation_count, 1);
+  assert.equal(summary.actionable_pending_obligation_count, 0);
+  assert.equal(summary.resumable, false);
+  assert.equal(summary.resume_can_make_progress, false);
+  assert.equal(summary.blocked, true);
+});
 
 test('provider obligations authoritatively correct stale checkpoint recovery presentation', () => {
   const checkpoint = { available: true, resumable: true, unresolved_obligation_count: 0,

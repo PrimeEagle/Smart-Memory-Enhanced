@@ -590,16 +590,35 @@ export function summarizeCatchUpRunManifest(manifest) {
 export function summarizeCatchUpCheckpoint(checkpoint) {
   if (!checkpoint || typeof checkpoint !== 'object') return { available: false, resumable: false, reason_code: 'no_checkpoint' };
   const normalized = normalizeCatchUpCheckpoint(checkpoint);
-  const blocked = checkpoint.recovery_blocked?.blocked === true;
+  const explicitlyBlocked = checkpoint.recovery_blocked?.blocked === true;
   const obligationProjection = projectMemorizeObligationLedger(
     checkpoint.run_manifest?.obligation_ledger);
+  const authoritativeObligationsAvailable = obligationProjection.obligation_count > 0;
+  const projectedPendingCount = authoritativeObligationsAvailable
+    ? obligationProjection.pending_obligation_count
+    : Number(checkpoint.recovery_blocked?.unresolved_obligation_count ?? 0);
   const exactPending = obligationProjection.next_eligible_obligation;
+  const pendingWithoutAction = projectedPendingCount > 0
+    && !exactPending?.next_eligible_action;
+  const blocked = explicitlyBlocked || pendingWithoutAction;
+  const resumeCanMakeProgress = Boolean(normalized) && !blocked
+    && (projectedPendingCount === 0
+      || Boolean(exactPending?.next_eligible_action));
   return {
     available: true,
-    resumable: Boolean(normalized) && !blocked,
+    resumable: resumeCanMakeProgress,
     blocked,
     blocked_reason_code: checkpoint.recovery_blocked?.reason_code ?? null,
-    unresolved_obligation_count: Number(checkpoint.recovery_blocked?.unresolved_obligation_count ?? 0),
+    unresolved_obligation_count: projectedPendingCount,
+    pending_obligation_count: projectedPendingCount,
+    actionable_pending_obligation_count: obligationProjection.actionable_pending_obligation_count,
+    operationally_paused_obligation_count: obligationProjection.operationally_paused_obligation_count,
+    blocked_obligation_count: pendingWithoutAction
+      ? Math.max(obligationProjection.blocked_obligation_count,
+        projectedPendingCount)
+      : obligationProjection.blocked_obligation_count,
+    running_obligation_count: obligationProjection.running_obligation_count,
+    terminal_failed_obligation_count: obligationProjection.terminal_failed_obligation_count,
     blocked_obligations: (checkpoint.recovery_blocked?.obligations ?? []).slice(-16),
     safe_progress_preserved: checkpoint.recovery_blocked?.safe_progress_preserved
       ?? (obligationProjection.safely_committed_obligation_count > 0
@@ -622,8 +641,7 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     cleanup_warnings: (checkpoint.cleanup_warnings ?? []).slice(-16),
     authoritative_obligation_ledger: obligationProjection,
     exact_pending_obligation: exactPending ?? null,
-    resume_can_make_progress: Boolean(normalized) && !blocked
-      && Boolean(exactPending?.next_eligible_action),
+    resume_can_make_progress: resumeCanMakeProgress,
     recovery_child_manifests: {
       schema_version: Number(checkpoint.recovery_child_manifests?.schema_version ?? 0) || null,
       roots: Object.values(checkpoint.recovery_child_manifests?.roots ?? {}).slice(-64),
@@ -678,23 +696,34 @@ export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSumma
   const unresolved = providerSummary?.terminal_unresolved_obligations ?? [];
   const operationalPauses = providerSummary?.operational_pauses ?? [];
   if (!unresolved.length && !operationalPauses.length) return base;
-  if (!unresolved.length && operationalPauses.length) return {
-    ...base,
-    available: true,
-    resumable: true,
-    blocked: false,
-    unresolved_obligation_count: 0,
-    operational_pause_count: operationalPauses.length,
-    operational_pauses: operationalPauses,
-    reason_code: operationalPauses[0]?.reason_code
-      ?? 'recovery_request_budget_reached_with_pending_children',
-    next_eligible_recovery_action: operationalPauses[0]?.next_resumable_child ?? null,
-    recovery_intent: operationalPauses[0]?.recovery_intent
-      ?? base.recovery_intent ?? null,
-    recovery_stage: operationalPauses[0]?.recovery_stage
-      ?? base.recovery_stage ?? null,
-    safe_progress_preserved: true,
-  };
+  if (!unresolved.length && operationalPauses.length) {
+    const action = authoritativePending?.next_eligible_action
+      ?? operationalPauses[0]?.next_resumable_child
+      ?? (operationalPauses[0]?.recovery_stage !== 'bounded_recovery_exhausted'
+        ? operationalPauses[0]?.recovery_stage : null);
+    const canProgress = Boolean(action);
+    return {
+      ...base,
+      available: true,
+      resumable: canProgress,
+      resume_can_make_progress: canProgress,
+      blocked: !canProgress,
+      unresolved_obligation_count: Number(base.authoritative_obligation_ledger?.pending_obligation_count
+        ?? (authoritativePending ? 1 : 0)),
+      actionable_pending_obligation_count: canProgress ? 1 : 0,
+      operational_pause_count: operationalPauses.length,
+      blocked_obligation_count: canProgress ? 0 : 1,
+      operational_pauses: operationalPauses,
+      reason_code: operationalPauses[0]?.reason_code
+        ?? 'recovery_request_budget_reached_with_pending_children',
+      next_eligible_recovery_action: action,
+      recovery_intent: operationalPauses[0]?.recovery_intent
+        ?? base.recovery_intent ?? null,
+      recovery_stage: action ?? operationalPauses[0]?.recovery_stage
+        ?? base.recovery_stage ?? null,
+      safe_progress_preserved: true,
+    };
+  }
   const blocked = unresolved.filter((item) => item.recovery_blocked === true
     || item.recovery_eligibility?.blocked === true);
   const resumable = unresolved.filter((item) => !blocked.includes(item)

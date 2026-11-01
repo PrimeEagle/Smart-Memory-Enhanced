@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   beginProviderAttempt,
+  beginProviderRecoveryEpoch,
   classifyMalformedProviderOutput,
   finishProviderAttempt,
+  markProviderRejectedFragmentsRecovered,
   markProviderPartialRecordsPersisted,
   markProviderRecoveryBudgetPause,
   markProviderRecoveryChildCompleted,
@@ -13,8 +15,43 @@ import {
   readProviderRecoveryWindowState,
   registerProviderRecoveryChildPlan,
   stageProviderPartialRecovery,
+  stageProviderRejectedFragments,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
+
+test('recovery epochs initialize before dispatch, prevent overlap, and count prior physical recovery', () => {
+  const metadata = { active_catchup_run_id: 'epoch-run' };
+  const id = 'session:chat:100-119:fnv1a-window';
+  const original = beginProviderAttempt(metadata, { logical_obligation_id: id, tier: 'session',
+    request_kind: 'original', source_range: { start: 100, end: 119 }, source_fingerprint: 'fnv1a-window' });
+  finishProviderAttempt(metadata, original, { terminal_outcome: 'completed', notice_reason: 'partial_valid_output' });
+  stageProviderRejectedFragments(metadata, id, 'fnv1a-window', [
+    { fragment_id: 'fragment-a', raw: 'private-a', reason_codes: ['malformed'] },
+    { fragment_id: 'fragment-b', raw: 'private-b', reason_codes: ['malformed'] },
+  ], { producing_attempt_id: original.attempt_id });
+  for (const recoveryStage of ['compact_response_repair', 'changed_dimension_regeneration',
+    'structured_json_regeneration', 'minimal_record_regeneration']) {
+    const attempt = beginProviderAttempt(metadata, { logical_obligation_id: id, tier: 'session',
+      request_kind: recoveryStage, recovery_stage: recoveryStage,
+      source_range: { start: 100, end: 119 }, source_fingerprint: 'fnv1a-window' });
+    finishProviderAttempt(metadata, attempt, { terminal_outcome: 'provider_response_malformed' });
+  }
+  const epoch = beginProviderRecoveryEpoch(metadata, id, 'fnv1a-window', {
+    recovery_stage: 'fragment_decision_regeneration', epoch_request_ceiling: 4,
+  });
+  assert.equal(epoch.status, 'initialized_before_dispatch');
+  assert.equal(epoch.global_requests_consumed_before_epoch, 4);
+  assert.equal(epoch.global_requests_by_stage_before_epoch.compact_response_repair, 1);
+  const focused = beginProviderAttempt(metadata, { logical_obligation_id: id, tier: 'session',
+    request_kind: 'fragment_decision_regeneration', recovery_stage: 'fragment_decision_regeneration',
+    resumed_pending_obligation: true, source_range: { start: 100, end: 119 }, source_fingerprint: 'fnv1a-window' });
+  const overlap = beginProviderRecoveryEpoch(metadata, id, 'fnv1a-window');
+  assert.equal(overlap.overlap_prevented, true);
+  finishProviderAttempt(metadata, focused, { terminal_outcome: 'completed' });
+  markProviderRejectedFragmentsRecovered(metadata, id, 'fnv1a-window', ['fragment-a', 'fragment-b']);
+  const state = readProviderRecoveryWindowState(metadata, id, 'fnv1a-window');
+  assert.equal(state.unresolved_fragments.length, 0);
+});
 
 test('persisted schema-three summaries reclassify strict partial inflation without losing true failures', () => {
   const migrated = migrateProviderAttemptAuditReport({

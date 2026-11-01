@@ -130,6 +130,7 @@ import {
   isChatLoadComplete,
 } from './trim-stats.js';
 import { getLiveMemoryHealthSummary } from './live-memory-health.js';
+import { formatDiagnosticIdentifier } from './diagnostic-presentation-utils.js';
 
 /** Renders the compact, text-free live-memory health status card. */
 export function updateLiveMemoryHealthUI() {
@@ -151,7 +152,7 @@ export function updateLiveMemoryHealthUI() {
   const providerOutcome = summary.last_extraction_event?.provider_outcome;
   const runningStage = isExtractionRunning
     ? ` \u2014 ${providerOutcome && providerOutcome !== 'not_started'
-      ? providerOutcome.replaceAll('_', ' ')
+      ? formatDiagnosticIdentifier(providerOutcome, 'unknown provider outcome')
       : 'preparing request'}`
     : '';
   const extraction = summary.last_extraction
@@ -163,7 +164,7 @@ export function updateLiveMemoryHealthUI() {
   const tierTokens = summary.injected_tier_tokens?.filter((tier) => tier.tokens > 0)
     .map((tier) => `${tier.tier} ${tier.tokens}`).join(', ') || 'none';
   const attention = summary.attention_reason_codes?.length
-    ? ` Attention: ${summary.attention_reason_codes.join(', ').replaceAll('_', ' ')}.`
+    ? ` Attention: ${formatDiagnosticIdentifier(summary.attention_reason_codes.join(', '), 'attention required')}.`
     : '';
   target.text(`Live memory health — extraction ${extraction}; latest injection ${injection}; injected tokens: ${tierTokens}.${attention}`)
     .toggleClass('sme_live_health_attention', Boolean(summary.attention_reason_codes?.length))
@@ -177,9 +178,9 @@ export function updateContinuityHealthUI() {
   const continuity = getLiveMemoryHealthSummary(getContext().chatMetadata?.[META_KEY])?.last_continuity;
   if (!continuity) return target.hide().empty();
   const attention = continuity.attention_reason_codes?.length
-    ? ` Attention: ${continuity.attention_reason_codes.join(', ').replaceAll('_', ' ')}.`
+    ? ` Attention: ${formatDiagnosticIdentifier(continuity.attention_reason_codes.join(', '), 'attention required')}.`
     : '';
-  target.text(`Continuity health — ${continuity.terminal_outcome.replaceAll('_', ' ')}; ${continuity.contradiction_count} contradictions; repair ${continuity.repair_lifecycle.replaceAll('_', ' ')}.${attention}`)
+  target.text(`Continuity health — ${formatDiagnosticIdentifier(continuity.terminal_outcome, 'unknown outcome')}; ${continuity.contradiction_count} contradictions; repair ${formatDiagnosticIdentifier(continuity.repair_lifecycle, 'unknown lifecycle')}.${attention}`)
     .toggleClass('sme_live_health_attention', Boolean(continuity.attention_reason_codes?.length))
     .show();
 }

@@ -581,6 +581,7 @@ export function beginProviderAttempt(metadata, input = {}) {
     attempt_id: `provider-${Date.now().toString(36)}-${audit.sequence}`,
     sequence: audit.sequence,
     at: Date.now(), run_id: audit.run_id, logical_run_id: audit.run_id,
+    controller_attempt_number: Number(input.controller_attempt_number ?? 0) || null,
     logical_obligation_id: obligationId, root_obligation_id: obligationId,
     tier: input.tier ?? 'unknown', owner: input.owner ?? null,
     request_kind: input.request_kind ?? 'original',
@@ -636,6 +637,12 @@ export function beginProviderAttempt(metadata, input = {}) {
     estimated_final_request_tokens: input.estimated_final_request_tokens ?? null,
     terminal_outcome: 'running',
   };
+  if (recoveryWindow.active_recovery_epoch
+    && recoveryWindow.active_recovery_epoch.status === 'initialized_before_dispatch') {
+    recoveryWindow.active_recovery_epoch.status = 'running';
+    recoveryWindow.active_recovery_epoch.provider_attempt_id = event.attempt_id;
+    recoveryWindow.active_recovery_epoch.dispatched_at = event.at;
+  }
   Object.defineProperty(event.prior_window_recovery_state, 'staged_partial_records', {
     value: (recoveryWindow.staged_partial_records ?? [])
       .filter((item) => item.state === 'staged').map((item) => item.record).filter(Boolean),
@@ -1232,6 +1239,10 @@ export function markProviderRejectedFragmentsRecovered(metadata, logicalObligati
   }
   window.unresolved_semantic_units = (window.unresolved_fragments ?? [])
     .filter((item) => item.state === 'pending').map((item) => item.fragment_id);
+  if (window.unresolved_semantic_units.length === 0 && window.active_recovery_epoch) {
+    window.active_recovery_epoch.status = 'completed';
+    window.active_recovery_epoch.completed_at = Date.now();
+  }
   return true;
 }
 
@@ -1255,6 +1266,8 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
       < RECOVERY_IMPLEMENTATION_VERSION,
     accepted_partial_record_count: count(window.accepted_partial_record_count),
     durable_partial_record_count: count(window.accepted_partial_record_count),
+    accepted_record_ids: [...new Set(window.accepted_record_ids ?? [])],
+    unresolved_semantic_units: [...new Set(window.unresolved_semantic_units ?? [])],
     last_malformed_reason: window.last_malformed_reason ?? null,
     prior_attempt_id: audit?.obligations?.[logicalObligationId]?.last_attempt_id ?? null,
   };
@@ -1266,8 +1279,62 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
   return result;
 }
 
+export function beginProviderRecoveryEpoch(metadata, logicalObligationId, sourceFingerprint, details = {}) {
+  if (!metadata || !logicalObligationId || !sourceFingerprint) return null;
+  const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
+  const obligation = audit.obligations?.[logicalObligationId];
+  const window = obligation?.recovery_windows?.[sourceFingerprint];
+  if (!window) return null;
+  window.recovery_epochs ??= [];
+  const activeEpoch = window.active_recovery_epoch;
+  if (activeEpoch && ['initialized_before_dispatch', 'running'].includes(activeEpoch.status)) {
+    const activePhysicalAttempt = (audit.recent_attempts ?? []).find((attempt) =>
+      attempt.logical_obligation_id === logicalObligationId && attempt.terminal_outcome === 'running');
+    if (activePhysicalAttempt) return { ...structuredClone(activeEpoch), overlap_prevented: true };
+    activeEpoch.status = 'interrupted_without_running_attempt';
+    activeEpoch.completed_at = Date.now();
+  }
+  const priorRecoveryRequestCount = (audit.recent_attempts ?? []).filter((attempt) =>
+    attempt.logical_obligation_id === logicalObligationId
+      && attempt.request_kind !== 'original'
+      && attempt.recovery_stage !== 'strict_generation').length;
+  const priorRecoveryRequestsByStage = (audit.recent_attempts ?? []).filter((attempt) =>
+    attempt.logical_obligation_id === logicalObligationId
+      && attempt.request_kind !== 'original'
+      && attempt.recovery_stage !== 'strict_generation').reduce((counts, attempt) => {
+    const stage = attempt.recovery_stage ?? attempt.request_kind ?? 'unknown';
+    counts[stage] = Number(counts[stage] ?? 0) + 1;
+    return counts;
+  }, {});
+  const epoch = {
+    schema_version: 1,
+    resume_epoch: Math.max(0, ...window.recovery_epochs.map((item) => Number(item.resume_epoch ?? 0))) + 1,
+    recovery_intent: details.recovery_intent ?? 'recover_unresolved_partial_output_fragments',
+    recovery_stage: details.recovery_stage ?? 'fragment_decision_regeneration',
+    unresolved_fragment_ids: [...new Set(details.unresolved_fragment_ids ?? window.unresolved_semantic_units ?? [])],
+    accepted_records_preserved: Number(details.accepted_records_preserved
+      ?? window.accepted_partial_record_count ?? 0),
+    global_request_ceiling: Number(details.global_request_ceiling ?? 20),
+    epoch_request_ceiling: Number(details.epoch_request_ceiling ?? 4),
+    global_requests_consumed_before_epoch: Number(details.global_requests_consumed_before_epoch
+      ?? priorRecoveryRequestCount),
+    global_requests_by_stage_before_epoch: structuredClone(
+      details.global_requests_by_stage_before_epoch ?? priorRecoveryRequestsByStage),
+    status: 'initialized_before_dispatch',
+    started_at: Date.now(),
+  };
+  window.recovery_epochs.push(epoch);
+  window.recovery_epochs = window.recovery_epochs.slice(-16);
+  window.active_recovery_epoch = epoch;
+  obligation.recovery_intent = epoch.recovery_intent;
+  obligation.recovery_stage = epoch.recovery_stage;
+  obligation.next_eligible_recovery_action = epoch.recovery_stage;
+  return structuredClone(epoch);
+}
+
 /** Marks valid partial records durable without closing their still-pending obligation. */
-export function markProviderPartialRecordsPersisted(metadata, logicalObligationId, acceptedCount = 0, sourceFingerprint = null) {
+export function markProviderPartialRecordsPersisted(metadata, logicalObligationId, acceptedCount = 0, sourceFingerprint = null,
+  acceptedRecordIds = []) {
   if (!metadata || !logicalObligationId) return false;
   const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
   const obligation = audit.obligations?.[logicalObligationId];
@@ -1278,6 +1345,9 @@ export function markProviderPartialRecordsPersisted(metadata, logicalObligationI
     ? [obligation.recovery_windows?.[sourceFingerprint]].filter(Boolean)
     : Object.values(obligation.recovery_windows ?? {});
   for (const window of windows) {
+    window.accepted_record_ids = [...new Set([
+      ...(window.accepted_record_ids ?? []), ...acceptedRecordIds.filter(Boolean).map(String),
+    ])].slice(-128);
     for (const item of window.staged_partial_records ?? []) {
       if (item.state === 'staged') { item.state = 'committed'; item.committed_at = Date.now(); }
     }
@@ -1321,6 +1391,7 @@ export function markProviderObligationOperationalPause(metadata, logicalObligati
     recovery_stage: obligation.recovery_stage,
     consumed_requests: count(details.consumed_requests),
     remaining_requests: count(details.remaining_requests),
+    budget_accounting: details.budget_accounting ? structuredClone(details.budget_accounting) : null,
     fresh_budget_on_resume: details.fresh_budget_on_resume === true,
     paused_at: Date.now(),
   };
@@ -1537,6 +1608,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       reason_code: item.final_disposition ?? 'recovery_request_budget_reached_with_pending_children',
       recovery_intent: item.recovery_intent ?? item.next_eligible_recovery_action ?? null,
       recovery_stage: item.recovery_stage ?? null,
+      budget_accounting: item.budget_accounting ?? null,
       next_resumable_child: item.child_coverage_manifest?.operational_pause?.next_resumable_child ?? null,
       child_coverage: summarizeRecoveryChildManifest(item.child_coverage_manifest),
     })),

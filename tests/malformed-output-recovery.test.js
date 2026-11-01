@@ -7,6 +7,7 @@ import {
   analyzeMalformedResponse,
   buildChangedDimensionRegenerationPrompt,
   buildCompactFormatRepairPrompt,
+  buildFragmentDecisionRecoveryPrompt,
   buildMinimalRecordRegenerationPrompt,
   buildSingleSourceUnitRegenerationPrompt,
   buildSingleSourceProviderRequest,
@@ -18,16 +19,77 @@ import {
   malformedChildCoverageComplete,
   normalizeTaggedMemoryOutput,
   partitionMalformedSourceWindow,
+  parseFragmentDecisionResponse,
   parseSingleSourceUnitResponse,
   recoverMalformedTaggedOutput,
   routeMalformedTaggedRecovery,
   selectRejectedTaggedFragments,
+  summarizeMalformedRecoveryBudget,
 } from '../malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility } from '../recovery-stage-eligibility.js';
 import { buildRecoverySourceUnits } from '../owner-applicability.js';
 
 const validLongterm = '[fact:2:permanent:sources=0] The garden gate is locked.';
 const validSession = '[detail:2:session:sources=0] The garden gate is currently locked.';
+
+test('fragment decision recovery keeps exact identities and constructs metadata locally', () => {
+  const fragments = [
+    { fragment_id: 'session-fragment-1-fnv1a-a', raw: 'malformed private fragment', reason_codes: ['malformed_entity_type_pair'] },
+    { fragment_id: 'session-fragment-2-fnv1a-b', raw: 'another malformed fragment', reason_codes: ['multiple_assignment_delimiters'] },
+  ];
+  const prompt = buildFragmentDecisionRecoveryPrompt('0: bounded source', fragments, { tier: 'session' });
+  assert.match(prompt, /accepted sibling records are already durable/i);
+  assert.match(prompt, /session-fragment-1-fnv1a-a/);
+  const parsed = parseFragmentDecisionResponse(JSON.stringify({ decisions: [
+    { fragment_id: fragments[0].fragment_id, disposition: 'record', type: 'detail',
+      claim: 'The bounded source supports the current detail.', source_indices: [0] },
+    { fragment_id: fragments[1].fragment_id, disposition: 'no_update' },
+  ] }), fragments, { tier: 'session', parse: parseSessionOutput });
+  assert.equal(parsed.valid, true);
+  assert.deepEqual(parsed.resolved_fragment_ids, fragments.map((item) => item.fragment_id));
+  assert.equal(parsed.records.length, 1);
+  assert.equal(parsed.records[0].importance, 2);
+  assert.equal(parsed.records[0].expiration, 'session');
+  assert.deepEqual(parsed.records[0].source_message_indices, [0]);
+});
+
+test('global and epoch recovery budgets remain mathematically distinct', () => {
+  const budget = createMalformedRecoveryBudget();
+  budget.maximum_additional_provider_requests = 4;
+  for (const stage of ['compact_response_repair', 'changed_dimension_regeneration',
+    'structured_json_regeneration', 'minimal_record_regeneration']) {
+    assert.equal(consumeMalformedRecoveryRequest(budget, stage).allowed, true);
+  }
+  const summary = summarizeMalformedRecoveryBudget(budget, {
+    eligible_changed_stages_remaining: [], pause_reason: 'recovery_stage_ladder_exhausted',
+  });
+  assert.equal(summary.global_request_ceiling, 20);
+  assert.equal(summary.global_requests_consumed, 4);
+  assert.equal(summary.global_requests_remaining, 16);
+  assert.equal(summary.epoch_request_ceiling, 4);
+  assert.equal(summary.epoch_requests_remaining, 0);
+  assert.equal(summary.stage_requests_remaining.compact_response_repair, 0);
+  assert.equal(summary.stage_requests_remaining.minimal_record_regeneration, 0);
+  assert.equal(summary.stage_requests_remaining.fragment_decision_regeneration, 1);
+  assert.equal(summary.eligible_changed_stages_remaining.length, 0);
+  assert.equal(summary.pause_reason, 'recovery_stage_ladder_exhausted');
+});
+
+test('a fresh epoch preserves global consumption while reopening only epoch allowance', () => {
+  const budget = createMalformedRecoveryBudget();
+  budget.global_additional_provider_requests = 4;
+  budget.additional_provider_requests = 0;
+  budget.maximum_additional_provider_requests = 4;
+  budget.resume_epoch = 2;
+  assert.equal(consumeMalformedRecoveryRequest(budget, 'fragment_decision_regeneration').allowed, true);
+  const summary = summarizeMalformedRecoveryBudget(budget, {
+    eligible_changed_stages_remaining: ['fragment_decision_regeneration'],
+  });
+  assert.equal(summary.global_requests_consumed, 5);
+  assert.equal(summary.global_requests_remaining, 15);
+  assert.equal(summary.epoch_requests_consumed, 1);
+  assert.equal(summary.epoch_requests_remaining, 3);
+});
 
 function auditHarness() {
   const events = [];
