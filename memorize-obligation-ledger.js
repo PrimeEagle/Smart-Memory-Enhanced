@@ -8,7 +8,7 @@
  */
 
 export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 1;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 1;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 2;
 
 export const MEMORIZE_OBLIGATION_STATES = Object.freeze([
   'unattempted', 'provider_running', 'provider_response_received',
@@ -96,6 +96,9 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
       current_state: state,
       exact_reason_code: raw?.exact_reason_code ?? null,
       next_eligible_action: raw?.next_eligible_action ?? defaultNextAction(state, raw?.exact_reason_code),
+      recovery_intent: raw?.recovery_intent ?? raw?.next_eligible_action
+        ?? defaultNextAction(state, raw?.exact_reason_code),
+      recovery_stage: raw?.recovery_stage ?? null,
       timestamps: { ...(raw?.timestamps ?? {}) },
       implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
       schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
@@ -140,6 +143,11 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
     exact_reason_code: SAFE_STATES.has(state) ? null : reason,
     next_eligible_action: SAFE_STATES.has(state) ? null
       : transition.next_eligible_action ?? defaultNextAction(state, reason),
+    recovery_intent: SAFE_STATES.has(state) ? null
+      : transition.recovery_intent ?? transition.next_eligible_action
+        ?? prior.recovery_intent ?? defaultNextAction(state, reason),
+    recovery_stage: SAFE_STATES.has(state) ? null
+      : transition.recovery_stage ?? prior.recovery_stage ?? null,
     timestamps: {
       ...(prior.timestamps ?? {}),
       created_at: prior.timestamps?.created_at ?? at,

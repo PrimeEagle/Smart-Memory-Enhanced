@@ -22,6 +22,31 @@ export const MALFORMED_RECOVERY_LIMITS = Object.freeze({
   automatic_sweep_rounds: 2,
 });
 
+/**
+ * Returns only structurally rejected tagged fragments. Raw text is intentionally
+ * transient: callers may use it for an in-process focused repair, but exported
+ * diagnostics receive only the stable identities and reason codes.
+ */
+export function selectRejectedTaggedFragments(response, { tier = 'longterm' } = {}) {
+  const text = String(response ?? '');
+  const lines = responseLines(text);
+  const lexical = analyzeTaggedMemoryOutput(text, { tier });
+  return lexical.rejected.map((entry) => {
+    const raw = String(lines[entry.line_index] ?? '').trim();
+    return {
+      fragment_id: `${tier}-fragment-${entry.line_index}-${safeFingerprint(raw)}`,
+      line_index: entry.line_index,
+      reason_codes: [...new Set([
+        entry.reason_code,
+        ...(entry.modifier_failure_subtypes ?? []),
+        ...(entry.modifier_missing_source_citation ? ['missing_source_citation'] : []),
+      ].filter(Boolean))],
+      recoverable_claim_content: entry.recoverable_claim_content === true,
+      raw,
+    };
+  }).filter((entry) => entry.raw);
+}
+
 const taggedTypes = (tier) => getTaggedMemoryGrammar(tier).types;
 
 const classifyCharacter = (character) => {
@@ -564,14 +589,19 @@ export function malformedChildCoverageComplete(expectedChildKeys, committedChild
 export function createMalformedRecoveryBudget(prior = null, now = Date.now()) {
   return prior ?? { schema_version: 2, started_at: now, additional_provider_requests: 0,
     maximum_additional_provider_requests: MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests,
+    maximum_wall_time_ms: MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms,
     resume_epoch: 1, requests_by_stage: {}, requests_by_child: {},
     recovered_by_stage: {}, split_children_committed: [] };
 }
 
 export function consumeMalformedRecoveryRequest(budget, stage, now = Date.now(), details = {}) {
   if (!budget) return { allowed: false, reason: 'recovery_budget_missing' };
-  if (now - Number(budget.started_at ?? now) > MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms) return { allowed: false, reason: 'recovery_wall_time_exhausted' };
-  if (Number(budget.additional_provider_requests ?? 0) >= MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests) return { allowed: false, reason: 'recovery_request_limit_exhausted' };
+  const maximumWallTime = Number(budget.maximum_wall_time_ms
+    ?? MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms);
+  const maximumRequests = Number(budget.maximum_additional_provider_requests
+    ?? MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests);
+  if (now - Number(budget.started_at ?? now) > maximumWallTime) return { allowed: false, reason: 'recovery_wall_time_exhausted' };
+  if (Number(budget.additional_provider_requests ?? 0) >= maximumRequests) return { allowed: false, reason: 'recovery_request_limit_exhausted' };
   budget.additional_provider_requests = Number(budget.additional_provider_requests ?? 0) + 1;
   budget.requests_by_stage[stage] = Number(budget.requests_by_stage[stage] ?? 0) + 1;
   if (details.child_key) budget.requests_by_child[details.child_key]

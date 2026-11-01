@@ -87,6 +87,7 @@ import {
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
   reconcileCatchUpRecoverySummary,
+  deriveFinalizationAvailability,
   getCatchUpTierRangeStatus,
   isCatchUpTierRangeSafelyCovered,
   getCatchUpOwnerRangeStatus,
@@ -217,7 +218,13 @@ import {
 import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
 import { deriveRunStatus, normalizeRunStatusReport, RUN_STATUS_CLASSIFIER_VERSION } from './run-status-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
-import { providerConfigurationSignature, summarizeProviderAttemptAudit, PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION } from './provider-attempt-audit.js';
+import {
+  markProviderObligationOperationalPause,
+  markProviderObligationRecoveryInProgress,
+  providerConfigurationSignature,
+  summarizeProviderAttemptAudit,
+  PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
+} from './provider-attempt-audit.js';
 import {
   buildTargetedReplayCandidates, createTargetedReplayCheckpoint,
   updateTargetedReplayCheckpoint, summarizeTargetedReplayCheckpoint,
@@ -238,8 +245,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.70',
-  build_fingerprint: 'sme-v0.9.70-controller-transaction-lifecycle-r1',
+  extension_version: '0.9.71',
+  build_fingerprint: 'sme-v0.9.71-automatic-partial-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5291,6 +5298,20 @@ export function bindSettingsUI(ctrl) {
     };
     const recordCatchUpOperationalPause = (label, err, tier = null) => {
       const pause = recordMemorizeOperationalPause(controllerRuntime, runResult, label, err, tier);
+      const requestDiagnostics = err?.sme_request_diagnostics ?? {};
+      markProviderObligationOperationalPause(
+        catchUpContext.chatMetadata?.[META_KEY],
+        requestDiagnostics.root_obligation_id ?? err?.sme_obligation_id,
+        {
+          reason_code: pause.reason_code,
+          recovery_intent: requestDiagnostics.recovery_intent
+            ?? requestDiagnostics.next_eligible_recovery_action,
+          recovery_stage: requestDiagnostics.recovery_stage,
+          consumed_requests: requestDiagnostics.consumed_requests,
+          remaining_requests: requestDiagnostics.remaining_requests,
+          fresh_budget_on_resume: requestDiagnostics.fresh_budget_on_resume,
+        },
+      );
       console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, pause);
     };
     const recordCatchUpWarning = (label, err, tier = null) => {
@@ -6057,9 +6078,89 @@ export function bindSettingsUI(ctrl) {
             _onRecoveryChildManifestUpdated: commitRecoveryChildManifest,
             _onObligationState: updateAuthoritativeObligation,
             _providerResumedPendingObligation: Boolean(resumableCheckpoint && priorSessionObligation),
+            _automaticPartialRecovery: true,
+            _onAutomaticRecoveryBoundary: async (detail) => {
+              const recoveryElapsedMs = Math.max(0,
+                Date.now() - Number(detail.recovery_started_at ?? Date.now()));
+              const recoveryRequestsRemaining = Math.max(0,
+                Number(detail.request_budget_maximum ?? 0) - Number(detail.request_budget_used ?? 0));
+              detail = {
+                ...detail,
+                recovery_elapsed_ms: recoveryElapsedMs,
+                request_budget_remaining: recoveryRequestsRemaining,
+              };
+              runResult.automaticRecovery ??= {
+                attempted: 0, completed: 0, paused: 0,
+                accepted_records_preserved: 0, recovered_records: 0,
+                records: [],
+              };
+              runResult.automaticRecovery.attempted++;
+              runResult.automaticRecovery.accepted_records_preserved
+                += Number(detail.accepted_records_preserved ?? 0);
+              runResult.automaticRecovery.records.push({
+                ...detail,
+                status: 'recovery_in_progress',
+                started_at: Date.now(),
+              });
+              runResult.automaticRecovery.records = runResult.automaticRecovery.records.slice(-64);
+              markProviderObligationRecoveryInProgress(
+                catchUpContext.chatMetadata?.[META_KEY], detail.root_obligation_id, detail);
+              checkpoint.automatic_recovery = {
+                schema_version: 1,
+                status: 'recovery_in_progress',
+                ...detail,
+                updated_at: Date.now(),
+              };
+              checkpoint.updated_at = Date.now();
+              await saveChatMetadata(catchUpContext);
+              await checkpointCatchUpTransaction(chunkTransaction);
+              setStatusMessage(`Automatically recovering Session ${detail.source_range.start}–${detail.source_range.end}: ${detail.recovery_stage.replaceAll('_', ' ')}; ${detail.unresolved_fragment_count} unresolved fragment${detail.unresolved_fragment_count === 1 ? '' : 's'}, ${detail.accepted_records_preserved} accepted record${detail.accepted_records_preserved === 1 ? '' : 's'} preserved; recovery request budget ${detail.request_budget_used}/${detail.request_budget_maximum} (${detail.request_budget_remaining} remaining), elapsed ${formatCatchUpDuration(detail.recovery_elapsed_ms)}.`);
+            },
+            _onAutomaticRecoveryCompleted: async (detail) => {
+              runResult.automaticRecovery ??= {
+                attempted: 0, completed: 0, paused: 0,
+                accepted_records_preserved: 0, recovered_records: 0,
+                records: [],
+              };
+              runResult.automaticRecovery.completed++;
+              runResult.automaticRecovery.recovered_records += Number(detail.recovered_record_count ?? 0);
+              runResult.automaticRecovery.records.push({
+                ...detail,
+                status: 'recovered_automatically',
+                completed_at: Date.now(),
+              });
+              runResult.automaticRecovery.records = runResult.automaticRecovery.records.slice(-64);
+              checkpoint.automatic_recovery = {
+                schema_version: 1,
+                status: 'recovered_automatically',
+                ...detail,
+                updated_at: Date.now(),
+              };
+              delete checkpoint.operational_pause;
+              checkpoint.updated_at = Date.now();
+              await saveChatMetadata(catchUpContext);
+              await checkpointCatchUpTransaction(chunkTransaction);
+              setStatusMessage(`Session ${detail.source_range.start}–${detail.source_range.end} recovered automatically; continuing Memorize Chat.`);
+            },
           }).catch((err) => {
             if (err?.code === 'SME_DOWNSTREAM_VALIDATION_PENDING'
               || err?.sme_operational_pause === true) {
+              if (checkpoint.automatic_recovery?.status === 'recovery_in_progress') {
+                checkpoint.automatic_recovery = {
+                  ...checkpoint.automatic_recovery,
+                  status: 'operationally_paused_resumable',
+                  pause_reason: err?.sme_request_diagnostics?.pause_reason
+                    ?? err?.sme_reason_code ?? err?.code,
+                  budget: {
+                    consumed_requests: Number(err?.sme_request_diagnostics?.consumed_requests ?? 0),
+                    remaining_requests: Number(err?.sme_request_diagnostics?.remaining_requests ?? 0),
+                    fresh_budget_on_resume: err?.sme_request_diagnostics?.fresh_budget_on_resume === true,
+                  },
+                  updated_at: Date.now(),
+                };
+                runResult.automaticRecovery ??= { attempted: 0, completed: 0, paused: 0, records: [] };
+                runResult.automaticRecovery.paused = Number(runResult.automaticRecovery.paused ?? 0) + 1;
+              }
               recordCatchUpOperationalPause('Session downstream validation pending', err, 'session');
               return;
             }
@@ -8684,6 +8785,21 @@ export function bindSettingsUI(ctrl) {
       }
       const qualityReasons = [];
       const providerAttemptSummary = summarizeProviderAttemptAudit(catchUpContext.chatMetadata?.[META_KEY]);
+      const authoritativeObligations = projectMemorizeObligationLedger(
+        checkpoint.run_manifest?.obligation_ledger);
+      const finalizationAvailability = deriveFinalizationAvailability({
+        next_source_offset: checkpoint.next_source_offset,
+        total_source_messages: total,
+        pending_obligation_count: authoritativeObligations.pending_obligation_count,
+        arcs_enabled: settings.arcs_enabled,
+        profiles_enabled: settings.profiles_enabled,
+      });
+      const sourceExtractionComplete = finalizationAvailability.source_extraction_complete;
+      const currentPartialUnresolved = (providerAttemptSummary?.terminal_unresolved_obligations ?? [])
+        .some((item) => Number(item.accepted_partial_record_count ?? 0) > 0
+          && Number(item.rejected_fragment_count ?? item.missing_semantic_unit_count ?? 0) > 0);
+      runResult.finalizationAvailability = finalizationAvailability.availability;
+      runResult.remainingSourceWork = [];
       // Extraction coverage is independent of candidate quality: a window is
       // covered only when it completed itself or every deterministic child
       // window completed. This prevents a context-overflow split from being
@@ -8697,12 +8813,15 @@ export function bindSettingsUI(ctrl) {
         const cumulativeTier = summarizeCatchUpRunManifest(checkpoint.run_manifest).cumulative_tier_coverage?.[tier];
         const cumulativeIncomplete = cumulativeTier?.enabled === true && cumulativeTier.coverage_complete !== true;
         if (cumulativeIncomplete) {
-          qualityReasons.push({
+          const remaining = {
             code: `${tier}_extraction_coverage_incomplete`,
             tier: tier === 'longterm' ? 'long-term' : 'session',
-            message: `${cumulativeTier.remaining_gaps?.length ?? 0} ${tier === 'longterm' ? 'long-term' : 'session'} source range${(cumulativeTier.remaining_gaps?.length ?? 0) === 1 ? '' : 's'} remain pending durable recovery.`,
+            state_scope: 'not_yet_attempted_or_exact_recovery_pending',
+            message: `${cumulativeTier.remaining_gaps?.length ?? 0} ${tier === 'longterm' ? 'long-term' : 'session'} source range${(cumulativeTier.remaining_gaps?.length ?? 0) === 1 ? '' : 's'} remain as expected incomplete work.`,
             unresolved_range_ids: cumulativeTier.remaining_gaps?.map((range) => `${range.start_offset}-${range.end_offset}`) ?? [],
-          });
+          };
+          runResult.remainingSourceWork.push(remaining);
+          if (sourceExtractionComplete) qualityReasons.push(remaining);
         }
       }
       const sessionFailureRatio = runResult.sessionExtraction.emitted > 0
@@ -8736,7 +8855,9 @@ export function bindSettingsUI(ctrl) {
           ? 'historical_and_recovered' : 'current_terminal_unresolved',
         message: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0) === 0
           ? `${runResult.sessionExtraction.malformedOutput} initial Session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} ${runResult.sessionExtraction.malformedOutput === 1 ? 'was' : 'were'} unparseable; all affected obligations recovered automatically.`
-          : `${runResult.sessionExtraction.malformedOutput} Session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} contained no parseable structured records, and terminal generation obligations remain unresolved.`,
+          : currentPartialUnresolved
+            ? `Session extraction produced valid persisted records plus unresolved fragments; focused recovery remains pending. Historical wholly malformed responses remain visible separately.`
+            : `${runResult.sessionExtraction.malformedOutput} Session extraction response${runResult.sessionExtraction.malformedOutput === 1 ? '' : 's'} contained no parseable structured records, and terminal generation obligations remain unresolved.`,
       });
       if (runResult.arcPipeline.classifiedResolved >= 2 && runResult.arcPipeline.persisted === 0) qualityReasons.push({
         code: 'resolved_arcs_without_persisted_summaries',
@@ -8866,9 +8987,9 @@ export function bindSettingsUI(ctrl) {
         ['identity_terminal_totals_reconcile', runResult.identityResolution.terminal_reconciled, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
-        ['arc_extraction_terminal_outcome_present', !settings.arcs_enabled || isFreshStart() || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
-        ['profile_terminal_accounting_reconciles', !settings.profiles_enabled || profileAccountingValidation.reconciled, 'Profile terminal accounting did not reconcile.'],
-        ['profile_coverage_complete', !settings.profiles_enabled || (runResult.profiles?.terminal_accounting?.unresolved_profiles ?? 0) === 0, 'A profile attempt has neither usable nor safe pending coverage.'],
+        ['arc_extraction_terminal_outcome_present', !sourceExtractionComplete || !settings.arcs_enabled || isFreshStart() || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
+        ['profile_terminal_accounting_reconciles', !sourceExtractionComplete || !settings.profiles_enabled || profileAccountingValidation.reconciled, 'Profile terminal accounting did not reconcile.'],
+        ['profile_coverage_complete', !sourceExtractionComplete || !settings.profiles_enabled || (runResult.profiles?.terminal_accounting?.unresolved_profiles ?? 0) === 0, 'A profile attempt has neither usable nor safe pending coverage.'],
         ['integrity_audit_invalid_status', ['clean', 'repaired', 'degraded', 'unsafe', 'failed', 'blocked_by_upstream_phase'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
       ];
       for (const [code, passed, message] of requiredIdentityInvariants) {
@@ -8915,7 +9036,9 @@ export function bindSettingsUI(ctrl) {
         count: providerAttemptSummary.failure_accounting?.terminal_unresolved_obligation_count
           ?? providerAttemptSummary.terminally_unresolved_malformed_obligations,
         state_scope: 'current_terminal_unresolved',
-        message: `${providerAttemptSummary.failure_accounting?.terminal_unresolved_obligation_count ?? providerAttemptSummary.terminally_unresolved_malformed_obligations} provider obligation(s) ended without valid parsed output; source traversal remains safely checkpointed but generation coverage is incomplete.`,
+        message: currentPartialUnresolved
+          ? `${providerAttemptSummary.failure_accounting?.terminal_unresolved_obligation_count ?? providerAttemptSummary.terminally_unresolved_malformed_obligations} provider obligation remains partially valid: accepted records are durable and only rejected fragments remain pending focused recovery.`
+          : `${providerAttemptSummary.failure_accounting?.terminal_unresolved_obligation_count ?? providerAttemptSummary.terminally_unresolved_malformed_obligations} provider obligation(s) ended without valid parsed output; source traversal remains safely checkpointed but generation coverage is incomplete.`,
       });
       const qualityDegradingReasons = qualityReasons.filter((reason) => !['notice', 'historical_recovered'].includes(reason.severity));
       const qualityNotices = qualityReasons.filter((reason) => ['notice', 'historical_recovered'].includes(reason.severity));

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.71] - 2026-11-01
+
+### Added
+
+- Session partial-valid output now enters a bounded, same-invocation automatic
+  recovery loop. Accepted records are durably checkpointed first, then only
+  stable rejected-fragment identities and their focused repair payload are
+  retried; successful repair continues directly into the next source chunk.
+- Automatic recovery exposes separate canonical `recovery_intent` and
+  `recovery_stage` fields, per-controller request and wall-time bounds, durable
+  crash recovery state, and live status details for preserved records,
+  unresolved fragments, and remaining request budget.
+- The 9,434-message offline replay now includes partial-valid Session output in
+  every chunk and verifies automatic completion without a manual Resume,
+  duplicate persistence, skipped ranges, leaked transactions, or premature
+  checkpoint advancement.
+
+### Fixed
+
+- A recoverable Session partial response no longer becomes
+  `awaiting_manual_resume` immediately after its first safe boundary. Compact
+  fragment repair and later materially changed stages run automatically until
+  success or an explicit bound is reached.
+- Rejected fragments are retained privately at the durable partial boundary so
+  a page reload can resume the exact unfinished fragment without regenerating
+  accepted records. Raw fragment content is excluded from exported diagnostics
+  and removed after recovery.
+- Bounded recovery exhaustion is now one resumable operational pause across
+  provider, run-status, recovery, and error-accounting projections rather than
+  simultaneously appearing as a pause, terminal failure, and missing event.
+- Partial-valid output is no longer described as wholly unparseable, and Arc
+  or Profile finalization that was correctly not reached because source
+  coverage remains incomplete is reported as not evaluated instead of a
+  quality defect.
+- Every new physical provider attempt carries its logical run and root
+  obligation IDs, recovery intent, stage, source range, and recovery lineage;
+  reconciliation now fails when retained attempt lineage is absent.
+- Per-controller recovery request and wall-time limits now override the global
+  safety ceilings correctly instead of being recorded but ignored.
+
 ## [0.9.70] - 2026-10-30
 
 ### Added

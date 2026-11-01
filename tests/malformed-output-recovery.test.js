@@ -21,6 +21,7 @@ import {
   parseSingleSourceUnitResponse,
   recoverMalformedTaggedOutput,
   routeMalformedTaggedRecovery,
+  selectRejectedTaggedFragments,
 } from '../malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility } from '../recovery-stage-eligibility.js';
 import { buildRecoverySourceUnits } from '../owner-applicability.js';
@@ -74,6 +75,33 @@ test('modifier diagnostics expose subtype counts and normalize only unambiguous 
   assert.equal(ambiguousShape.modifier_failure_subtype_counts.duplicate_source_modifier, 1);
   assert.equal(normalizeTaggedMemoryOutput(ambiguousResponse, { tier: 'longterm', parse: parseExtractionOutput }).succeeded, false);
   assert.equal(JSON.stringify(ambiguousShape).includes('ambiguous durable claim'), false);
+});
+
+test('partial output exposes only stable rejected-fragment identities for focused recovery', () => {
+  const response = [
+    '[detail:2:session:sources=0] First accepted Session record.',
+    '[revelation:3:session:sources=1] Second accepted Session record.',
+    '[development:2:session:sources=2] Third accepted Session record.',
+    '[detail:2:session:sources=3:sources=4] One malformed but recoverable claim.',
+  ].join('\n');
+  const fragments = selectRejectedTaggedFragments(response, { tier: 'session' });
+  assert.equal(parseSessionOutput(response).length, 3);
+  assert.equal(fragments.length, 1);
+  assert.match(fragments[0].fragment_id, /^session-fragment-3-fnv1a-/);
+  assert.equal(fragments[0].reason_codes.includes('duplicate_source_modifier'), true);
+  assert.equal(fragments[0].raw.includes('First accepted'), false);
+});
+
+test('per-controller recovery budgets enforce their own request and wall-time limits', () => {
+  const requestBudget = createMalformedRecoveryBudget();
+  requestBudget.maximum_additional_provider_requests = 1;
+  assert.equal(consumeMalformedRecoveryRequest(requestBudget, 'compact_response_repair').allowed, true);
+  assert.equal(consumeMalformedRecoveryRequest(requestBudget, 'changed_dimension_regeneration').reason,
+    'recovery_request_limit_exhausted');
+  const wallBudget = createMalformedRecoveryBudget(null, 1_000);
+  wallBudget.maximum_wall_time_ms = 50;
+  assert.equal(consumeMalformedRecoveryRequest(wallBudget, 'compact_response_repair', 1_051).reason,
+    'recovery_wall_time_exhausted');
 });
 
 test('missing source citations remain explicit and are never invented by local normalization', () => {

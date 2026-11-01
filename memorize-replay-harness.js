@@ -73,6 +73,50 @@ export function buildFullChatReplay(messageCount = 9434, chunkSize = 20, owners 
   return { logicalRunId: 'offline-full-chat-9434', obligations, events };
 }
 
+export function buildAutomaticRecoveryFullChatReplay(messageCount = 9434, chunkSize = 20,
+  owners = ['Alex Mercer', 'Aster Graves', 'Lillian Kraft', 'Lisette Dumont', 'Nyx Watson', 'Valerie Erikssen']) {
+  const obligations = [];
+  const events = [];
+  let automaticRecoveries = 0;
+  for (let start = 0; start < messageCount; start += chunkSize) {
+    const end = Math.min(messageCount - 1, start + chunkSize - 1);
+    for (const owner of owners) {
+      const obligation_id = `longterm:${owner.toLowerCase()}:${start}-${end}:automatic-replay`;
+      obligations.push({ obligation_id, tier: 'longterm', owner, source_range: { start, end } });
+      events.push({ obligation_id, current_state: 'durably_committed', persistence_result: 'committed',
+        coverage_result: 'safely_committed', persisted_record_ids: [`lt:${owner}:${start}`] });
+    }
+    const obligation_id = `session:chat:${start}-${end}:automatic-replay`;
+    obligations.push({ obligation_id, tier: 'session', source_range: { start, end } });
+    events.push({ obligation_id, current_state: 'parser_partial', parser_result: 'partial',
+      exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
+      metrics: { parser_accepted_records: 3, parser_rejected_fragments: 1 },
+      persisted_record_ids: [`session:${start}:one`, `session:${start}:two`, `session:${start}:three`] });
+    events.push({ obligation_id, current_state: 'partial_records_committed',
+      downstream_validation_result: 'accepted_partial_records', persistence_result: 'partial_records_committed',
+      coverage_result: 'pending', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
+      next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair' });
+    events.push({ obligation_id, current_state: 'durably_committed', parser_result: 'recovered_fragment',
+      downstream_validation_result: 'accepted', persistence_result: 'committed_without_duplicate_partial_records',
+      coverage_result: 'safely_committed', persisted_record_ids: [`session:${start}:recovered`] });
+    automaticRecoveries++;
+  }
+  const rootObligations = automaticRecoveries * (owners.length + 1);
+  const physicalProviderRequests = rootObligations + automaticRecoveries;
+  return { logicalRunId: 'offline-full-chat-9434-automatic-recovery', obligations, events,
+    expectedAutomaticRecoveries: automaticRecoveries, expectedOperationalPauses: 0,
+    providerMetrics: {
+      root_obligations: rootObligations,
+      physical_provider_requests: physicalProviderRequests,
+      focused_fragment_recovery_requests: automaticRecoveries,
+      request_amplification: physicalProviderRequests / rootObligations,
+      partial_valid_response_rate: automaticRecoveries / physicalProviderRequests,
+      fragment_recovery_success_rate: 1,
+    },
+  };
+}
+
 /**
  * Deterministic controller-path replay for the v0.9.69 range 0-19 failure.
  * It models the same event sequence as the real button handler: staged partial
@@ -207,5 +251,111 @@ export async function replayPartialSessionResume({
     duplicate_record_count: [...persisted].length - new Set(persisted).size,
     leaked_transaction: [transaction, resumeResult?.transaction].some((item) => item?.state === 'active'),
   };
+}
+
+/**
+ * Deterministic same-invocation recovery replay for the v0.9.70 Session 20-39
+ * partial-output shape. The scripted provider is fragment-scoped and cannot
+ * regenerate the three records already committed at the durable boundary.
+ */
+export async function replayAutomaticPartialSessionRecovery({
+  recoveryOutcomes = ['success'],
+  maximumRequests = 4,
+  interruptAfterBoundary = false,
+  commitFailure = false,
+  manualCancel = false,
+} = {}) {
+  const logicalRunId = 'offline-automatic-session-20-39';
+  const sessionId = 'session:chat:20-39:fnv1a-eeb22053';
+  const owners = ['Alex Mercer', 'Aster Graves', 'Lillian Kraft', 'Lisette Dumont', 'Nyx Watson', 'Valerie Erikssen'];
+  const ledger = createMemorizeObligationLedger(logicalRunId, 1);
+  const checkpoint = { next_source_offset: 20, source_message_count: 9434,
+    run_manifest: { logical_run_id: logicalRunId, total_attempt_count: 1, obligation_ledger: ledger } };
+  const records = new Set(['session:20-39:one', 'session:20-39:two', 'session:20-39:three']);
+  const providerRequests = [];
+  const transaction = { transaction_id: 'automatic-tx', state: 'active', terminal_disposition: null };
+  const runtime = createMemorizeControllerRuntime({ invocation_id: 'automatic-attempt', logical_run_id: logicalRunId, attempt_number: 1 });
+  bindMemorizeCheckpoint(runtime, checkpoint);
+  trackMemorizeTransaction(runtime, transaction, { phase: 'source_extraction', tier: 'session',
+    source_range: { start: 20, end: 39 }, obligation_id: sessionId });
+  for (const owner of owners) transitionMemorizeObligation(ledger, {
+    obligation_id: `longterm:${owner.toLowerCase()}:20-39:fnv1a-eeb22053`, logical_run_id: logicalRunId,
+    tier: 'longterm', owner, source_range: { start: 20, end: 39 }, source_fingerprint: 'fnv1a-eeb22053',
+  }, { current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed', at: 2 });
+  transitionMemorizeObligation(ledger, {
+    obligation_id: sessionId, logical_run_id: logicalRunId, tier: 'session',
+    source_range: { start: 20, end: 39 }, source_fingerprint: 'fnv1a-eeb22053',
+  }, { current_state: 'pending_recovery', parser_result: 'partial',
+    downstream_validation_result: 'accepted_partial_records', persistence_result: 'partial_records_committed',
+    coverage_result: 'pending', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
+    next_eligible_action: 'recover_unresolved_partial_output_fragments',
+    recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair',
+    metrics: { parser_accepted_records: 3, parser_rejected_fragments: 1,
+      persisted_records: 3, unresolved_fragment_ids: ['session-fragment-3-fnv1a-replay'] }, at: 3 });
+  checkpoint.automatic_recovery = { status: 'recovery_in_progress', recovery_intent: 'recover_unresolved_partial_output_fragments',
+    recovery_stage: 'compact_response_repair', accepted_records_preserved: 3, unresolved_fragment_count: 1 };
+  // Durable partial boundary: a crash from this point can replay only the fragment.
+  transaction.snapshot_checkpoint = 20;
+  if (interruptAfterBoundary) {
+    transaction.state = 'rolled_back';
+    transaction.terminal_disposition = 'rolled_back';
+    recordMemorizeControllerExit(ledger, buildMemorizeControllerExit(runtime, {
+      classification: 'page_interrupted', reason_code: 'page_interrupted_during_automatic_recovery',
+      resumable: true, obligation_id: sessionId, next_eligible_action: 'recover_unresolved_partial_output_fragments', at: 4,
+    }));
+    return { checkpoint, ledger, transaction, records: [...records], providerRequests,
+      projection: projectMemorizeObligationLedger(ledger), interrupted: true, nextChunkStarted: false };
+  }
+  let recovered = false;
+  let stage = 'compact_response_repair';
+  for (const outcome of recoveryOutcomes) {
+    if (providerRequests.length >= maximumRequests) break;
+    providerRequests.push({ root_obligation_id: sessionId, recovery_intent: 'recover_unresolved_partial_output_fragments',
+      recovery_stage: stage, fragment_ids: ['session-fragment-3-fnv1a-replay'] });
+    if (manualCancel) break;
+    if (outcome === 'success') { recovered = true; break; }
+    stage = 'changed_dimension_regeneration';
+  }
+  if (recovered && !commitFailure) {
+    records.add('session:20-39:recovered-fragment');
+    transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
+      current_state: 'durably_committed', parser_result: 'recovered_fragment',
+      downstream_validation_result: 'accepted', persistence_result: 'committed_without_duplicate_partial_records',
+      coverage_result: 'safely_committed', metrics: { recovered_fragment_count: 1 }, at: 5,
+    });
+    checkpoint.next_source_offset = 40;
+    checkpoint.automatic_recovery = { ...checkpoint.automatic_recovery, status: 'recovered_automatically',
+      recovery_stage: stage, request_budget_used: providerRequests.length };
+    transaction.state = 'committed';
+    transaction.terminal_disposition = 'committed';
+  } else {
+    const reason = commitFailure ? 'transaction_commit_failure'
+      : manualCancel ? 'manual_cancel' : 'automatic_partial_recovery_exhausted';
+    transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
+      current_state: manualCancel ? 'pending_recovery' : 'operationally_paused',
+      exact_reason_code: reason, next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: stage, at: 5,
+    });
+    checkpoint.automatic_recovery = { ...checkpoint.automatic_recovery,
+      status: manualCancel ? 'manually_cancelled' : 'operationally_paused_resumable',
+      pause_reason: reason, request_budget_used: providerRequests.length,
+      request_budget_remaining: Math.max(0, maximumRequests - providerRequests.length), fresh_budget_on_resume: true };
+    transaction.state = commitFailure ? 'commit_failed_with_exact_state' : 'rolled_back';
+    transaction.terminal_disposition = transaction.state;
+  }
+  const nextChunkStarted = recovered && !commitFailure;
+  if (nextChunkStarted) providerRequests.push({ root_obligation_id: 'session:chat:40-59:offline',
+    recovery_intent: 'extract_root_obligation', recovery_stage: 'strict_generation', fragment_ids: [] });
+  recordMemorizeControllerExit(ledger, buildMemorizeControllerExit(runtime, {
+    classification: nextChunkStarted ? 'completed_with_recovered_errors'
+      : manualCancel ? 'manually_cancelled' : 'operationally_paused',
+    reason_code: nextChunkStarted ? 'automatic_partial_recovery_completed'
+      : checkpoint.automatic_recovery.pause_reason,
+    resumable: !nextChunkStarted && !manualCancel, obligation_id: nextChunkStarted ? null : sessionId,
+    next_eligible_action: nextChunkStarted ? null : 'recover_unresolved_partial_output_fragments', at: 6,
+  }));
+  return { checkpoint, ledger, transaction, records: [...records], providerRequests,
+    projection: projectMemorizeObligationLedger(ledger), interrupted: false, nextChunkStarted,
+    duplicate_record_count: records.size - new Set(records).size };
 }
 

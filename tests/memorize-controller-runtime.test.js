@@ -12,10 +12,17 @@ import {
   trackMemorizeTransaction,
 } from '../memorize-controller-runtime.js';
 import { projectMemorizeObligationLedger, recordMemorizeControllerExit } from '../memorize-obligation-ledger.js';
-import { replayPartialSessionResume } from '../memorize-replay-harness.js';
+import {
+  replayAutomaticPartialSessionRecovery,
+  replayPartialSessionResume,
+} from '../memorize-replay-harness.js';
 
 const controllerFailureFixture = JSON.parse(readFileSync(
   new URL('./fixtures/memorize-controller-0-19-failure.json', import.meta.url),
+  'utf8',
+));
+const automaticRecoveryFixture = JSON.parse(readFileSync(
+  new URL('./fixtures/memorize-automatic-session-20-39.json', import.meta.url),
   'utf8',
 ));
 
@@ -130,4 +137,74 @@ test('overlapping transaction state is observable and therefore blocks a second 
   const exit = buildMemorizeControllerExit(runtime, { reason_code: 'already_running', classification: 'blocked_nonresumable' });
   assert.equal(exit.active_transaction_state, 'active');
   assert.equal(exit.resumable, false);
+});
+
+test('partial Session output recovers automatically and continues into the next chunk', async () => {
+  const result = await replayAutomaticPartialSessionRecovery();
+  assert.equal(result.checkpoint.next_source_offset, automaticRecoveryFixture.next_checkpoint);
+  assert.equal(result.checkpoint.automatic_recovery.status, 'recovered_automatically');
+  assert.equal(result.nextChunkStarted, true);
+  assert.equal(result.providerRequests[0].root_obligation_id, automaticRecoveryFixture.session_obligation_id);
+  assert.deepEqual(result.providerRequests[0].fragment_ids, automaticRecoveryFixture.rejected_fragment_ids);
+  assert.equal(result.providerRequests.at(-1).root_obligation_id, 'session:chat:40-59:offline');
+  assert.equal(result.projection.pending_obligation_count, 0);
+  assert.equal(result.transaction.state, 'committed');
+});
+
+test('automatic fragment repair preserves accepted records and does not replay Long-Term siblings', async () => {
+  const result = await replayAutomaticPartialSessionRecovery();
+  for (const id of automaticRecoveryFixture.accepted_record_ids) {
+    assert.equal(result.records.filter((item) => item === id).length, 1);
+  }
+  assert.equal(result.providerRequests.some((item) => item.root_obligation_id.startsWith('longterm:')), false);
+  assert.equal(result.records.includes('session:20-39:recovered-fragment'), true);
+  assert.equal(result.duplicate_record_count, 0);
+});
+
+test('a failed compact repair advances to a changed recovery dimension in the same invocation', async () => {
+  const result = await replayAutomaticPartialSessionRecovery({ recoveryOutcomes: ['malformed', 'success'] });
+  assert.deepEqual(result.providerRequests.slice(0, 2).map((item) => item.recovery_stage),
+    ['compact_response_repair', 'changed_dimension_regeneration']);
+  assert.equal(result.checkpoint.next_source_offset, 40);
+  assert.equal(result.nextChunkStarted, true);
+});
+
+test('automatic recovery request exhaustion creates one safe resumable pause', async () => {
+  const result = await replayAutomaticPartialSessionRecovery({
+    recoveryOutcomes: ['malformed', 'malformed', 'malformed'], maximumRequests: 2,
+  });
+  assert.equal(result.providerRequests.length, 2);
+  assert.equal(result.checkpoint.next_source_offset, 20);
+  assert.equal(result.checkpoint.automatic_recovery.status, 'operationally_paused_resumable');
+  assert.equal(result.checkpoint.automatic_recovery.fresh_budget_on_resume, true);
+  assert.equal(result.projection.pending_obligation_count, 1);
+  assert.equal(result.projection.last_controller_exit.classification, 'operationally_paused');
+  assert.notEqual(result.transaction.state, 'active');
+});
+
+test('page interruption after the durable partial boundary preserves exact Resume work', async () => {
+  const result = await replayAutomaticPartialSessionRecovery({ interruptAfterBoundary: true });
+  assert.equal(result.checkpoint.next_source_offset, 20);
+  assert.deepEqual(result.records, automaticRecoveryFixture.accepted_record_ids);
+  assert.equal(result.projection.next_eligible_obligation.recovery_intent,
+    automaticRecoveryFixture.recovery_intent);
+  assert.equal(result.projection.next_eligible_obligation.recovery_stage,
+    automaticRecoveryFixture.recovery_stage);
+  assert.equal(result.transaction.state, 'rolled_back');
+});
+
+test('commit failure after fragment recovery cannot advance the chunk checkpoint', async () => {
+  const result = await replayAutomaticPartialSessionRecovery({ commitFailure: true });
+  assert.equal(result.checkpoint.next_source_offset, 20);
+  assert.equal(result.nextChunkStarted, false);
+  assert.equal(result.transaction.state, 'commit_failed_with_exact_state');
+  assert.equal(result.projection.pending_obligation_count, 1);
+});
+
+test('manual cancellation during automatic recovery settles the transaction', async () => {
+  const result = await replayAutomaticPartialSessionRecovery({ manualCancel: true });
+  assert.equal(result.checkpoint.next_source_offset, 20);
+  assert.equal(result.checkpoint.automatic_recovery.status, 'manually_cancelled');
+  assert.equal(result.transaction.state, 'rolled_back');
+  assert.equal(result.projection.last_controller_exit.classification, 'manually_cancelled');
 });

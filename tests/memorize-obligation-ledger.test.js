@@ -8,12 +8,21 @@ import {
   recordMemorizeControllerExit,
   transitionMemorizeObligation,
 } from '../memorize-obligation-ledger.js';
-import { buildFullChatReplay, runMemorizeReplay } from '../memorize-replay-harness.js';
+import {
+  buildAutomaticRecoveryFullChatReplay,
+  buildFullChatReplay,
+  runMemorizeReplay,
+} from '../memorize-replay-harness.js';
 import { repairSessionCandidateShapes } from '../session-candidate-utils.js';
 import {
   beginProviderAttempt,
   finishProviderAttempt,
   markProviderDownstreamOutcome,
+  markProviderObligationOperationalPause,
+  markProviderObligationRecoveryInProgress,
+  markProviderRejectedFragmentsRecovered,
+  readProviderRecoveryWindowState,
+  stageProviderRejectedFragments,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
 
@@ -23,11 +32,13 @@ const sessionInput = { obligation_id: sessionId, logical_run_id: 'run', tier: 's
 test('Session 640-659 downstream rejection remains exact pending recovery', () => {
   const ledger = createMemorizeObligationLedger('run');
   transitionMemorizeObligation(ledger, sessionInput, { current_state: 'parser_partial', parser_result: 'one accepted, two rejected', exact_reason_code: 'partial_valid_output_has_unresolved_fragments', metrics: { parser_accepted_records: 1, parser_rejected_fragments: 2 } });
-  transitionMemorizeObligation(ledger, sessionInput, { current_state: 'pending_recovery', downstream_validation_result: 'rejected_invalid_candidate_shape', persistence_result: 'not_committed', coverage_result: 'pending', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'session_validation_repair_or_bounded_regeneration' });
+  transitionMemorizeObligation(ledger, sessionInput, { current_state: 'pending_recovery', downstream_validation_result: 'rejected_invalid_candidate_shape', persistence_result: 'not_committed', coverage_result: 'pending', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'session_validation_repair_or_bounded_regeneration', recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair' });
   const result = projectMemorizeObligationLedger(ledger);
   assert.equal(result.pending_obligation_count, 1);
   assert.equal(result.next_eligible_obligation.obligation_id, sessionId);
   assert.equal(result.next_eligible_obligation.checkpoint_eligible, false);
+  assert.equal(result.next_eligible_obligation.recovery_intent, 'recover_unresolved_partial_output_fragments');
+  assert.equal(result.next_eligible_obligation.recovery_stage, 'compact_response_repair');
   assert.equal(result.tier_coverage.session.coverage_complete, false);
   assert.equal(result.chunks[0].status, 'pending_session_recovery');
   assert.equal(result.invariants.valid, true);
@@ -51,10 +62,88 @@ test('provider response completion cannot bypass downstream validation', () => {
   assert.equal(obligation.terminal_outcome, 'pending_recovery');
   assert.equal(obligation.checkpoint_eligible, false);
   const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.retained_attempts[0].root_obligation_id, sessionId);
+  assert.equal(summary.retained_attempts[0].logical_run_id, 'run');
+  assert.equal(summary.reconciliation.physical_attempts_without_root_obligation_id, 0);
   assert.equal(summary.terminal_unresolved_obligations[0].root_obligation_id, sessionId);
   assert.equal(summary.reconciliation.authoritative_unresolved_count, 1);
   assert.equal(summary.reconciliation.retained_unresolved_detail_count, 1);
   assert.equal(summary.reconciliation.unresolved_count_consistent, true);
+});
+
+test('rejected fragments survive a recovery boundary but raw text stays out of diagnostics', () => {
+  const metadata = { active_catchup_run_id: 'run-fragment-resume' };
+  const attempt = beginProviderAttempt(metadata, {
+    logical_obligation_id: sessionId, tier: 'session', source_range: { start: 640, end: 659 },
+    source_fingerprint: 'fnv1a-4ee9852e', request_kind: 'original',
+  });
+  finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed', notice_reason: 'partial_valid_output' });
+  stageProviderRejectedFragments(metadata, sessionId, 'fnv1a-4ee9852e', [{
+    fragment_id: 'session-fragment-3-fnv1a-test', raw: '[detail:2:session:sources=1:sources=2] private claim',
+    reason_codes: ['duplicate_source_modifier'],
+  }], { producing_attempt_id: attempt.attempt_id });
+  const restored = readProviderRecoveryWindowState(metadata, sessionId, 'fnv1a-4ee9852e');
+  assert.equal(restored.unresolved_fragments.length, 1);
+  assert.equal(restored.unresolved_fragments[0].producing_attempt_id, attempt.attempt_id);
+  assert.equal(JSON.stringify(summarizeProviderAttemptAudit(metadata)).includes('private claim'), false);
+  markProviderRejectedFragmentsRecovered(metadata, sessionId, 'fnv1a-4ee9852e',
+    ['session-fragment-3-fnv1a-test']);
+  assert.equal(readProviderRecoveryWindowState(metadata, sessionId, 'fnv1a-4ee9852e').unresolved_fragments.length, 0);
+});
+
+test('bounded recovery exhaustion is one operational pause rather than a terminal failure', () => {
+  const metadata = { active_catchup_run_id: 'run-operational-pause' };
+  const attempt = beginProviderAttempt(metadata, {
+    logical_obligation_id: sessionId, tier: 'session', source_range: { start: 640, end: 659 },
+    source_fingerprint: 'fnv1a-4ee9852e', request_kind: 'original',
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'completed', notice_reason: 'partial_valid_output',
+    accepted_candidate_count: 3, rejected_candidate_count: 1, total_candidate_count: 4,
+  });
+  markProviderDownstreamOutcome(metadata, sessionId, {
+    validation_accepted: true, persistence_committed: true, accepted_count: 3, rejected_count: 1,
+    reason_code: 'partial_valid_output_has_unresolved_fragments', unresolved_semantic_requirements: true,
+  });
+  markProviderObligationOperationalPause(metadata, sessionId, {
+    reason_code: 'automatic_partial_recovery_exhausted',
+    recovery_intent: 'recover_unresolved_partial_output_fragments',
+    recovery_stage: 'bounded_recovery_exhausted', consumed_requests: 4, remaining_requests: 0,
+    fresh_budget_on_resume: true,
+  });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.operational_pause_count, 1);
+  assert.equal(summary.failure_accounting.operationally_paused_obligation_count, 1);
+  assert.equal(summary.failure_accounting.terminal_unresolved_obligation_count, 0);
+  assert.equal(summary.coverage.operationally_paused_obligations, 1);
+  assert.equal(summary.coverage.terminal_failed_obligations, 0);
+});
+
+test('automatic recovery in progress accounts for the failed obligation without reporting it unresolved', () => {
+  const metadata = { active_catchup_run_id: 'run-recovery-in-progress' };
+  const attempt = beginProviderAttempt(metadata, {
+    logical_obligation_id: sessionId, tier: 'session', source_range: { start: 640, end: 659 },
+    source_fingerprint: 'fnv1a-4ee9852e', request_kind: 'original',
+  });
+  finishProviderAttempt(metadata, attempt, {
+    terminal_outcome: 'completed', notice_reason: 'partial_valid_output',
+    accepted_candidate_count: 3, rejected_candidate_count: 1, total_candidate_count: 4,
+  });
+  markProviderDownstreamOutcome(metadata, sessionId, {
+    validation_accepted: true, persistence_committed: true, accepted_count: 3, rejected_count: 1,
+    reason_code: 'partial_valid_output_has_unresolved_fragments', unresolved_semantic_requirements: true,
+  });
+  markProviderObligationRecoveryInProgress(metadata, sessionId, {
+    recovery_intent: 'recover_unresolved_partial_output_fragments',
+    recovery_stage: 'compact_response_repair',
+  });
+  const summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(summary.failure_accounting.recovery_in_progress_obligation_count, 1);
+  assert.equal(summary.failure_accounting.terminal_unresolved_obligation_count, 0);
+  assert.equal(summary.terminal_unresolved_obligations.length, 0);
+  assert.equal(summary.reconciliation.recovered_plus_unresolved_equals_unique_failed, true);
+  assert.equal(summary.reconciliation.malformed_obligations_reconcile, true);
+  assert.equal(summary.coverage.terminal_failed_obligations, 0);
 });
 
 test('v0.9.68 contradiction migrates to the exact Session obligation only', () => {
@@ -155,5 +244,23 @@ test('9,434-message offline replay finalizes monotonically and is idempotent', (
   assert.equal(first.duplicate_record_count, 0);
   assert.deepEqual(first.projection.tier_coverage, second.projection.tier_coverage);
   assert.deepEqual(first.persisted_record_ids, second.persisted_record_ids);
+});
+
+test('9,434-message replay automatically recovers frequent partial Session output without pauses', () => {
+  const script = buildAutomaticRecoveryFullChatReplay();
+  const result = runMemorizeReplay(script);
+  assert.equal(script.expectedAutomaticRecoveries, Math.ceil(9434 / 20));
+  assert.equal(script.expectedOperationalPauses, 0);
+  assert.equal(result.finalization_reachable, true);
+  assert.equal(result.checkpoint, 9434);
+  assert.equal(result.projection.pending_obligation_count, 0);
+  assert.equal(result.duplicate_record_count, 0);
+  assert.equal(result.projection.tier_coverage.longterm.coverage_complete, true);
+  assert.equal(result.projection.tier_coverage.session.coverage_complete, true);
+  assert.equal(script.providerMetrics.root_obligations, 3304);
+  assert.equal(script.providerMetrics.physical_provider_requests, 3776);
+  assert.equal(script.providerMetrics.request_amplification, 8 / 7);
+  assert.equal(script.providerMetrics.partial_valid_response_rate, 1 / 8);
+  assert.equal(script.providerMetrics.fragment_recovery_success_rate, 1);
 });
 

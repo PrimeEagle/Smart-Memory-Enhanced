@@ -14,6 +14,7 @@ import {
   summarizeCatchUpRunManifest,
   summarizeCatchUpCheckpoint,
   reconcileCatchUpRecoverySummary,
+  deriveFinalizationAvailability,
   invalidatePrematureFinalization,
 } from '../catchup-recovery-utils.js';
 
@@ -382,4 +383,36 @@ test('legacy manual-cancel labels migrate when the durable predecessor was a pha
   assert.equal(summary.attempts[1].type, 'resumed_after_phase_failure');
   assert.equal(summary.attempts[1].legacy_attempt_type, 'resumed_after_manual_cancel');
   assert.equal(summary.attempts[1].attempt_type_migrated, true);
+});
+
+test('Arc and Profile finalization remain not evaluated while source recovery is pending', () => {
+  const result = deriveFinalizationAvailability({
+    next_source_offset: 20,
+    total_source_messages: 9434,
+    pending_obligation_count: 1,
+    arcs_enabled: true,
+    profiles_enabled: true,
+  });
+  assert.equal(result.source_extraction_complete, false);
+  assert.deepEqual(result.availability, {
+    state: 'not_reached',
+    blocked_by: 'upstream_source_coverage_incomplete',
+    arc_extraction: 'not_evaluated',
+    profile_generation: 'not_evaluated',
+  });
+});
+
+test('finalization becomes evaluable only after source offset and obligations are complete', () => {
+  assert.equal(deriveFinalizationAvailability({
+    next_source_offset: 9434,
+    total_source_messages: 9434,
+    pending_obligation_count: 1,
+    arcs_enabled: true,
+  }).source_extraction_complete, false);
+  assert.deepEqual(deriveFinalizationAvailability({
+    next_source_offset: 9434,
+    total_source_messages: 9434,
+    pending_obligation_count: 0,
+    arcs_enabled: true,
+  }).availability, { state: 'ready_or_completed', blocked_by: null });
 });

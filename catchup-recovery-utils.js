@@ -606,6 +606,9 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
         || Number(checkpoint.next_source_offset ?? 0) > 0),
     next_eligible_recovery_action: checkpoint.recovery_blocked?.next_eligible_recovery_action
       ?? exactPending?.next_eligible_action ?? null,
+    recovery_intent: exactPending?.recovery_intent
+      ?? exactPending?.next_eligible_action ?? null,
+    recovery_stage: exactPending?.recovery_stage ?? null,
     status: checkpoint.status ?? 'unknown',
     reason_code: checkpoint.recovery_blocked?.reason_code
       ?? exactPending?.exact_reason_code
@@ -686,6 +689,10 @@ export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSumma
     reason_code: operationalPauses[0]?.reason_code
       ?? 'recovery_request_budget_reached_with_pending_children',
     next_eligible_recovery_action: operationalPauses[0]?.next_resumable_child ?? null,
+    recovery_intent: operationalPauses[0]?.recovery_intent
+      ?? base.recovery_intent ?? null,
+    recovery_stage: operationalPauses[0]?.recovery_stage
+      ?? base.recovery_stage ?? null,
     safe_progress_preserved: true,
   };
   const blocked = unresolved.filter((item) => item.recovery_blocked === true
@@ -712,6 +719,12 @@ export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSumma
     resume_can_make_progress: resumable.length > 0,
     next_eligible_recovery_action: authoritativePending?.next_eligible_action
       ?? resumable[0]?.next_eligible_recovery_action ?? null,
+    recovery_intent: authoritativePending?.recovery_intent
+      ?? authoritativePending?.next_eligible_action
+      ?? base.recovery_intent ?? null,
+    recovery_stage: authoritativePending?.recovery_stage
+      ?? resumable[0]?.recovery_eligibility?.eligible_action
+      ?? base.recovery_stage ?? null,
     reason_code: authoritativePending?.exact_reason_code
       ?? (blocked.length > 0 && resumable.length === 0
         ? 'recovery_change_required' : 'tier_coverage_incomplete'),
@@ -719,5 +732,31 @@ export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSumma
       ? 'all_recovery_stages_exhausted_for_unchanged_inputs' : null,
     safe_progress_preserved: base.authoritative_obligation_ledger?.safely_committed_obligation_count > 0
       || Number(base.safely_committed_offset ?? 0) > 0,
+  };
+}
+
+/**
+ * Finalization phases are evaluable only after every source obligation is
+ * complete. A correctly deferred phase is not a quality failure.
+ */
+export function deriveFinalizationAvailability({
+  next_source_offset = 0,
+  total_source_messages = 0,
+  pending_obligation_count = 0,
+  arcs_enabled = false,
+  profiles_enabled = false,
+} = {}) {
+  const source_extraction_complete = Number(next_source_offset) >= Number(total_source_messages)
+    && Number(pending_obligation_count) === 0;
+  return {
+    source_extraction_complete,
+    availability: source_extraction_complete ? {
+      state: 'ready_or_completed', blocked_by: null,
+    } : {
+      state: 'not_reached',
+      blocked_by: 'upstream_source_coverage_incomplete',
+      arc_extraction: arcs_enabled ? 'not_evaluated' : 'disabled',
+      profile_generation: profiles_enabled ? 'not_evaluated' : 'disabled',
+    },
   };
 }

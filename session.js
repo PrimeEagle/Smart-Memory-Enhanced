@@ -106,10 +106,12 @@ import {
   finishProviderAttempt,
   markProviderDownstreamOutcome,
   markProviderPartialRecordsPersisted,
+  markProviderRejectedFragmentsRecovered,
   markProviderStagedRecoveryCompleted,
   providerConfigurationSignature,
   readProviderRecoveryWindowState,
   stageProviderPartialRecovery,
+  stageProviderRejectedFragments,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
@@ -120,10 +122,21 @@ import {
   malformedChildCoverageComplete,
   partitionMalformedSourceWindow,
   recoverMalformedTaggedOutput,
+  selectRejectedTaggedFragments,
 } from './malformed-output-recovery.js';
 import { repairSessionCandidateShapes } from './session-candidate-utils.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
+const AUTOMATIC_SESSION_RECOVERY_LIMITS = Object.freeze({
+  maximum_controller_cycles: 3,
+  maximum_provider_requests: 4,
+  maximum_wall_time_ms: 45 * 60 * 1000,
+});
+
+export function buildFocusedSessionFragmentRecoveryPrompt(chatHistory, fragments = []) {
+  const rejected = fragments.map((item) => item.raw).filter(Boolean).join('\n');
+  return `SESSION FRAGMENT RECOVERY\nThe accepted records from the prior response are already durable. Recover only the rejected fragments below; do not repeat, rewrite, or replace accepted records. Use the numbered source excerpt only to validate and cite the rejected claims.\n\nSOURCE EXCERPT\n${chatHistory}\n\nREJECTED FRAGMENTS\n${rejected}\n\nReturn only recovered records represented by REJECTED FRAGMENTS, or exactly NONE when none can be safely recovered.`;
+}
 
 function extractionRangeId(tier, range, depth) {
   return `${tier}:chat:${range.start ?? 'none'}-${range.end ?? 'none'}:d${depth}`;
@@ -748,20 +761,40 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       ? storedRecoveryState : null;
     const resumeEligibility = resumeRecoveryState
       ? deriveRecoveryStageEligibility(resumeRecoveryState) : null;
-    const bypassEquivalentRootReplay = resumeEligibility?.blocked === true
+    const restoredFragments = resumeRecoveryState?.unresolved_fragments ?? [];
+    const automaticFragmentRecovery = options._automaticFragmentRecovery
+      ?? (options._providerResumedPendingObligation === true && restoredFragments.length ? {
+        response: restoredFragments.map((item) => item.raw).join('\n'),
+        fragment_ids: restoredFragments.map((item) => item.fragment_id),
+        recovery_of_attempt_id: restoredFragments[0]?.producing_attempt_id ?? null,
+        focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, restoredFragments),
+      } : null);
+    const bypassEquivalentRootReplay = Boolean(automaticFragmentRecovery)
+      || (options._providerResumedPendingObligation === true && Boolean(resumeRecoveryState))
+      || resumeEligibility?.blocked === true
       || resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
-    const providerAttempt = bypassEquivalentRootReplay ? {
-      attempt_id: null,
+    const providerAttempt = automaticFragmentRecovery ? {
+      attempt_id: automaticFragmentRecovery.recovery_of_attempt_id ?? null,
       logical_obligation_id: rootObligationId,
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
+      _already_finished: true,
+    } : bypassEquivalentRootReplay ? {
+      attempt_id: resumeRecoveryState?.prior_attempt_id ?? null,
+      logical_obligation_id: rootObligationId,
+      resumed_pending_obligation: true,
+      prior_window_recovery_state: resumeRecoveryState,
+      _already_finished: true,
     } : beginPhysicalAttempt();
     await updateObligation('provider_running', {
       provider_attempt_id: providerAttempt?.attempt_id ?? null,
       exact_reason_code: 'provider_request_in_progress',
     });
     try {
-      if (!bypassEquivalentRootReplay) {
+      if (automaticFragmentRecovery) {
+        response = automaticFragmentRecovery.response;
+        providerResponseReceived = true;
+      } else if (!bypassEquivalentRootReplay) {
         providerRequestSent = true;
         response = await generateMemoryExtract(prompt, { responseLength });
         providerResponseReceived = true;
@@ -848,19 +881,25 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let recoveryPendingObligationId = null;
     let stagedRecoveryObligationId = null;
     let unresolvedPartialFragments = 0;
+    let rejectedPartialFragments = [];
     let parsedCandidates = parseSessionOutput(response);
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
       const recovery = await recoverMalformedTaggedOutput({
         response, tier: 'session', parse: parseSessionOutput,
-        generate: generateMemoryExtract, originalPrompt: prompt, responseLength,
+        generate: generateMemoryExtract,
+        originalPrompt: automaticFragmentRecovery?.focused_prompt ?? prompt,
+        responseLength,
         originalAttempt: providerAttempt, beginAttempt: beginPhysicalAttempt,
-        finishAttempt: (attempt, patch) => finishProviderAttempt(providerMetadata, attempt, patch),
-        splitWindow: splitMalformedWindow, budget: malformedRecoveryBudget,
+        finishAttempt: (attempt, patch) => attempt?._already_finished
+          ? attempt : finishProviderAttempt(providerMetadata, attempt, patch),
+        splitWindow: automaticFragmentRecovery ? null : splitMalformedWindow,
+        budget: malformedRecoveryBudget,
         splitDepth: malformedRecoveryDepth,
         resumeState: resumeRecoveryState,
         providerCapabilities: getMemoryProviderCapabilities(),
-        sourceUnits: buildRecoverySourceUnits(sourceMessages, range.start, sourceWindowFingerprint),
+        sourceUnits: automaticFragmentRecovery
+          ? [] : buildRecoverySourceUnits(sourceMessages, range.start, sourceWindowFingerprint),
         stagePartialRecords: async (records, details) => {
           stageProviderPartialRecovery(providerMetadata, rootObligationId, coverageBase.source_fingerprint,
             records, { ...details, source_range: { start: range.start, end: range.end, message_count: range.message_count } });
@@ -881,6 +920,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }
       if (recovery.explicit_none) {
         const durableRecoveredCount = Number(recovery.durable_partial_record_count ?? 0) || 0;
+        if (automaticFragmentRecovery?.fragment_ids?.length) {
+          markProviderRejectedFragmentsRecovered(providerMetadata, rootObligationId,
+            coverageBase.source_fingerprint, automaticFragmentRecovery.fragment_ids);
+        }
         if (recovery.logical_obligation_id) {
           markProviderStagedRecoveryCompleted(providerMetadata, recovery.logical_obligation_id,
             coverageBase.source_fingerprint, durableRecoveredCount);
@@ -928,6 +971,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         && responseShape.structurally_rejected_record_count > 0 ? 'partial_valid_output' : null;
       unresolvedPartialFragments = partialReason
         ? Number(responseShape.structurally_rejected_record_count ?? 0) : 0;
+      rejectedPartialFragments = partialReason
+        ? selectRejectedTaggedFragments(response, { tier: 'session' }) : [];
+      if (rejectedPartialFragments.length) {
+        stageProviderRejectedFragments(providerMetadata, rootObligationId,
+          coverageBase.source_fingerprint, rejectedPartialFragments, {
+            source_range: { start: range.start, end: range.end, message_count: range.message_count },
+            producing_attempt_id: providerAttempt?.attempt_id ?? null,
+          });
+      }
       const noticeReason = !parserCountConsistent ? 'parser_structural_analysis_mismatch'
         : partialReason ?? ((responseShape.prose_before_structure || responseShape.prose_after_structure)
         ? 'prose_around_tagged_records'
@@ -1605,7 +1657,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         persistence_result: 'partial_records_committed', coverage_result: 'pending',
         exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
         next_eligible_action: 'recover_unresolved_partial_output_fragments',
-        metrics: { persisted_records: added, unresolved_parser_fragments: unresolvedPartialFragments },
+        recovery_intent: 'recover_unresolved_partial_output_fragments',
+        recovery_stage: 'compact_response_repair',
+        metrics: {
+          persisted_records: added,
+          unresolved_parser_fragments: unresolvedPartialFragments,
+          unresolved_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+          producing_provider_attempt_id: providerAttempt?.attempt_id ?? null,
+        },
       });
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
@@ -1613,6 +1672,80 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         accepted_partial_record_count: added,
         unresolved_fragment_count: unresolvedPartialFragments,
       });
+      const automaticRecoveryDepth = Number(options._automaticRecoveryDepth ?? 0);
+      if (options._automaticPartialRecovery !== false
+        && rejectedPartialFragments.length > 0
+        && automaticRecoveryDepth < AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_controller_cycles) {
+        const automaticBudget = options._automaticRecoveryBudget ?? {
+          ...createMalformedRecoveryBudget(),
+          maximum_additional_provider_requests: AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_provider_requests,
+          maximum_wall_time_ms: AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_wall_time_ms,
+        };
+        const boundary = {
+          recovery_intent: 'recover_unresolved_partial_output_fragments',
+          recovery_stage: 'compact_response_repair',
+          root_obligation_id: rootObligationId,
+          source_range: { start: range.start, end: range.end, message_count: range.message_count },
+          accepted_records_preserved: added,
+          unresolved_fragment_count: rejectedPartialFragments.length,
+          unresolved_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+          request_budget_used: Number(automaticBudget.additional_provider_requests ?? 0),
+          request_budget_maximum: Number(automaticBudget.maximum_additional_provider_requests),
+          recovery_started_at: Number(automaticBudget.started_at),
+        };
+        await options._onAutomaticRecoveryBoundary?.(boundary);
+        try {
+          const recovered = await extractSessionMemories(recentMessages, abortCheck, {
+            ...options,
+            liveHealth: null,
+            _automaticRecoveryDepth: automaticRecoveryDepth + 1,
+            _automaticRecoveryBudget: automaticBudget,
+            _malformedRecoveryBudget: automaticBudget,
+            _providerRootObligationId: rootObligationId,
+            _providerRootSourceRange: options._providerRootSourceRange
+              ?? { start: range.start, end: range.end, message_count: range.message_count },
+            _providerRootSourceFingerprint: options._providerRootSourceFingerprint
+              ?? coverageBase.source_fingerprint,
+            _providerResumedPendingObligation: true,
+            _automaticFragmentRecovery: {
+              response: rejectedPartialFragments.map((item) => item.raw).join('\n'),
+              fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+              recovery_of_attempt_id: providerAttempt?.attempt_id ?? null,
+              focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, rejectedPartialFragments),
+            },
+          });
+          await options._onAutomaticRecoveryCompleted?.({
+            ...boundary,
+            recovery_stage: 'completed',
+            recovered_record_count: Number(recovered ?? 0),
+            request_budget_used: Number(automaticBudget.additional_provider_requests ?? 0),
+          });
+          return added + Number(recovered ?? 0);
+        } catch (automaticError) {
+          if (['SME_MALFORMED_PROVIDER_OUTPUT', 'SME_RECOVERY_PATH_EXHAUSTED'].includes(automaticError?.code)) {
+            automaticError.code = 'SME_RECOVERY_BUDGET_PAUSE';
+            automaticError.sme_operational_pause = true;
+            automaticError.sme_reason_code = 'automatic_partial_recovery_exhausted';
+            automaticError.sme_request_diagnostics = {
+              ...(automaticError.sme_request_diagnostics ?? {}),
+              pause_reason: 'automatic_partial_recovery_exhausted',
+              recovery_intent: boundary.recovery_intent,
+              recovery_stage: 'bounded_recovery_exhausted',
+              root_obligation_id: rootObligationId,
+              source_range: boundary.source_range,
+              accepted_records_preserved: boundary.accepted_records_preserved,
+              unresolved_fragment_count: boundary.unresolved_fragment_count,
+              unresolved_fragment_ids: boundary.unresolved_fragment_ids,
+              consumed_requests: Number(automaticBudget.additional_provider_requests ?? 0),
+              remaining_requests: Math.max(0, Number(automaticBudget.maximum_additional_provider_requests)
+                - Number(automaticBudget.additional_provider_requests ?? 0)),
+              fresh_budget_on_resume: true,
+              next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments',
+            };
+          }
+          throw automaticError;
+        }
+      }
       const partialError = new Error('Session extraction preserved valid records but unresolved provider fragments remain.');
       partialError.code = 'SME_DOWNSTREAM_VALIDATION_PENDING';
       partialError.sme_partial_records_persisted = true;
@@ -1628,6 +1761,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments',
       };
       throw partialError;
+    }
+    if (automaticFragmentRecovery?.fragment_ids?.length) {
+      markProviderRejectedFragmentsRecovered(providerMetadata, rootObligationId,
+        coverageBase.source_fingerprint, automaticFragmentRecovery.fragment_ids);
+      await saveChatMetadata(getContext());
     }
     markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
       validation_accepted: true, persistence_committed: true, accepted_count: added,
