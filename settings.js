@@ -248,8 +248,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.72',
-  build_fingerprint: 'sme-v0.9.72-exhausted-resume-reconciliation-r1',
+  extension_version: '0.9.73',
+  build_fingerprint: 'sme-v0.9.73-identity-lifecycle-backlog-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5875,6 +5875,12 @@ export function bindSettingsUI(ctrl) {
       // prompt overhead (instructions, existing memories) and the model response.
       const catchUpTokenBudget = Math.max(500, Math.floor(getMaxContextSize(0) * 0.35));
       let i = resumeOffset;
+      // Session fragments have no ordering authority over later source text.
+      // Traverse later chunks after durably queueing them, but retain the
+      // contiguous safe checkpoint and require a recovery sweep before any
+      // finalization. Long-Term and persistence failures remain strict.
+      const recoveryTraversalPolicy = 'completion_first_traversal';
+      let recoverySweepActive = false;
       // Older checkpoints recorded only per-tier range coverage. Reconstruct
       // their missing work as a bounded, numeric-only replay queue before
       // accepting any finalization. New checkpoints normally have no queue
@@ -6351,6 +6357,42 @@ export function bindSettingsUI(ctrl) {
           if (rangeBlocked || currentChunkFailed) runResult.failedChunks++;
           else runResult.completedChunks++;
           if (rangeBlocked) {
+            const queueProjection = projectMemorizeObligationLedger(
+              checkpointForCommit.run_manifest.obligation_ledger);
+            const queueCandidate = queueProjection.pending_obligations.find((obligation) =>
+              obligation.tier === 'session'
+              && Number(obligation.source_range?.start) === Number(currentRange.source_start_index)
+              && Number(obligation.source_range?.end) === Number(currentRange.source_end_index));
+            const mayContinueTraversal = recoveryTraversalPolicy === 'completion_first_traversal'
+              && !recoverySweepActive
+              && !replayRange
+              && queueCandidate
+              && (queueCandidate.lifecycle?.unresolved_fragment_ids ?? []).length > 0
+              && queueCandidate.next_eligible_action;
+            if (mayContinueTraversal) {
+              checkpointForCommit.status = 'in_progress_with_recovery_backlog';
+              checkpointForCommit.source_traversal_offset = processed;
+              checkpointForCommit.recovery_traversal_policy = recoveryTraversalPolicy;
+              checkpointForCommit.updated_at = Date.now();
+              await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
+              i = processed;
+              setStatusMessage(`Source ${currentRange.source_start_index}–${currentRange.source_end_index} traversed with ${queueCandidate.lifecycle.unresolved_fragment_ids.length} Session fragment${queueCandidate.lifecycle.unresolved_fragment_ids.length === 1 ? '' : 's'} queued for mandatory recovery; continuing source traversal.`);
+              if (i >= total) {
+                const nextBacklog = queueProjection.pending_obligations
+                  .filter((obligation) => obligation.next_eligible_action && obligation.source_range)
+                  .sort((left, right) => left.source_range.start - right.source_range.start)[0];
+                if (nextBacklog) {
+                  recoverySweepActive = true;
+                  i = nextBacklog.source_range.start;
+                  checkpointForCommit.recovery_sweep = {
+                    schema_version: 1, status: 'running',
+                    next_obligation_id: nextBacklog.obligation_id,
+                    started_at: Date.now(),
+                  };
+                }
+              }
+              continue;
+            }
             // Preserve the committed tier plus its durable pending obligation,
             // then stop at this boundary. Finalization must never transform
             // partial tier coverage into a completed rebuild.
@@ -6417,12 +6459,50 @@ export function bindSettingsUI(ctrl) {
           } else {
             checkpointForCommit.committed_chunks = Number(checkpointForCommit.committed_chunks ?? 0) + 1;
             delete checkpointForCommit.operational_pause;
-            checkpointForCommit.next_source_offset = processed;
-            if (replayRange) {
+            const postCommitProjection = projectMemorizeObligationLedger(
+              checkpointForCommit.run_manifest.obligation_ledger);
+            const earliestPendingOffset = postCommitProjection.pending_obligations
+              .map((obligation) => Number(obligation.source_range?.start))
+              .filter(Number.isInteger)
+              .sort((left, right) => left - right)[0];
+            checkpointForCommit.next_source_offset = Number.isInteger(earliestPendingOffset)
+              ? Math.min(processed, earliestPendingOffset) : processed;
+            checkpointForCommit.source_traversal_offset = Math.max(
+              Number(checkpointForCommit.source_traversal_offset ?? 0), processed);
+            if (recoverySweepActive) {
+              const nextBacklog = postCommitProjection.pending_obligations
+                .filter((obligation) => obligation.next_eligible_action && obligation.source_range)
+                .sort((left, right) => left.source_range.start - right.source_range.start)[0];
+              if (nextBacklog) {
+                i = nextBacklog.source_range.start;
+                checkpointForCommit.recovery_sweep = {
+                  ...(checkpointForCommit.recovery_sweep ?? { schema_version: 1, started_at: Date.now() }),
+                  status: 'running', next_obligation_id: nextBacklog.obligation_id,
+                  updated_at: Date.now(),
+                };
+              } else {
+                recoverySweepActive = false;
+                checkpointForCommit.next_source_offset = Number(checkpointForCommit.source_traversal_offset ?? total);
+                checkpointForCommit.recovery_sweep = {
+                  ...(checkpointForCommit.recovery_sweep ?? { schema_version: 1 }),
+                  status: 'completed', completed_at: Date.now(),
+                };
+                i = Number(checkpointForCommit.source_traversal_offset ?? total);
+              }
+            } else if (processed >= total && postCommitProjection.pending_obligation_count > 0) {
+              const nextBacklog = postCommitProjection.pending_obligations
+                .filter((obligation) => obligation.next_eligible_action && obligation.source_range)
+                .sort((left, right) => left.source_range.start - right.source_range.start)[0];
+              if (nextBacklog) {
+                recoverySweepActive = true;
+                i = nextBacklog.source_range.start;
+              } else i = processed;
+            } else if (replayRange) {
               if (processed <= replayRange.end_offset) i = processed;
               else {
                 tierReplayCursor += 1;
-                i = legacyTierReplayRanges[tierReplayCursor]?.start_offset ?? total;
+                i = legacyTierReplayRanges[tierReplayCursor]?.start_offset
+                  ?? Number(checkpointForCommit.source_traversal_offset ?? total);
               }
             } else i += chunk.length;
           }
@@ -8841,7 +8921,7 @@ export function bindSettingsUI(ctrl) {
       });
       const sourceExtractionComplete = finalizationAvailability.source_extraction_complete;
       const currentPartialUnresolved = (providerAttemptSummary?.terminal_unresolved_obligations ?? [])
-        .some((item) => Number(item.accepted_partial_record_count ?? 0) > 0
+        .some((item) => Number(item.durable_partial_record_count ?? 0) > 0
           && Number(item.rejected_fragment_count ?? item.missing_semantic_unit_count ?? 0) > 0);
       runResult.finalizationAvailability = finalizationAvailability.availability;
       runResult.remainingSourceWork = [];
@@ -9097,11 +9177,14 @@ export function bindSettingsUI(ctrl) {
         operational_status: projectedOperationalStatus,
         final_integrity_status: finalIntegrityStatus,
         data_quality_status: qualityDegradingReasons.length ? 'attention' : 'clean',
-        generation_quality_status: resumableFinalizationFailure ? 'not_evaluated'
+        generation_quality_status: projectedOperationalStatus !== 'completed' ? 'not_evaluated_incomplete'
+          : resumableFinalizationFailure ? 'not_evaluated'
           : qualityDegradingReasons.length ? 'attention'
             : historicalRecoveredGenerationFailures.length ? 'completed_recovered_errors' : 'completed_clean',
         historical_recovered_generation_failures: historicalRecoveredGenerationFailures,
-        current_unresolved_generation_failure_count: Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0),
+        current_unresolved_generation_failure_count: Math.max(
+          Number(providerAttemptSummary?.failure_accounting?.terminal_unresolved_obligation_count ?? 0),
+          Number(authoritativeObligations.pending_obligation_count ?? 0)),
         maintenance_actions: maintenanceActions,
         maintenance_actions_performed: maintenanceActions.entity_links_repaired,
         reasons: qualityReasons,

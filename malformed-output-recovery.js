@@ -72,11 +72,16 @@ export function parseFragmentDecisionResponse(response, fragments = [], { tier =
   }
   const seen = new Set();
   const lines = [];
+  const recordFragmentIds = [];
+  const noUpdateFragmentIds = [];
   for (const decision of parsed.decisions) {
     const id = String(decision?.fragment_id ?? '');
     if (!expected.has(id) || seen.has(id)) return { valid: false, reason_code: 'fragment_decision_identity_mismatch', records: [], resolved_fragment_ids: [] };
     seen.add(id);
-    if (decision.disposition === 'no_update') continue;
+    if (decision.disposition === 'no_update') {
+      noUpdateFragmentIds.push(id);
+      continue;
+    }
     if (decision.disposition !== 'record' || !taggedTypes(tier).includes(decision.type)) {
       return { valid: false, reason_code: 'fragment_decision_invalid_disposition_or_type', records: [], resolved_fragment_ids: [] };
     }
@@ -87,6 +92,7 @@ export function parseFragmentDecisionResponse(response, fragments = [], { tier =
       return { valid: false, reason_code: 'fragment_decision_missing_claim_or_citation', records: [], resolved_fragment_ids: [] };
     }
     lines.push(`[${decision.type}:2:${tier === 'session' ? 'session' : 'permanent'}:sources=${sources.join(',')}] ${claim}`);
+    recordFragmentIds.push(id);
   }
   if (seen.size !== expected.size) return { valid: false, reason_code: 'fragment_decision_incomplete', records: [], resolved_fragment_ids: [] };
   const records = typeof parse === 'function' ? parse(lines.join('\n')) : [];
@@ -94,6 +100,7 @@ export function parseFragmentDecisionResponse(response, fragments = [], { tier =
     return { valid: false, reason_code: 'fragment_decision_local_construction_failed', records: [], resolved_fragment_ids: [] };
   }
   return { valid: true, reason_code: null, records, resolved_fragment_ids: [...seen],
+    record_fragment_ids: recordFragmentIds, no_update_fragment_ids: noUpdateFragmentIds,
     explicit_none: lines.length === 0 };
 }
 
@@ -819,7 +826,8 @@ export async function recoverMalformedTaggedOutput({
   let lastProviderError = null;
   let acceptedPartialRecords = [...(effectiveResumeState?.staged_partial_records ?? [])];
   const restoredStagedPartialCount = acceptedPartialRecords.length;
-  const restoredDurablePartialCount = Number(effectiveResumeState?.accepted_partial_record_count ?? 0) || 0;
+  const restoredDurablePartialCount = Number(effectiveResumeState?.durable_partial_record_count
+    ?? effectiveResumeState?.accepted_partial_record_count ?? 0) || 0;
   const durablePartialRecordCount = () => restoredDurablePartialCount
     + Math.max(0, acceptedPartialRecords.length - restoredStagedPartialCount);
   const stagedCompletedUnitKeys = new Set(effectiveResumeState?.completed_source_units ?? []);
@@ -1197,6 +1205,8 @@ export async function recoverMalformedTaggedOutput({
           markMalformedRecoverySuccess(budget, 'fragment_decision_regeneration');
           return { records: decision.records, explicit_none: decision.explicit_none,
             resolved_fragment_ids: decision.resolved_fragment_ids,
+            record_fragment_ids: decision.record_fragment_ids,
+            no_update_fragment_ids: decision.no_update_fragment_ids,
             stage: 'fragment_decision_regeneration', budget, original_reason: originalReason };
         }
         lastReason = decision.reason_code;

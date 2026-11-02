@@ -29,7 +29,8 @@ export function deriveRecoveryStageEligibility(state = {}) {
     return outcome && String(outcome.disposition ?? '').startsWith('blocked_')
       && Number(outcome.recovery_implementation_version ?? 3) < RECOVERY_IMPLEMENTATION_VERSION;
   });
-  const acceptedPartialCount = Number(state.accepted_partial_record_count ?? 0) || 0;
+  const acceptedPartialCount = Number(state.durable_partial_record_count
+    ?? state.accepted_partial_record_count ?? 0) || 0;
   // Fragment-decision recovery is meaningful only when the durable recovery
   // window still contains exact rejected fragment identities.  Do not insert
   // it into older Long-Term/unit ladders merely because the implementation

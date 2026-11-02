@@ -127,6 +127,8 @@ import {
   summarizeMalformedRecoveryBudget,
 } from './malformed-output-recovery.js';
 import { repairSessionCandidateShapes } from './session-candidate-utils.js';
+import { verifyPersistedPartialSessionRecords } from './session-partial-persistence.js';
+export { verifyPersistedPartialSessionRecords } from './session-partial-persistence.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 const AUTOMATIC_SESSION_RECOVERY_LIMITS = Object.freeze({
@@ -138,27 +140,6 @@ const AUTOMATIC_SESSION_RECOVERY_LIMITS = Object.freeze({
 export function buildFocusedSessionFragmentRecoveryPrompt(chatHistory, fragments = []) {
   const rejected = fragments.map((item) => item.raw).filter(Boolean).join('\n');
   return `SESSION FRAGMENT RECOVERY\nThe accepted records from the prior response are already durable. Recover only the rejected fragments below; do not repeat, rewrite, or replace accepted records. Use the numbered source excerpt only to validate and cite the rejected claims.\n\nSOURCE EXCERPT\n${chatHistory}\n\nREJECTED FRAGMENTS\n${rejected}\n\nReturn only recovered records represented by REJECTED FRAGMENTS, or exactly NONE when none can be safely recovered.`;
-}
-
-export function verifyPersistedPartialSessionRecords(memories = [], recoveryState = null, range = {}) {
-  const expectedCount = Number(recoveryState?.accepted_partial_record_count ?? 0);
-  const expectedIds = new Set((recoveryState?.accepted_record_ids ?? []).map(String));
-  const start = Number(range.start);
-  const end = Number(range.end);
-  const candidates = memories.filter((memory) => {
-    if (expectedIds.size && expectedIds.has(String(memory?.id))) return true;
-    return (memory?.source_message_indices ?? []).some((index) => Number(index) >= start && Number(index) <= end);
-  });
-  const verified = expectedIds.size
-    ? candidates.filter((memory) => expectedIds.has(String(memory?.id)))
-    : candidates.slice(-expectedCount);
-  return {
-    verified: expectedCount === 0 || verified.length >= expectedCount,
-    expected_count: expectedCount,
-    verified_count: verified.length,
-    record_ids: verified.map((memory) => memory.id).filter(Boolean),
-    reconstruction: expectedIds.size ? 'durable_record_ids' : 'source_provenance_range',
-  };
 }
 
 function extractionRangeId(tier, range, depth) {
@@ -791,7 +772,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       ? storedRecoveryState : null;
     const restoredFragments = resumeRecoveryState?.unresolved_fragments ?? [];
     if (options._providerResumedPendingObligation === true
-      && Number(resumeRecoveryState?.accepted_partial_record_count ?? 0) > 0
+      && Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
       && (resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
       && restoredFragments.length === 0) {
       await updateObligation('blocked', {
@@ -864,7 +845,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovery_intent: 'recover_unresolved_partial_output_fragments',
         recovery_stage: resumeEligibility?.eligible_action ?? 'fragment_decision_regeneration',
         unresolved_fragment_ids: automaticFragmentRecovery.fragment_ids,
-        accepted_records_preserved: Number(resumeRecoveryState?.accepted_partial_record_count ?? 0),
+        accepted_records_preserved: Number(resumeRecoveryState?.durable_partial_record_count ?? 0),
         global_request_ceiling: 20,
         epoch_request_ceiling: Number(malformedRecoveryBudget.maximum_additional_provider_requests ?? 4),
       }) : null;
@@ -1005,6 +986,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let stagedRecoveryObligationId = null;
     let unresolvedPartialFragments = 0;
     let rejectedPartialFragments = [];
+    let recoveredRecordFragmentIds = [];
+    let recoveredNoUpdateFragmentIds = [];
     let parsedCandidates = parseSessionOutput(response);
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
@@ -1073,6 +1056,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           downstream_validation_result: durableRecoveredCount > 0 ? 'accepted_staged_records' : 'validated_no_update',
           persistence_result: durableRecoveredCount > 0 ? 'committed' : 'not_required_validated_no_update',
           coverage_result: 'safely_committed',
+          lifecycle: {
+            explicit_no_update_fragment_ids: recovery.no_update_fragment_ids
+              ?? automaticFragmentRecovery?.fragment_ids ?? [],
+          },
         });
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
           provider_outcome: durableRecoveredCount > 0
@@ -1081,6 +1068,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return 0;
       }
       parsedCandidates = recovery.records;
+      recoveredRecordFragmentIds = recovery.record_fragment_ids ?? recovery.resolved_fragment_ids ?? [];
+      recoveredNoUpdateFragmentIds = recovery.no_update_fragment_ids ?? [];
       stagedRecoveryObligationId = recovery.staged_partial_record_count
         ? recovery.logical_obligation_id ?? rootObligationId : null;
       if (recovery.partial_unresolved) {
@@ -1139,7 +1128,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       exact_reason_code: unresolvedPartialFragments > 0
         ? 'partial_valid_output_has_unresolved_fragments' : 'downstream_validation_pending',
       metrics: { parser_accepted_records: parsedCandidates.length, parser_rejected_fragments: unresolvedPartialFragments },
+      lifecycle: {
+        parser_rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+        unresolved_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+      },
     });
+    // Assign parser-stage identities before any deterministic representation
+    // repair so a downstream split or rejection cannot rewrite parser history.
+    for (const [index, candidate] of parsedCandidates.entries()) {
+      candidate._citation_candidate_id ??= `session-candidate:${coverageBase.source_fingerprint}:${index}:${stableCitationClaimHash(candidate)}`;
+    }
+    const parserAcceptedCandidateIds = [...new Set(parsedCandidates
+      .map((candidate) => candidate._citation_candidate_id))];
     const shapeRepair = repairSessionCandidateShapes(parsedCandidates);
     parsedCandidates = shapeRepair.records;
     if (sessionDiagnostics && shapeRepair.repaired_count) {
@@ -1147,20 +1147,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         + shapeRepair.repaired_count;
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsedCandidates.length } });
-    // Stable within-request IDs make citation repair an association task rather
-    // than a best-effort text match. They are transient and never persisted in
-    // a memory record or exported with memory text.
-    for (const [index, candidate] of parsedCandidates.entries()) {
-      // The diagnostics object lives for the full catch-up run, so its
-      // monotonically increasing sequence avoids reusing session-1/session-2
-      // in every chunk. This is required for a true one-terminal-record-per-
-      // candidate audit across a long imported chat.
-      const sequence = sessionDiagnostics
-        ? (sessionDiagnostics._citation_candidate_sequence = Number(sessionDiagnostics._citation_candidate_sequence ?? 0) + 1)
-        : index + 1;
-      candidate._citation_candidate_id ??= `session-${sequence}`;
-    }
-    const initiallyParsedCount = parsedCandidates.length;
+    await updateObligation(unresolvedPartialFragments > 0 ? 'parser_partial' : 'parser_accepted', {
+      lifecycle: { parser_accepted_candidate_ids: parserAcceptedCandidateIds },
+    });
+    const initiallyParsedCount = parserAcceptedCandidateIds.length;
     const terminalRecords = new Map();
     const recordTerminalCandidate = (candidate, disposition, reason = null) => {
       const candidateId = candidate?._citation_candidate_id;
@@ -1168,6 +1158,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       terminalRecords.set(candidateId, { candidate_id: candidateId, terminal_disposition: disposition, reason });
       return true;
     };
+    for (const rejected of shapeRepair.rejected) {
+      recordTerminalCandidate(rejected.candidate, 'rejected_malformed', rejected.reason_code);
+    }
     parsedCandidateCount = initiallyParsedCount;
     if (sessionDiagnostics) sessionDiagnostics.emitted = (sessionDiagnostics.emitted ?? 0) + parsedCandidates.length;
     // When the provider produced otherwise parseable session records but
@@ -1561,6 +1554,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           downstream_validation_result: 'validated_duplicate_only_no_update',
           persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
           metrics: { rejected_duplicates: verificationDispositions.duplicate_same_pass + verificationDispositions.duplicate_existing },
+          lifecycle: {
+            downstream_rejected_candidate_ids: [...terminalRecords.values()]
+              .filter((entry) => entry.terminal_disposition.startsWith('rejected_'))
+              .map((entry) => entry.candidate_id),
+            duplicate_candidate_ids: [...terminalRecords.values()]
+              .filter((entry) => entry.terminal_disposition === 'rejected_duplicate')
+              .map((entry) => entry.candidate_id),
+          },
         });
         recordCompletedCoverage('completed_validated_no_update');
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
@@ -1590,6 +1591,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             ? 'citation_repair_or_bounded_regeneration'
             : 'recover_unresolved_partial_output_fragments',
         metrics: { downstream_rejected_records: Math.max(1, initiallyParsedCount), local_shape_repairs: shapeRepair.repaired_count },
+        lifecycle: {
+          downstream_rejected_candidate_ids: [...terminalRecords.values()]
+            .filter((entry) => entry.terminal_disposition.startsWith('rejected_'))
+            .map((entry) => entry.candidate_id),
+          duplicate_candidate_ids: [...terminalRecords.values()]
+            .filter((entry) => entry.terminal_disposition === 'rejected_duplicate')
+            .map((entry) => entry.candidate_id),
+        },
       });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase, request_sent: true,
@@ -1622,6 +1631,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       downstream_validation_result: 'accepted',
       exact_reason_code: 'persistence_pending',
       metrics: { downstream_valid_records: incoming.length, local_shape_repairs: shapeRepair.repaired_count },
+      lifecycle: {
+        downstream_accepted_candidate_ids: incoming.map((candidate) => candidate._citation_candidate_id),
+        downstream_rejected_candidate_ids: [...terminalRecords.values()]
+          .filter((entry) => entry.terminal_disposition.startsWith('rejected_'))
+          .map((entry) => entry.candidate_id),
+        duplicate_candidate_ids: [...terminalRecords.values()]
+          .filter((entry) => entry.terminal_disposition === 'rejected_duplicate')
+          .map((entry) => entry.candidate_id),
+      },
     });
 
     // Tag each new memory with the source message range so users can jump back
@@ -1760,6 +1778,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const newlyAddedMemories = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`));
     const added = newlyAddedMemories.length;
     const addedRecordIds = newlyAddedMemories.map((memory) => memory.id).filter(Boolean);
+    const durableRecordCandidateMap = Object.fromEntries(newlyAddedMemories
+      .filter((memory) => memory.id && memory._citation_candidate_id)
+      .map((memory) => [String(memory.id), String(memory._citation_candidate_id)]));
+    for (const memory of finalActive) {
+      delete memory._citation_candidate_id;
+      delete memory._citation_claim_hash;
+    }
     if (abortCheck?.()) return 0;
     persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
@@ -1802,6 +1827,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           unresolved_parser_fragments: unresolvedPartialFragments,
           unresolved_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
           producing_provider_attempt_id: providerAttempt?.attempt_id ?? null,
+        },
+        lifecycle: {
+          durably_persisted_record_ids: addedRecordIds,
+          durable_record_candidate_map: durableRecordCandidateMap,
+          unresolved_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
         },
       });
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
@@ -1917,6 +1947,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       parser_result: 'accepted', downstream_validation_result: 'accepted',
       persistence_result: 'committed', coverage_result: 'safely_committed',
       metrics: { persisted_records: added, local_shape_repairs: shapeRepair.repaired_count },
+      lifecycle: {
+        durably_persisted_record_ids: addedRecordIds,
+        durable_record_candidate_map: durableRecordCandidateMap,
+        recovered_fragment_ids: recoveredRecordFragmentIds,
+        explicit_no_update_fragment_ids: recoveredNoUpdateFragmentIds,
+      },
     });
     recordCompletedCoverage('completed_and_persisted');
     healthFinish({

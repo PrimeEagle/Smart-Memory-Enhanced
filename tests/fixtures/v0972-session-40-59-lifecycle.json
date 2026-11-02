@@ -1,0 +1,17 @@
+{
+  "logical_run_id": "5927e350-76ab-497b-a6e7-26ba0b7f720f",
+  "obligation_id": "session:chat:40-59:fnv1a-e3dd3b39",
+  "source_range": { "start": 40, "end": 59, "message_count": 20 },
+  "source_fingerprint": "fnv1a-e3dd3b39",
+  "parser_accepted_count": 4,
+  "downstream_accepted_count": 1,
+  "durably_persisted_record_ids": ["d6d61e7f-c998-4a22-9e7a-ec1fdce66ab0"],
+  "unresolved_fragment_ids": [
+    "session-fragment-0-fnv1a-1ea30fd8",
+    "session-fragment-4-fnv1a-653364cd",
+    "session-fragment-10-fnv1a-2e312c8e",
+    "session-fragment-12-fnv1a-4f8e74bb",
+    "session-fragment-16-fnv1a-ff8fc80c"
+  ],
+  "producing_provider_attempt_id": "provider-mvyjgh3s-92"
+}

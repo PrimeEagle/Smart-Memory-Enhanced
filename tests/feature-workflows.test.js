@@ -896,7 +896,8 @@ test('recovered Session failures are historical while exhausted candidates remai
   assert.match(settings, /session_malformed_provider_output_recovered/);
   assert.match(settings, /all affected obligations recovered automatically/);
   assert.match(settings, /severity: Number\(providerAttemptSummary.*historical_recovered/s);
-  assert.match(settings, /generation_quality_status: resumableFinalizationFailure/);
+  assert.match(settings, /generation_quality_status: projectedOperationalStatus !== 'completed'/);
+  assert.match(settings, /not_evaluated_incomplete/);
   assert.match(settings, /completed_recovered_errors/);
   assert.match(settings, /session_candidate_provenance_safely_rejected/);
   assert.match(settings, /persisted_ungrounded_records: 0/);
@@ -1654,6 +1655,7 @@ test('long-chat extraction preflights final prompts and records bounded overflow
 
 test('Memorize Chat checkpoints only committed chunks and exposes guarded recovery', () => {
   const settings = read('settings.js');
+  const obligationLedger = read('memorize-obligation-ledger.js');
   const shortTermRecovery = read('shortterm-recovery-utils.js');
   const html = read('settings.html');
   const index = read('index.js');
@@ -1661,8 +1663,10 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(html, /sme_catch_up_recovery_status/);
   assert.match(settings, /catch_up_checkpoint/);
   assert.match(settings, /validateCatchUpResumeSource/);
-  assert.match(settings, /checkpointForCommit\.next_source_offset = processed/);
-  assert.match(settings, /if \(chunkCommitted\) \{[\s\S]*i \+= chunk\.length/);
+  assert.match(settings, /recoveryTraversalPolicy = 'completion_first_traversal'/);
+  assert.match(settings, /checkpointForCommit\.source_traversal_offset = processed/);
+  assert.match(settings, /earliestPendingOffset/);
+  assert.match(obligationLedger, /completion_gate_satisfied/);
   assert.match(settings, /recordCommittedCatchUpRange/);
   assert.match(settings, /getCatchUpTierRangeStatus/);
   assert.match(settings, /tier_coverage_incomplete/);

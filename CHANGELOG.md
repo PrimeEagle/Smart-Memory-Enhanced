@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.73] - 2026-11-02
+
+### Added
+
+- Memorize Chat now has one identity-backed obligation lifecycle for parser
+  candidates, rejected fragments, downstream dispositions, duplicate
+  candidates, durable records, recovered fragments, and explicit no-update
+  decisions. All lifecycle counts are projections of stable ID sets.
+- A typed transition table records predecessor state, evidence, durable fields,
+  checkpoint effect, and controller-exit effect. Illegal transitions and
+  provider reconciliation failures now export exact invariant IDs and affected
+  obligations.
+- Completion-first source traversal can durably queue unresolved Session
+  fragments, continue independent later chunks, and run a mandatory recovery
+  sweep before finalization while retaining the contiguous safe checkpoint.
+- Deterministic lifecycle property tests, the real four-parser/one-downstream/
+  one-durable/five-fragment fixture, and a six-chunk 0–119 canary now gate the
+  persisted-record verification and recovery-backlog paths.
+
+### Fixed
+
+- Resume verification no longer treats the parser-accepted candidate count as
+  the durable-record expectation. It verifies the exact durable Session record
+  IDs, so one committed record is correctly expected even when four candidates
+  parsed successfully.
+- The v0.9.72 `committed_partial_record_verification_failed` state migrates to
+  actionable focused recovery when its exact durable IDs verify. Parser history,
+  committed records, five private fragment payloads, and completed Long-Term
+  work are preserved without regeneration or duplication.
+- Provider recovery windows now separate parser acceptance from durable record
+  identities. Starting another recovery epoch cannot inflate or reduce the
+  durable set, and the former cross-stage `Math.max()` value is retained only as
+  an explicitly scoped parser-history compatibility projection.
+- Stable Session candidate IDs and durable record-to-candidate associations now
+  survive validation and persistence accounting without leaking transient
+  repair identifiers into stored memory records.
+- Incomplete runs can no longer report completed generation quality or zero
+  current unresolved failures while authoritative pending obligations remain.
+  Clean data quality remains a separate statement from operational completion.
+- Provider reconciliation now includes recovery-in-progress obligations in its
+  disposition partition and never reports `consistent: false` without named
+  violated invariants.
+
 ## [0.9.72] - 2026-11-01
 
 ### Added
