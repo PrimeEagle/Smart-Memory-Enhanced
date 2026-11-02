@@ -124,6 +124,18 @@ import {
   registerMemorizeCleanup,
   trackMemorizeTransaction,
 } from './memorize-controller-runtime.js';
+import {
+  updateMemorizeControllerHeartbeat,
+  classifyStaleMemorizeController,
+  MEMORIZE_CONTROLLER_HEARTBEAT_SCHEMA_VERSION,
+} from './memorize-controller-heartbeat.js';
+import {
+  inspectProviderCompletionConsistency,
+  migrateTerminalProviderCompletions,
+  reconcileImpossibleLiveHealth,
+  exportProviderCompletionJournal,
+  PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
+} from './provider-completion-journal.js';
 import { formatDiagnosticIdentifier, runNonfatalPresentation } from './diagnostic-presentation-utils.js';
 import { runCompaction, injectSummary, loadAndInjectSummary, buildCompactionRequestSignature, SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION } from './compaction.js';
 import {
@@ -248,14 +260,16 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.73',
-  build_fingerprint: 'sme-v0.9.73-identity-lifecycle-backlog-r1',
+  extension_version: '0.9.74',
+  build_fingerprint: 'sme-v0.9.74-provider-completion-wal-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
     shortterm_attempt_accounting: SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
     targeted_replay: TARGETED_REPLAY_SCHEMA_VERSION,
     provider_attempt_audit: PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
+    provider_completion_journal: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
+    memorize_controller_heartbeat: MEMORIZE_CONTROLLER_HEARTBEAT_SCHEMA_VERSION,
     malformed_output_recovery: MALFORMED_RECOVERY_SCHEMA_VERSION,
     run_status_classifier: RUN_STATUS_CLASSIFIER_VERSION,
   }),
@@ -1071,6 +1085,7 @@ import {
 } from './ui.js';
 
 function createLiveHealth(context, tier, messages, triggerReason = 'manual_extract_now') {
+  const owner = arguments[4] ?? null;
   const metadata = context.chatMetadata?.[META_KEY];
   if (!metadata) return null;
   const indices = (messages ?? [])
@@ -1081,6 +1096,7 @@ function createLiveHealth(context, tier, messages, triggerReason = 'manual_extra
   const event = beginLiveExtractionEvent(metadata, {
     chat_turn_id: context.chat?.length ?? null,
     tier,
+    owner,
     trigger_reason: triggerReason,
     window_selection_reason: 'stable_window_with_fallback',
     source_start: indices.length ? Math.min(...indices) : null,
@@ -1089,6 +1105,8 @@ function createLiveHealth(context, tier, messages, triggerReason = 'manual_extra
   });
   updateLiveMemoryHealthUI();
   return {
+    event_id: event?.event_id ?? null,
+    setOwner: (value) => { if (event) event.owner = value ?? null; },
     update: (patch) => {
       updateLiveExtractionEvent(event, patch);
       updateLiveMemoryHealthUI();
@@ -2284,6 +2302,51 @@ export function bindSettingsUI(ctrl) {
 
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
     const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
+    const liveMetadata = getContext().chatMetadata?.[META_KEY];
+    if (rawCheckpoint?.status === 'in_progress' && !ctrl.extractionRunning && !ctrl.compactionRunning
+      && !getActiveCatchUpTransactionSnapshot()) {
+      const audit = liveMetadata?.live_memory_health?.provider_attempt_audit;
+      const staleAudit = classifyStaleMemorizeController(rawCheckpoint.controller_heartbeat, {
+        stale_threshold_ms: 300000,
+        provider_running: (audit?.recent_attempts ?? []).some((item) => item.terminal_outcome === 'running'),
+        persistence_running: false, save_running: false, background_operation_running: false,
+        controller_executing: false, transaction_inspectable: true,
+      });
+      if (staleAudit.stale && rawCheckpoint.run_manifest?.obligation_ledger) {
+        const repaired = reconcileMemorizeRunningObligations(
+          rawCheckpoint.run_manifest.obligation_ledger, audit);
+        rawCheckpoint.run_manifest.obligation_ledger = repaired.ledger;
+        migrateTerminalProviderCompletions(liveMetadata, audit,
+          repaired.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
+        const healthRepairs = reconcileImpossibleLiveHealth(liveMetadata, audit);
+        const transactionId = rawCheckpoint.transaction_lifecycle?.transaction_id ?? null;
+        if (rawCheckpoint.transaction_lifecycle?.state === 'active') {
+          rawCheckpoint.transaction_lifecycle = {
+            ...rawCheckpoint.transaction_lifecycle,
+            state: 'stale_controller_reconciled', terminal_disposition: 'rolled_back_to_last_durable_checkpoint',
+            exact_reason_code: 'stale_controller_no_active_operation', settled_at: Date.now(),
+          };
+        }
+        recordMemorizeControllerExit(rawCheckpoint.run_manifest.obligation_ledger, {
+          controller_invocation_id: rawCheckpoint.controller_heartbeat?.controller_invocation_id
+            ?? `stale:${transactionId ?? rawCheckpoint.run_id}`,
+          logical_run_id: rawCheckpoint.run_manifest.logical_run_id ?? rawCheckpoint.run_id,
+          attempt_number: rawCheckpoint.controller_heartbeat?.attempt_number ?? null,
+          page_instance_id: rawCheckpoint.controller_heartbeat?.page_instance_id ?? null,
+          phase: rawCheckpoint.controller_heartbeat?.phase ?? 'source_extraction',
+          active_transaction_id: transactionId, active_transaction_state: 'stale_controller_reconciled',
+          classification: 'stale_controller_reconciled', reason_code: 'stale_controller_no_active_operation',
+          resumable: true, next_eligible_action: repaired.repairs[0]?.reason_code
+            ? 'replay_terminal_provider_downstream_lifecycle' : 'resume_exact_obligation',
+        });
+        rawCheckpoint.status = 'awaiting_manual_resume';
+        rawCheckpoint.stale_controller_audit = { ...staleAudit, reconciled: true,
+          repaired_obligations: repaired.repairs, live_health_repairs: healthRepairs, reconciled_at: Date.now() };
+        rawCheckpoint.updated_at = Date.now();
+        saveChatMetadata(getContext()).catch((error) => console.warn(
+          `[${MODULE_NAME}] Could not persist stale-controller reconciliation:`, error));
+      }
+    }
     const checkpoint = normalizeCatchUpCheckpoint(rawCheckpoint);
     const $resume = $('#sme_resume_catch_up');
     const $status = $('#sme_catch_up_recovery_status');
@@ -2365,6 +2428,11 @@ export function bindSettingsUI(ctrl) {
     const operatorActionRequired = !resumeEligibility.eligible;
     const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
     const rangeText = `${manifest.cumulative_range_count ?? 0} coalesced committed range${manifest.cumulative_range_count === 1 ? '' : 's'}`;
+    const traversalCount = Number(manifest.cumulative_committed_count ?? committed) || 0;
+    const furthestTraversedIndex = Math.max(-1, ...(manifest.cumulative_committed_ranges ?? [])
+      .map((range) => Number(range.source_end_index ?? range.end_offset ?? -1)));
+    const backlogCount = Number(checkpointRecovery.recovery_backlog_count ?? 0);
+    const progressText = `contiguous checkpoint ${committed}/${total}; ${traversalCount} source messages traversed${furthestTraversedIndex >= 0 ? ` through source index ${furthestTraversedIndex}` : ''}; ${backlogCount} recovery backlog obligation${backlogCount === 1 ? '' : 's'}`;
     const finalizationText = finalization?.completed_phase_count
       ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${formatDiagnosticIdentifier(finalization.active_phase, 'pending phase')}` : ''}.`
       : '';
@@ -2415,12 +2483,12 @@ export function bindSettingsUI(ctrl) {
     $status.text(running
       ? transactionLocked && !ctrl.extractionRunning && !ctrl.compactionRunning
         ? `Resume temporarily unavailable: an in-memory transaction lock remains for ${activeTransaction.owner?.phase ?? 'unknown phase'}. Starting Resume will first audit and roll back that stale lock; no committed work will be discarded.`
-        : `Resumed automatically — processing continues from ${manifest.cumulative_committed_count || committed}/${total} safely committed source messages${attemptText} (${rangeText}).${finalizationText}${providerRecoveryText}`
+        : `Resumed automatically — processing continues; ${progressText}${attemptText} (${rangeText}). Later safe work remains preserved while mandatory backlog recovery blocks finalization.${finalizationText}${providerRecoveryText}`
       : operatorActionRequired
         ? `Short-Term finalization cannot ordinarily resume (${formatDiagnosticIdentifier(resumeEligibility.decision, 'blocked')}: ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}). Completed extraction and phase checkpoints remain preserved.`
       : reconstructingSuccessor
         ? `Short-Term progress is safely committed. Resume will reconstruct the missing successor plan at the committed boundary without regenerating the prior segment.${finalizationText}`
-        : `Incomplete Memorize Chat run available: ${manifest.cumulative_committed_count || committed}/${total} source messages safely committed${attemptText} (${rangeText}). Resuming continues from that point.${finalizationText}${providerRecoveryText}`).show();
+        : `Incomplete Memorize Chat run available: ${progressText}${attemptText} (${rangeText}). Later safe work remains preserved; Resume continues the exact active obligation without restarting at the contiguous checkpoint.${finalizationText}${providerRecoveryText}`).show();
     if (autoResume && !operatorActionRequired && checkpoint.status === 'in_progress' && !autoResumeAttemptedRunIds.has(checkpoint.run_id) && !ctrl.extractionRunning && !ctrl.compactionRunning) {
       autoResumeAttemptedRunIds.add(checkpoint.run_id);
       window.setTimeout(() => {
@@ -2976,6 +3044,8 @@ export function bindSettingsUI(ctrl) {
         compaction_request_audit: completedRun.compaction_request_audit
           ? reconcileShortTermSegmentLedger(completedRun.compaction_request_audit) : null,
         live_memory_health: liveMemoryHealth, catch_up_recovery: reconciledRecovery,
+        provider_completion_journal: exportProviderCompletionJournal(metadata),
+        controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat ?? null,
         malformed_recovery: centralMalformedRecovery ?? completedRun.malformed_recovery ?? null,
         targeted_extraction_replay: metadata.targeted_extraction_replay
           ? { ...(completedRun.targeted_extraction_replay ?? {}),
@@ -3004,6 +3074,8 @@ export function bindSettingsUI(ctrl) {
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
       provider_attempt_audit: liveProviderSummary,
+      provider_completion_journal: exportProviderCompletionJournal(metadata),
+      controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat ?? null,
       malformed_recovery: centralMalformedRecovery,
       targeted_extraction_replay: metadata.targeted_extraction_replay
         ? summarizeTargetedReplayCheckpoint(metadata.targeted_extraction_replay) : null,
@@ -4575,7 +4647,7 @@ export function bindSettingsUI(ctrl) {
       const context = getContext();
       const recentMessages = ctrl.getStableExtractionWindowWithFallback(context.chat, 20);
       const count = await extractAndStoreMemories(characterName, recentMessages, setStatusMessage, {
-        liveHealth: createLiveHealth(context, 'longterm', recentMessages),
+        liveHealth: createLiveHealth(context, 'longterm', recentMessages, 'manual_extract_now', characterName),
       });
       saveSettingsDebounced();
       updateLongTermUI(characterName);
@@ -5539,6 +5611,32 @@ export function bindSettingsUI(ctrl) {
         catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
       );
       checkpoint.run_manifest.obligation_ledger = runningReconciliation.ledger;
+      const providerAudit = catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit;
+      const migratedCompletions = migrateTerminalProviderCompletions(
+        catchUpContext.chatMetadata?.[META_KEY], providerAudit,
+        runningReconciliation.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
+      const liveHealthRepairs = reconcileImpossibleLiveHealth(
+        catchUpContext.chatMetadata?.[META_KEY], providerAudit);
+      checkpoint.provider_completion_consistency = inspectProviderCompletionConsistency({
+        metadata: catchUpContext.chatMetadata?.[META_KEY], provider_audit: providerAudit,
+        ledger: checkpoint.run_manifest.obligation_ledger,
+        child_manifests: checkpoint.recovery_child_manifests,
+        live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
+      });
+      checkpoint.stale_controller_audit = classifyStaleMemorizeController(
+        checkpoint.controller_heartbeat, {
+          stale_threshold_ms: 300000,
+          provider_running: (providerAudit?.recent_attempts ?? []).some((item) => item.terminal_outcome === 'running'),
+          persistence_running: false, save_running: false, background_operation_running: false,
+          controller_executing: false, transaction_inspectable: true,
+        });
+      if (migratedCompletions.length || liveHealthRepairs.length) {
+        checkpoint.runtime_lifecycle_repairs = {
+          migrated_terminal_completion_count: migratedCompletions.length,
+          live_health_repairs: liveHealthRepairs,
+          reconciled_at: Date.now(),
+        };
+      }
       if (runningReconciliation.repairs.length) {
         checkpoint.runtime_obligation_repairs = [
           ...(checkpoint.runtime_obligation_repairs ?? []), ...runningReconciliation.repairs,
@@ -5941,6 +6039,10 @@ export function bindSettingsUI(ctrl) {
         trackMemorizeTransaction(controllerRuntime, chunkTransaction, {
           phase: 'source_extraction', source_range: { start: currentRange.source_start_index, end: currentRange.source_end_index },
         });
+        updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
+          await_point: 'transaction_checkpoint', progress: true,
+          last_durable_transition: 'chunk_transaction_started',
+        });
         checkpoint.context_overflow_recovery ??= { schema_version: 1, completed_children: [] };
         checkpoint.context_overflow_recovery.completed_children ??= [];
         const completedOverflowChildren = checkpoint.context_overflow_recovery.completed_children
@@ -5959,8 +6061,23 @@ export function bindSettingsUI(ctrl) {
         checkpoint.recovery_child_manifests ??= { schema_version: 1, roots: {} };
         checkpoint.recovery_child_manifests.roots ??= {};
         const commitRecoveryChildManifest = async (manifest) => {
+          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
+            await_point: 'child_manifest_update', progress: true,
+          });
           if (!manifest?.root_obligation_id) return;
           checkpoint.recovery_child_manifests.roots[manifest.root_obligation_id] = manifest;
+          checkpoint.updated_at = Date.now();
+          await saveChatMetadata(catchUpContext);
+          await checkpointCatchUpTransaction(chunkTransaction);
+        };
+        const commitProviderCompletionJournal = async (_entry, heartbeatPatch = {}) => {
+          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
+          checkpoint.updated_at = Date.now();
+          await saveChatMetadata(catchUpContext);
+          await checkpointCatchUpTransaction(chunkTransaction);
+        };
+        const commitProviderAwaitPoint = async (heartbeatPatch = {}) => {
+          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
           checkpoint.updated_at = Date.now();
           await saveChatMetadata(catchUpContext);
           await checkpointCatchUpTransaction(chunkTransaction);
@@ -5969,6 +6086,11 @@ export function bindSettingsUI(ctrl) {
           trackMemorizeTransaction(controllerRuntime, controllerRuntime.active_transaction, {
             phase: 'source_extraction', tier: transition.tier, owner: transition.owner,
             source_range: transition.source_range, obligation_id: transition.obligation_id,
+          });
+          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
+            await_point: 'obligation_update', progress: true,
+            root_obligation_id: transition.obligation_id,
+            source_range: transition.source_range,
           });
           checkpoint.run_manifest.obligation_ledger = ensureMemorizeObligationLedger(
             checkpoint.run_manifest.obligation_ledger, checkpoint.run_manifest.logical_run_id);
@@ -6047,15 +6169,19 @@ export function bindSettingsUI(ctrl) {
             if (nameChunk.length === 0) continue;
             const ownerSourceFingerprint = sourceWindowFingerprint(nameChunk);
             const ownerObligationId = `longterm:${String(name).trim().toLowerCase()}:${currentRange.source_start_index}-${currentRange.source_end_index}:${ownerSourceFingerprint}`;
+            const longtermLiveHealth = createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up');
+            longtermLiveHealth?.setOwner(name);
             setStatusMessage(
               `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
             );
             await extractAndStoreMemories(name, nameChunk, setStatusMessage, {
               extractionCoverage: runResult.extractionCoverage,
-              liveHealth: createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up'),
+              liveHealth: longtermLiveHealth,
               _contextOverflowCompletedChildren: completedOverflowChildren,
               _onContextOverflowChildCommitted: commitOverflowChild,
               _onRecoveryChildManifestUpdated: commitRecoveryChildManifest,
+              _onProviderCompletionJournalUpdated: commitProviderCompletionJournal,
+              _onProviderAwaitPoint: commitProviderAwaitPoint,
               _onObligationState: updateAuthoritativeObligation,
               _controllerAttemptNumber: checkpoint.run_manifest?.attempt_count ?? null,
               _providerResumedPendingObligation: Boolean(resumableCheckpoint
@@ -9306,6 +9432,10 @@ export function bindSettingsUI(ctrl) {
             ? reconcileShortTermSegmentLedger(runResult.compactionRequestAudit)
             : null,
         provider_attempt_audit: providerAttemptSummary,
+        provider_completion_journal: exportProviderCompletionJournal(
+          catchUpContext.chatMetadata?.[META_KEY]),
+        controller_heartbeat: checkpoint.controller_heartbeat ?? null,
+        provider_completion_reconciliation: checkpoint.provider_completion_consistency ?? null,
         provider_runtime_reconciliation: reconcileMemorizeProviderRuntime(
           checkpoint.run_manifest?.obligation_ledger,
           catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,

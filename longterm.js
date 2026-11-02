@@ -132,6 +132,11 @@ import {
   stageProviderPartialRecovery,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
+import { markRecoveryChildState } from './recovery-child-coverage.js';
+import {
+  findReplayableProviderCompletion,
+  recordProviderCompletion,
+} from './provider-completion-journal.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
 import {
@@ -1099,6 +1104,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         budget,
       });
       await options._onRecoveryChildManifestUpdated?.(childManifest);
+      let deferredTerminalReconciliation = null;
       for (const child of children) {
         const childRange = sourceRange(child);
         const childKey = extractionRecoveryChildKey('longterm', characterName, child);
@@ -1132,21 +1138,33 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             unattempted_siblings: expectedChildKeys.slice(childIndex),
             progress_made: true };
         }
-        added += await extractAndStoreMemories(characterName, child, statusFn, {
-          ...options,
-          liveHealth: null,
-          _malformedRecoveryDepth: nextDepth,
-          _malformedRecoveryBudget: budget,
-          _contextOverflowParentRangeId: rangeId,
-          _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + nextDepth),
-          _providerRootObligationId: rootObligationId,
-          _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-          _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-          _providerParentAttemptId: parentAttemptId,
-          _providerRequestKind: 'malformed_repartition_child',
-          _providerChangedRecoveryDimensions: ['source_range', 'malformed_output_repartition'],
-          _recoveryManifestParentChildKey: childKey,
-        });
+        try {
+          added += await extractAndStoreMemories(characterName, child, statusFn, {
+            ...options,
+            liveHealth: null,
+            _malformedRecoveryDepth: nextDepth,
+            _malformedRecoveryBudget: budget,
+            _contextOverflowParentRangeId: rangeId,
+            _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + nextDepth),
+            _providerRootObligationId: rootObligationId,
+            _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
+            _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+            _providerParentAttemptId: parentAttemptId,
+            _providerRequestKind: 'malformed_repartition_child',
+            _providerChangedRecoveryDimensions: ['source_range', 'malformed_output_repartition'],
+            _recoveryManifestParentChildKey: childKey,
+          });
+        } catch (error) {
+          if (error?.code !== 'SME_TERMINAL_PROVIDER_OUTPUT_UNAVAILABLE') throw error;
+          deferredTerminalReconciliation = error;
+          childManifest = markRecoveryChildState(childManifest, childKey,
+            'downstream_reconciliation_pending', {
+              reason_code: 'legacy_terminal_output_not_durably_retained',
+              recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
+            });
+          await options._onRecoveryChildManifestUpdated?.(childManifest);
+          continue;
+        }
         budget.split_children_committed.push(childKey);
         await options._onContextOverflowChildCommitted?.({
           key: childKey, tier: 'longterm', owner: characterName,
@@ -1158,6 +1176,27 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         childManifest = markProviderRecoveryChildCompleted(providerMetadata, rootObligationId, childKey, {
           recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
         });
+        const completedAttempt = [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+          .reverse().find((attempt) => attempt.logical_obligation_id === rootObligationId
+            && attempt.source_fingerprint === sourceWindowFingerprint(child)
+            && attempt.terminal_outcome !== 'running');
+        if (completedAttempt) {
+          const childJournal = recordProviderCompletion(providerMetadata, completedAttempt, {
+            child_key: childKey,
+            manifest_transition: { status: 'applied', applied_at: Date.now() },
+            ledger_transition: { status: 'applied', disposition: 'pending_child_coverage', applied_at: Date.now() },
+          });
+          await options._onProviderCompletionJournalUpdated?.(childJournal, {
+            await_point: 'obligation_update', progress: true,
+            last_durable_transition: 'recovery_child_completed',
+          });
+        }
+        await updateObligation('pending_recovery', {
+          exact_reason_code: 'recovery_child_completed_siblings_pending',
+          next_eligible_action: 'continue_unattempted_recovery_child',
+          recovery_intent: 'complete_recovery_child_coverage',
+          recovery_stage: 'malformed_repartition_child',
+        });
         await options._onRecoveryChildManifestUpdated?.(childManifest);
       }
       const committedChildKeys = [
@@ -1165,6 +1204,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         ...budget.split_children_committed,
       ];
       if (!malformedChildCoverageComplete(expectedChildKeys, committedChildKeys)) {
+        if (deferredTerminalReconciliation) return {
+          completed: false, paused: true,
+          reason: 'terminal_provider_downstream_reconciliation_required',
+          next_resumable_child: childManifest?.coverage?.pending_child_keys?.[0] ?? null,
+          unattempted_siblings: childManifest?.coverage?.unattempted_child_keys ?? [],
+          progress_made: true,
+        };
         return { completed: false, reason: 'malformed_child_coverage_incomplete' };
       }
       recordExtractionCoverage(coverageLedger, {
@@ -1215,13 +1261,47 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       ? deriveRecoveryStageEligibility(resumeRecoveryState) : null;
     const bypassEquivalentRootReplay = resumeEligibility?.blocked === true
       || resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
-    const providerAttempt = bypassEquivalentRootReplay ? {
+    const completionReplay = findReplayableProviderCompletion(providerMetadata, {
+      root_obligation_id: rootObligationId,
+      source_fingerprint: coverageBase.source_fingerprint,
+    });
+    const legacyTerminalWithoutOutput = !completionReplay
+      ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+        .reverse().find((attempt) => attempt.logical_obligation_id === rootObligationId
+          && attempt.source_fingerprint === coverageBase.source_fingerprint
+          && ['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(attempt.terminal_outcome))
+      : null;
+    if (legacyTerminalWithoutOutput) {
+      const error = new Error('A terminal provider response requires downstream reconciliation, but this legacy build did not retain its private output. The completed provider request will not be repeated.');
+      error.code = 'SME_TERMINAL_PROVIDER_OUTPUT_UNAVAILABLE';
+      error.sme_obligation_id = rootObligationId;
+      error.sme_request_diagnostics = {
+        root_obligation_id: rootObligationId,
+        attempt_id: legacyTerminalWithoutOutput.attempt_id,
+        reason_code: 'legacy_terminal_output_not_durably_retained',
+        recovery_intent: 'restore_private_terminal_output_or_change_recovery_disposition',
+        recovery_stage: 'terminal_provider_downstream_reconciliation',
+        provider_request_must_not_repeat: true,
+      };
+      throw error;
+    }
+    const providerAttempt = completionReplay ? {
+      attempt_id: completionReplay.attempt_id,
+      logical_obligation_id: rootObligationId,
+      root_obligation_id: rootObligationId,
+      logical_run_id: completionReplay.logical_run_id,
+      tier: 'longterm', owner: characterName,
+      source_range: completionReplay.source_range,
+      source_fingerprint: completionReplay.source_fingerprint,
+      terminal_outcome: completionReplay.terminal_outcome,
+      recovery_stage: options._providerRequestKind ?? 'completion_journal_replay',
+    } : bypassEquivalentRootReplay ? {
       attempt_id: null,
       logical_obligation_id: rootObligationId,
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
     } : beginPhysicalAttempt();
-    if (!bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
+    if (!completionReplay && !bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
       await updateObligation('provider_running', {
         provider_attempt_id: providerAttempt.attempt_id,
         exact_reason_code: 'provider_request_in_progress',
@@ -1230,7 +1310,16 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       });
     }
     try {
-      if (!bypassEquivalentRootReplay) {
+      if (completionReplay) {
+        response = completionReplay.response_text;
+      } else if (!bypassEquivalentRootReplay) {
+        await options._onProviderAwaitPoint?.({
+          await_point: 'provider_request', progress: true,
+          active_provider_attempt_id: providerAttempt?.attempt_id ?? null,
+          root_obligation_id: rootObligationId,
+          child_obligation_id: extractionRecoveryChildKey('longterm', characterName, sourceMessages),
+          source_range: { start: range.start, end: range.end, message_count: range.message_count },
+        });
         response = await generateMemoryExtract(prompt, { responseLength });
       }
     } catch (err) {
@@ -1265,8 +1354,32 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
+    await options._onProviderAwaitPoint?.({
+      await_point: 'response_parse', progress: true,
+      active_provider_attempt_id: null,
+      root_obligation_id: rootObligationId,
+      source_range: { start: range.start, end: range.end, message_count: range.message_count },
+      last_durable_transition: 'provider_response_received',
+    });
+    const completionChildKey = extractionRecoveryChildKey('longterm', characterName, sourceMessages);
+    let completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
+      child_key: completionChildKey,
+      response_text: response,
+      live_health_event_id: options.liveHealth?.event_id ?? null,
+    });
+    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+      await_point: 'response_parse', progress: true,
+    });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
+      completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
+        child_key: completionChildKey,
+        parser_result: { status: 'explicit_none', records: [] },
+        persistence: { status: 'not_needed', durable_record_ids: [] },
+      });
+      await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+        await_point: 'child_manifest_update', progress: true,
+      });
       recordCompletedCoverage('completed_no_candidates');
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
@@ -1359,6 +1472,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         partial_output_policy: partialReason ? 'accept_complete_valid_records_and_reject_only_malformed_fragments' : null,
       });
     }
+    completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
+      child_key: completionChildKey,
+      parser_result: { status: 'accepted', records: parsed, accepted_count: parsed.length },
+    });
+    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+      await_point: 'downstream_validation', progress: true,
+    });
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
 
     // Source citations belong to the numbered extraction window.  Translate
@@ -1379,6 +1499,24 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       superseded: supersessionMap,
       confirmed: confirmedIds,
     } = await verifyLongtermCandidates(parsed, activeMemories);
+    const verifiedExistingRecordIds = parsed.map((candidate) => activeMemories.find((memory) =>
+      (candidate.id && memory.id === candidate.id)
+      || (memory.type === candidate.type && String(memory.content).trim() === String(candidate.content).trim()))?.id)
+      .filter(Boolean);
+    completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
+      child_key: completionChildKey,
+      validated_record_identities: newMemories.map((memory) => ({
+        id: memory.id ?? null, type: memory.type ?? null,
+        source_message_indices: memory.source_message_indices ?? [],
+      })),
+      persistence: newMemories.length === 0
+        ? { status: parsed.length > 0 ? 'verified_existing' : 'not_needed',
+          durable_record_ids: verifiedExistingRecordIds }
+        : { status: 'staged', durable_record_ids: newMemories.map((memory) => memory.id).filter(Boolean) },
+    });
+    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+      await_point: 'canonical_persistence', progress: true,
+    });
     if (newMemories.length === 0) {
       smLog(
         `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
@@ -1399,6 +1537,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           coverageBase.source_fingerprint, parsed.length);
         await saveChatMetadata(getContext());
       }
+      completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
+        child_key: completionChildKey,
+        persistence: { status: parsed.length > 0 ? 'verified_existing' : 'not_needed',
+          durable_record_ids: verifiedExistingRecordIds },
+      });
+      await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+        await_point: 'child_manifest_update', progress: true,
+        last_durable_transition: 'canonical_records_verified_existing',
+      });
       recordCompletedCoverage('completed_no_persistence_needed');
       healthFinish({ terminal_health: 'completed', persistence: 'not_needed', candidates: { accepted: 0, rejected_duplicate: parsed.length } });
       return 0;
@@ -1741,6 +1888,18 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     // Save: final active set + all retired memories (history is preserved).
     saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
+    const durableRecordIds = finalActive.filter((memory) => newMemories.some((candidate) =>
+      candidate.id === memory.id)).map((memory) => memory.id).filter(Boolean);
+    completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
+      child_key: completionChildKey,
+      persistence: { status: 'committed', durable_record_ids: durableRecordIds },
+      manifest_transition: { status: options._providerRequestKind ? 'pending' : 'not_applicable' },
+      ledger_transition: { status: options._providerRequestKind ? 'pending' : 'applied' },
+    });
+    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+      await_point: 'child_manifest_update', progress: true,
+      last_durable_transition: 'canonical_records_committed',
+    });
     if (stagedRecoveryObligationId) {
       markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
         coverageBase.source_fingerprint, parsed.length);

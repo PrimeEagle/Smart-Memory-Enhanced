@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.74] - 2026-11-02
+
+### Added
+
+- Provider completion now crosses a durable write-ahead boundary that retains
+  the private terminal response before parsing and journals parser, validation,
+  canonical persistence, recovery-child, obligation, and live-health
+  dispositions by physical attempt ID. Resume replays only missing downstream
+  steps and never repeats a terminal successful request.
+- Memorize Chat now persists a controller heartbeat with the controller/page,
+  transaction, provider attempt, owner/range, cancellation state, and exact
+  await point. Staleness requires an old heartbeat plus the absence of every
+  registered provider, persistence, save, background, and current-controller
+  operation.
+- Diagnostics now export a privacy-safe completion-journal projection and name
+  terminal-attempt/ledger, manifest-child, persistence, live-health, heartbeat,
+  and transaction inconsistencies directly.
+
+### Fixed
+
+- A successful malformed-repartition child can no longer be stranded as both
+  `provider_running` and `unattempted` after its physical request is terminal.
+  Retained output resumes at validation/persistence; committed records,
+  manifest coverage, and ledger state are applied idempotently.
+- Recovery continues independent unattempted siblings while an older terminal
+  child awaits downstream reconciliation. Legacy v0.9.73 attempts whose raw
+  output was never retained are preserved and explicitly paused instead of
+  silently repeating the provider request or falsely completing the child.
+- Impossible live-health combinations such as `response_received: true` with
+  `provider_outcome: not_started` are reconciled to pending child coverage once
+  no matching provider operation is active.
+
 ## [0.9.73] - 2026-11-02
 
 ### Added

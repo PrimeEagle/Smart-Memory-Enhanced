@@ -479,13 +479,19 @@ export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit =
       }
       continue;
     }
+    const terminalAttempt = [...(providerAudit?.recent_attempts ?? [])].reverse()
+      .find((attempt) => attempt?.logical_obligation_id === obligation.obligation_id
+        && attempt?.terminal_outcome !== 'running');
     const persisted = Number(obligation.metrics?.persisted_records ?? 0);
     obligation.current_state = 'pending_recovery';
     obligation.checkpoint_eligible = false;
-    obligation.exact_reason_code = 'stale_provider_running_without_physical_attempt';
+    obligation.exact_reason_code = terminalAttempt
+      ? 'terminal_provider_attempt_pending_downstream_reconciliation'
+      : 'stale_provider_running_without_physical_attempt';
     obligation.next_eligible_action = Number(obligation.metrics?.unresolved_parser_fragments ?? 0) > 0
       ? 'recover_unresolved_partial_output_fragments'
-      : obligation.recovery_intent ?? 'resume_exact_obligation';
+      : terminalAttempt ? 'replay_terminal_provider_downstream_lifecycle'
+        : obligation.recovery_intent ?? 'resume_exact_obligation';
     obligation.recovery_intent = obligation.next_eligible_action;
     obligation.recovery_stage = 'resume_epoch_initialization';
     if (persisted > 0) {
@@ -498,7 +504,9 @@ export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit =
     obligation.timestamps ??= {};
     obligation.timestamps.reconciled_stale_provider_running_at = Date.now();
     repairs.push({ obligation_id: obligation.obligation_id,
-      reason_code: obligation.exact_reason_code, persisted_records_preserved: persisted });
+      reason_code: obligation.exact_reason_code, persisted_records_preserved: persisted,
+      terminal_attempt_id: terminalAttempt?.attempt_id ?? null,
+      provider_request_must_not_repeat: Boolean(terminalAttempt) });
   }
   if (repairs.length) ledger.updated_at = Date.now();
   return { ledger, repairs };

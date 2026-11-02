@@ -267,6 +267,7 @@ export function beginLiveExtractionEvent(metadata, input = {}) {
     chat_turn_id: input.chat_turn_id ?? null,
     run_id: input.run_id ?? metadata?.active_catchup_run_id ?? null,
     tier: input.tier ?? 'unknown',
+    owner: input.owner ?? null,
     trigger_reason: input.trigger_reason ?? 'periodic_cadence',
     source_range: {
       start: Number.isInteger(input.source_start) ? input.source_start : null,
