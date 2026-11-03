@@ -1,3 +1,6 @@
+import { isMemorizeOutcome, memorizeOutcomeFromLegacyError } from './memorize-outcome.js';
+import { normalizeMemorizeReasonCode } from './memorize-reasons.js';
+
 /**
  * Explicit ownership for one Memorize Chat controller invocation.
  *
@@ -46,21 +49,24 @@ export function trackMemorizeTransaction(runtime, transaction, detail = {}) {
   return transaction;
 }
 
-export function recordMemorizeOperationalPause(runtime, runResult, label, error, tier = null) {
+export function recordMemorizeOperationalPause(runtime, runResult, label, errorOrOutcome, tier = null) {
   const checkpoint = runtime?.checkpoint;
   if (!checkpoint) {
     const missing = new Error('Cannot record a Memorize Chat operational pause before its checkpoint is bound.');
     missing.code = 'SME_MEMORIZE_CHECKPOINT_UNBOUND';
     throw missing;
   }
+  const outcome = isMemorizeOutcome(errorOrOutcome)
+    ? errorOrOutcome
+    : memorizeOutcomeFromLegacyError(errorOrOutcome, { kind: 'paused' });
+  const diagnostics = errorOrOutcome?.sme_request_diagnostics ?? outcome.evidence?.request_diagnostics ?? {};
   const pause = {
+    ...diagnostics,
     label,
     tier,
-    reason_code: error?.sme_request_diagnostics?.pause_reason
-      ?? error?.sme_request_diagnostics?.reason_code
-      ?? error?.code
-      ?? 'recovery_request_budget_reached_with_pending_children',
-    ...(error?.sme_request_diagnostics ?? {}),
+    reason_code: outcome.reason_code,
+    next_eligible_recovery_action: outcome.next_action,
+    root_obligation_id: outcome.obligation_id,
     recorded_at: Date.now(),
   };
   runResult.operationalPauses = [
@@ -132,7 +138,7 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
     active_transaction_state: transaction?.state ?? 'not_applicable',
     checkpoint_before: runtime.checkpoint_before,
     checkpoint_after: Number(runtime.checkpoint?.next_source_offset ?? runtime.checkpoint_before) || 0,
-    reason_code: input.reason_code ?? failure?.code ?? 'unknown_interruption',
+    reason_code: normalizeMemorizeReasonCode(input.reason_code ?? failure?.code, 'unknown_interruption'),
     classification: input.classification ?? (failure ? 'internal_exception' : 'completed'),
     normalized_exception_class: failure?.normalized_exception_class ?? null,
     bounded_message: failure?.bounded_message ?? null,
@@ -147,10 +153,4 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
   }
   runtime.controller_exit = candidate;
   return runtime.controller_exit;
-}
-
-/** Small event adapter used by the real button and deterministic tests. */
-export function bindMemorizeChatHandler(button, handler) {
-  button.on('click', handler);
-  return handler;
 }

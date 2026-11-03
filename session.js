@@ -102,7 +102,6 @@ import {
   sourceWindowFingerprint,
 } from './extraction-window-utils.js';
 import {
-  beginProviderAttempt,
   beginProviderRecoveryEpoch,
   finishProviderAttempt,
   markProviderDownstreamOutcome,
@@ -129,6 +128,9 @@ import {
 } from './malformed-output-recovery.js';
 import { repairSessionCandidateShapes } from './session-candidate-utils.js';
 import { verifyPersistedPartialSessionRecords } from './session-partial-persistence.js';
+import { extendMemorizeExecutionContext, resolveMemorizeExecutionContext } from './memorize-execution-context.js';
+import { createMemorizeTierPipeline, recordTierCoverage as recordExtractionCoverage } from './memorize-tier-pipeline.js';
+import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
 export { verifyPersistedPartialSessionRecords } from './session-partial-persistence.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
@@ -145,27 +147,6 @@ export function buildFocusedSessionFragmentRecoveryPrompt(chatHistory, fragments
 
 function extractionRangeId(tier, range, depth) {
   return `${tier}:chat:${range.start ?? 'none'}-${range.end ?? 'none'}:d${depth}`;
-}
-
-function recordExtractionCoverage(ledger, record) {
-  if (!ledger) return;
-  ledger.records ??= [];
-  const index = ledger.records.findIndex((entry) => entry.range_id === record.range_id);
-  if (index >= 0) ledger.records[index] = { ...ledger.records[index], ...record };
-  else ledger.records.push(record);
-}
-
-function contextOverflowError(preflight, range) {
-  const error = new Error('Session extraction window exceeds the configured context budget before request dispatch.');
-  error.sme_request_diagnostics = {
-    http_status: 400,
-    likely_cause: 'estimated_context_overflow',
-    request_prevented: true,
-    ...preflight,
-    source_start_index: range.start,
-    source_end_index: range.end,
-  };
-  return error;
 }
 
 /**
@@ -427,6 +408,7 @@ async function deduplicateSession(existing, incoming, max) {
  */
 export async function extractSessionMemories(recentMessages, abortCheck = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
+  const execution = resolveMemorizeExecutionContext(options);
   const healthUpdate = (patch) => options.liveHealth?.update?.(patch);
   const healthFinish = (patch) => options.liveHealth?.finish?.(patch);
   if (!settings.session_enabled) {
@@ -512,47 +494,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     preflight.estimated_final_request_tokens = preflight.estimated_input_tokens
       + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens;
     healthUpdate({ preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens } });
-    const depth = Number(options._contextOverflowDepth ?? 0);
+    const depth = execution.recovery.context_overflow_depth;
     const range = sourceRange(sourceMessages);
-    const rangeId = options._contextOverflowRangeId
+    const rangeId = execution.recovery.context_overflow_range_id
       ?? extractionRangeId('session', range, depth);
     const coverageLedger = options.extractionCoverage?.session;
-    const coverageBase = {
-      range_id: rangeId,
-      parent_range_id: options._contextOverflowParentRangeId ?? null,
-      tier: 'session',
-      original_range: { start: range.start, end: range.end, message_count: range.message_count },
-      effective_range: { start: range.start, end: range.end, message_count: range.message_count },
-      citation_mapping_valid: range.source_indices.every(Number.isInteger),
-      source_fingerprint: sourceWindowFingerprint(sourceMessages),
-      preflight,
-      request_sent: false,
-    };
-    const recordCompletedCoverage = (providerOutcome = 'completed') => recordExtractionCoverage(coverageLedger, {
-      ...coverageBase,
-      request_sent: true,
-      provider_outcome: providerOutcome,
-      coverage_terminal_state: 'completed',
-      all_source_messages_covered: true,
-    });
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
-    const rootObligationId = options._providerRootObligationId
-      ?? `session:chat:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
-    const rootSourceRange = options._providerRootSourceRange
-      ?? { start: range.start, end: range.end, message_count: range.message_count };
-    const isRecoveryLeaf = range.start !== rootSourceRange.start || range.end !== rootSourceRange.end;
-    const leafObligationId = isRecoveryLeaf
-      ? `${rootObligationId}:leaf:${range.start}-${range.end}:${coverageBase.source_fingerprint}`
-      : rootObligationId;
-    const updateObligation = async (currentState, details = {}) => options._onObligationState?.({
-      obligation_id: leafObligationId,
-      parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
-      tier: 'session', owner: null,
-      source_range: { start: range.start, end: range.end, message_count: range.message_count },
-      source_fingerprint: coverageBase.source_fingerprint,
-      current_state: currentState,
-      ...details,
-    });
     const providerConfigSignature = providerConfigurationSignature({
       connection_profile_id: settings.connection_profile_id ?? null,
       model: settings.openai_compat_model ?? settings.ollama_model ?? null,
@@ -560,47 +507,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       response_length: responseLength,
       context_length: settings.context_length ?? null,
     });
-    const beginPhysicalAttempt = (requestKind = options._providerRequestKind
-      ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
-      ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
-      tier: 'session', owner: null, logical_obligation_id: rootObligationId,
-      child_obligation_id: leafObligationId,
-      controller_attempt_number: options._controllerAttemptNumber ?? null,
-      chat_id: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
-      parent_attempt_id: options._providerParentAttemptId ?? null,
-      repartition_parent_id: options._contextOverflowParentRangeId ?? null,
-      request_kind: requestKind,
-      changed_recovery_dimensions: changedDimensions,
-      recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
-      source_unit_key: recovery.source_unit_key ?? null,
-      target_source_unit: recovery.target_source_unit ?? recovery.source_unit_key ?? null,
-      target_source_fingerprint: recovery.target_source_fingerprint ?? null,
-      context_source_range: recovery.context_source_range ?? null,
-      context_message_count: recovery.context_message_count ?? null,
-      permitted_citation_indexes: recovery.permitted_citation_indexes ?? [],
-      context_only_messages_eligible: recovery.context_only_messages_eligible ?? null,
-      applicability_decision: recovery.applicability_decision ?? null,
-      provider_capability_path: recovery.provider_capability_path ?? null,
-      repair_reason: recovery.repair_reason ?? null,
-      recovery_stage: recovery.recovery_stage ?? null,
-      expected_output_format: recovery.expected_output_format ?? 'session_tagged_lines_v1',
-      root_source_range: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-      root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-      source_range: { start: range.start, end: range.end, message_count: range.message_count },
-      source_fingerprint: coverageBase.source_fingerprint,
-      configured_context_limit: preflight.configured_context_limit,
-      effective_context_limit: preflight.effective_context_limit,
-      context_limit_source: requestBudget.runtimeContextLookup?.status === 'hit' ? 'persisted_learned_limit' : 'configured_preference',
-      runtime_context_lookup_status: requestBudget.runtimeContextLookup?.status ?? null,
-      reserved_output_tokens: preflight.reserved_output_tokens,
-      safety_margin: preflight.safety_margin_tokens,
-      protocol_overhead: preflight.protocol_overhead_tokens,
-      estimated_input_tokens: preflight.estimated_input_tokens,
-      estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
-      resumed_pending_obligation: options._providerResumedPendingObligation === true,
-      schema_version: 'session-tagged-v1',
-      configuration_signature: providerConfigSignature,
+    const pipeline = createMemorizeTierPipeline({
+      tier: 'session', tierLabel: 'Session', execution, metadata: providerMetadata,
+      range, rangeId, parentRangeId: execution.recovery.context_overflow_parent_range_id,
+      depth, coverageLedger, sourceFingerprint: sourceWindowFingerprint(sourceMessages),
+      preflight, requestBudget, providerConfigSignature,
+      chatId: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
+      expectedOutputFormat: 'session_tagged_lines_v1', schemaVersion: 'session-tagged-v1',
     });
+    const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
+    const recordCompletedCoverage = pipeline.recordCompletedCoverage;
+    const updateObligation = pipeline.transitionObligation;
+    const beginPhysicalAttempt = pipeline.beginAttempt;
     const updateCompletionJournal = (attempt = providerAttempt, patch = {}) => {
       const attemptSucceeded = ['completed', 'completed_no_candidates',
         'completed_repartitioned'].includes(attempt?.terminal_outcome);
@@ -653,14 +571,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           coverage_terminal_state: 'unresolved_context_overflow',
           unresolved_reason: 'split_depth_or_partition_failure',
         });
-        throw contextOverflowError(preflight, range);
+        throw pipeline.contextOverflowError();
       }
       let added = 0;
       try {
-        for (const child of split.partitions) {
+        const schedule = await createMemorizeRecoveryScheduler().run({
+          tasks: split.partitions,
+          keyOf: (child) => extractionRecoveryChildKey('session', null, child),
+          completedKeys: execution.recovery.completed_child_keys,
+          onSkipped: async (child) => {
           const childRange = sourceRange(child);
-          const childKey = extractionRecoveryChildKey('session', null, child);
-          if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)) {
             recordExtractionCoverage(coverageLedger, {
               range_id: extractionRangeId('session', childRange, depth + 1),
               parent_range_id: rangeId, tier: 'session',
@@ -670,28 +590,37 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               request_sent: false, provider_outcome: 'restored_recovered_child_checkpoint',
               coverage_terminal_state: 'completed', all_source_messages_covered: true,
             });
-            continue;
-          }
-          added += await extractSessionMemories(child, abortCheck, {
+          },
+          execute: async (child) => {
+            const childRange = sourceRange(child);
+            return extractSessionMemories(child, abortCheck, {
             ...options,
             // Preserve one bounded health event for the root live window.
             liveHealth: null,
-            _contextOverflowDepth: depth + 1,
-            _contextOverflowParentRangeId: rangeId,
-            _contextOverflowRangeId: extractionRangeId('session', childRange, depth + 1),
-            _providerRootObligationId: rootObligationId,
-            _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-            _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-            _providerParentAttemptId: parentAttemptId ?? options._providerParentAttemptId ?? null,
+            executionContext: extendMemorizeExecutionContext(execution, { recovery: {
+              context_overflow_depth: depth + 1,
+              context_overflow_parent_range_id: rangeId,
+              context_overflow_range_id: extractionRangeId('session', childRange, depth + 1),
+            }, provider: {
+              root_obligation_id: rootObligationId,
+              root_source_range: execution.provider.root_source_range ?? { start: range.start, end: range.end, message_count: range.message_count },
+              root_source_fingerprint: execution.provider.root_source_fingerprint ?? coverageBase.source_fingerprint,
+              parent_attempt_id: parentAttemptId ?? execution.provider.parent_attempt_id,
+            } }),
           });
-          await options._onContextOverflowChildCommitted?.({
+          },
+          onCommitted: async (child, { key: childKey }) => {
+            const childRange = sourceRange(child);
+          await execution.hooks.context_overflow_child_committed({
             key: childKey, tier: 'session', owner: null,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
             parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: depth + 1,
             split_reason: reason, provider_parent_attempt_id: parentAttemptId,
           });
-        }
+          },
+        });
+        added = schedule.added;
       } catch (err) {
         recordExtractionCoverage(coverageLedger, {
           ...splitCoverageBase,
@@ -708,7 +637,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           unresolved_reason: 'single_message_exceeds_context_budget',
           recovered_child_ranges: split.partitions.length,
         });
-        throw contextOverflowError(preflight, range);
+        throw pipeline.contextOverflowError();
       }
       recordExtractionCoverage(coverageLedger, {
         ...splitCoverageBase,
@@ -725,9 +654,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       });
       return added;
     };
-    const malformedRecoveryDepth = Number(options._malformedRecoveryDepth ?? 0);
-    const malformedRecoveryBudget = createMalformedRecoveryBudget(options._malformedRecoveryBudget);
-    if (options._providerResumedPendingObligation === true && !options._malformedRecoveryBudget) {
+    const malformedRecoveryDepth = execution.recovery.malformed_depth;
+    const malformedRecoveryBudget = createMalformedRecoveryBudget(execution.recovery.malformed_budget);
+    if (execution.provider.resumed_pending_obligation && !execution.recovery.malformed_budget) {
       malformedRecoveryBudget.maximum_additional_provider_requests
         = AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_provider_requests;
       malformedRecoveryBudget.maximum_wall_time_ms
@@ -738,38 +667,50 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       if (!children.length) return { completed: false, reason: 'minimum_malformed_recovery_window_reached' };
       let added = 0;
       const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('session', 'chat', child));
-      for (const child of children) {
-        const childRange = sourceRange(child);
-        const childKey = extractionRecoveryChildKey('session', 'chat', child);
-        if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)
-          || budget.split_children_committed.includes(childKey)) continue;
-        const allowance = consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition');
-        if (!allowance.allowed) return { completed: false, reason: allowance.reason };
-        added += await extractSessionMemories(child, abortCheck, {
+      const schedule = await createMemorizeRecoveryScheduler().run({
+        tasks: children,
+        keyOf: (child) => extractionRecoveryChildKey('session', 'chat', child),
+        completedKeys: [
+          ...execution.recovery.completed_child_keys,
+          ...budget.split_children_committed,
+        ],
+        allowance: async () => consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition'),
+        execute: async (child) => {
+          const childRange = sourceRange(child);
+          return extractSessionMemories(child, abortCheck, {
           ...options,
           liveHealth: null,
-          _malformedRecoveryDepth: nextDepth,
-          _malformedRecoveryBudget: budget,
-          _contextOverflowParentRangeId: rangeId,
-          _contextOverflowRangeId: extractionRangeId('session', childRange, depth + nextDepth),
-          _providerRootObligationId: rootObligationId,
-          _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-          _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-          _providerParentAttemptId: parentAttemptId,
-          _providerRequestKind: 'malformed_repartition_child',
-          _providerChangedRecoveryDimensions: ['source_range', 'malformed_output_repartition'],
+          executionContext: extendMemorizeExecutionContext(execution, { recovery: {
+            malformed_depth: nextDepth,
+            malformed_budget: budget,
+            context_overflow_parent_range_id: rangeId,
+            context_overflow_range_id: extractionRangeId('session', childRange, depth + nextDepth),
+          }, provider: {
+            root_obligation_id: rootObligationId,
+            root_source_range: execution.provider.root_source_range ?? { start: range.start, end: range.end, message_count: range.message_count },
+            root_source_fingerprint: execution.provider.root_source_fingerprint ?? coverageBase.source_fingerprint,
+            parent_attempt_id: parentAttemptId,
+            request_kind: 'malformed_repartition_child',
+            changed_recovery_dimensions: ['source_range', 'malformed_output_repartition'],
+          } }),
         });
+        },
+        onCommitted: async (child, { key: childKey }) => {
+          const childRange = sourceRange(child);
         budget.split_children_committed.push(childKey);
-        await options._onContextOverflowChildCommitted?.({
+        await execution.hooks.context_overflow_child_committed({
           key: childKey, tier: 'session', owner: null,
           source_start_index: childRange.start, source_end_index: childRange.end,
           message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
           parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: nextDepth,
           split_reason: 'malformed_output_repartition', malformed_reason: reason,
         });
-      }
+        },
+      });
+      added = schedule.added;
+      if (!schedule.completed) return { completed: false, reason: schedule.pause_reason };
       const committedChildKeys = [
-        ...(options._contextOverflowCompletedChildren ?? []),
+        ...execution.recovery.completed_child_keys,
         ...budget.split_children_committed,
       ];
       if (!malformedChildCoverageComplete(expectedChildKeys, committedChildKeys)) {
@@ -796,7 +737,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const resumeRecoveryState = storedRecoveryState?.configuration_signature === providerConfigSignature
       ? storedRecoveryState : null;
     const restoredFragments = resumeRecoveryState?.unresolved_fragments ?? [];
-    if (options._providerResumedPendingObligation === true
+    if (execution.provider.resumed_pending_obligation
       && Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
       && (resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
       && restoredFragments.length === 0) {
@@ -816,14 +757,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         ...resumeRecoveryState,
         has_unresolved_fragments: restoredFragments.length > 0,
       }) : null;
-    const automaticFragmentRecovery = options._automaticFragmentRecovery
-      ?? (options._providerResumedPendingObligation === true && restoredFragments.length ? {
+    const automaticFragmentRecovery = execution.recovery.automatic_fragment_recovery
+      ?? (execution.provider.resumed_pending_obligation && restoredFragments.length ? {
         response: restoredFragments.map((item) => item.raw).join('\n'),
         fragment_ids: restoredFragments.map((item) => item.fragment_id),
         recovery_of_attempt_id: restoredFragments[0]?.producing_attempt_id ?? null,
         focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, restoredFragments),
       } : null);
-    if (options._providerResumedPendingObligation === true && automaticFragmentRecovery
+    if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery
       && resumeEligibility?.blocked === true) {
       await updateObligation('blocked', {
         exact_reason_code: resumeEligibility.reason_code ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
@@ -836,7 +777,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       blocked.sme_obligation_id = rootObligationId;
       throw blocked;
     }
-    if (options._providerResumedPendingObligation === true && automaticFragmentRecovery) {
+    if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery) {
       const partialVerification = verifyPersistedPartialSessionRecords(
         loadSessionMemories(), resumeRecoveryState, { start: range.start, end: range.end });
       if (!partialVerification.verified) {
@@ -864,8 +805,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         metrics: { partial_record_verification: partialVerification },
       });
     }
-    const restoredResumeEpoch = options._providerResumedPendingObligation === true
-      && automaticFragmentRecovery && Number(options._automaticRecoveryDepth ?? 0) === 0
+    const restoredResumeEpoch = execution.provider.resumed_pending_obligation
+      && automaticFragmentRecovery && execution.recovery.automatic_depth === 0
       ? beginProviderRecoveryEpoch(providerMetadata, rootObligationId, coverageBase.source_fingerprint, {
         recovery_intent: 'recover_unresolved_partial_output_fragments',
         recovery_stage: resumeEligibility?.eligible_action ?? 'fragment_decision_regeneration',
@@ -892,10 +833,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       malformedRecoveryBudget.global_requests_by_stage = {
         ...(restoredResumeEpoch.global_requests_by_stage_before_epoch ?? {}),
       };
-      await options._onRecoveryEpochInitialized?.(restoredResumeEpoch);
+      await execution.hooks.recovery_epoch_initialized(restoredResumeEpoch);
     }
     const bypassEquivalentRootReplay = Boolean(automaticFragmentRecovery)
-      || (options._providerResumedPendingObligation === true && Boolean(resumeRecoveryState))
+      || (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState))
       || resumeEligibility?.blocked === true
       || resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
     const providerAttempt = automaticFragmentRecovery ? {
@@ -1907,11 +1848,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         accepted_partial_record_count: added,
         unresolved_fragment_count: unresolvedPartialFragments,
       });
-      const automaticRecoveryDepth = Number(options._automaticRecoveryDepth ?? 0);
-      if (options._automaticPartialRecovery !== false
+      const automaticRecoveryDepth = execution.recovery.automatic_depth;
+      if (execution.recovery.automatic_partial_recovery
         && rejectedPartialFragments.length > 0
         && automaticRecoveryDepth < AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_controller_cycles) {
-        const automaticBudget = options._automaticRecoveryBudget ?? {
+        const automaticBudget = execution.recovery.automatic_budget ?? {
           ...createMalformedRecoveryBudget(),
           maximum_additional_provider_requests: AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_provider_requests,
           maximum_wall_time_ms: AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_wall_time_ms,
@@ -1928,28 +1869,31 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           request_budget_maximum: Number(automaticBudget.maximum_additional_provider_requests),
           recovery_started_at: Number(automaticBudget.started_at),
         };
-        await options._onAutomaticRecoveryBoundary?.(boundary);
+        await execution.hooks.automatic_recovery_boundary(boundary);
         try {
           const recovered = await extractSessionMemories(recentMessages, abortCheck, {
             ...options,
             liveHealth: null,
-            _automaticRecoveryDepth: automaticRecoveryDepth + 1,
-            _automaticRecoveryBudget: automaticBudget,
-            _malformedRecoveryBudget: automaticBudget,
-            _providerRootObligationId: rootObligationId,
-            _providerRootSourceRange: options._providerRootSourceRange
-              ?? { start: range.start, end: range.end, message_count: range.message_count },
-            _providerRootSourceFingerprint: options._providerRootSourceFingerprint
-              ?? coverageBase.source_fingerprint,
-            _providerResumedPendingObligation: true,
-            _automaticFragmentRecovery: {
-              response: rejectedPartialFragments.map((item) => item.raw).join('\n'),
-              fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
-              recovery_of_attempt_id: providerAttempt?.attempt_id ?? null,
-              focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, rejectedPartialFragments),
-            },
+            executionContext: extendMemorizeExecutionContext(execution, { recovery: {
+              automatic_depth: automaticRecoveryDepth + 1,
+              automatic_budget: automaticBudget,
+              malformed_budget: automaticBudget,
+              automatic_fragment_recovery: {
+                response: rejectedPartialFragments.map((item) => item.raw).join('\n'),
+                fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+                recovery_of_attempt_id: providerAttempt?.attempt_id ?? null,
+                focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, rejectedPartialFragments),
+              },
+            }, provider: {
+              root_obligation_id: rootObligationId,
+              root_source_range: execution.provider.root_source_range
+                ?? { start: range.start, end: range.end, message_count: range.message_count },
+              root_source_fingerprint: execution.provider.root_source_fingerprint
+                ?? coverageBase.source_fingerprint,
+              resumed_pending_obligation: true,
+            } }),
           });
-          await options._onAutomaticRecoveryCompleted?.({
+          await execution.hooks.automatic_recovery_completed({
             ...boundary,
             recovery_stage: 'completed',
             recovered_record_count: Number(recovered ?? 0),

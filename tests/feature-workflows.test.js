@@ -1365,6 +1365,7 @@ test('chat-local cleanup: Forget This Chat and Fresh Start remove every chat-loc
 
 test('Fresh Start refreshes cleared personal prompt slots before updating token usage', () => {
   const settings = read('settings.js');
+  const projections = read('memorize-projections.js');
   const freshStart = settings.slice(settings.indexOf("$('#sme_fresh_start_button')"), settings.indexOf('// ---- Embedding deduplication'));
   assert.match(freshStart, /freshStartCharacterNames/);
   assert.match(freshStart, /for \(const memberName of freshStartCharacterNames\)/);
@@ -1380,9 +1381,9 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /current_chat_identity_reviews_removed/);
   assert.match(freshStart, /sme_export_diagnostics/);
   assert.match(settings, /preRunFreshStartAudit/);
-  assert.match(settings, /diagnostic_type: recovery\.available \? 'incomplete_catchup_recovery' : 'pre_run_state_audit'/);
   assert.match(settings, /catch_up_recovery: recovery/);
-  assert.match(settings, /provider_calls_during_audit: 0/);
+  assert.match(projections, /diagnostic_type: current\.catch_up_recovery\?\.available \? 'incomplete_catchup_recovery' : 'pre_run_state_audit'/);
+  assert.match(projections, /provider_calls_during_audit: 0/);
   assert.match(settings, /'entity_redirects'/);
   assert.match(settings, /'developer_idempotence_check'/);
   assert.match(settings, /'live_memory_health'/);
@@ -1649,12 +1650,15 @@ test('long-chat extraction preflights final prompts and records bounded overflow
   assert.match(settings, /extraction_coverage: runResult\.extractionCoverage/);
   assert.match(settings, /\['completed', 'repartitioned_completed'\]\.includes/);
   assert.match(settings, /checkpointCatchUpTransaction\(chunkTransaction\)/);
-  assert.match(settings, /_contextOverflowCompletedChildren/);
+  assert.match(settings, /completed_child_keys: completedOverflowChildren/);
+  assert.match(session, /execution\.recovery\.completed_child_keys/);
+  assert.match(longterm, /execution\.recovery\.completed_child_keys/);
   assert.match(settings, /getCatchUpOwnerRangeStatus/);
 });
 
 test('Memorize Chat checkpoints only committed chunks and exposes guarded recovery', () => {
   const settings = read('settings.js');
+  const projections = read('memorize-projections.js');
   const obligationLedger = read('memorize-obligation-ledger.js');
   const shortTermRecovery = read('shortterm-recovery-utils.js');
   const html = read('settings.html');
@@ -1671,7 +1675,7 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /getCatchUpTierRangeStatus/);
   assert.match(settings, /tier_coverage_incomplete/);
   assert.match(settings, /exactPendingObligation/);
-  assert.match(settings, /Next action:/);
+  assert.match(projections, /Next action:/);
   assert.match(settings, /unknown_uncommitted_tier_obligation/);
   assert.match(settings, /const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest/);
   assert.match(settings, /chunks_scope: 'current_attempt'/);
@@ -1679,11 +1683,12 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /full cumulative coverage confirmed/);
   assert.match(settings, /source_message_count: Math\.max\(0, total - resumeOffset\)/);
   assert.match(settings, /timing_scope: 'current_attempt_plus_finalization_only'/);
-  assert.match(settings, /Incomplete Memorize Chat run available:/);
+  assert.match(projections, /Incomplete Memorize Chat run available:/);
   assert.match(shortTermRecovery, /Resumed Automatically/);
-  assert.match(settings, /Resumed automatically — processing continues/);
+  assert.match(projections, /Resumed automatically — processing continues/);
   assert.match(settings, /let catchUpUiRunning = false/);
-  assert.match(settings, /if \(catchUpUiRunning \|\| !status \|\| status\.lifecycle_status === 'not_run'\)/);
+  assert.match(settings, /selectRunOutcomePresentation\(report/);
+  assert.match(projections, /if \(running \|\| !status \|\| status\.lifecycle_status === 'not_run'\)/);
   assert.match(settings, /ctrl\.compactionRunning = true;\s*catchUpUiRunning = true;[\s\S]*refreshRunOutcomeUI\(\)/);
   assert.match(settings, /ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;/);
   assert.match(settings, /after the same transaction succeeds/);
@@ -1695,6 +1700,7 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
 test('finalization phases commit independently and resume their saved settings snapshot', () => {
   const settings = read('settings.js');
   const compaction = read('compaction.js');
+  const projections = read('memorize-projections.js');
   assert.match(settings, /function snapshotMemorizeRunSettings/);
   assert.match(settings, /CATCH_UP_SETTINGS_SIDECAR_KEY/);
   assert.match(settings, /CATCH_UP_SETTINGS_STORAGE_PREFIX/);
@@ -1708,7 +1714,7 @@ test('finalization phases commit independently and resume their saved settings s
   assert.match(settings, /const commitFinalizationPhase/);
   assert.match(settings, /hasCompletedFinalizationPhase\('shortterm_extraction'\)/);
   assert.match(settings, /commitFinalizationPhase\('shortterm_extraction'\)/);
-  assert.match(settings, /completed_phase_count/);
+  assert.match(projections, /completed_phase_count/);
   assert.match(settings, /restored_from_recovery_checkpoint/);
   assert.match(settings, /skipped_not_applicable_for_fresh_start/);
   assert.match(settings, /commitShortTermPass/);
@@ -1946,8 +1952,10 @@ test('scene diagnostics distinguish grounded relocation coverage gaps from gener
 
 test('Session extraction imports chat identity and distinguishes pre-request internal failures', () => {
   const session = read('session.js');
+  const tierPipeline = read('memorize-tier-pipeline.js');
   assert.match(session, /extension_prompt_roles,\s*getCurrentChatId,/);
-  assert.match(session, /chat_id: getCurrentChatId\(\)/);
+  assert.match(session, /chatId: getCurrentChatId\(\)/);
+  assert.match(tierPipeline, /chat_id: chatId/);
   assert.match(session, /const preRequestInternalFailure = !malformedExhausted && !providerRequestSent/);
   assert.match(session, /request_not_sent_internal_error/);
   assert.match(session, /sessionDiagnostics\.internalFailures/);
@@ -1980,7 +1988,9 @@ test('source-tier coverage becomes complete only after a terminal parse or persi
 
 test('Memorize Chat exposes blocked recovery and central malformed-recovery diagnostics', () => {
   const settings = read('settings.js');
-  assert.match(settings, /Blocked — recovery change required/);
+  const projections = read('memorize-projections.js');
+  assert.match(projections, /Blocked — recovery change required/);
+  assert.match(settings, /selectRecoveryPresentation/);
   assert.match(settings, /buildCentralMalformedRecoverySummary/);
   assert.match(settings, /malformed_recovery: centralMalformedRecovery/);
   assert.match(settings, /recovery_blocked = recoveryBlocked/);

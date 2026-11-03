@@ -37,6 +37,50 @@ applied only after parser, validation, persistence, coverage/manifest, ledger,
 and live-health stages have explicit dispositions. A crash at any arrow resumes
 the unapplied downstream stages without repeating a usable provider response.
 
+## Controller boundary and outcomes
+
+Initial execution and Resume enter through the same `MemorizeRunEngine`, which
+owns at most one invocation. Controller results use a single typed shape:
+
+```text
+kind + reason_code + resumable + next_action + obligation_id
+     + provider_call_required + bounded evidence
+```
+
+Completion, pause, block, cancellation, and failure are result kinds. Expected
+pause/block states are not new exception types. A compatibility boundary
+normalizes decorated errors emitted by older lower-level helpers; unexpected
+implementation, persistence, and transport exceptions retain their native
+exception path.
+
+Session and Long-Term receive one explicit execution context containing the
+controller attempt, provider obligation/recovery identity, and lifecycle hooks.
+The controller must not add or interpret underscore-prefixed callback,
+provider, or recovery fields. Child work extends the named context while
+preserving hooks and replacing only the exact provider/recovery identity.
+
+## Shared tier pipeline and recovery scheduler
+
+Session and Long-Term use the same tier pipeline to derive the logical root,
+exact recovery leaf, coverage record, obligation transition, physical provider
+attempt, and context-overflow evidence. Tier modules retain their distinct
+prompt, parser, validation, and persistence rules; they do not independently
+reimplement lifecycle bookkeeping.
+
+Recovery child traversal is owned by a bounded iterative scheduler. The
+scheduler skips durable child keys, checks the current allowance before each
+request, commits one exact child at a time, and returns the exact next and
+unattempted keys when the budget is exhausted. Re-entry is rejected, so a
+worker cannot silently re-enter the same recovery traversal.
+
+## Read models
+
+Diagnostics and UI render from pure selectors. The selectors receive durable
+checkpoint, ledger, manifest, run-status, and live-health inputs and return new
+read models without persisting or annotating those inputs. Mutation is limited
+to explicit lifecycle commands; presentation refresh and diagnostics export do
+not become hidden state-transition paths.
+
 ## Obligation reducer
 
 | From | Permitted classes | Forbidden example |

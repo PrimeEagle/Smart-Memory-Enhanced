@@ -666,7 +666,6 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       }])),
       phase_dispositions: checkpoint.finalization?.phase_dispositions ?? {},
       shortterm_recovery: checkpoint.finalization?.shortterm_failure_state ?? null,
-      shortterm_resume_eligibility: checkpoint.finalization?.shortterm_resume_eligibility ?? null,
       shortterm_recovery_migration: checkpoint.finalization?.shortterm_recovery_migration ?? null,
       shortterm_post_commit_recovery_marker: checkpoint.finalization?.shortterm_post_commit_recovery_marker ?? null,
       shortterm_recovery_plan: checkpoint.finalization?.shortterm_recovery_plan ? {

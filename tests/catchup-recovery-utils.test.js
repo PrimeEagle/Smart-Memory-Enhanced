@@ -378,7 +378,6 @@ test('checkpoint diagnostics retain completed finalization phases and the recove
   const summary = summarizeCatchUpCheckpoint({
     ...checkpoint,
     finalization: { schema_version: 1, active_phase: 'shortterm_extraction', completed_phases: { scene_detection: { completed_at: 1 } },
-      shortterm_resume_eligibility: { eligible: true, decision: 'reconstruct_successor_from_committed_boundary' },
       shortterm_recovery_migration: { applied: true, false_failure_size_removed: 9 },
       shortterm_post_commit_recovery_marker: { marker_id: 'marker-1', committed_boundary: 7645 },
       shortterm_recovery_plan: { schema_version: 6, plan_id: 'successor', lifecycle_state: 'successor_reload_verified',
@@ -388,7 +387,6 @@ test('checkpoint diagnostics retain completed finalization phases and the recove
   });
   assert.equal(summary.finalization.active_phase, 'shortterm_extraction');
   assert.deepEqual(summary.finalization.completed_phases, ['scene_detection']);
-  assert.equal(summary.finalization.shortterm_resume_eligibility.eligible, true);
   assert.equal(summary.finalization.shortterm_recovery_migration.false_failure_size_removed, 9);
   assert.equal(summary.finalization.shortterm_post_commit_recovery_marker.committed_boundary, 7645);
   assert.equal(summary.finalization.shortterm_recovery_plan.next_segment_start, 7645);

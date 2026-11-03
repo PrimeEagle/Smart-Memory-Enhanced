@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.76] - 2026-11-03
+
+### Changed
+
+- Began the Memorize Chat controller cleanup with one typed lifecycle outcome
+  contract and centralized reason registry. Expected pause/block results now
+  normalize at a compatibility boundary instead of spreading new decorated
+  `Error` conventions through the controller.
+- Initial and resumed runs now enter through the same single-owner run engine.
+  Concurrent invocations receive a typed blocked outcome while unexpected
+  exceptions continue to propagate to the existing failure diagnostics.
+- Session and Long-Term extraction now consume a named execution context for
+  controller identity, provider recovery identity, and durable lifecycle hooks.
+  Their provider, obligation, and source-coverage transitions now run through
+  one shared tier pipeline.
+- Context-overflow and malformed-child recovery now use a bounded iterative
+  scheduler with exact skip, allowance, commit, and next-work accounting.
+  Recursive private option overrides were removed in favor of the explicit
+  execution context.
+- Run outcome, recovery-button state, and exported diagnostics now derive from
+  pure projection functions. Rendering no longer writes inferred status back
+  into the recovery checkpoint, and the obsolete button-event compatibility
+  adapter was removed.
+
 ## [0.9.75] - 2026-11-03
 
 ### Added

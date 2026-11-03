@@ -120,7 +120,6 @@ import {
   sourceWindowFingerprint,
 } from './extraction-window-utils.js';
 import {
-  beginProviderAttempt,
   finishProviderAttempt,
   markProviderPartialRecordsPersisted,
   markProviderRecoveryBudgetPause,
@@ -148,32 +147,14 @@ import {
   recoveryBudgetPauseError,
   recoverMalformedTaggedOutput,
 } from './malformed-output-recovery.js';
+import { extendMemorizeExecutionContext, resolveMemorizeExecutionContext } from './memorize-execution-context.js';
+import { createMemorizeTierPipeline, recordTierCoverage as recordExtractionCoverage } from './memorize-tier-pipeline.js';
+import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 
 function extractionRangeId(tier, owner, range, depth) {
   return `${tier}:${String(owner ?? 'chat').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}:${range.start ?? 'none'}-${range.end ?? 'none'}:d${depth}`;
-}
-
-function recordExtractionCoverage(ledger, record) {
-  if (!ledger) return;
-  ledger.records ??= [];
-  const index = ledger.records.findIndex((entry) => entry.range_id === record.range_id);
-  if (index >= 0) ledger.records[index] = { ...ledger.records[index], ...record };
-  else ledger.records.push(record);
-}
-
-function contextOverflowError(tier, preflight, range) {
-  const error = new Error(`${tier} extraction window exceeds the configured context budget before request dispatch.`);
-  error.sme_request_diagnostics = {
-    http_status: 400,
-    likely_cause: 'estimated_context_overflow',
-    request_prevented: true,
-    ...preflight,
-    source_start_index: range.start,
-    source_end_index: range.end,
-  };
-  return error;
 }
 
 // Maximum new entries accepted per type per extraction pass.
@@ -828,6 +809,7 @@ function mergeMemories(existing, incoming, maxTotal) {
  */
 export async function extractAndStoreMemories(characterName, recentMessages, statusFn = null, options = {}) {
   const settings = extension_settings[MODULE_NAME];
+  const execution = resolveMemorizeExecutionContext(options);
   // The live caller supplies a small mutable diagnostic handle. Catch-up and
   // manual extraction intentionally omit it, keeping their existing ledgers.
   const healthUpdate = (patch) => options.liveHealth?.update?.(patch);
@@ -895,46 +877,12 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       preflight: { ...preflight, usable_input_budget: preflight.usable_input_tokens },
       citation_mapping_valid: sourceMessages.every((message) => Number.isInteger(message.__sme_original_index) || getContext().chat?.includes(message)),
     });
-    const depth = Number(options._contextOverflowDepth ?? 0);
+    const depth = execution.recovery.context_overflow_depth;
     const range = sourceRange(sourceMessages);
-    const rangeId = options._contextOverflowRangeId
+    const rangeId = execution.recovery.context_overflow_range_id
       ?? extractionRangeId('longterm', characterName, range, depth);
     const coverageLedger = options.extractionCoverage?.longterm;
-    const coverageBase = {
-      range_id: rangeId,
-      parent_range_id: options._contextOverflowParentRangeId ?? null,
-      tier: 'longterm',
-      owner: characterName,
-      original_range: { start: range.start, end: range.end, message_count: range.message_count },
-      effective_range: { start: range.start, end: range.end, message_count: range.message_count },
-      citation_mapping_valid: range.source_indices.every(Number.isInteger),
-      source_fingerprint: sourceWindowFingerprint(sourceMessages),
-      preflight,
-      request_sent: false,
-    };
-    const recordCompletedCoverage = (providerOutcome = 'completed') => recordExtractionCoverage(coverageLedger, {
-      ...coverageBase,
-      request_sent: true,
-      provider_outcome: providerOutcome,
-      coverage_terminal_state: 'completed',
-      all_source_messages_covered: true,
-    });
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
-    const rootObligationId = options._providerRootObligationId
-      ?? `longterm:${String(characterName).toLowerCase()}:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
-    const rootSourceRange = options._providerRootSourceRange
-      ?? { start: range.start, end: range.end, message_count: range.message_count };
-    const isRecoveryLeaf = range.start !== rootSourceRange.start || range.end !== rootSourceRange.end;
-    const leafObligationId = isRecoveryLeaf
-      ? `${rootObligationId}:leaf:${range.start}-${range.end}:${coverageBase.source_fingerprint}`
-      : rootObligationId;
-    const updateObligation = async (currentState, details = {}) => options._onObligationState?.({
-      obligation_id: leafObligationId,
-      parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
-      tier: 'longterm', owner: characterName,
-      source_range: { start: range.start, end: range.end, message_count: range.message_count },
-      source_fingerprint: coverageBase.source_fingerprint, current_state: currentState, ...details,
-    });
     const providerConfigSignature = providerConfigurationSignature({
       connection_profile_id: settings.connection_profile_id ?? null,
       model: settings.openai_compat_model ?? settings.ollama_model ?? null,
@@ -942,47 +890,19 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       response_length: responseLength,
       context_length: settings.context_length ?? null,
     });
-    const beginPhysicalAttempt = (requestKind = options._providerRequestKind
-      ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
-      ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
-      tier: 'longterm', owner: characterName, logical_obligation_id: rootObligationId,
-      child_obligation_id: leafObligationId,
-      controller_attempt_number: options._controllerAttemptNumber ?? null,
-      chat_id: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
-      parent_attempt_id: options._providerParentAttemptId ?? null,
-      repartition_parent_id: options._contextOverflowParentRangeId ?? null,
-      request_kind: requestKind,
-      changed_recovery_dimensions: changedDimensions,
-      recovery_of_attempt_id: recovery.recovery_of_attempt_id ?? null,
-      source_unit_key: recovery.source_unit_key ?? null,
-      target_source_unit: recovery.target_source_unit ?? recovery.source_unit_key ?? null,
-      target_source_fingerprint: recovery.target_source_fingerprint ?? null,
-      context_source_range: recovery.context_source_range ?? null,
-      context_message_count: recovery.context_message_count ?? null,
-      permitted_citation_indexes: recovery.permitted_citation_indexes ?? [],
-      context_only_messages_eligible: recovery.context_only_messages_eligible ?? null,
-      applicability_decision: recovery.applicability_decision ?? null,
-      provider_capability_path: recovery.provider_capability_path ?? null,
-      repair_reason: recovery.repair_reason ?? null,
-      recovery_stage: recovery.recovery_stage ?? null,
-      expected_output_format: recovery.expected_output_format ?? 'longterm_tagged_lines_v1',
-      root_source_range: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-      root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-      source_range: { start: range.start, end: range.end, message_count: range.message_count },
-      source_fingerprint: coverageBase.source_fingerprint,
-      configured_context_limit: preflight.configured_context_limit,
-      effective_context_limit: preflight.effective_context_limit,
-      context_limit_source: requestBudget.runtimeContextLookup?.status === 'hit' ? 'persisted_learned_limit' : 'configured_preference',
-      runtime_context_lookup_status: requestBudget.runtimeContextLookup?.status ?? null,
-      reserved_output_tokens: preflight.reserved_output_tokens,
-      safety_margin: preflight.safety_margin_tokens,
-      protocol_overhead: preflight.protocol_overhead_tokens,
-      estimated_input_tokens: preflight.estimated_input_tokens,
-      estimated_final_request_tokens: preflight.estimated_input_tokens + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
-      resumed_pending_obligation: options._providerResumedPendingObligation === true,
-      schema_version: 'longterm-tagged-v1',
-      configuration_signature: providerConfigSignature,
+    const pipeline = createMemorizeTierPipeline({
+      tier: 'longterm', tierLabel: 'Long-term', owner: characterName,
+      execution, metadata: providerMetadata, range, rangeId,
+      parentRangeId: execution.recovery.context_overflow_parent_range_id,
+      depth, coverageLedger, sourceFingerprint: sourceWindowFingerprint(sourceMessages),
+      preflight, requestBudget, providerConfigSignature,
+      chatId: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
+      expectedOutputFormat: 'longterm_tagged_lines_v1', schemaVersion: 'longterm-tagged-v1',
     });
+    const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
+    const recordCompletedCoverage = pipeline.recordCompletedCoverage;
+    const updateObligation = pipeline.transitionObligation;
+    const beginPhysicalAttempt = pipeline.beginAttempt;
     const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
       const splitCoverageBase = {
@@ -1018,14 +938,16 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           coverage_terminal_state: 'unresolved_context_overflow',
           unresolved_reason: 'split_depth_or_partition_failure',
         });
-        throw contextOverflowError('Long-term', preflight, range);
+        throw pipeline.contextOverflowError();
       }
       let added = 0;
       try {
-        for (const child of split.partitions) {
+        const schedule = await createMemorizeRecoveryScheduler().run({
+          tasks: split.partitions,
+          keyOf: (child) => extractionRecoveryChildKey('longterm', characterName, child),
+          completedKeys: execution.recovery.completed_child_keys,
+          onSkipped: async (child) => {
           const childRange = sourceRange(child);
-          const childKey = extractionRecoveryChildKey('longterm', characterName, child);
-          if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)) {
             recordExtractionCoverage(coverageLedger, {
               range_id: extractionRangeId('longterm', characterName, childRange, depth + 1),
               parent_range_id: rangeId,
@@ -1036,31 +958,40 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               request_sent: false, provider_outcome: 'restored_recovered_child_checkpoint',
               coverage_terminal_state: 'completed', all_source_messages_covered: true,
             });
-            continue;
-          }
-          added += await extractAndStoreMemories(characterName, child, statusFn, {
+          },
+          execute: async (child) => {
+            const childRange = sourceRange(child);
+            return extractAndStoreMemories(characterName, child, statusFn, {
             ...options,
             // One live event describes the root incremental window. Child
             // partitions are recovery details, not independent live turns.
             liveHealth: null,
-            _contextOverflowDepth: depth + 1,
-            _contextOverflowParentRangeId: rangeId,
-            _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + 1),
-            _providerRootObligationId: rootObligationId,
-            _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-            _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-            _providerParentAttemptId: parentAttemptId ?? options._providerParentAttemptId ?? null,
-            _providerRequestKind: 'repartition_child',
-            _providerChangedRecoveryDimensions: ['source_range', 'estimated_request_size'],
+            executionContext: extendMemorizeExecutionContext(execution, { recovery: {
+              context_overflow_depth: depth + 1,
+              context_overflow_parent_range_id: rangeId,
+              context_overflow_range_id: extractionRangeId('longterm', characterName, childRange, depth + 1),
+            }, provider: {
+              root_obligation_id: rootObligationId,
+              root_source_range: execution.provider.root_source_range ?? { start: range.start, end: range.end, message_count: range.message_count },
+              root_source_fingerprint: execution.provider.root_source_fingerprint ?? coverageBase.source_fingerprint,
+              parent_attempt_id: parentAttemptId ?? execution.provider.parent_attempt_id,
+              request_kind: 'repartition_child',
+              changed_recovery_dimensions: ['source_range', 'estimated_request_size'],
+            } }),
           });
-          await options._onContextOverflowChildCommitted?.({
+          },
+          onCommitted: async (child, { key: childKey }) => {
+            const childRange = sourceRange(child);
+          await execution.hooks.context_overflow_child_committed({
             key: childKey, tier: 'longterm', owner: characterName,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
             parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: depth + 1,
             split_reason: reason, provider_parent_attempt_id: parentAttemptId,
           });
-        }
+          },
+        });
+        added = schedule.added;
       } catch (err) {
         recordExtractionCoverage(coverageLedger, {
           ...splitCoverageBase,
@@ -1077,7 +1008,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           unresolved_reason: 'single_message_exceeds_context_budget',
           recovered_child_ranges: split.partitions.length,
         });
-        throw contextOverflowError('Long-term', preflight, range);
+        throw pipeline.contextOverflowError();
       }
       recordExtractionCoverage(coverageLedger, {
         ...splitCoverageBase,
@@ -1087,23 +1018,23 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       });
       return added;
     };
-    const malformedRecoveryDepth = Number(options._malformedRecoveryDepth ?? 0);
-    const malformedRecoveryBudget = createMalformedRecoveryBudget(options._malformedRecoveryBudget);
+    const malformedRecoveryDepth = execution.recovery.malformed_depth;
+    const malformedRecoveryBudget = createMalformedRecoveryBudget(execution.recovery.malformed_budget);
     const splitMalformedWindow = async ({ budget, nextDepth, reason, parentAttemptId }) => {
       const children = partitionMalformedSourceWindow(sourceMessages);
       if (!children.length) return { completed: false, reason: 'minimum_malformed_recovery_window_reached' };
       let added = 0;
       const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('longterm', characterName, child));
       const completedChildKeysAtStart = [
-        ...(options._contextOverflowCompletedChildren ?? []),
+        ...execution.recovery.completed_child_keys,
         ...(budget.split_children_committed ?? []),
       ];
       let childManifest = registerProviderRecoveryChildPlan(providerMetadata, rootObligationId, {
         tier: 'longterm', owner: characterName,
-        root_source_range: options._providerRootSourceRange
+        root_source_range: execution.provider.root_source_range
           ?? { start: range.start, end: range.end, message_count: range.message_count },
-        root_source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-        parent_child_key: options._recoveryManifestParentChildKey ?? null,
+        root_source_fingerprint: execution.provider.root_source_fingerprint ?? coverageBase.source_fingerprint,
+        parent_child_key: execution.recovery.manifest_parent_child_key,
         children: children.map((child) => {
           const childRange = sourceRange(child);
           return { key: extractionRecoveryChildKey('longterm', characterName, child),
@@ -1112,104 +1043,116 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         completed_child_keys: completedChildKeysAtStart,
         budget,
       });
-      await options._onRecoveryChildManifestUpdated?.(childManifest);
+      await execution.hooks.recovery_child_manifest_updated(childManifest);
       let deferredTerminalReconciliation = null;
-      for (const child of children) {
-        const childRange = sourceRange(child);
-        const childKey = extractionRecoveryChildKey('longterm', characterName, child);
-        if ((options._contextOverflowCompletedChildren ?? []).includes(childKey)
-          || budget.split_children_committed.includes(childKey)) continue;
+      const schedule = await createMemorizeRecoveryScheduler().run({
+        tasks: children,
+        keyOf: (child) => extractionRecoveryChildKey('longterm', characterName, child),
+        completedKeys: completedChildKeysAtStart,
+        allowance: async (child, { key: childKey }) => {
+          const childRange = sourceRange(child);
         const childPrefix = `longterm:${String(characterName).trim().toLowerCase()}:`;
         const hasCompletedDescendant = completedChildKeysAtStart.some((key) => {
           if (!String(key).startsWith(childPrefix) || key === childKey) return false;
           const match = String(key).slice(childPrefix.length).match(/^(\d+)-(\d+):/);
           return match && Number(match[1]) >= childRange.start && Number(match[2]) <= childRange.end;
         });
-        const allowance = hasCompletedDescendant
+          return hasCompletedDescendant
           ? { allowed: true, restored_descendant_resume: true }
           : consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition', Date.now(), { child_key: childKey });
-        if (!allowance.allowed) {
-          const childIndex = expectedChildKeys.indexOf(childKey);
+        },
+        execute: async (child, { key: childKey }) => {
+          const childRange = sourceRange(child);
+          try {
+            const childAdded = await extractAndStoreMemories(characterName, child, statusFn, {
+              ...options,
+              liveHealth: null,
+              executionContext: extendMemorizeExecutionContext(execution, { recovery: {
+                malformed_depth: nextDepth,
+                malformed_budget: budget,
+                context_overflow_parent_range_id: rangeId,
+                context_overflow_range_id: extractionRangeId('longterm', characterName, childRange, depth + nextDepth),
+                manifest_parent_child_key: childKey,
+              }, provider: {
+                root_obligation_id: rootObligationId,
+                root_source_range: execution.provider.root_source_range ?? { start: range.start, end: range.end, message_count: range.message_count },
+                root_source_fingerprint: execution.provider.root_source_fingerprint ?? coverageBase.source_fingerprint,
+                parent_attempt_id: parentAttemptId,
+                request_kind: 'malformed_repartition_child',
+                changed_recovery_dimensions: ['source_range', 'malformed_output_repartition'],
+              } }),
+            });
+            return { added: childAdded };
+          } catch (error) {
+            if (error?.code !== 'SME_TERMINAL_PROVIDER_OUTPUT_UNAVAILABLE') throw error;
+            deferredTerminalReconciliation = error;
+            childManifest = markRecoveryChildState(childManifest, childKey,
+              'downstream_reconciliation_pending', {
+                reason_code: 'legacy_terminal_output_not_durably_retained',
+                recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
+              });
+            await execution.hooks.recovery_child_manifest_updated(childManifest);
+            return { added: 0, committed: false };
+          }
+        },
+        onCommitted: async (child, { key: childKey }) => {
+          const childRange = sourceRange(child);
+          budget.split_children_committed.push(childKey);
+          await execution.hooks.context_overflow_child_committed({
+            key: childKey, tier: 'longterm', owner: characterName,
+            source_start_index: childRange.start, source_end_index: childRange.end,
+            message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
+            parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: nextDepth,
+            split_reason: 'malformed_output_repartition', malformed_reason: reason,
+          });
+          childManifest = markProviderRecoveryChildCompleted(providerMetadata, rootObligationId, childKey, {
+            recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
+          });
+          const completedAttempt = [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+            .reverse().find((attempt) => attempt.logical_obligation_id === rootObligationId
+              && attempt.source_fingerprint === sourceWindowFingerprint(child)
+              && attempt.terminal_outcome !== 'running');
+          if (completedAttempt) {
+            const childJournal = recordProviderCompletion(providerMetadata, completedAttempt, {
+              child_key: childKey,
+              manifest_transition: { status: 'applied', applied_at: Date.now() },
+              ledger_transition: { status: 'applied', disposition: 'pending_child_coverage', applied_at: Date.now() },
+            });
+            await execution.hooks.provider_completion_journal_updated(childJournal, {
+              await_point: 'obligation_update', progress: true,
+              last_durable_transition: 'recovery_child_completed',
+            });
+          }
+          await updateObligation('pending_recovery', {
+            exact_reason_code: 'recovery_child_completed_siblings_pending',
+            next_eligible_action: 'continue_unattempted_recovery_child',
+            recovery_intent: 'complete_recovery_child_coverage',
+            recovery_stage: 'malformed_repartition_child',
+          });
+          await execution.hooks.recovery_child_manifest_updated(childManifest);
+        },
+      });
+      added = schedule.added;
+      if (!schedule.completed) {
           childManifest = markProviderRecoveryBudgetPause(providerMetadata, rootObligationId, {
-            reason_code: allowance.reason === 'recovery_wall_time_exhausted'
+          reason_code: schedule.pause_reason === 'recovery_wall_time_exhausted'
               ? 'recovery_wall_time_budget_reached_with_pending_children'
               : 'recovery_request_budget_reached_with_pending_children',
-            next_child_key: childKey,
+          next_child_key: schedule.next_task_key,
             child_active_when_budget_ended: null,
-            unattempted_siblings: expectedChildKeys.slice(childIndex),
-            progress_made: childIndex > 0 || completedChildKeysAtStart.length > 0,
+          unattempted_siblings: schedule.unattempted_task_keys,
+          progress_made: schedule.executed > 0 || completedChildKeysAtStart.length > 0,
           });
-          await options._onRecoveryChildManifestUpdated?.(childManifest);
+          await execution.hooks.recovery_child_manifest_updated(childManifest);
           return { completed: false, paused: true,
             reason: childManifest?.operational_pause?.reason_code
               ?? 'recovery_request_budget_reached_with_pending_children',
-            next_resumable_child: childKey,
-            unattempted_siblings: expectedChildKeys.slice(childIndex),
-            progress_made: true };
-        }
-        try {
-          added += await extractAndStoreMemories(characterName, child, statusFn, {
-            ...options,
-            liveHealth: null,
-            _malformedRecoveryDepth: nextDepth,
-            _malformedRecoveryBudget: budget,
-            _contextOverflowParentRangeId: rangeId,
-            _contextOverflowRangeId: extractionRangeId('longterm', characterName, childRange, depth + nextDepth),
-            _providerRootObligationId: rootObligationId,
-            _providerRootSourceRange: options._providerRootSourceRange ?? { start: range.start, end: range.end, message_count: range.message_count },
-            _providerRootSourceFingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
-            _providerParentAttemptId: parentAttemptId,
-            _providerRequestKind: 'malformed_repartition_child',
-            _providerChangedRecoveryDimensions: ['source_range', 'malformed_output_repartition'],
-            _recoveryManifestParentChildKey: childKey,
-          });
-        } catch (error) {
-          if (error?.code !== 'SME_TERMINAL_PROVIDER_OUTPUT_UNAVAILABLE') throw error;
-          deferredTerminalReconciliation = error;
-          childManifest = markRecoveryChildState(childManifest, childKey,
-            'downstream_reconciliation_pending', {
-              reason_code: 'legacy_terminal_output_not_durably_retained',
-              recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
-            });
-          await options._onRecoveryChildManifestUpdated?.(childManifest);
-          continue;
-        }
-        budget.split_children_committed.push(childKey);
-        await options._onContextOverflowChildCommitted?.({
-          key: childKey, tier: 'longterm', owner: characterName,
-          source_start_index: childRange.start, source_end_index: childRange.end,
-          message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
-          parent_range_id: rangeId, root_obligation_id: rootObligationId, depth: nextDepth,
-          split_reason: 'malformed_output_repartition', malformed_reason: reason,
-        });
-        childManifest = markProviderRecoveryChildCompleted(providerMetadata, rootObligationId, childKey, {
-          recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
-        });
-        const completedAttempt = [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
-          .reverse().find((attempt) => attempt.logical_obligation_id === rootObligationId
-            && attempt.source_fingerprint === sourceWindowFingerprint(child)
-            && attempt.terminal_outcome !== 'running');
-        if (completedAttempt) {
-          const childJournal = recordProviderCompletion(providerMetadata, completedAttempt, {
-            child_key: childKey,
-            manifest_transition: { status: 'applied', applied_at: Date.now() },
-            ledger_transition: { status: 'applied', disposition: 'pending_child_coverage', applied_at: Date.now() },
-          });
-          await options._onProviderCompletionJournalUpdated?.(childJournal, {
-            await_point: 'obligation_update', progress: true,
-            last_durable_transition: 'recovery_child_completed',
-          });
-        }
-        await updateObligation('pending_recovery', {
-          exact_reason_code: 'recovery_child_completed_siblings_pending',
-          next_eligible_action: 'continue_unattempted_recovery_child',
-          recovery_intent: 'complete_recovery_child_coverage',
-          recovery_stage: 'malformed_repartition_child',
-        });
-        await options._onRecoveryChildManifestUpdated?.(childManifest);
+          next_resumable_child: schedule.next_task_key,
+          unattempted_siblings: schedule.unattempted_task_keys,
+          progress_made: schedule.executed > 0 };
       }
       const committedChildKeys = [
-        ...(options._contextOverflowCompletedChildren ?? []),
+        ...execution.recovery.completed_child_keys,
         ...budget.split_children_committed,
       ];
       if (!malformedChildCoverageComplete(expectedChildKeys, committedChildKeys)) {
@@ -1230,7 +1173,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       return { completed: true, added };
     };
 
-    const completedRecoveryChildren = options._contextOverflowCompletedChildren ?? [];
+    const completedRecoveryChildren = execution.recovery.completed_child_keys;
     const rootChildPrefix = `longterm:${String(characterName).trim().toLowerCase()}:`;
     const hasRestoredMalformedDescendant = completedRecoveryChildren.some((key) => {
       if (!String(key).startsWith(rootChildPrefix)) return false;
@@ -1303,7 +1246,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       source_range: completionReplay.source_range,
       source_fingerprint: completionReplay.source_fingerprint,
       terminal_outcome: completionReplay.terminal_outcome,
-      recovery_stage: options._providerRequestKind ?? 'completion_journal_replay',
+      recovery_stage: execution.provider.request_kind ?? 'completion_journal_replay',
     } : bypassEquivalentRootReplay ? {
       attempt_id: null,
       logical_obligation_id: rootObligationId,
@@ -1322,7 +1265,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       if (completionReplay) {
         response = completionReplay.response_text;
       } else if (!bypassEquivalentRootReplay) {
-        await options._onProviderAwaitPoint?.({
+        await execution.hooks.provider_await_point({
           await_point: 'provider_request', progress: true,
           active_provider_attempt_id: providerAttempt?.attempt_id ?? null,
           root_obligation_id: rootObligationId,
@@ -1363,7 +1306,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
-    await options._onProviderAwaitPoint?.({
+    await execution.hooks.provider_await_point({
       await_point: 'response_parse', progress: true,
       active_provider_attempt_id: null,
       root_obligation_id: rootObligationId,
@@ -1376,7 +1319,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       response_text: response,
       live_health_event_id: options.liveHealth?.event_id ?? null,
     });
-    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+    await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'response_parse', progress: true,
     });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
@@ -1386,7 +1329,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         parser_result: { status: 'explicit_none', records: [] },
         persistence: { status: 'not_needed', durable_record_ids: [] },
       });
-      await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+      await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
         await_point: 'child_manifest_update', progress: true,
       });
       recordCompletedCoverage('completed_no_candidates');
@@ -1485,7 +1428,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       child_key: completionChildKey,
       parser_result: { status: 'accepted', records: parsed, accepted_count: parsed.length },
     });
-    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+    await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'downstream_validation', progress: true,
     });
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
@@ -1523,7 +1466,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           durable_record_ids: verifiedExistingRecordIds }
         : { status: 'staged', durable_record_ids: newMemories.map((memory) => memory.id).filter(Boolean) },
     });
-    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+    await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'canonical_persistence', progress: true,
     });
     if (newMemories.length === 0) {
@@ -1551,7 +1494,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         persistence: { status: parsed.length > 0 ? 'verified_existing' : 'not_needed',
           durable_record_ids: verifiedExistingRecordIds },
       });
-      await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+      await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
         await_point: 'child_manifest_update', progress: true,
         last_durable_transition: 'canonical_records_verified_existing',
       });
@@ -1669,7 +1612,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // cues not present in the memory text itself, scored at a higher bonus per hit.
     // Runs sequentially to avoid OOM on limited VRAM (Ollama serialises anyway).
     const existingKeys = new Set(activeMemories.map((m) => `${m.type}|${m.content}`));
-    if (!options._targetedReplay && (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled)) {
+    if (!execution.recovery.targeted_replay && (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled)) {
       for (const mem of finalActive) {
         // Skip if triggers are already present - covers both new memories with
         // triggers derived this pass and existing memories that survived consolidation
@@ -1704,7 +1647,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Relationship delta extraction: runs after memory extraction so newly
     // added memories are already in finalActive and entity names are known.
     // Sequential like trigger generation to avoid OOM on limited VRAM.
-    if (!options._targetedReplay) {
+    if (!execution.recovery.targeted_replay) {
       // Build the current-state string from stored history for the prompt baseline.
       // Format: "pair: word(magnitude), word(magnitude)" so the model sees existing magnitudes.
       const stateLines = Object.entries(relHistory)
@@ -1902,10 +1845,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
       child_key: completionChildKey,
       persistence: { status: 'committed', durable_record_ids: durableRecordIds },
-      manifest_transition: { status: options._providerRequestKind ? 'pending' : 'not_applicable' },
-      ledger_transition: { status: options._providerRequestKind ? 'pending' : 'applied' },
+      manifest_transition: { status: execution.provider.request_kind ? 'pending' : 'not_applicable' },
+      ledger_transition: { status: execution.provider.request_kind ? 'pending' : 'applied' },
     });
-    await options._onProviderCompletionJournalUpdated?.(completionJournalEntry, {
+    await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'child_manifest_update', progress: true,
       last_durable_transition: 'canonical_records_committed',
     });
@@ -1943,7 +1886,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       err.sme_request_diagnostics ??= {};
       err.sme_request_diagnostics.owner = characterName;
       err.sme_request_diagnostics.root_obligation_id = rootObligationId;
-      err.sme_request_diagnostics.root_source_range = options._providerRootSourceRange
+      err.sme_request_diagnostics.root_source_range = execution.provider.root_source_range
         ?? { start: range.start, end: range.end, message_count: range.message_count };
       healthFinish({
         terminal_health: 'paused_resumable',

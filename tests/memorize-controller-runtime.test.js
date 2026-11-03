@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  bindMemorizeChatHandler,
   bindMemorizeCheckpoint,
   buildMemorizeControllerExit,
   cleanupMemorizeRuntime,
@@ -50,16 +49,6 @@ test('cleanup is idempotent and one cleanup exception cannot stop later resource
   assert.deepEqual(calls, ['first', 'second']);
   assert.equal(first[0].resource_name, 'first');
   assert.equal(second.length, 0);
-});
-
-test('the real Memorize Chat event adapter executes its supplied button handler once', async () => {
-  let registered = null;
-  const button = { on(event, handler) { assert.equal(event, 'click'); registered = handler; } };
-  let invoked = 0;
-  const handler = bindMemorizeChatHandler(button, async () => { invoked += 1; });
-  assert.equal(registered, handler);
-  await registered();
-  assert.equal(invoked, 1);
 });
 
 test('0-19 partial Session path pauses safely, settles its transaction, and preserves siblings', async () => {
