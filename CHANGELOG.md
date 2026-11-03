@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.75] - 2026-11-03
+
+### Added
+
+- Added the canonical Memorize Chat lifecycle model, an authoritative
+  fail-closed obligation reducer, explicit recovery-leaf identity, and a
+  versioned/idempotent v0.9.74 ambiguous-parent migration.
+- Provider attempt registration and terminal completion now use one shared
+  completion journal for both Long-Term and Session extraction. The journal
+  records request/recovery identity plus explicit parser, validation,
+  persistence, coverage, ledger, and live-health dispositions.
+- Added a redacted attempt-399/400 regression fixture and coverage for illegal
+  transition rejection, exact child recovery, migration idempotence, journal
+  completeness, and controller-heartbeat closure.
+
+### Fixed
+
+- Session recovery no longer treats records persisted for one child range as
+  proof that the entire parent range is covered. Committed 280–284 work is
+  preserved independently, 285–289 remains an actionable paused leaf, and
+  290–299 remains explicitly unattempted.
+- `durably_committed -> provider_running` and every other illegal obligation
+  transition are rejected before mutation rather than merely logged after the
+  corrupting state change.
+- Diagnostics refresh completion-journal reconciliation at export time, while
+  migrated historical transition observations remain separate from new
+  runtime invariant violations.
+- Controller exit now settles any active transaction and closes provider,
+  transaction, and await-point ownership in the durable heartbeat.
+
 ## [0.9.74] - 2026-11-02
 
 ### Added

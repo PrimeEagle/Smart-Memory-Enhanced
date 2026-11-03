@@ -115,6 +115,7 @@ import {
   stageProviderRejectedFragments,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
+import { recordProviderCompletion } from './provider-completion-journal.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
 import {
   analyzeMalformedResponse,
@@ -537,12 +538,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `session:chat:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const rootSourceRange = options._providerRootSourceRange
+      ?? { start: range.start, end: range.end, message_count: range.message_count };
+    const isRecoveryLeaf = range.start !== rootSourceRange.start || range.end !== rootSourceRange.end;
+    const leafObligationId = isRecoveryLeaf
+      ? `${rootObligationId}:leaf:${range.start}-${range.end}:${coverageBase.source_fingerprint}`
+      : rootObligationId;
     const updateObligation = async (currentState, details = {}) => options._onObligationState?.({
-      obligation_id: rootObligationId,
+      obligation_id: leafObligationId,
+      parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
       tier: 'session', owner: null,
-      source_range: options._providerRootSourceRange
-        ?? { start: range.start, end: range.end, message_count: range.message_count },
-      source_fingerprint: options._providerRootSourceFingerprint ?? coverageBase.source_fingerprint,
+      source_range: { start: range.start, end: range.end, message_count: range.message_count },
+      source_fingerprint: coverageBase.source_fingerprint,
       current_state: currentState,
       ...details,
     });
@@ -557,6 +564,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
       ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
       tier: 'session', owner: null, logical_obligation_id: rootObligationId,
+      child_obligation_id: leafObligationId,
       controller_attempt_number: options._controllerAttemptNumber ?? null,
       chat_id: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
       parent_attempt_id: options._providerParentAttemptId ?? null,
@@ -593,6 +601,23 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       schema_version: 'session-tagged-v1',
       configuration_signature: providerConfigSignature,
     });
+    const updateCompletionJournal = (attempt = providerAttempt, patch = {}) => {
+      const attemptSucceeded = ['completed', 'completed_no_candidates',
+        'completed_repartitioned'].includes(attempt?.terminal_outcome);
+      const selectedAttempt = (!attempt?._already_finished
+        && (attempt?.terminal_outcome === 'running' || attemptSucceeded)) ? attempt
+        : [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+          .reverse().find((candidate) => candidate.logical_obligation_id === rootObligationId
+            && candidate.source_fingerprint === coverageBase.source_fingerprint
+            && ['completed', 'completed_no_candidates', 'completed_repartitioned']
+              .includes(candidate.terminal_outcome));
+      if (!selectedAttempt?.attempt_id) return null;
+      return recordProviderCompletion(providerMetadata, selectedAttempt, {
+        child_key: extractionRecoveryChildKey('session', 'chat', sourceMessages),
+        child_obligation_id: leafObligationId,
+        ...patch,
+      });
+    };
     const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
       const splitCoverageBase = {
@@ -944,8 +969,19 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     smLog('[Smart Memory Enhanced] Session extraction response:', response);
 
     healthUpdate({ response_received: true, parser_outcome: 'not_started' });
+    updateCompletionJournal(providerAttempt, {
+      provider_disposition: 'response_received', response_text: response,
+    });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
+      updateCompletionJournal(providerAttempt, {
+        parser_result: { status: 'explicit_none', records: [], accepted_count: 0 },
+        validation: { status: 'no_update' },
+        persistence: { status: 'not_needed', durable_record_ids: [] },
+        manifest_transition: { status: 'applied', disposition: 'explicit_no_update' },
+        ledger_transition: { status: 'applied', disposition: 'explicit_no_update' },
+        live_health_transition: { status: 'applied', disposition: 'completed' },
+      });
       markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
       await updateObligation('explicit_no_update', {
         parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
@@ -1122,6 +1158,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         partial_output_policy: partialReason ? 'accept_complete_valid_records_and_reject_only_malformed_fragments' : null,
       });
     }
+    updateCompletionJournal(providerAttempt, {
+      parser_result: {
+        status: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
+        records: parsedCandidates, accepted_count: parsedCandidates.length,
+        rejected_count: unresolvedPartialFragments,
+      },
+    });
     await updateObligation(unresolvedPartialFragments > 0 ? 'parser_partial' : 'parser_accepted', {
       provider_attempt_id: providerAttempt?.attempt_id ?? null,
       parser_result: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
@@ -1600,6 +1643,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             .map((entry) => entry.candidate_id),
         },
       });
+      updateCompletionJournal(providerAttempt, {
+        validation: { status: 'rejected', reason_code: pendingReason },
+        persistence: { status: 'not_applicable', durable_record_ids: [], reason_code: pendingReason },
+        manifest_transition: { status: 'rejected', reason_code: pendingReason },
+        ledger_transition: { status: 'applied', disposition: 'pending_recovery' },
+        live_health_transition: { status: 'applied', disposition: 'operationally_paused' },
+      });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase, request_sent: true,
         provider_outcome: 'downstream_validation_pending_recovery',
@@ -1788,6 +1838,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (abortCheck?.()) return 0;
     persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
+    updateCompletionJournal(providerAttempt, {
+      validation: { status: 'accepted', accepted_count: incoming.length },
+      validated_record_identities: incoming.map((memory) => ({
+        id: memory.id ?? null,
+        candidate_id: memory._citation_candidate_id ?? durableRecordCandidateMap[memory.id] ?? null,
+        source_message_indices: memory.source_message_indices ?? [],
+      })),
+      persistence: {
+        status: addedRecordIds.length ? 'committed' : 'verified_existing',
+        durable_record_ids: addedRecordIds,
+      },
+    });
     if (stagedRecoveryObligationId) {
       markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
         coverageBase.source_fingerprint, added);
@@ -1833,6 +1895,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           durable_record_candidate_map: durableRecordCandidateMap,
           unresolved_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
         },
+      });
+      updateCompletionJournal(providerAttempt, {
+        manifest_transition: { status: 'applied', disposition: 'partial_child_pending' },
+        ledger_transition: { status: 'applied', disposition: 'pending_recovery' },
+        live_health_transition: { status: 'applied', disposition: 'operationally_paused' },
       });
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
@@ -1953,6 +2020,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovered_fragment_ids: recoveredRecordFragmentIds,
         explicit_no_update_fragment_ids: recoveredNoUpdateFragmentIds,
       },
+    });
+    updateCompletionJournal(providerAttempt, {
+      manifest_transition: { status: 'applied', disposition: 'leaf_covered' },
+      ledger_transition: { status: 'applied', disposition: 'durably_committed' },
+      live_health_transition: { status: 'applied', disposition: 'completed' },
     });
     recordCompletedCoverage('completed_and_persisted');
     healthFinish({

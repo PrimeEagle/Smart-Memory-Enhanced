@@ -1,6 +1,6 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
 
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 1;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 2;
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
@@ -8,10 +8,19 @@ const now = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now
 
 function container(metadata) {
   if (!metadata) return null;
+  const created = !metadata.provider_completion_journal;
+  const priorSchema = Number(metadata.provider_completion_journal?.schema_version ?? 0);
   metadata.provider_completion_journal ??= {
     schema_version: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
-    entries: {}, order: [], reconciliation: null,
+    entries: {}, order: [], reconciliation: null, runtime_epoch_started_at: Date.now(),
+    historical_cutoff_enabled: false,
   };
+  if (created || priorSchema < PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION) {
+    metadata.provider_completion_journal.runtime_epoch_started_at ??= Date.now();
+    if (!created && priorSchema < PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION) {
+      metadata.provider_completion_journal.historical_cutoff_enabled = true;
+    }
+  }
   metadata.provider_completion_journal.schema_version = PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION;
   metadata.provider_completion_journal.entries ??= {};
   metadata.provider_completion_journal.order ??= [];
@@ -29,13 +38,21 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     root_obligation_id: attempt.root_obligation_id ?? attempt.logical_obligation_id
       ?? prior.root_obligation_id ?? null,
     child_key: patch.child_key ?? prior.child_key ?? null,
+    child_obligation_id: patch.child_obligation_id ?? prior.child_obligation_id
+      ?? attempt.child_obligation_id ?? attempt.source_unit_key ?? null,
     tier: attempt.tier ?? prior.tier ?? null,
     owner: attempt.owner ?? prior.owner ?? null,
     source_range: clone(attempt.source_range ?? prior.source_range ?? null),
     source_fingerprint: attempt.source_fingerprint ?? prior.source_fingerprint ?? null,
+    request_kind: patch.request_kind ?? attempt.request_kind ?? prior.request_kind ?? null,
+    recovery_stage: patch.recovery_stage ?? attempt.recovery_stage ?? prior.recovery_stage ?? null,
+    provider_disposition: patch.provider_disposition ?? attempt.terminal_outcome
+      ?? prior.provider_disposition ?? 'running',
     terminal_outcome: attempt.terminal_outcome ?? prior.terminal_outcome ?? 'running',
     response_text: patch.response_text ?? prior.response_text ?? null,
     parser_result: clone(patch.parser_result ?? prior.parser_result ?? null),
+    validation: { status: 'pending', ...(prior.validation ?? {}),
+      ...(clone(patch.validation) ?? {}) },
     validated_record_identities: clone(patch.validated_record_identities
       ?? prior.validated_record_identities ?? []),
     persistence: { status: 'not_started', durable_record_ids: [],
@@ -128,13 +145,24 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
   const runningAttemptIds = new Set(attempts.filter((item) => item?.terminal_outcome === 'running')
     .map((item) => item.attempt_id));
   const violations = [];
+  const historicalObservations = [];
+  const recordViolation = (violation, attempt = null) => {
+    const historical = journal.historical_cutoff_enabled === true
+      && attempt && Number(attempt.at ?? 0) > 0
+      && Number(attempt.at) < Number(journal.runtime_epoch_started_at ?? 0);
+    (historical ? historicalObservations : violations).push({
+      ...violation,
+      classification: historical ? 'historical_normalized' : 'current_runtime',
+    });
+  };
   for (const obligation of Object.values(obligations)) {
     if (obligation?.current_state !== 'provider_running') continue;
     const active = (obligation.provider_attempt_lineage ?? []).filter((id) => runningAttemptIds.has(id));
     if (active.length !== 1) violations.push({ code: 'provider_running_without_exactly_one_physical_attempt',
       obligation_id: obligation.obligation_id, active_attempt_ids: active });
   }
-  for (const attempt of attempts.filter((item) => terminalSuccess.has(item?.terminal_outcome))) {
+  for (const attempt of attempts.filter((item) => item?.terminal_outcome
+    && item.terminal_outcome !== 'running')) {
     const obligation = obligations[attempt.logical_obligation_id]
       ?? Object.values(obligations).find((item) => item?.obligation_id === attempt.logical_obligation_id);
     const entry = journal.entries[attempt.attempt_id];
@@ -142,22 +170,23 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
       Object.values(manifest?.children ?? {}).map((child) => ({ manifest, child })))
       .filter(({ manifest, child }) => manifest.root_obligation_id === attempt.logical_obligation_id
         && child.source_fingerprint === attempt.source_fingerprint);
-    if (obligation?.current_state === 'provider_running') violations.push({
+    if (obligation?.current_state === 'provider_running') recordViolation({
       code: 'terminal_attempt_left_obligation_provider_running', attempt_id: attempt.attempt_id,
       obligation_id: attempt.logical_obligation_id, source_range: attempt.source_range,
-    });
+    }, attempt);
     for (const { child } of matchingChildren.filter(({ child }) => child.state === 'unattempted')) {
-      violations.push({ code: 'completed_attempt_has_unattempted_manifest_child',
+      recordViolation({ code: 'completed_attempt_has_unattempted_manifest_child',
         attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
-        child_key: child.key, source_range: child.source_range });
+        child_key: child.key, source_range: child.source_range }, attempt);
     }
-    if (!entry) violations.push({ code: 'terminal_attempt_missing_completion_journal',
+    if (!entry) recordViolation({ code: 'terminal_attempt_missing_completion_journal',
       attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
-      source_range: attempt.source_range });
-    else if (!['committed', 'not_needed', 'verified_existing'].includes(entry.persistence?.status)) {
-      violations.push({ code: 'terminal_attempt_missing_persistence_disposition',
+      source_range: attempt.source_range }, attempt);
+    else if (!['committed', 'not_needed', 'verified_existing', 'not_applicable',
+      'discarded', 'rejected'].includes(entry.persistence?.status)) {
+      recordViolation({ code: 'terminal_attempt_missing_persistence_disposition',
         attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
-        persistence_status: entry.persistence?.status ?? null });
+        persistence_status: entry.persistence?.status ?? null }, attempt);
     }
   }
   for (const event of live_health?.recent_extraction_events ?? []) {
@@ -171,7 +200,18 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
       tier: event.tier, owner: event.owner ?? null,
     });
   }
-  const result = { consistent: violations.length === 0, violations, checked_at: Date.now() };
+  const result = {
+    consistent: violations.length === 0,
+    violations,
+    current_runtime_violations: violations,
+    unresolved_migration_violations: [],
+    historical_observations: historicalObservations,
+    informational_compatibility_notices: historicalObservations.length ? [{
+      code: 'legacy_completion_journal_observations_normalized',
+      count: historicalObservations.length,
+    }] : [],
+    checked_at: Date.now(),
+  };
   if (metadata) journal.reconciliation = result;
   return result;
 }
@@ -207,17 +247,22 @@ export function exportProviderCompletionJournal(metadata) {
   if (!journal) return null;
   return {
     schema_version: journal.schema_version,
+    runtime_epoch_started_at: journal.runtime_epoch_started_at ?? null,
     reconciliation: clone(journal.reconciliation),
     entries: journal.order.map((id) => journal.entries[id]).filter(Boolean).map((entry) => ({
       attempt_id: entry.attempt_id, logical_run_id: entry.logical_run_id,
       root_obligation_id: entry.root_obligation_id, child_key: entry.child_key,
+      child_obligation_id: entry.child_obligation_id,
       tier: entry.tier, owner: entry.owner, source_range: clone(entry.source_range),
       source_fingerprint: entry.source_fingerprint, terminal_outcome: entry.terminal_outcome,
+      request_kind: entry.request_kind, recovery_stage: entry.recovery_stage,
+      provider_disposition: entry.provider_disposition,
       private_response_retained: entry.response_text != null,
       parser_status: entry.parser_result?.status ?? null,
       parser_accepted_count: Number(entry.parser_result?.accepted_count
         ?? entry.parser_result?.records?.length ?? 0),
       validated_record_identities: clone(entry.validated_record_identities ?? []),
+      validation: clone(entry.validation),
       persistence: clone(entry.persistence), manifest_transition: clone(entry.manifest_transition),
       ledger_transition: clone(entry.ledger_transition),
       live_health_event_id: entry.live_health_event_id,

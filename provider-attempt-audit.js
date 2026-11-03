@@ -1,6 +1,7 @@
 /** Bounded, content-free accounting for actual Long-Term/Session provider calls. */
 import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION } from './recovery-stage-eligibility.js';
+import { recordProviderCompletion } from './provider-completion-journal.js';
 import {
   createRecoveryChildManifest,
   markRecoveryChildState,
@@ -685,6 +686,15 @@ export function beginProviderAttempt(metadata, input = {}) {
   }
   audit.recent_attempts.push(event);
   audit.recent_attempts = audit.recent_attempts.slice(-PROVIDER_ATTEMPT_EVENT_LIMIT);
+  // Attempt registration and completion share one WAL for every tier.  This
+  // closes the former Long-Term-only integration hole that omitted Session
+  // attempts from durable completion accounting.
+  recordProviderCompletion(metadata, event, {
+    child_obligation_id: input.child_obligation_id ?? input.source_unit_key ?? null,
+    request_kind: event.request_kind,
+    recovery_stage: event.recovery_stage,
+    provider_disposition: 'running',
+  });
   return event;
 }
 
@@ -1080,6 +1090,30 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
       prior.recovery_same_source_fingerprint = prior.source_fingerprint === event.source_fingerprint;
     }
   }
+  const providerSucceeded = SUCCESSFUL_TERMINAL_OUTCOMES.has(event.terminal_outcome);
+  recordProviderCompletion(metadata, event, {
+    request_kind: event.request_kind,
+    recovery_stage: event.recovery_stage,
+    provider_disposition: event.terminal_outcome,
+    response_text: patch.response_text,
+    parser_result: patch.parser_result,
+    validation: patch.validation,
+    persistence: patch.persistence ?? (providerSucceeded
+      ? { status: 'pending', durable_record_ids: [] }
+      : { status: 'not_applicable', durable_record_ids: [],
+        reason_code: event.malformed_reason ?? event.failure_classification
+          ?? event.terminal_outcome }),
+    manifest_transition: patch.manifest_transition ?? (providerSucceeded
+      ? { status: 'pending' }
+      : { status: 'rejected', reason_code: event.terminal_outcome }),
+    ledger_transition: patch.ledger_transition ?? (providerSucceeded
+      ? { status: 'pending' }
+      : { status: 'applied', disposition: 'pending_recovery' }),
+    live_health_transition: patch.live_health_transition ?? (providerSucceeded
+      ? { status: 'pending' }
+      : { status: 'applied', disposition: event.terminal_outcome }),
+    completed_at: providerSucceeded ? null : Date.now(),
+  });
   return event;
 }
 

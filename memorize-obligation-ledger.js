@@ -7,8 +7,8 @@
  * `explicit_no_update` make an obligation checkpoint eligible.
  */
 
-export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 2;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 4;
+export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 3;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 5;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -203,6 +203,7 @@ export function createMemorizeObligationLedger(logicalRunId = null, now = Date.n
     obligations: {},
     recovery_backlog: [],
     transition_violations: [],
+    historical_transition_observations: [],
     controller_exits: [],
     created_at: now,
     updated_at: now,
@@ -224,7 +225,17 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
   ledger.logical_run_id ??= logicalRunId;
   ledger.obligations ??= {};
   ledger.recovery_backlog = Array.isArray(ledger.recovery_backlog) ? ledger.recovery_backlog : [];
-  ledger.transition_violations = Array.isArray(ledger.transition_violations) ? ledger.transition_violations.slice(-64) : [];
+  // Older builds recorded an illegal transition and then applied it. Preserve
+  // that evidence, but do not let normalized history masquerade as a new
+  // runtime invariant failure forever.
+  ledger.historical_transition_observations = [
+    ...(Array.isArray(ledger.historical_transition_observations)
+      ? ledger.historical_transition_observations : []),
+    ...(Array.isArray(ledger.transition_violations) ? ledger.transition_violations.map((item) => ({
+      ...item, classification: 'historical_normalized',
+    })) : []),
+  ].slice(-64);
+  ledger.transition_violations = [];
   ledger.controller_exits = Array.isArray(ledger.controller_exits) ? ledger.controller_exits.slice(-32) : [];
   for (const [key, raw] of Object.entries(ledger.obligations)) {
     const id = stableId({ ...raw, obligation_id: raw?.obligation_id ?? key });
@@ -333,13 +344,30 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
   }
   const at = nowValue(transition.at);
   const priorState = prior.current_state ?? 'unattempted';
-  if (prior.current_state && state !== priorState
-    && !(MEMORIZE_OBLIGATION_TRANSITIONS[priorState] ?? []).includes(state)) {
-    ledger.transition_violations.push({
+  const permitted = !prior.current_state || state === priorState
+    || (MEMORIZE_OBLIGATION_TRANSITIONS[priorState] ?? []).includes(state);
+  if (!permitted) {
+    const rejection = {
       code: 'illegal_obligation_state_transition', obligation_id: id,
-      from: priorState, to: state, at,
-    });
-    ledger.transition_violations = ledger.transition_violations.slice(-64);
+      from: priorState, to: state, at, classification: 'current_runtime',
+      requested_evidence: {
+        provider_attempt_id: transition.provider_attempt_id ?? null,
+        exact_reason_code: transition.exact_reason_code ?? transition.reason_code ?? null,
+      },
+    };
+    const duplicate = ledger.transition_violations.some((item) =>
+      item.code === rejection.code && item.obligation_id === rejection.obligation_id
+      && item.from === rejection.from && item.to === rejection.to
+      && item.requested_evidence?.provider_attempt_id
+        === rejection.requested_evidence.provider_attempt_id);
+    if (!duplicate) {
+      ledger.transition_violations.push(rejection);
+      ledger.transition_violations = ledger.transition_violations.slice(-64);
+      ledger.updated_at = at;
+    }
+    // The reducer is fail-closed: terminal coverage and all other durable
+    // fields remain byte-for-byte unchanged when a transition is illegal.
+    return prior;
   }
   const reason = transition.exact_reason_code ?? transition.reason_code ?? prior.exact_reason_code ?? null;
   const range = normalizeRange(input.source_range ?? prior.source_range ?? input);
@@ -413,8 +441,7 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
     },
     transition_history: [...(prior.transition_history ?? []), {
       from: priorState, to: state, at,
-      permitted: !prior.current_state || state === priorState
-        || (MEMORIZE_OBLIGATION_TRANSITIONS[priorState] ?? []).includes(state),
+      permitted: true,
       evidence: {
         provider_attempt_id: transition.provider_attempt_id ?? null,
         parser_result: transition.parser_result ?? null,
@@ -561,7 +588,11 @@ export function projectMemorizeObligationLedger(ledgerValue) {
   const obligations = Object.values(ledger.obligations);
   const safe = obligations.filter((item) => item.checkpoint_eligible);
   const pending = obligations.filter((item) => !item.checkpoint_eligible);
-  const actionable = pending.filter((item) => ACTIONABLE_STATES.has(item.current_state)
+  // Parents summarize child coverage; only leaves may be dispatched. This
+  // prevents Resume from selecting the ambiguous root and repeating a child
+  // whose durable work is already complete.
+  const actionable = pending.filter((item) => !(item.expected_child_obligation_ids?.length)
+    && ACTIONABLE_STATES.has(item.current_state)
     && item.exact_reason_code && item.next_eligible_action);
   const running = pending.filter((item) => item.current_state === 'provider_running');
   const paused = pending.filter((item) => item.current_state === 'operationally_paused');
@@ -622,6 +653,8 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     recovery_backlog: structuredClone(ledger.recovery_backlog ?? []),
     recovery_backlog_count: (ledger.recovery_backlog ?? []).length,
     completion_gate_satisfied: pending.length === 0 && (ledger.recovery_backlog ?? []).length === 0,
+    historical_transition_observations: structuredClone(
+      ledger.historical_transition_observations ?? []),
     invariants: { valid: violations.length === 0, violations },
   };
 }

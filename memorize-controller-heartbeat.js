@@ -34,6 +34,32 @@ export function updateMemorizeControllerHeartbeat(checkpoint, runtime, patch = {
   return checkpoint.controller_heartbeat;
 }
 
+export function closeMemorizeControllerHeartbeat(checkpoint, runtime, exit = {}, at = Date.now()) {
+  if (!checkpoint) return null;
+  const prior = checkpoint.controller_heartbeat ?? {};
+  checkpoint.controller_heartbeat = {
+    ...prior,
+    schema_version: MEMORIZE_CONTROLLER_HEARTBEAT_SCHEMA_VERSION,
+    controller_invocation_id: runtime?.invocation_id ?? prior.controller_invocation_id ?? null,
+    page_instance_id: runtime?.page_instance_id ?? prior.page_instance_id ?? null,
+    attempt_number: runtime?.attempt_number ?? prior.attempt_number ?? null,
+    phase: 'closed',
+    active_transaction_id: null,
+    active_provider_attempt_id: null,
+    await_point: null,
+    await_started_at: null,
+    cancellation_pending: false,
+    terminal: true,
+    exit_classification: exit.classification ?? 'completed',
+    exit_reason_code: exit.reason_code ?? null,
+    next_eligible_action: exit.next_eligible_action ?? null,
+    last_progress_at: at,
+    closed_at: at,
+    updated_at: at,
+  };
+  return checkpoint.controller_heartbeat;
+}
+
 export function classifyStaleMemorizeController(heartbeat, evidence = {}, at = Date.now()) {
   const threshold = Math.max(1, Number(evidence.stale_threshold_ms ?? 300000));
   const age = heartbeat?.last_progress_at == null ? Infinity : Math.max(0, at - heartbeat.last_progress_at);

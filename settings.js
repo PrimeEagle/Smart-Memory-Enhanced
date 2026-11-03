@@ -104,6 +104,7 @@ import {
   recordMemorizeControllerExit,
   transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
+import { migrateAmbiguousRecoveryParents } from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
   checkpointCatchUpTransaction,
@@ -126,6 +127,7 @@ import {
 } from './memorize-controller-runtime.js';
 import {
   updateMemorizeControllerHeartbeat,
+  closeMemorizeControllerHeartbeat,
   classifyStaleMemorizeController,
   MEMORIZE_CONTROLLER_HEARTBEAT_SCHEMA_VERSION,
 } from './memorize-controller-heartbeat.js';
@@ -260,8 +262,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.74',
-  build_fingerprint: 'sme-v0.9.74-provider-completion-wal-r1',
+  extension_version: '0.9.75',
+  build_fingerprint: 'sme-v0.9.75-canonical-lifecycle-reducer-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -3013,6 +3015,13 @@ export function bindSettingsUI(ctrl) {
     const completedRun = metadata.catch_up_diagnostics ?? latestExportDiagnostics;
     const liveMemoryHealth = metadata.live_memory_health ? exportLiveMemoryHealth(metadata) : null;
     const liveProviderSummary = summarizeProviderAttemptAudit(metadata);
+    const liveLedger = metadata.catch_up_checkpoint?.run_manifest?.obligation_ledger ?? null;
+    const currentCompletionConsistency = inspectProviderCompletionConsistency({
+      metadata, provider_audit: metadata.live_memory_health?.provider_attempt_audit,
+      ledger: liveLedger,
+      child_manifests: metadata.catch_up_checkpoint?.recovery_child_manifests,
+      live_health: metadata.live_memory_health,
+    });
     const transactionState = getActiveCatchUpTransactionSnapshot();
     const recoveryBase = reconcileCatchUpRecoverySummary(
       summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint), liveProviderSummary,
@@ -3044,7 +3053,9 @@ export function bindSettingsUI(ctrl) {
         compaction_request_audit: completedRun.compaction_request_audit
           ? reconcileShortTermSegmentLedger(completedRun.compaction_request_audit) : null,
         live_memory_health: liveMemoryHealth, catch_up_recovery: reconciledRecovery,
-        provider_completion_journal: exportProviderCompletionJournal(metadata),
+        provider_completion_journal: {
+          ...exportProviderCompletionJournal(metadata), reconciliation: currentCompletionConsistency,
+        },
         controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat ?? null,
         malformed_recovery: centralMalformedRecovery ?? completedRun.malformed_recovery ?? null,
         targeted_extraction_replay: metadata.targeted_extraction_replay
@@ -3074,7 +3085,9 @@ export function bindSettingsUI(ctrl) {
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
       provider_attempt_audit: liveProviderSummary,
-      provider_completion_journal: exportProviderCompletionJournal(metadata),
+      provider_completion_journal: {
+        ...exportProviderCompletionJournal(metadata), reconciliation: currentCompletionConsistency,
+      },
       controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat ?? null,
       malformed_recovery: centralMalformedRecovery,
       targeted_extraction_replay: metadata.targeted_extraction_replay
@@ -5606,12 +5619,19 @@ export function bindSettingsUI(ctrl) {
             ?.catch_up_diagnostics?.sessionExtraction,
         },
       );
+      const providerAudit = catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit;
+      const lifecycleMigration = migrateAmbiguousRecoveryParents({
+        ledger: checkpoint.run_manifest.obligation_ledger,
+        metadata: catchUpContext.chatMetadata?.[META_KEY],
+        provider_audit: providerAudit,
+      });
+      checkpoint.run_manifest.obligation_ledger = lifecycleMigration.ledger;
+      if (lifecycleMigration.migrated) checkpoint.lifecycle_migration = lifecycleMigration.detail;
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
-        catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
+        providerAudit,
       );
       checkpoint.run_manifest.obligation_ledger = runningReconciliation.ledger;
-      const providerAudit = catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit;
       const migratedCompletions = migrateTerminalProviderCompletions(
         catchUpContext.chatMetadata?.[META_KEY], providerAudit,
         runningReconciliation.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
@@ -10067,6 +10087,24 @@ export function bindSettingsUI(ctrl) {
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
     } finally {
+      // A controller may not return ownership to the UI with an active
+      // transaction. Normal success already committed it; every other exit is
+      // rolled back to the last durable boundary before the exit is recorded.
+      try { settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'controller_exit'); }
+      catch (settleError) {
+        console.warn('[Smart Memory Enhanced] Final transaction settlement warning:', settleError);
+      }
+      const exitCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
+        ?? controllerRuntime.checkpoint;
+      if (exitCheckpoint) exitCheckpoint.provider_completion_consistency
+        = inspectProviderCompletionConsistency({
+          metadata: catchUpContext.chatMetadata?.[META_KEY],
+          provider_audit: catchUpContext.chatMetadata?.[META_KEY]
+            ?.live_memory_health?.provider_attempt_audit,
+          ledger: exitCheckpoint.run_manifest?.obligation_ledger,
+          child_manifests: exitCheckpoint.recovery_child_manifests,
+          live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
+        });
       if (!controllerRuntime.controller_exit) {
         const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
           ?? controllerRuntime.checkpoint;
@@ -10100,10 +10138,20 @@ export function bindSettingsUI(ctrl) {
         console.warn(`[Smart Memory Enhanced] Cleanup warning (${warning.resource_name}/${warning.classification}):`, cleanupErr);
       });
       const cleanupCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
-      if (cleanupCheckpoint && cleanupWarnings.length) {
-        cleanupCheckpoint.cleanup_warnings = [
+      if (cleanupCheckpoint) {
+        if (cleanupWarnings.length) cleanupCheckpoint.cleanup_warnings = [
           ...(cleanupCheckpoint.cleanup_warnings ?? []), ...cleanupWarnings,
         ].slice(-16);
+        closeMemorizeControllerHeartbeat(cleanupCheckpoint, controllerRuntime,
+          controllerRuntime.controller_exit);
+        if (cleanupCheckpoint.transaction_lifecycle?.state === 'active') {
+          cleanupCheckpoint.transaction_lifecycle = {
+            ...cleanupCheckpoint.transaction_lifecycle,
+            state: 'rolled_back', terminal_disposition: 'controller_exit',
+            exact_reason_code: controllerRuntime.controller_exit?.reason_code ?? 'controller_exit',
+            settled_at: Date.now(), updated_at: Date.now(),
+          };
+        }
         cleanupCheckpoint.updated_at = Date.now();
         try {
           await saveChatMetadata(catchUpContext);

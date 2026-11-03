@@ -922,8 +922,16 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
     const rootObligationId = options._providerRootObligationId
       ?? `longterm:${String(characterName).toLowerCase()}:${range.start}-${range.end}:${coverageBase.source_fingerprint}`;
+    const rootSourceRange = options._providerRootSourceRange
+      ?? { start: range.start, end: range.end, message_count: range.message_count };
+    const isRecoveryLeaf = range.start !== rootSourceRange.start || range.end !== rootSourceRange.end;
+    const leafObligationId = isRecoveryLeaf
+      ? `${rootObligationId}:leaf:${range.start}-${range.end}:${coverageBase.source_fingerprint}`
+      : rootObligationId;
     const updateObligation = async (currentState, details = {}) => options._onObligationState?.({
-      obligation_id: rootObligationId, tier: 'longterm', owner: characterName,
+      obligation_id: leafObligationId,
+      parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
+      tier: 'longterm', owner: characterName,
       source_range: { start: range.start, end: range.end, message_count: range.message_count },
       source_fingerprint: coverageBase.source_fingerprint, current_state: currentState, ...details,
     });
@@ -938,6 +946,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       ?? (depth ? 'repartition_child' : 'original'), changedDimensions = options._providerChangedRecoveryDimensions
       ?? (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(providerMetadata, {
       tier: 'longterm', owner: characterName, logical_obligation_id: rootObligationId,
+      child_obligation_id: leafObligationId,
       controller_attempt_number: options._controllerAttemptNumber ?? null,
       chat_id: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
       parent_attempt_id: options._providerParentAttemptId ?? null,
