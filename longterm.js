@@ -901,7 +901,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     });
     const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
     const recordCompletedCoverage = pipeline.recordCompletedCoverage;
-    const updateObligation = pipeline.transitionObligation;
+    const emitLifecycleEvent = pipeline.emitLifecycleEvent;
     const beginPhysicalAttempt = pipeline.beginAttempt;
     const splitWindow = async (reason, splitBudget = requestBudget, overflow = null, parentAttemptId = null) => {
       const providerRequestWasSent = reason === 'provider_reported_context_overflow';
@@ -940,6 +940,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         });
         throw pipeline.contextOverflowError();
       }
+      await emitLifecycleEvent('recovery_children_declared', {
+        children: split.partitions.map((child) => {
+          const childRange = sourceRange(child);
+          const fingerprint = sourceWindowFingerprint(child);
+          return {
+            obligation_id: `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${fingerprint}`,
+            tier: 'longterm', owner: characterName,
+            source_range: childRange, source_fingerprint: fingerprint,
+          };
+        }),
+      });
       let added = 0;
       try {
         const schedule = await createMemorizeRecoveryScheduler().run({
@@ -1016,6 +1027,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         coverage_terminal_state: 'repartitioned_completed',
         all_source_messages_covered: true,
       });
+      await emitLifecycleEvent('parent_children_completed', {
+        persistence_result: 'committed_children', coverage_result: 'safely_committed',
+      });
       return added;
     };
     const malformedRecoveryDepth = execution.recovery.malformed_depth;
@@ -1023,6 +1037,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const splitMalformedWindow = async ({ budget, nextDepth, reason, parentAttemptId }) => {
       const children = partitionMalformedSourceWindow(sourceMessages);
       if (!children.length) return { completed: false, reason: 'minimum_malformed_recovery_window_reached' };
+      await emitLifecycleEvent('recovery_children_declared', {
+        children: children.map((child) => {
+          const childRange = sourceRange(child);
+          const fingerprint = sourceWindowFingerprint(child);
+          return {
+            obligation_id: `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${fingerprint}`,
+            tier: 'longterm', owner: characterName,
+            source_range: childRange, source_fingerprint: fingerprint,
+          };
+        }),
+      });
       let added = 0;
       const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('longterm', characterName, child));
       const completedChildKeysAtStart = [
@@ -1123,7 +1148,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               last_durable_transition: 'recovery_child_completed',
             });
           }
-          await updateObligation('pending_recovery', {
+          await emitLifecycleEvent('recovery_required', {
             exact_reason_code: 'recovery_child_completed_siblings_pending',
             next_eligible_action: 'continue_unattempted_recovery_child',
             recovery_intent: 'complete_recovery_child_coverage',
@@ -1169,6 +1194,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         ...coverageBase, provider_outcome: 'malformed_output_repartition_recovered',
         coverage_terminal_state: 'repartitioned_completed', all_source_messages_covered: true,
         child_range_count: children.length,
+      });
+      await emitLifecycleEvent('parent_children_completed', {
+        persistence_result: 'committed_children', coverage_result: 'safely_committed',
       });
       return { completed: true, added };
     };
@@ -1254,7 +1282,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       prior_window_recovery_state: resumeRecoveryState,
     } : beginPhysicalAttempt();
     if (!completionReplay && !bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
-      await updateObligation('provider_running', {
+      await emitLifecycleEvent('provider_attempt_started', {
         provider_attempt_id: providerAttempt.attempt_id,
         exact_reason_code: 'provider_request_in_progress',
         recovery_intent: providerAttempt.recovery_intent,
@@ -1322,6 +1350,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'response_parse', progress: true,
     });
+    await emitLifecycleEvent('provider_response_received', {
+      provider_attempt_id: providerAttempt?.attempt_id ?? null,
+      exact_reason_code: 'downstream_parser_pending',
+    });
     if (String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
       completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
@@ -1332,6 +1364,14 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
         await_point: 'child_manifest_update', progress: true,
       });
+      await emitLifecycleEvent('parser_accepted', {
+        provider_attempt_id: providerAttempt?.attempt_id ?? null,
+        parser_result: 'explicit_none',
+      });
+      await emitLifecycleEvent('explicit_no_update_accepted', {
+        provider_attempt_id: providerAttempt?.attempt_id ?? null,
+        parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
+      });
       recordCompletedCoverage('completed_no_candidates');
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
       return 0;
@@ -1340,6 +1380,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     let recoveryPendingError = null;
     let recoveryPendingObligationId = null;
     let stagedRecoveryObligationId = null;
+    let lifecycleAttemptId = providerAttempt?.attempt_id ?? null;
     let parsed = parseExtractionOutput(response);
     if (parsed.length === 0) {
       const recovery = await recoverMalformedTaggedOutput({
@@ -1355,7 +1396,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         sourceUnits: buildRecoverySourceUnits(sourceMessages, range.start, sourceWindowFingerprint),
         onAttemptRegistered: async (attempt, detail = {}) => {
           if (!attempt?.attempt_id) throw new Error('Provider recovery attempt registration failed.');
-          await updateObligation('provider_running', {
+          await emitLifecycleEvent('provider_attempt_started', {
             provider_attempt_id: attempt.attempt_id,
             exact_reason_code: 'provider_request_in_progress',
             recovery_intent: 'recover_unresolved_partial_output_fragments',
@@ -1368,6 +1409,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           await saveChatMetadata(getContext());
         },
       });
+      const terminalRecoveryAttempt = [...(providerMetadata?.live_memory_health
+        ?.provider_attempt_audit?.recent_attempts ?? [])].reverse().find((attempt) =>
+        attempt.child_obligation_id === leafObligationId && attempt.terminal_outcome !== 'running');
+      if (terminalRecoveryAttempt?.attempt_id
+        && terminalRecoveryAttempt.attempt_id !== providerAttempt?.attempt_id) {
+        lifecycleAttemptId = terminalRecoveryAttempt.attempt_id;
+        await emitLifecycleEvent('provider_response_received', {
+          provider_attempt_id: lifecycleAttemptId,
+          exact_reason_code: 'downstream_parser_pending',
+        });
+      }
       if (recovery.repartitioned) {
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved',
           provider_outcome: 'completed_after_malformed_repartition', parser_outcome: 'repartitioned' });
@@ -1386,6 +1438,24 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           provider_outcome: durableRecoveredCount > 0
             ? 'completed_after_durable_partial_recovery' : 'completed_no_candidates_after_regeneration',
           parser_outcome: 'explicit_none', durable_recovered_record_count: durableRecoveredCount });
+        await emitLifecycleEvent('parser_accepted', {
+          provider_attempt_id: lifecycleAttemptId, parser_result: 'recovered_explicit_none',
+        });
+        if (durableRecoveredCount > 0) {
+          await emitLifecycleEvent('validation_accepted', {
+            provider_attempt_id: lifecycleAttemptId,
+            downstream_validation_result: 'accepted_staged_records',
+          });
+          await emitLifecycleEvent('records_staged', {
+            provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
+          });
+        }
+        await emitLifecycleEvent(durableRecoveredCount > 0
+          ? 'records_durably_persisted' : 'explicit_no_update_accepted', {
+          provider_attempt_id: lifecycleAttemptId,
+          persistence_result: durableRecoveredCount > 0 ? 'committed' : 'not_required_validated_no_update',
+          coverage_result: 'safely_committed',
+        });
         return 0;
       }
       parsed = recovery.records;
@@ -1431,6 +1501,12 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'downstream_validation', progress: true,
     });
+    await emitLifecycleEvent('parser_accepted', {
+      provider_attempt_id: lifecycleAttemptId,
+      parser_result: 'accepted',
+      lifecycle: { parser_accepted_candidate_ids: parsed.map((item, index) =>
+        item.id ?? `longterm-candidate:${leafObligationId}:${index}`) },
+    });
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
 
     // Source citations belong to the numbered extraction window.  Translate
@@ -1469,6 +1545,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'canonical_persistence', progress: true,
     });
+    await emitLifecycleEvent('validation_accepted', {
+      provider_attempt_id: lifecycleAttemptId,
+      downstream_validation_result: 'accepted',
+    });
     if (newMemories.length === 0) {
       smLog(
         `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
@@ -1497,6 +1577,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
         await_point: 'child_manifest_update', progress: true,
         last_durable_transition: 'canonical_records_verified_existing',
+      });
+      await emitLifecycleEvent('explicit_no_update_accepted', {
+        provider_attempt_id: lifecycleAttemptId,
+        parser_result: 'accepted', downstream_validation_result: 'validated_duplicate_only_no_update',
       });
       recordCompletedCoverage('completed_no_persistence_needed');
       healthFinish({ terminal_health: 'completed', persistence: 'not_needed', candidates: { accepted: 0, rejected_duplicate: parsed.length } });
@@ -1851,6 +1935,19 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'child_manifest_update', progress: true,
       last_durable_transition: 'canonical_records_committed',
+    });
+    await emitLifecycleEvent('records_staged', {
+      provider_attempt_id: lifecycleAttemptId,
+      persistence_result: 'staged',
+    });
+    await emitLifecycleEvent('records_durably_persisted', {
+      provider_attempt_id: lifecycleAttemptId,
+      persistence_result: 'committed', coverage_result: 'safely_committed',
+      durable_record_ids: durableRecordIds,
+      lifecycle: {
+        downstream_accepted_candidate_ids: newMemories.map((item, index) =>
+          item.id ?? `longterm-candidate:${leafObligationId}:${index}`),
+      },
     });
     if (stagedRecoveryObligationId) {
       markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,

@@ -7,8 +7,8 @@
  * `explicit_no_update` make an obligation checkpoint eligible.
  */
 
-export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 3;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 5;
+export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 4;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 6;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -285,6 +285,9 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
         : raw?.recovery_stage ?? null,
       timestamps: { ...(raw?.timestamps ?? {}) },
       transition_history: Array.isArray(raw?.transition_history) ? raw.transition_history.slice(-64) : [],
+      semantic_event_ids: normalizeIds(raw?.semantic_event_ids).slice(-256),
+      semantic_event_history: Array.isArray(raw?.semantic_event_history)
+        ? raw.semantic_event_history.slice(-128) : [],
       implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
       schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
       metrics: { ...(raw?.metrics ?? {}) },
@@ -454,6 +457,9 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
       controller_exit_effect: ['blocked', 'terminal_failed', 'operationally_paused'].includes(state)
         ? 'controller_must_exit_or_select_safe_next_action' : 'none',
     }].slice(-64),
+    semantic_event_ids: normalizeIds(prior.semantic_event_ids).slice(-256),
+    semantic_event_history: Array.isArray(prior.semantic_event_history)
+      ? prior.semantic_event_history.slice(-128) : [],
     implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
     schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
     metrics: { ...(prior.metrics ?? {}), ...(transition.metrics ?? {}) },
@@ -488,6 +494,474 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
   ];
   ledger.updated_at = at;
   return next;
+}
+
+export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
+  'obligation_registered', 'recovery_children_declared', 'provider_attempt_started',
+  'provider_response_received', 'provider_transport_failed', 'parser_accepted',
+  'parser_partially_accepted', 'parser_rejected', 'validation_accepted',
+  'validation_partially_accepted', 'validation_rejected', 'records_staged',
+  'records_durably_persisted', 'explicit_no_update_accepted', 'recovery_required',
+  'recovery_budget_exhausted', 'leaf_coverage_completed', 'parent_children_completed',
+  'obligation_blocked', 'controller_relinquished_ownership',
+]);
+
+const SEMANTIC_EVENT_SET = new Set(MEMORIZE_LIFECYCLE_EVENTS);
+
+function semanticEventId(identity, event) {
+  if (event.event_id) return String(event.event_id);
+  return [stableId(identity), event.type, event.provider_attempt_id ?? '',
+    event.source_fingerprint ?? identity.source_fingerprint ?? '',
+    ...(normalizeIds(event.durable_record_ids))].join('|');
+}
+
+function recordSemanticViolation(ledger, identity, event, code, detail = {}) {
+  const violation = {
+    code, obligation_id: stableId(identity), lifecycle_event: event?.type ?? null,
+    provider_attempt_id: event?.provider_attempt_id ?? null,
+    missing_evidence: detail.missing_evidence ?? [], safe_repair_action: detail.safe_repair_action
+      ?? 'supply_complete_semantic_lifecycle_evidence', at: nowValue(event?.at),
+    classification: 'current_runtime',
+  };
+  const duplicate = ledger.transition_violations.some((item) => item.code === violation.code
+    && item.obligation_id === violation.obligation_id
+    && item.lifecycle_event === violation.lifecycle_event
+    && item.provider_attempt_id === violation.provider_attempt_id);
+  if (!duplicate) ledger.transition_violations = [...ledger.transition_violations, violation].slice(-64);
+  ledger.updated_at = violation.at;
+  return { applied: false, duplicate: false, violation,
+    obligation: ledger.obligations[violation.obligation_id] ?? null };
+}
+
+function validateChildTree(parent, children) {
+  const parentRange = normalizeRange(parent.source_range ?? parent);
+  const normalized = children.map((child) => ({ ...child,
+    obligation_id: stableId(child), source_range: normalizeRange(child.source_range ?? child) }));
+  if (!parentRange || normalized.some((child) => !child.source_range)) {
+    return { valid: false, reason: 'missing_parent_or_child_range', children: normalized };
+  }
+  const sorted = [...normalized].sort((a, b) => a.source_range.start - b.source_range.start);
+  let next = parentRange.start;
+  for (const child of sorted) {
+    if (child.source_range.start !== next || child.source_range.end > parentRange.end) {
+      return { valid: false, reason: 'child_ranges_do_not_exactly_partition_parent', children: normalized };
+    }
+    next = child.source_range.end + 1;
+  }
+  return { valid: next === parentRange.end + 1,
+    reason: next === parentRange.end + 1 ? null : 'child_ranges_do_not_cover_parent', children: normalized };
+}
+
+function appendSemanticEvent(obligation, eventId, event) {
+  obligation.semantic_event_ids = normalizeIds([...(obligation.semantic_event_ids ?? []), eventId]).slice(-256);
+  obligation.semantic_event_history = [...(obligation.semantic_event_history ?? []), {
+    event_id: eventId, type: event.type, provider_attempt_id: event.provider_attempt_id ?? null,
+    at: nowValue(event.at), derived: event.derived === true,
+  }].slice(-128);
+}
+
+function transitionForSemanticEvent(ledger, identity, event, state, patch = {}) {
+  const before = ledger.obligations[stableId(identity)];
+  const next = transitionMemorizeObligation(ledger, identity, {
+    ...patch, current_state: state, at: event.at,
+    provider_attempt_id: event.provider_attempt_id ?? patch.provider_attempt_id,
+  });
+  if (next === before && before?.current_state !== state) {
+    return recordSemanticViolation(ledger, identity, event,
+      'semantic_event_rejected_by_canonical_transition', {
+        safe_repair_action: 'reconcile_missing_prior_lifecycle_evidence',
+      });
+  }
+  return { applied: true, obligation: next };
+}
+
+/**
+ * Sole production mutation API for Memorize obligations. Callers report domain
+ * evidence; this function chooses and validates canonical reducer states.
+ */
+export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = {}) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue, identity.logical_run_id);
+  if (!SEMANTIC_EVENT_SET.has(event.type)) {
+    return recordSemanticViolation(ledger, identity, event, 'unknown_memorize_lifecycle_event');
+  }
+  const id = stableId(identity);
+  const eventId = semanticEventId(identity, event);
+  const existing = ledger.obligations[id];
+  if (existing?.semantic_event_ids?.includes(eventId)) {
+    return { applied: false, duplicate: true, obligation: existing, event_id: eventId };
+  }
+  let result;
+  const details = {
+    parser_result: event.parser_result,
+    downstream_validation_result: event.downstream_validation_result,
+    persistence_result: event.persistence_result,
+    coverage_result: event.coverage_result,
+    exact_reason_code: event.reason_code ?? event.exact_reason_code,
+    next_eligible_action: event.next_action ?? event.next_eligible_action,
+    recovery_intent: event.recovery_intent,
+    recovery_stage: event.recovery_stage,
+    metrics: event.metrics,
+    lifecycle: {
+      ...(event.lifecycle ?? {}),
+      ...(event.durable_record_ids?.length ? {
+        durably_persisted_record_ids: event.durable_record_ids,
+      } : {}),
+    },
+  };
+  const priorState = existing?.current_state ?? 'unattempted';
+  switch (event.type) {
+    case 'obligation_registered':
+      result = transitionForSemanticEvent(ledger, identity, event, priorState, details);
+      break;
+    case 'recovery_children_declared': { // Durable registration precedes dispatch.
+      const children = Array.isArray(event.children) ? event.children : [];
+      const check = validateChildTree(existing ?? identity, children);
+      if (!check.valid) return recordSemanticViolation(ledger, identity, event,
+        'invalid_recovery_child_partition', { missing_evidence: [check.reason] });
+      const childIds = check.children.map((child) => child.obligation_id);
+      const parent = transitionMemorizeObligation(ledger, {
+        ...identity, expected_child_obligation_ids: childIds,
+      }, {
+        current_state: SAFE_STATES.has(priorState) ? priorState : 'pending_recovery',
+        exact_reason_code: 'recovery_children_pending',
+        next_eligible_action: 'continue_unattempted_recovery_child',
+        recovery_intent: 'complete_recovery_child_coverage', at: event.at,
+      });
+      for (const child of check.children) {
+        transitionMemorizeObligation(ledger, {
+          ...child, logical_run_id: identity.logical_run_id ?? ledger.logical_run_id,
+          tier: child.tier ?? identity.tier, owner: child.owner ?? identity.owner,
+          parent_obligation_id: id,
+        }, { current_state: ledger.obligations[child.obligation_id]?.current_state ?? 'unattempted', at: event.at });
+      }
+      result = { applied: true, obligation: parent };
+      break;
+    }
+    case 'provider_attempt_started':
+      if (!event.provider_attempt_id) return recordSemanticViolation(ledger, identity, event,
+        'provider_attempt_started_without_attempt_id', { missing_evidence: ['provider_attempt_id'] });
+      if (!['unattempted', 'pending_recovery', 'operationally_paused', 'blocked',
+        'partial_records_committed', 'terminal_failed'].includes(priorState)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'provider_retry_started_before_prior_attempt_disposition', {
+            missing_evidence: ['parser_or_validation_disposition', 'recovery_required'],
+            safe_repair_action: 'record_prior_attempt_disposition_then_recovery_required',
+          });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, 'provider_running', {
+        ...details, exact_reason_code: 'provider_request_in_progress',
+      });
+      break;
+    case 'provider_response_received':
+      if (!event.provider_attempt_id || !existing?.provider_attempt_lineage?.includes(event.provider_attempt_id)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'provider_response_without_registered_attempt', { missing_evidence: ['registered_provider_attempt'] });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, 'provider_response_received', {
+        ...details, exact_reason_code: 'downstream_parser_pending',
+      });
+      break;
+    case 'provider_transport_failed':
+      result = transitionForSemanticEvent(ledger, identity, event, 'pending_recovery', {
+        ...details, exact_reason_code: event.reason_code ?? 'provider_transport_failure',
+        next_eligible_action: event.next_action ?? 'retry_provider_with_backoff',
+      });
+      break;
+    case 'parser_accepted':
+    case 'parser_partially_accepted':
+    case 'parser_rejected': {
+      const targetParserState = event.type === 'parser_accepted' ? 'parser_accepted'
+        : event.type === 'parser_partially_accepted' ? 'parser_partial' : 'parser_rejected';
+      if (priorState !== 'provider_response_received' && priorState !== targetParserState) {
+        return recordSemanticViolation(ledger, identity, event,
+        'parser_disposition_without_provider_response', { missing_evidence: ['provider_response_received'] });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, targetParserState, details);
+      break;
+    }
+    case 'validation_accepted':
+    case 'validation_partially_accepted':
+    case 'validation_rejected': {
+      if (!['parser_accepted', 'parser_partial'].includes(priorState)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'validation_disposition_without_parser_disposition', { missing_evidence: ['parser_disposition'] });
+      }
+      const state = event.type === 'validation_accepted' ? 'validation_accepted'
+        : event.type === 'validation_partially_accepted' ? 'validation_partial' : 'validation_rejected';
+      result = transitionForSemanticEvent(ledger, identity, event, state, details);
+      break;
+    }
+    case 'records_staged':
+      if (!['validation_accepted', 'validation_partial'].includes(priorState)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'records_staged_without_validation_acceptance', { missing_evidence: ['validation_acceptance'] });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, 'staged', details);
+      break;
+    case 'leaf_coverage_completed': {
+      if (event.verified_coverage !== true) return recordSemanticViolation(ledger, identity, event,
+        'leaf_coverage_completion_missing_verified_coverage', {
+          missing_evidence: ['verified_coverage'],
+        });
+      result = transitionForSemanticEvent(ledger, identity, event,
+        event.explicit_no_update === true ? 'explicit_no_update' : 'durably_committed', {
+          ...details,
+          parser_result: event.parser_result ?? 'verified_by_authoritative_coverage_manifest',
+          downstream_validation_result: event.downstream_validation_result ?? 'verified_existing',
+          persistence_result: event.persistence_result
+            ?? (event.explicit_no_update ? 'not_required' : 'verified_existing'),
+          coverage_result: 'safely_committed',
+        });
+      break;
+    }
+    case 'records_durably_persisted': {
+      if (!['staged', 'partial_records_committed'].includes(priorState)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'durable_persistence_without_accepted_staged_records', {
+            missing_evidence: ['parser_acceptance', 'validation_acceptance', 'records_staged'],
+          });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, 'durably_committed', {
+        ...details, persistence_result: event.persistence_result ?? 'committed',
+        coverage_result: event.coverage_result ?? 'safely_committed',
+      });
+      break;
+    }
+    case 'explicit_no_update_accepted':
+      if (!['parser_accepted', 'parser_partial', 'validation_accepted', 'validation_partial'].includes(priorState)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'no_update_without_parser_or_validation_evidence', { missing_evidence: ['validated_no_update'] });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, 'explicit_no_update', {
+        ...details, persistence_result: 'not_required_validated_no_update',
+        coverage_result: 'safely_committed',
+      });
+      break;
+    case 'recovery_required':
+    case 'recovery_budget_exhausted':
+      if (!(event.reason_code ?? event.exact_reason_code)
+        || !(event.next_action ?? event.next_eligible_action)) return recordSemanticViolation(ledger, identity, event,
+        'recovery_event_missing_typed_action', { missing_evidence: ['reason_code', 'next_action'] });
+      result = transitionForSemanticEvent(ledger, identity, event,
+        event.type === 'recovery_budget_exhausted' ? 'operationally_paused' : 'pending_recovery', details);
+      break;
+    case 'parent_children_completed':
+      if (!(existing?.expected_child_obligation_ids?.length)
+        || existing.expected_child_obligation_ids.some((childId) =>
+          !ledger.obligations[childId]?.checkpoint_eligible)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'parent_completion_without_complete_registered_children', {
+            missing_evidence: ['registered_terminal_child_coverage'],
+          });
+      }
+      if (priorState !== 'pending_recovery') {
+        const pending = transitionMemorizeObligation(ledger, identity, {
+          current_state: 'pending_recovery', exact_reason_code: 'child_coverage_ready_for_aggregation',
+          next_eligible_action: 'derive_parent_child_coverage', at: event.at,
+        });
+        if (pending.current_state !== 'pending_recovery') return recordSemanticViolation(
+          ledger, identity, event, 'parent_aggregation_pending_transition_rejected');
+      }
+      result = transitionForSemanticEvent(ledger, identity, { ...event, derived: true },
+        'durably_committed', { ...details, parser_result: 'derived_from_child_coverage',
+          downstream_validation_result: 'not_applicable_parent_aggregation',
+          persistence_result: 'committed_children', coverage_result: 'safely_committed' });
+      break;
+    case 'obligation_blocked':
+      if (!(event.reason_code ?? event.exact_reason_code)
+        || !(event.next_action ?? event.next_eligible_action)) return recordSemanticViolation(ledger, identity, event,
+        'blocked_event_missing_typed_action', { missing_evidence: ['reason_code', 'next_action'] });
+      result = transitionForSemanticEvent(ledger, identity, event, 'blocked', details);
+      break;
+    case 'controller_relinquished_ownership':
+      result = { applied: true, obligation: existing ?? null };
+      break;
+    default:
+      result = recordSemanticViolation(ledger, identity, event, 'unhandled_memorize_lifecycle_event');
+  }
+  if (result.applied && result.obligation) appendSemanticEvent(result.obligation, eventId, event);
+  return { ...result, event_id: eventId };
+}
+
+/** Recursively derives terminal parent coverage without provider or persistence work. */
+export function aggregateMemorizeObligationParents(ledgerValue, at = Date.now()) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue);
+  let mutations = 0;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const parent of Object.values(ledger.obligations)) {
+      const childIds = parent.expected_child_obligation_ids ?? [];
+      if (!childIds.length || parent.checkpoint_eligible) continue;
+      const children = childIds.map((id) => ledger.obligations[id]);
+      if (children.some((child) => !child?.checkpoint_eligible)) continue;
+      if (parent.current_state !== 'pending_recovery') {
+        const pending = transitionMemorizeObligation(ledger, parent, {
+          current_state: 'pending_recovery', exact_reason_code: 'child_coverage_ready_for_aggregation',
+          next_eligible_action: 'derive_parent_child_coverage', at,
+        });
+        if (pending.current_state !== 'pending_recovery') continue;
+      }
+      const result = applyMemorizeLifecycleEvent(ledger, parent, {
+        type: 'parent_children_completed', event_id: `aggregate:${parent.obligation_id}`,
+        at, derived: true,
+      });
+      if (result.applied) { mutations += 1; changed = true; }
+    }
+  }
+  return { ledger, mutations };
+}
+
+function journalEntries(journal) {
+  if (Array.isArray(journal)) return journal;
+  if (Array.isArray(journal?.entries)) return journal.entries;
+  return (journal?.order ?? []).map((id) => journal?.entries?.[id]).filter(Boolean);
+}
+
+function coverageRange(record) {
+  return normalizeRange(record?.effective_range ?? record?.original_range ?? record?.source_range ?? record);
+}
+
+function findObligationForCoverage(ledger, record, rootId = null) {
+  const range = coverageRange(record);
+  const candidates = Object.values(ledger.obligations).filter((item) => item.tier === record.tier
+    && (item.owner ?? null) === (record.owner ?? null)
+    && item.source_range?.start === range?.start && item.source_range?.end === range?.end
+    && (!record.source_fingerprint || item.source_fingerprint === record.source_fingerprint)
+    && (!rootId || item.obligation_id === rootId || item.obligation_id.startsWith(`${rootId}:leaf:`)));
+  return candidates[0] ?? null;
+}
+
+export function deriveMemorizeSafeResumeOffset(ledgerValue, startingOffset = 0) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue);
+  let offset = Math.max(0, Number(startingOffset) || 0);
+  const roots = Object.values(ledger.obligations).filter((item) => !item.parent_obligation_id
+    && item.source_range && item.source_range.end >= offset);
+  while (true) {
+    const candidates = roots.filter((item) => item.source_range.start === offset);
+    if (!candidates.length || candidates.some((item) => !item.checkpoint_eligible)) break;
+    const ends = new Set(candidates.map((item) => item.source_range.end));
+    if (ends.size !== 1) break;
+    offset = candidates[0].source_range.end + 1;
+  }
+  return offset;
+}
+
+/**
+ * Repairs false-negative ledger projections from durable coverage and provider
+ * completion evidence. It never invokes a provider or persistence callback.
+ */
+export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
+  const before = JSON.stringify(ledger);
+  const coverage = (input.coverage_records ?? []).filter((item) => item?.tier);
+  const byRangeId = new Map(coverage.filter((item) => item.range_id)
+    .map((item) => [item.range_id, item]));
+  const rootIds = new Set(journalEntries(input.journal).map((entry) => entry.root_obligation_id).filter(Boolean));
+  for (const obligation of Object.values(ledger.obligations)) {
+    if (!obligation.parent_obligation_id && coverage.some((record) =>
+      findObligationForCoverage(ledger, record)?.obligation_id === obligation.obligation_id)) {
+      rootIds.add(obligation.obligation_id);
+    }
+  }
+  for (const rootId of rootIds) {
+    const scoped = coverage.filter((record) => {
+      const obligation = findObligationForCoverage(ledger, record, rootId);
+      return Boolean(obligation);
+    });
+    const childrenByParent = new Map();
+    for (const record of scoped) {
+      if (!record.parent_range_id) continue;
+      const parentRecord = byRangeId.get(record.parent_range_id);
+      const parent = parentRecord ? findObligationForCoverage(ledger, parentRecord, rootId) : null;
+      const child = findObligationForCoverage(ledger, record, rootId);
+      if (!parent || !child || parent.obligation_id === child.obligation_id) continue;
+      const list = childrenByParent.get(parent.obligation_id) ?? [];
+      list.push(child);
+      childrenByParent.set(parent.obligation_id, list);
+    }
+    for (const [parentId, children] of childrenByParent) {
+      applyMemorizeLifecycleEvent(ledger, ledger.obligations[parentId], {
+        type: 'recovery_children_declared', children,
+        event_id: `coverage-tree:${parentId}:${children.map((child) => child.obligation_id).sort().join(',')}`,
+        at: input.at,
+      });
+    }
+  }
+  const reusedAttemptIds = [];
+  const preservedRecordIds = [];
+  for (const entry of journalEntries(input.journal)) {
+    if (!['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(entry?.terminal_outcome)) continue;
+    const obligation = ledger.obligations[entry.child_obligation_id]
+      ?? ledger.obligations[entry.root_obligation_id];
+    if (!obligation) continue;
+    // Journal entries for a repartition parent describe the superseded
+    // physical attempt, not terminal leaf coverage. Parents close only after
+    // their registered children aggregate.
+    if (obligation.expected_child_obligation_ids?.length) continue;
+    const persistence = entry.persistence ?? {};
+    const durableIds = normalizeIds(persistence.durable_record_ids);
+    const terminallyCovered = ['committed', 'verified_existing', 'not_needed'].includes(persistence.status)
+      && entry.manifest_transition?.status === 'applied';
+    if (!terminallyCovered) continue;
+    reusedAttemptIds.push(entry.attempt_id);
+    preservedRecordIds.push(...durableIds);
+    if (!obligation.checkpoint_eligible) {
+      if (!obligation.provider_attempt_lineage?.includes(entry.attempt_id)) {
+        applyMemorizeLifecycleEvent(ledger, obligation, { type: 'provider_attempt_started',
+          provider_attempt_id: entry.attempt_id, event_id: `journal:${entry.attempt_id}:attempt`, at: input.at });
+      }
+      const current = ledger.obligations[obligation.obligation_id];
+      if (current.current_state === 'provider_running') applyMemorizeLifecycleEvent(ledger, current, {
+        type: 'provider_response_received', provider_attempt_id: entry.attempt_id,
+        event_id: `journal:${entry.attempt_id}:response`, at: input.at,
+      });
+      const afterResponse = ledger.obligations[obligation.obligation_id];
+      if (afterResponse.current_state === 'provider_response_received') applyMemorizeLifecycleEvent(ledger, afterResponse, {
+        type: 'parser_accepted', provider_attempt_id: entry.attempt_id,
+        parser_result: entry.parser_result?.status ?? 'accepted_from_completion_journal',
+        event_id: `journal:${entry.attempt_id}:parser`, at: input.at,
+      });
+      const afterParser = ledger.obligations[obligation.obligation_id];
+      if (['parser_accepted', 'parser_partial'].includes(afterParser.current_state)) applyMemorizeLifecycleEvent(ledger, afterParser, {
+        type: 'validation_accepted', provider_attempt_id: entry.attempt_id,
+        downstream_validation_result: entry.validation?.status ?? 'accepted_from_completion_journal',
+        event_id: `journal:${entry.attempt_id}:validation`, at: input.at,
+      });
+      const afterValidation = ledger.obligations[obligation.obligation_id];
+      if (durableIds.length && afterValidation.current_state === 'validation_accepted') {
+        applyMemorizeLifecycleEvent(ledger, afterValidation, { type: 'records_staged',
+          provider_attempt_id: entry.attempt_id, event_id: `journal:${entry.attempt_id}:staged`, at: input.at });
+        applyMemorizeLifecycleEvent(ledger, ledger.obligations[obligation.obligation_id], {
+          type: 'records_durably_persisted', provider_attempt_id: entry.attempt_id,
+          durable_record_ids: durableIds, persistence_result: persistence.status,
+          event_id: `journal:${entry.attempt_id}:durable`, at: input.at,
+        });
+      } else if (!durableIds.length && ['validation_accepted', 'parser_accepted', 'parser_partial']
+        .includes(afterValidation.current_state)) {
+        applyMemorizeLifecycleEvent(ledger, afterValidation, { type: 'explicit_no_update_accepted',
+          provider_attempt_id: entry.attempt_id, event_id: `journal:${entry.attempt_id}:no-update`, at: input.at });
+      }
+    }
+  }
+  const aggregation = aggregateMemorizeObligationParents(ledger, input.at);
+  const safeResumeOffset = deriveMemorizeSafeResumeOffset(
+    ledger, input.checkpoint_before ?? input.starting_offset ?? 0);
+  const chunkSize = Math.max(1, Number(input.chunk_size ?? 20) || 20);
+  const sourceCount = Number.isFinite(Number(input.source_message_count))
+    ? Number(input.source_message_count) : null;
+  const after = JSON.stringify(ledger);
+  return {
+    ledger, mutations: before === after ? 0 : 1,
+    parent_aggregation_mutations: aggregation.mutations,
+    provider_calls: 0, persistence_calls: 0,
+    reused_attempt_ids: normalizeIds(reusedAttemptIds),
+    preserved_durable_record_ids: normalizeIds(preservedRecordIds),
+    safe_resume_offset: safeResumeOffset,
+    next_source_range: sourceCount == null || safeResumeOffset >= sourceCount ? null : {
+      start: safeResumeOffset, end: Math.min(sourceCount - 1, safeResumeOffset + chunkSize - 1),
+    },
+  };
 }
 
 /** Repairs persisted running states when no physical provider attempt is active. */
@@ -550,6 +1024,18 @@ export function recordMemorizeControllerExit(ledgerValue, input = {}) {
     operationally_paused: 30, manually_cancelled: 40,
     transaction_commit_failure: 80, transaction_rollback_failure: 90, internal_exception: 100,
   }[classification] ?? 50);
+  if (existing && input.finalize_transaction_evidence === true) {
+    Object.assign(existing, {
+      active_transaction_id: input.active_transaction_id ?? existing.active_transaction_id,
+      active_transaction_state: input.active_transaction_state ?? 'not_applicable',
+      checkpoint_after: Number.isFinite(Number(input.checkpoint_after))
+        ? Number(input.checkpoint_after) : existing.checkpoint_after,
+      transaction_evidence_finalized: true,
+      at: nowValue(input.at),
+    });
+    ledger.updated_at = existing.at;
+    return existing;
+  }
   if (existing && exitPriority(input.classification) <= exitPriority(existing.classification)) return existing;
   const reasonCode = input.reason_code ?? 'unknown_interruption';
   const record = {

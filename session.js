@@ -517,7 +517,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     });
     const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
     const recordCompletedCoverage = pipeline.recordCompletedCoverage;
-    const updateObligation = pipeline.transitionObligation;
+    const emitLifecycleEvent = pipeline.emitLifecycleEvent;
     const beginPhysicalAttempt = pipeline.beginAttempt;
     const updateCompletionJournal = (attempt = providerAttempt, patch = {}) => {
       const attemptSucceeded = ['completed', 'completed_no_candidates',
@@ -573,6 +573,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         });
         throw pipeline.contextOverflowError();
       }
+      await emitLifecycleEvent('recovery_children_declared', {
+        children: split.partitions.map((child) => {
+          const childRange = sourceRange(child);
+          const fingerprint = sourceWindowFingerprint(child);
+          return {
+            obligation_id: `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${fingerprint}`,
+            tier: 'session', owner: null,
+            source_range: childRange, source_fingerprint: fingerprint,
+          };
+        }),
+      });
       let added = 0;
       try {
         const schedule = await createMemorizeRecoveryScheduler().run({
@@ -648,7 +659,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
         validation_accepted: true, persistence_committed: true, accepted_count: added,
       });
-      await updateObligation('durably_committed', {
+      await emitLifecycleEvent('parent_children_completed', {
         parser_result: 'repartitioned', downstream_validation_result: 'accepted',
         persistence_result: 'committed_children', coverage_result: 'safely_committed',
       });
@@ -665,6 +676,17 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const splitMalformedWindow = async ({ budget, nextDepth, reason, parentAttemptId }) => {
       const children = partitionMalformedSourceWindow(sourceMessages);
       if (!children.length) return { completed: false, reason: 'minimum_malformed_recovery_window_reached' };
+      await emitLifecycleEvent('recovery_children_declared', {
+        children: children.map((child) => {
+          const childRange = sourceRange(child);
+          const fingerprint = sourceWindowFingerprint(child);
+          return {
+            obligation_id: `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${fingerprint}`,
+            tier: 'session', owner: null,
+            source_range: childRange, source_fingerprint: fingerprint,
+          };
+        }),
+      });
       let added = 0;
       const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('session', 'chat', child));
       const schedule = await createMemorizeRecoveryScheduler().run({
@@ -741,7 +763,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       && Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
       && (resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
       && restoredFragments.length === 0) {
-      await updateObligation('blocked', {
+      await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: 'missing_private_unresolved_fragment_payload',
         next_eligible_action: 'inspect_or_restore_unresolved_fragment_payload',
         recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
@@ -766,7 +788,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       } : null);
     if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery
       && resumeEligibility?.blocked === true) {
-      await updateObligation('blocked', {
+      await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
         next_eligible_action: 'change_provider_configuration_or_install_updated_build',
         recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
@@ -781,7 +803,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       const partialVerification = verifyPersistedPartialSessionRecords(
         loadSessionMemories(), resumeRecoveryState, { start: range.start, end: range.end });
       if (!partialVerification.verified) {
-        await updateObligation('blocked', {
+        await emitLifecycleEvent('obligation_blocked', {
           exact_reason_code: 'committed_partial_record_verification_failed',
           next_eligible_action: 'inspect_or_restore_committed_partial_record',
           recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
@@ -796,7 +818,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       markProviderPartialRecordsPersisted(providerMetadata, rootObligationId,
         partialVerification.expected_count, coverageBase.source_fingerprint,
         partialVerification.record_ids);
-      await updateObligation('pending_recovery', {
+      await emitLifecycleEvent('recovery_required', {
         exact_reason_code: 'resume_epoch_ready',
         next_eligible_action: resumeEligibility?.eligible_action ?? 'fragment_decision_regeneration',
         recovery_intent: 'recover_unresolved_partial_output_fragments',
@@ -853,7 +875,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       _already_finished: true,
     } : beginPhysicalAttempt();
     if (!bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
-      await updateObligation('provider_running', {
+      await emitLifecycleEvent('provider_attempt_started', {
         provider_attempt_id: providerAttempt.attempt_id,
         exact_reason_code: 'provider_request_in_progress',
         recovery_intent: providerAttempt.recovery_intent,
@@ -868,7 +890,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         providerRequestSent = true;
         response = await generateMemoryExtract(prompt, { responseLength });
         providerResponseReceived = true;
-        await updateObligation('provider_response_received', {
+        await emitLifecycleEvent('provider_response_received', {
           provider_attempt_id: providerAttempt?.attempt_id ?? null,
           exact_reason_code: 'downstream_parser_pending',
         });
@@ -924,7 +946,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         live_health_transition: { status: 'applied', disposition: 'completed' },
       });
       markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
-      await updateObligation('explicit_no_update', {
+      await emitLifecycleEvent('parser_accepted', {
+        provider_attempt_id: providerAttempt?.attempt_id ?? null,
+        parser_result: 'explicit_none',
+      });
+      await emitLifecycleEvent('explicit_no_update_accepted', {
         parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
         persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
       });
@@ -961,6 +987,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let recoveryPendingError = null;
     let recoveryPendingObligationId = null;
     let stagedRecoveryObligationId = null;
+    let lifecycleAttemptId = providerAttempt?.attempt_id ?? null;
     let unresolvedPartialFragments = 0;
     let rejectedPartialFragments = [];
     let recoveredRecordFragmentIds = [];
@@ -985,7 +1012,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           ? restoredFragments.length ? restoredFragments : rejectedPartialFragments : [],
         onAttemptRegistered: async (attempt, detail = {}) => {
           if (!attempt?.attempt_id) throw new Error('Provider recovery attempt registration failed.');
-          await updateObligation('provider_running', {
+          await emitLifecycleEvent('provider_attempt_started', {
             provider_attempt_id: attempt.attempt_id,
             exact_reason_code: 'provider_request_in_progress',
             recovery_intent: 'recover_unresolved_partial_output_fragments',
@@ -1000,11 +1027,22 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           await saveChatMetadata(getContext());
         },
       });
+      const terminalRecoveryAttempt = [...(providerMetadata?.live_memory_health
+        ?.provider_attempt_audit?.recent_attempts ?? [])].reverse().find((attempt) =>
+        attempt.child_obligation_id === leafObligationId && attempt.terminal_outcome !== 'running');
+      if (terminalRecoveryAttempt?.attempt_id
+        && terminalRecoveryAttempt.attempt_id !== providerAttempt?.attempt_id) {
+        lifecycleAttemptId = terminalRecoveryAttempt.attempt_id;
+        await emitLifecycleEvent('provider_response_received', {
+          provider_attempt_id: lifecycleAttemptId,
+          exact_reason_code: 'downstream_parser_pending',
+        });
+      }
       if (recovery.repartitioned) {
         markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
           validation_accepted: true, persistence_committed: true, accepted_count: recovery.added,
         });
-        await updateObligation('durably_committed', {
+        await emitLifecycleEvent('parent_children_completed', {
           parser_result: 'repartitioned', downstream_validation_result: 'accepted',
           persistence_result: 'committed_children', coverage_result: 'safely_committed',
         });
@@ -1028,7 +1066,22 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         markProviderDownstreamOutcome(providerMetadata, rootObligationId, durableRecoveredCount > 0
           ? { validation_accepted: true, persistence_committed: true, accepted_count: durableRecoveredCount }
           : { explicit_no_update: true });
-        await updateObligation(durableRecoveredCount > 0 ? 'durably_committed' : 'explicit_no_update', {
+        await emitLifecycleEvent('parser_accepted', {
+          provider_attempt_id: lifecycleAttemptId,
+          parser_result: 'recovered_explicit_none',
+        });
+        if (durableRecoveredCount > 0) {
+          await emitLifecycleEvent('validation_accepted', {
+            provider_attempt_id: lifecycleAttemptId,
+            downstream_validation_result: 'accepted_staged_records',
+          });
+          await emitLifecycleEvent('records_staged', {
+            provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
+          });
+        }
+        await emitLifecycleEvent(durableRecoveredCount > 0
+          ? 'records_durably_persisted' : 'explicit_no_update_accepted', {
+          provider_attempt_id: lifecycleAttemptId,
           parser_result: 'recovered_explicit_none',
           downstream_validation_result: durableRecoveredCount > 0 ? 'accepted_staged_records' : 'validated_no_update',
           persistence_result: durableRecoveredCount > 0 ? 'committed' : 'not_required_validated_no_update',
@@ -1106,8 +1159,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         rejected_count: unresolvedPartialFragments,
       },
     });
-    await updateObligation(unresolvedPartialFragments > 0 ? 'parser_partial' : 'parser_accepted', {
-      provider_attempt_id: providerAttempt?.attempt_id ?? null,
+    await emitLifecycleEvent(unresolvedPartialFragments > 0
+      ? 'parser_partially_accepted' : 'parser_accepted', {
+      provider_attempt_id: lifecycleAttemptId,
       parser_result: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
       exact_reason_code: unresolvedPartialFragments > 0
         ? 'partial_valid_output_has_unresolved_fragments' : 'downstream_validation_pending',
@@ -1131,7 +1185,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         + shapeRepair.repaired_count;
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsedCandidates.length } });
-    await updateObligation(unresolvedPartialFragments > 0 ? 'parser_partial' : 'parser_accepted', {
+    await emitLifecycleEvent(unresolvedPartialFragments > 0
+      ? 'parser_partially_accepted' : 'parser_accepted', {
       lifecycle: { parser_accepted_candidate_ids: parserAcceptedCandidateIds },
     });
     const initiallyParsedCount = parserAcceptedCandidateIds.length;
@@ -1533,7 +1588,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           : unresolvedPartialFragments > 0 ? 'partial_valid_output_has_unresolved_fragments' : null;
       if (!pendingReason) {
         markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
-        await updateObligation('explicit_no_update', {
+        await emitLifecycleEvent('explicit_no_update_accepted', {
           parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
           downstream_validation_result: 'validated_duplicate_only_no_update',
           persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
@@ -1564,7 +1619,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             ? 'citation_repair_or_bounded_regeneration'
             : 'recover_unresolved_partial_output_fragments',
       });
-      await updateObligation('pending_recovery', {
+      await emitLifecycleEvent('recovery_required', {
         parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
         downstream_validation_result: `rejected_${pendingReason}`,
         persistence_result: 'not_committed', coverage_result: 'pending',
@@ -1617,7 +1672,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       throw pendingError;
     }
 
-    await updateObligation('validation_accepted', {
+    await emitLifecycleEvent('validation_accepted', {
       parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
       downstream_validation_result: 'accepted',
       exact_reason_code: 'persistence_pending',
@@ -1818,7 +1873,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         candidate_shape_repair_count: shapeRepair.repaired_count,
         next_eligible_action: 'recover_unresolved_partial_output_fragments',
       });
-      await updateObligation('pending_recovery', {
+      await emitLifecycleEvent('recovery_required', {
         parser_result: 'partial', downstream_validation_result: 'accepted_partial_records',
         persistence_result: 'partial_records_committed', coverage_result: 'pending',
         exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
@@ -1954,7 +2009,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       validation_accepted: true, persistence_committed: true, accepted_count: added,
       candidate_shape_repair_count: shapeRepair.repaired_count,
     });
-    await updateObligation('durably_committed', {
+    await emitLifecycleEvent('records_staged', {
+      provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
+    });
+    await emitLifecycleEvent('records_durably_persisted', {
+      provider_attempt_id: lifecycleAttemptId,
       parser_result: 'accepted', downstream_validation_result: 'accepted',
       persistence_result: 'committed', coverage_result: 'safely_committed',
       metrics: { persisted_records: added, local_shape_repairs: shapeRepair.repaired_count },

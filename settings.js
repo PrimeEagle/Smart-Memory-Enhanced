@@ -101,8 +101,9 @@ import {
   projectMemorizeObligationLedger,
   reconcileMemorizeRunningObligations,
   reconcileMemorizeProviderRuntime,
+  applyMemorizeLifecycleEvent,
+  reconcileMemorizeLifecycleFromJournal,
   recordMemorizeControllerExit,
-  transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
 import { migrateAmbiguousRecoveryParents } from './memorize-lifecycle-migration.js';
 import {
@@ -264,8 +265,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.75',
-  build_fingerprint: 'sme-v0.9.75-canonical-lifecycle-reducer-r1',
+  extension_version: '0.9.77',
+  build_fingerprint: 'sme-v0.9.77-semantic-lifecycle-journal-reconciliation-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5349,12 +5350,12 @@ export function bindSettingsUI(ctrl) {
       );
       const pausedObligationId = requestDiagnostics.root_obligation_id ?? err?.sme_obligation_id;
       const pauseLedger = controllerRuntime?.checkpoint?.run_manifest?.obligation_ledger;
-      if (pauseLedger && pausedObligationId) transitionMemorizeObligation(pauseLedger, {
+      if (pauseLedger && pausedObligationId) applyMemorizeLifecycleEvent(pauseLedger, {
         obligation_id: pausedObligationId,
         logical_run_id: controllerRuntime.checkpoint.run_manifest.logical_run_id,
       }, {
-        current_state: 'operationally_paused', exact_reason_code: pause.reason_code,
-        next_eligible_action: requestDiagnostics.next_eligible_recovery_action
+        type: 'recovery_budget_exhausted', reason_code: pause.reason_code,
+        next_action: requestDiagnostics.next_eligible_recovery_action
           ?? requestDiagnostics.recovery_intent ?? 'resume_exact_obligation',
         recovery_intent: requestDiagnostics.recovery_intent
           ?? 'recover_unresolved_partial_output_fragments',
@@ -5496,7 +5497,7 @@ export function bindSettingsUI(ctrl) {
         ? discoveredMessages.slice(0, resumeSourceValidation.source_message_count)
         : discoveredMessages;
       const total = allMessages.length;
-      const resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
+      let resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
       const checkpoint = resumableCheckpoint ?? {
         schema_version: 3,
         run_id: catchUpRunId,
@@ -5578,6 +5579,34 @@ export function bindSettingsUI(ctrl) {
         providerAudit,
       );
       checkpoint.run_manifest.obligation_ledger = runningReconciliation.ledger;
+      const persistedCoverage = catchUpContext.chatMetadata?.[META_KEY]
+        ?.catch_up_diagnostics?.extractionCoverage ?? {};
+      const lifecycleJournalRepair = reconcileMemorizeLifecycleFromJournal(
+        checkpoint.run_manifest.obligation_ledger, {
+          logical_run_id: checkpoint.run_manifest.logical_run_id,
+          journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+          coverage_records: Object.values(persistedCoverage)
+            .flatMap((tier) => tier?.records ?? []),
+          checkpoint_before: checkpoint.next_source_offset,
+          source_message_count: total,
+          chunk_size: CATCH_UP_CHUNK_SIZE,
+        });
+      checkpoint.run_manifest.obligation_ledger = lifecycleJournalRepair.ledger;
+      if (lifecycleJournalRepair.safe_resume_offset > checkpoint.next_source_offset) {
+        checkpoint.next_source_offset = lifecycleJournalRepair.safe_resume_offset;
+        resumeOffset = Math.max(resumeOffset, lifecycleJournalRepair.safe_resume_offset);
+        checkpoint.source_traversal_offset = Math.max(
+          Number(checkpoint.source_traversal_offset ?? 0), lifecycleJournalRepair.safe_resume_offset);
+      }
+      if (lifecycleJournalRepair.mutations) checkpoint.lifecycle_journal_reconciliation = {
+        mutations: lifecycleJournalRepair.mutations,
+        parent_aggregation_mutations: lifecycleJournalRepair.parent_aggregation_mutations,
+        reused_attempt_ids: lifecycleJournalRepair.reused_attempt_ids,
+        preserved_durable_record_ids: lifecycleJournalRepair.preserved_durable_record_ids,
+        safe_resume_offset: lifecycleJournalRepair.safe_resume_offset,
+        next_source_range: lifecycleJournalRepair.next_source_range,
+        provider_calls: 0, persistence_calls: 0, reconciled_at: Date.now(),
+      };
       const migratedCompletions = migrateTerminalProviderCompletions(
         catchUpContext.chatMetadata?.[META_KEY], providerAudit,
         runningReconciliation.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
@@ -5603,7 +5632,7 @@ export function bindSettingsUI(ctrl) {
           reconciled_at: Date.now(),
         };
       }
-      if (runningReconciliation.repairs.length) {
+      if (runningReconciliation.repairs.length || lifecycleJournalRepair.mutations) {
         checkpoint.runtime_obligation_repairs = [
           ...(checkpoint.runtime_obligation_repairs ?? []), ...runningReconciliation.repairs,
         ].slice(-16);
@@ -6048,31 +6077,73 @@ export function bindSettingsUI(ctrl) {
           await saveChatMetadata(catchUpContext);
           await checkpointCatchUpTransaction(chunkTransaction);
         };
-        const updateAuthoritativeObligation = async (transition) => {
+        const applyAuthoritativeLifecycleEvent = async (event) => {
           trackMemorizeTransaction(controllerRuntime, controllerRuntime.active_transaction, {
-            phase: 'source_extraction', tier: transition.tier, owner: transition.owner,
-            source_range: transition.source_range, obligation_id: transition.obligation_id,
+            phase: 'source_extraction', tier: event.tier, owner: event.owner,
+            source_range: event.source_range, obligation_id: event.obligation_id,
           });
           updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
             await_point: 'obligation_update', progress: true,
-            root_obligation_id: transition.obligation_id,
-            source_range: transition.source_range,
+            root_obligation_id: event.obligation_id,
+            source_range: event.source_range,
           });
           checkpoint.run_manifest.obligation_ledger = ensureMemorizeObligationLedger(
             checkpoint.run_manifest.obligation_ledger, checkpoint.run_manifest.logical_run_id);
-          transitionMemorizeObligation(checkpoint.run_manifest.obligation_ledger, {
-            obligation_id: transition.obligation_id,
+          const identity = {
+            obligation_id: event.obligation_id,
             logical_run_id: checkpoint.run_manifest.logical_run_id,
-            tier: transition.tier,
-            owner: transition.owner,
-            source_range: transition.source_range,
-            source_fingerprint: transition.source_fingerprint,
-            parent_obligation_id: transition.parent_obligation_id,
-            expected_child_obligation_ids: transition.expected_child_obligation_ids,
-          }, transition);
+            tier: event.tier,
+            owner: event.owner,
+            source_range: event.source_range,
+            source_fingerprint: event.source_fingerprint,
+            parent_obligation_id: event.parent_obligation_id,
+          };
+          const ledger = checkpoint.run_manifest.obligation_ledger;
+          const prior = ledger.obligations[event.obligation_id];
+          // A recovery callback announces the next physical attempt. Settle
+          // the previous terminal response first so retry sequencing remains
+          // response -> parser disposition -> pending recovery -> running.
+          if (event.type === 'provider_attempt_started'
+            && ['provider_running', 'provider_response_received', 'parser_accepted',
+              'parser_partial', 'parser_rejected', 'validation_rejected'].includes(prior?.current_state)) {
+            const attempts = catchUpContext.chatMetadata?.[META_KEY]
+              ?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [];
+            const terminal = [...attempts].reverse().find((attempt) =>
+              attempt?.terminal_outcome && attempt.terminal_outcome !== 'running'
+              && (attempt.child_obligation_id === event.obligation_id
+                || (attempt.logical_obligation_id === event.obligation_id
+                  && prior?.provider_attempt_lineage?.includes(attempt.attempt_id))));
+            if (prior.current_state === 'provider_running' && terminal?.attempt_id) {
+              applyMemorizeLifecycleEvent(ledger, identity, {
+                type: 'provider_response_received', provider_attempt_id: terminal.attempt_id,
+                event_id: `retry-settlement:${terminal.attempt_id}:response`,
+              });
+            }
+            const afterResponse = ledger.obligations[event.obligation_id];
+            if (afterResponse?.current_state === 'provider_response_received') {
+              applyMemorizeLifecycleEvent(ledger, identity, {
+                type: 'parser_rejected', provider_attempt_id: terminal?.attempt_id ?? null,
+                parser_result: 'malformed_output_rejected_for_recovery',
+                event_id: `retry-settlement:${terminal?.attempt_id ?? 'unknown'}:parser`,
+              });
+            }
+            const afterParser = ledger.obligations[event.obligation_id];
+            if (['parser_accepted', 'parser_partial', 'parser_rejected',
+              'validation_rejected'].includes(afterParser?.current_state)) {
+              applyMemorizeLifecycleEvent(ledger, identity, {
+                type: 'recovery_required', reason_code: 'malformed_provider_output',
+                next_action: 'dispatch_bounded_recovery_attempt',
+                recovery_intent: 'recover_unresolved_partial_output_fragments',
+                recovery_stage: event.recovery_stage,
+                event_id: `retry-settlement:${terminal?.attempt_id ?? 'unknown'}:pending`,
+              });
+            }
+          }
+          const result = applyMemorizeLifecycleEvent(ledger, identity, event);
           checkpoint.updated_at = Date.now();
           await saveChatMetadata(catchUpContext);
           await checkpointCatchUpTransaction(chunkTransaction);
+          return result;
         };
         const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
         const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
@@ -6155,7 +6226,7 @@ export function bindSettingsUI(ctrl) {
                   recovery_child_manifest_updated: commitRecoveryChildManifest,
                   provider_completion_journal_updated: commitProviderCompletionJournal,
                   provider_await_point: commitProviderAwaitPoint,
-                  obligation_state: updateAuthoritativeObligation,
+                  obligation_event: applyAuthoritativeLifecycleEvent,
                 },
               }),
             }).catch((err) => {
@@ -6184,13 +6255,13 @@ export function bindSettingsUI(ctrl) {
                 terminalOutcome: completedOwnerRecord.coverage_terminal_state,
               });
             } else {
-              await updateAuthoritativeObligation({
+              await applyAuthoritativeLifecycleEvent({
                 obligation_id: ownerObligationId, tier: 'longterm', owner: name,
                 source_range: { start: currentRange.source_start_index, end: currentRange.source_end_index },
                 source_fingerprint: ownerSourceFingerprint,
-                current_state: 'pending_recovery',
-                exact_reason_code: 'longterm_extraction_not_safely_committed',
-                next_eligible_action: 'resume_exact_obligation',
+                type: 'recovery_required',
+                reason_code: 'longterm_extraction_not_safely_committed',
+                next_action: 'resume_exact_obligation',
                 coverage_result: 'pending',
               });
             }
@@ -6225,7 +6296,7 @@ export function bindSettingsUI(ctrl) {
               hooks: {
                 context_overflow_child_committed: commitOverflowChild,
                 recovery_child_manifest_updated: commitRecoveryChildManifest,
-                obligation_state: updateAuthoritativeObligation,
+                obligation_event: applyAuthoritativeLifecycleEvent,
                 recovery_epoch_initialized: async (epoch) => {
                   checkpoint.recovery_epoch = { ...epoch, status: 'initialized_before_dispatch' };
                   checkpoint.updated_at = Date.now();
@@ -6391,6 +6462,21 @@ export function bindSettingsUI(ctrl) {
           checkpointForCommit.last_committed_source_end_index = chunk.at(-1)?.__sme_original_index ?? null;
           const chunkStartIndex = chunk[0]?.__sme_original_index ?? null;
           const chunkEndIndex = chunk.at(-1)?.__sme_original_index ?? null;
+          const lifecycleReconciliation = reconcileMemorizeLifecycleFromJournal(
+            checkpointForCommit.run_manifest.obligation_ledger, {
+              logical_run_id: checkpointForCommit.run_manifest.logical_run_id,
+              journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+              coverage_records: Object.values(runResult.extractionCoverage ?? {})
+                .flatMap((tier) => tier?.records ?? []),
+            });
+          checkpointForCommit.run_manifest.obligation_ledger = lifecycleReconciliation.ledger;
+          checkpointForCommit.lifecycle_journal_reconciliation = {
+            mutations: lifecycleReconciliation.mutations,
+            parent_aggregation_mutations: lifecycleReconciliation.parent_aggregation_mutations,
+            reused_attempt_ids: lifecycleReconciliation.reused_attempt_ids,
+            preserved_durable_record_ids: lifecycleReconciliation.preserved_durable_record_ids,
+            provider_calls: 0, persistence_calls: 0, reconciled_at: Date.now(),
+          };
           const rangeMatchesCurrentChunk = (record) => record?.original_range?.start === chunkStartIndex
             && record?.original_range?.end === chunkEndIndex
             && ['completed', 'repartitioned_completed'].includes(record?.coverage_terminal_state);
@@ -10060,8 +10146,11 @@ export function bindSettingsUI(ctrl) {
       }
       const exitCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
         ?? controllerRuntime.checkpoint;
-      if (exitCheckpoint) exitCheckpoint.provider_completion_consistency
-        = inspectProviderCompletionConsistency({
+      if (exitCheckpoint) {
+        reconcileImpossibleLiveHealth(
+          catchUpContext.chatMetadata?.[META_KEY],
+          catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit);
+        exitCheckpoint.provider_completion_consistency = inspectProviderCompletionConsistency({
           metadata: catchUpContext.chatMetadata?.[META_KEY],
           provider_audit: catchUpContext.chatMetadata?.[META_KEY]
             ?.live_memory_health?.provider_attempt_audit,
@@ -10069,6 +10158,7 @@ export function bindSettingsUI(ctrl) {
           child_manifests: exitCheckpoint.recovery_child_manifests,
           live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
         });
+      }
       if (!controllerRuntime.controller_exit) {
         const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
           ?? controllerRuntime.checkpoint;
@@ -10084,6 +10174,13 @@ export function bindSettingsUI(ctrl) {
           next_eligible_action: pending?.next_eligible_action ?? null,
         });
       }
+      // The provisional exit may have been captured while a chunk transaction
+      // was still active. Replace only its transaction projection after the
+      // final settlement above; preserve its authoritative reason/classification.
+      if (controllerRuntime.controller_exit) recordControllerExit({
+        ...controllerRuntime.controller_exit,
+        finalize_transaction_evidence: true,
+      });
       if (resumeRequested) recordRuntimeEvidence('resume_handler_exited', {
         subsystem: 'memorize_chat_resume',
         request_state: controllerRuntime.controller_exit?.classification ?? 'unknown_exit',

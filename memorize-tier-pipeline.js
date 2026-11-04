@@ -59,14 +59,14 @@ export function createMemorizeTierPipeline(input) {
     coverage_terminal_state: 'completed',
     all_source_messages_covered: true,
   });
-  const transitionObligation = (currentState, details = {}) => execution.hooks.obligation_state({
+  const emitLifecycleEvent = (type, details = {}) => execution.hooks.obligation_event({
     obligation_id: leafObligationId,
     parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
     tier,
     owner,
     source_range: { start: range.start, end: range.end, message_count: range.message_count },
     source_fingerprint: sourceFingerprint,
-    current_state: currentState,
+    type,
     ...details,
   });
   const beginAttempt = (requestKind = execution.provider.request_kind
@@ -119,7 +119,7 @@ export function createMemorizeTierPipeline(input) {
   return Object.freeze({
     tier, tierLabel, owner, range, rangeId, rootSourceRange,
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
-    recordCoverage, recordCompletedCoverage, transitionObligation, beginAttempt,
+    recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

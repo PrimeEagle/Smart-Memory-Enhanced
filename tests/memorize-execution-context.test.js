@@ -16,12 +16,12 @@ test('execution context exposes named controller, provider, and hook dependencie
       resumed_pending_obligation: true,
       changed_recovery_dimensions: ['source_range'],
     },
-    hooks: { obligation_state: async (event) => events.push(event) },
+    hooks: { obligation_event: async (event) => events.push(event) },
   });
   assert.equal(context.controller.attempt_number, 3);
   assert.equal(context.provider.resumed_pending_obligation, true);
-  await context.hooks.obligation_state({ state: 'running' });
-  assert.deepEqual(events, [{ state: 'running' }]);
+  await context.hooks.obligation_event({ type: 'provider_attempt_started' });
+  assert.deepEqual(events, [{ type: 'provider_attempt_started' }]);
   assert.equal(Object.isFrozen(context.provider), true);
 });
 
@@ -41,7 +41,7 @@ test('child execution contexts override provider identity without losing hooks',
   const events = [];
   const root = createMemorizeExecutionContext({
     provider: { root_obligation_id: 'root', request_kind: 'original' },
-    hooks: { obligation_state: async (event) => events.push(event) },
+    hooks: { obligation_event: async (event) => events.push(event) },
   });
   const child = extendMemorizeExecutionContext(root, {
     provider: { parent_attempt_id: 'attempt-1', request_kind: 'repartition_child' },
@@ -49,7 +49,7 @@ test('child execution contexts override provider identity without losing hooks',
   assert.equal(child.provider.root_obligation_id, 'root');
   assert.equal(child.provider.parent_attempt_id, 'attempt-1');
   assert.equal(child.provider.request_kind, 'repartition_child');
-  await child.hooks.obligation_state('child-running');
+  await child.hooks.obligation_event('child-running');
   assert.deepEqual(events, ['child-running']);
 });
 

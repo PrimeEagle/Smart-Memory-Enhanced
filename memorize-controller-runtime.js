@@ -146,7 +146,20 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
     resumable: input.resumable === true,
     next_eligible_action: input.next_eligible_action ?? null,
     at: input.at ?? Date.now(),
+    finalize_transaction_evidence: input.finalize_transaction_evidence === true,
   };
+  if (runtime.controller_exit && candidate.finalize_transaction_evidence) {
+    runtime.controller_exit = {
+      ...runtime.controller_exit,
+      active_transaction_id: candidate.active_transaction_id,
+      active_transaction_state: candidate.active_transaction_state,
+      checkpoint_after: candidate.checkpoint_after,
+      at: candidate.at,
+      finalize_transaction_evidence: true,
+      transaction_evidence_finalized: true,
+    };
+    return runtime.controller_exit;
+  }
   if (runtime.controller_exit
     && exitPriority(candidate.classification) <= exitPriority(runtime.controller_exit.classification)) {
     return runtime.controller_exit;

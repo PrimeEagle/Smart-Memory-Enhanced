@@ -115,11 +115,32 @@ export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date
   if (!health) return [];
   const running = providerAudit?.recent_attempts?.filter((item) => item?.terminal_outcome === 'running') ?? [];
   const repairs = [];
+  const completionEntries = journalEntriesForHealth(metadata);
   for (const event of health.recent_extraction_events ?? []) {
     if (event?.terminal_health !== 'running') continue;
     const active = running.some((attempt) => attempt.tier === event.tier
       && (attempt.owner ?? null) === (event.owner ?? null));
     if (active) continue;
+    const terminal = [...completionEntries].reverse().find((entry) =>
+      (entry.live_health_event_id && entry.live_health_event_id === event.event_id)
+      || (entry.tier === event.tier && (entry.owner ?? null) === (event.owner ?? null)
+        && terminalSuccess.has(entry.terminal_outcome)
+        && ['committed', 'verified_existing', 'not_needed'].includes(entry.persistence?.status)));
+    if (terminal) {
+      event.provider_outcome = terminal.terminal_outcome;
+      event.parser_outcome = terminal.parser_result?.status ?? event.parser_outcome ?? 'accepted';
+      event.persistence = terminal.persistence?.status ?? 'not_needed';
+      event.terminal_health = 'completed';
+      event.finished_at = terminal.completed_at ?? terminal.updated_at ?? at;
+      event.attention_reason_codes = (event.attention_reason_codes ?? [])
+        .filter((code) => code !== 'stale_live_health_reconciled');
+      terminal.live_health_transition = {
+        status: 'applied', disposition: 'completed', applied_at: at,
+      };
+      repairs.push({ event_id: event.event_id ?? null,
+        attempt_id: terminal.attempt_id, reason_code: 'terminal_journal_completion_applied' });
+      continue;
+    }
     event.provider_outcome = event.response_received === true
       ? 'terminal_response_pending_downstream_reconciliation'
       : 'interrupted_without_active_provider';
@@ -134,6 +155,11 @@ export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date
     repairs.push({ event_id: event.event_id ?? null, reason_code: 'running_health_without_active_provider' });
   }
   return repairs;
+}
+
+function journalEntriesForHealth(metadata) {
+  const journal = container(metadata);
+  return (journal?.order ?? []).map((id) => journal.entries?.[id]).filter(Boolean);
 }
 
 export function inspectProviderCompletionConsistency({ metadata, provider_audit, ledger,

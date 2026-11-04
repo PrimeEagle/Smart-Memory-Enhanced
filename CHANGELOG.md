@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.77] - 2026-11-04
+
+### Added
+
+- Added one idempotent semantic obligation API for Memorize Chat. Session,
+  Long-Term, recovery, manifest, pause, and controller paths now report domain
+  events; only the reducer, migrations, and deterministic replay harnesses may
+  select raw lifecycle states.
+- Added durable exact-partition child registration and recursive parent
+  aggregation. Repartitioned parents close only after every registered child
+  is terminally covered, without a provider call or duplicate persistence.
+- Added journal-driven lifecycle reconciliation and a redacted v0.9.75
+  `40–59` regression fixture. Terminal child evidence can repair a missed
+  ledger projection, preserve durable IDs, advance contiguous coverage, and
+  converge with zero mutations on a second pass.
+
+### Fixed
+
+- Recovery retries now settle the prior attempt through response and parser
+  disposition, enter typed pending recovery, and only then start the next
+  physical attempt. Parser and validation events can no longer skip their
+  required evidence boundaries.
+- Repaired the v0.9.75 false block in which Session leaves `50–54` and `55–59`
+  were committed but parents `50–59` and `40–59` remained stranded in
+  `provider_response_received`. Attempts 17/18 and their existing records are
+  reused; the safe checkpoint advances from 40 to 60.
+- Final controller-exit diagnostics now refresh transaction evidence after
+  settlement, so a committed transaction cannot remain displayed as active.
+  Terminal completion-journal evidence also closes the corresponding stale
+  running live-health event.
+- The lifecycle ledger is now schema 4 / implementation 6 and migrates prior
+  runtime transition observations to bounded historical evidence before new
+  semantic events are applied.
+
 ## [0.9.76] - 2026-11-03
 
 ### Changed

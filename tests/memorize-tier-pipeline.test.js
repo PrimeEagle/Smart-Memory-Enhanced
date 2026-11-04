@@ -15,7 +15,7 @@ const makePipeline = ({ range = { start: 10, end: 19, message_count: 10, source_
       root_source_range: rootRange ?? range,
       root_source_fingerprint: 'root-fingerprint',
     },
-    hooks: { obligation_state: async (transition) => transitions.push(transition) },
+    hooks: { obligation_event: async (transition) => transitions.push(transition) },
   });
   const coverageLedger = { records: [] };
   const pipeline = createMemorizeTierPipeline({
@@ -52,9 +52,9 @@ test('coverage projection merges repeated writes and becomes terminal only expli
   assert.equal(coverageLedger.records[0].citation_mapping_valid, true);
 });
 
-test('obligation transitions and context-overflow errors retain exact tier range', async () => {
+test('obligation events and context-overflow errors retain exact tier range', async () => {
   const { pipeline, transitions } = makePipeline();
-  await pipeline.transitionObligation('provider_running', { physical_attempt_id: 'attempt-1' });
+  await pipeline.emitLifecycleEvent('provider_attempt_started', { provider_attempt_id: 'attempt-1' });
   assert.equal(transitions[0].obligation_id, pipeline.leafObligationId);
   assert.deepEqual(transitions[0].source_range, { start: 10, end: 19, message_count: 10 });
   const error = createTierContextOverflowError('Session', { estimated_input_tokens: 9000 }, pipeline.range);

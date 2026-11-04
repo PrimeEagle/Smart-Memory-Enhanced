@@ -36,7 +36,7 @@ export function createMemorizeExecutionContext(input = {}) {
       automatic_depth: Number(input.recovery?.automatic_depth ?? 0),
     }),
     hooks: Object.freeze({
-      obligation_state: input.hooks?.obligation_state ?? noopAsync,
+      obligation_event: input.hooks?.obligation_event ?? noopAsync,
       provider_await_point: input.hooks?.provider_await_point ?? noopAsync,
       provider_completion_journal_updated: input.hooks?.provider_completion_journal_updated ?? noopAsync,
       recovery_child_manifest_updated: input.hooks?.recovery_child_manifest_updated ?? noopAsync,

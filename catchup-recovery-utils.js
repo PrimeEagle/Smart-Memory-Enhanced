@@ -1,7 +1,7 @@
 import {
   ensureMemorizeObligationLedger,
   projectMemorizeObligationLedger,
-  transitionMemorizeObligation,
+  applyMemorizeLifecycleEvent,
 } from './memorize-obligation-ledger.js';
 
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
@@ -184,17 +184,18 @@ export function recordCatchUpOwnerRange(manifest, owner, range, {
   const sourceStart = normalized.source_start_index ?? normalized.start_offset;
   const sourceEnd = normalized.source_end_index ?? normalized.end_offset;
   const ledgerId = `longterm:${String(owner).trim().toLowerCase()}:${sourceStart}-${sourceEnd}:${entry.source_fingerprint ?? 'range-ledger'}`;
-  transitionMemorizeObligation(next.obligation_ledger, {
+  applyMemorizeLifecycleEvent(next.obligation_ledger, {
     obligation_id: ledgerId, logical_run_id: next.logical_run_id,
     tier: 'longterm', owner: String(owner),
     source_range: { start: sourceStart, end: sourceEnd },
     source_fingerprint: entry.source_fingerprint,
   }, safelyCommitted ? {
-    current_state: 'durably_committed', downstream_validation_result: 'accepted',
-    persistence_result: 'committed', coverage_result: 'safely_committed', at: now,
+    type: 'leaf_coverage_completed', verified_coverage: true,
+    downstream_validation_result: 'accepted',
+    persistence_result: 'verified_existing', coverage_result: 'safely_committed', at: now,
   } : {
-    current_state: 'pending_recovery', exact_reason_code: terminalOutcome,
-    next_eligible_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
+    type: 'recovery_required', reason_code: terminalOutcome,
+    next_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
   });
   return next;
 }
@@ -227,14 +228,14 @@ export function invalidateCatchUpOwnerRange(manifest, owner, range, {
     item.tier === 'longterm' && String(item.owner).toLowerCase() === String(owner).toLowerCase()
     && Number(item.source_range?.start) === Number(sourceStart)
     && Number(item.source_range?.end) === Number(sourceEnd));
-  transitionMemorizeObligation(next.obligation_ledger, {
+  applyMemorizeLifecycleEvent(next.obligation_ledger, {
     obligation_id: matchingLedger?.obligation_id
       ?? `longterm:${String(owner).trim().toLowerCase()}:${sourceStart}-${sourceEnd}:${entry.source_fingerprint ?? 'range-ledger'}`,
     logical_run_id: next.logical_run_id, tier: 'longterm', owner: String(owner),
     source_range: { start: sourceStart, end: sourceEnd }, source_fingerprint: entry.source_fingerprint,
   }, {
-    current_state: 'pending_recovery', exact_reason_code: reasonCode,
-    next_eligible_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
+    type: 'recovery_required', reason_code: reasonCode,
+    next_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
   });
   return next;
 }
@@ -436,17 +437,18 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
       source_fingerprint: existingLedgerObligation?.source_fingerprint ?? null,
     };
     if (safelyCommitted) {
-      transitionMemorizeObligation(next.obligation_ledger, ledgerInput, {
-        current_state: outcome.not_applicable ? 'explicit_no_update' : 'durably_committed',
+      applyMemorizeLifecycleEvent(next.obligation_ledger, ledgerInput, {
+        type: 'leaf_coverage_completed', verified_coverage: true,
+        explicit_no_update: outcome.not_applicable === true,
         downstream_validation_result: outcome.not_applicable ? 'not_applicable' : 'accepted',
         persistence_result: outcome.not_applicable ? 'not_required' : 'committed',
         coverage_result: 'safely_committed',
       });
     } else if (!existingLedgerObligation?.exact_reason_code) {
-      transitionMemorizeObligation(next.obligation_ledger, ledgerInput, {
-        current_state: 'pending_recovery',
-        exact_reason_code: outcome.reason_code ?? 'not_safely_committed',
-        next_eligible_action: 'resume_exact_obligation',
+      applyMemorizeLifecycleEvent(next.obligation_ledger, ledgerInput, {
+        type: 'recovery_required',
+        reason_code: outcome.reason_code ?? 'not_safely_committed',
+        next_action: 'resume_exact_obligation',
         coverage_result: 'pending',
       });
     }
