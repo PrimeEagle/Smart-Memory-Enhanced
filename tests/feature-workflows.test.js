@@ -1653,7 +1653,7 @@ test('long-chat extraction preflights final prompts and records bounded overflow
   assert.match(settings, /completed_child_keys: completedOverflowChildren/);
   assert.match(session, /execution\.recovery\.completed_child_keys/);
   assert.match(longterm, /execution\.recovery\.completed_child_keys/);
-  assert.match(settings, /getCatchUpOwnerRangeStatus/);
+  assert.match(settings, /getAuthoritativeOwnerRangeStatus/);
 });
 
 test('Memorize Chat checkpoints only committed chunks and exposes guarded recovery', () => {
@@ -1671,12 +1671,12 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /checkpointForCommit\.source_traversal_offset = processed/);
   assert.match(settings, /earliestPendingOffset/);
   assert.match(obligationLedger, /completion_gate_satisfied/);
-  assert.match(settings, /recordCommittedCatchUpRange/);
-  assert.match(settings, /getCatchUpTierRangeStatus/);
+  assert.match(settings, /rebuildMemorizeCompatibilityProjection/);
+  assert.match(settings, /getAuthoritativeTierRangeStatus/);
   assert.match(settings, /tier_coverage_incomplete/);
   assert.match(settings, /exactPendingObligation/);
   assert.match(projections, /Next action:/);
-  assert.match(settings, /unknown_uncommitted_tier_obligation/);
+  assert.match(settings, /canonical_pending_obligation_has_no_executable_action/);
   assert.match(settings, /const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest/);
   assert.match(settings, /chunks_scope: 'current_attempt'/);
   assert.match(settings, /scope: 'cumulative_logical_run_across_attempts'/);
@@ -1995,7 +1995,7 @@ test('Memorize Chat exposes blocked recovery and central malformed-recovery diag
   assert.match(settings, /malformed_recovery: centralMalformedRecovery/);
   assert.match(settings, /recovery_blocked = recoveryBlocked/);
   assert.match(settings, /change_provider_configuration_or_install_updated_build/);
-  assert.match(settings, /ownerHasUnresolvedProviderObligation\(name\)/);
+  assert.match(settings, /reconcileProviderRecoveryWindowsFromLedger/);
   assert.match(settings, /item\.configuration_signature === currentConfigurationSignature\(item\.tier\)/);
   assert.match(settings, /delete rawCheckpoint\.recovery_blocked/);
   assert.match(settings, /configuration_signature: obligation\.configuration_signature/);

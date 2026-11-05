@@ -115,11 +115,24 @@ export function createMemorizeTierPipeline(input) {
       schema_version: schemaVersion,
       configuration_signature: providerConfigSignature,
     });
+  // Registration and the canonical running transition form one awaited
+  // dispatch boundary. Callers cannot send the provider request between them.
+  const beginRegisteredAttempt = async (...args) => {
+    const attempt = beginAttempt(...args);
+    if (attempt?.attempt_id) await emitLifecycleEvent('provider_attempt_started', {
+      provider_attempt_id: attempt.attempt_id,
+      exact_reason_code: 'provider_request_in_progress',
+      recovery_intent: attempt.recovery_intent,
+      recovery_stage: attempt.recovery_stage,
+    });
+    return attempt;
+  };
 
   return Object.freeze({
     tier, tierLabel, owner, range, rangeId, rootSourceRange,
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
+    beginRegisteredAttempt,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

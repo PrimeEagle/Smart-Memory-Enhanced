@@ -127,7 +127,10 @@ import {
   summarizeMalformedRecoveryBudget,
 } from './malformed-output-recovery.js';
 import { repairSessionCandidateShapes } from './session-candidate-utils.js';
-import { verifyPersistedPartialSessionRecords } from './session-partial-persistence.js';
+import {
+  shouldVerifyPersistedPartialSessionRecords,
+  verifyPersistedPartialSessionRecords,
+} from './session-partial-persistence.js';
 import { extendMemorizeExecutionContext, resolveMemorizeExecutionContext } from './memorize-execution-context.js';
 import { createMemorizeTierPipeline, recordTierCoverage as recordExtractionCoverage } from './memorize-tier-pipeline.js';
 import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
@@ -799,7 +802,21 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       blocked.sme_obligation_id = rootObligationId;
       throw blocked;
     }
-    if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery) {
+    const verifyCommittedPartialRecords = shouldVerifyPersistedPartialSessionRecords({
+      canonical_obligation: {
+        obligation_id: rootObligationId,
+        source_fingerprint: coverageBase.source_fingerprint,
+        current_state: execution.provider.root_obligation_state,
+        checkpoint_eligible: execution.provider.root_obligation_state === 'durably_committed'
+          || execution.provider.root_obligation_state === 'explicit_no_update',
+        source_range: { start: range.start, end: range.end },
+      },
+      recovery_state: resumeRecoveryState,
+      selected_range: { start: range.start, end: range.end },
+      selected_action: execution.provider.selected_recovery_action,
+    });
+    if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery
+      && verifyCommittedPartialRecords) {
       const partialVerification = verifyPersistedPartialSessionRecords(
         loadSessionMemories(), resumeRecoveryState, { start: range.start, end: range.end });
       if (!partialVerification.verified) {
@@ -873,15 +890,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
       _already_finished: true,
-    } : beginPhysicalAttempt();
-    if (!bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
-      await emitLifecycleEvent('provider_attempt_started', {
-        provider_attempt_id: providerAttempt.attempt_id,
-        exact_reason_code: 'provider_request_in_progress',
-        recovery_intent: providerAttempt.recovery_intent,
-        recovery_stage: providerAttempt.recovery_stage,
-      });
-    }
+    } : await pipeline.beginRegisteredAttempt();
     try {
       if (automaticFragmentRecovery) {
         response = automaticFragmentRecovery.response;

@@ -2,6 +2,7 @@
 import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION } from './recovery-stage-eligibility.js';
 import { recordProviderCompletion } from './provider-completion-journal.js';
+import { ensureMemorizeObligationLedger } from './memorize-obligation-ledger.js';
 import {
   createRecoveryChildManifest,
   markRecoveryChildState,
@@ -12,7 +13,7 @@ import {
   summarizeRecoveryChildManifest,
 } from './recovery-child-coverage.js';
 
-export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 10;
+export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 11;
 export const PROVIDER_ATTEMPT_EVENT_LIMIT = 160;
 // Large enough to retain every root obligation in the supplied 9,434-message
 // replay while remaining explicitly bounded for arbitrarily large chats.
@@ -1289,11 +1290,18 @@ export function markProviderRejectedFragmentsRecovered(metadata, logicalObligati
 
 export function readProviderRecoveryWindowState(metadata, logicalObligationId, sourceFingerprint) {
   const audit = ensure(metadata, metadata?.active_catchup_run_id ?? null);
-  const window = audit?.obligations?.[logicalObligationId]?.recovery_windows?.[sourceFingerprint];
+  const obligation = audit?.obligations?.[logicalObligationId];
+  const window = obligation?.recovery_windows?.[sourceFingerprint];
   if (!window) return null;
+  if (window.canonical_terminal_state === 'retired_committed_root') return null;
   const result = {
     resume_unresolved_obligation: true,
-    configuration_signature: audit?.obligations?.[logicalObligationId]?.configuration_signature ?? null,
+    root_obligation_id: logicalObligationId,
+    source_fingerprint: window.source_fingerprint ?? sourceFingerprint,
+    source_range: window.source_range ?? obligation?.last_source_range
+      ?? obligation?.root_source_range ?? null,
+    selected_recovery_action: obligation?.next_eligible_recovery_action ?? null,
+    configuration_signature: obligation?.configuration_signature ?? null,
     recovery_stages_attempted: [...(window.recovery_stages_attempted ?? [])],
     exhausted_stages: [...(window.exhausted_stages ?? [])],
     staged_partial_records: (window.staged_partial_records ?? [])
@@ -1317,7 +1325,7 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
       ?? window.accepted_record_ids ?? [])],
     unresolved_semantic_units: [...new Set(window.unresolved_semantic_units ?? [])],
     last_malformed_reason: window.last_malformed_reason ?? null,
-    prior_attempt_id: audit?.obligations?.[logicalObligationId]?.last_attempt_id ?? null,
+    prior_attempt_id: obligation?.last_attempt_id ?? null,
   };
   Object.defineProperty(result, 'unresolved_fragments', {
     value: (window.unresolved_fragments ?? []).filter((item) => item.state === 'pending')
@@ -1325,6 +1333,69 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
     enumerable: false,
   });
   return result;
+}
+
+/**
+ * Retires stale provider-recovery windows only when the canonical obligation
+ * ledger proves the same root terminal. Historical attempts and record IDs are
+ * preserved; only future recovery eligibility is removed.
+ */
+export function reconcileProviderRecoveryWindowsFromLedger(metadata, ledgerValue, at = Date.now()) {
+  if (!metadata) return { mutations: 0, retired_windows: [], provider_calls: 0, persistence_calls: 0 };
+  const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
+  const ledger = ensureMemorizeObligationLedger(ledgerValue);
+  const retired = [];
+  let mutations = 0;
+  for (const [obligationId, obligation] of Object.entries(audit.obligations ?? {})) {
+    const canonical = ledger.obligations?.[obligationId];
+    if (!canonical?.checkpoint_eligible) continue;
+    for (const [sourceFingerprint, window] of Object.entries(obligation.recovery_windows ?? {})) {
+      if (window.canonical_terminal_state === 'retired_committed_root') continue;
+      window.canonical_terminal_state = 'retired_committed_root';
+      window.retired_at = at;
+      window.retirement_reason = 'canonical_obligation_safely_committed';
+      window.retained_historical_attempts = true;
+      window.retained_durable_record_ids = [...new Set(window.durably_persisted_record_ids
+        ?? window.accepted_record_ids ?? [])];
+      for (const fragment of window.unresolved_fragments ?? []) {
+        if (fragment.state === 'pending') {
+          fragment.state = 'superseded_by_canonical_commit';
+          fragment.superseded_at = at;
+          delete fragment.raw;
+        }
+      }
+      window.unresolved_semantic_units = [];
+      if (window.active_recovery_epoch
+        && !['completed', 'superseded_by_canonical_commit'].includes(window.active_recovery_epoch.status)) {
+        window.active_recovery_epoch.status = 'superseded_by_canonical_commit';
+        window.active_recovery_epoch.completed_at = at;
+      }
+      retired.push({ obligation_id: obligationId, source_fingerprint: sourceFingerprint });
+      mutations++;
+    }
+    if (['recovery_in_progress', 'partial_output_pending', 'pending_recovery',
+      'provider_response_malformed'].includes(obligation.terminal_outcome)) {
+      obligation.terminal_outcome = canonical.current_state === 'explicit_no_update'
+        ? 'completed_no_candidates' : 'completed';
+      obligation.final_disposition = 'canonical_commit_reconciled';
+      obligation.recovery_blocked = false;
+      obligation.recovery_intent = null;
+      obligation.recovery_stage = null;
+      obligation.next_eligible_recovery_action = null;
+      obligation.canonical_terminal_reconciliation = {
+        version: 1, reconciled_at: at,
+        canonical_state: canonical.current_state,
+        reason_code: 'canonical_obligation_safely_committed',
+      };
+      mutations++;
+    }
+  }
+  return {
+    mutations,
+    retired_windows: retired,
+    provider_calls: 0,
+    persistence_calls: 0,
+  };
 }
 
 export function beginProviderRecoveryEpoch(metadata, logicalObligationId, sourceFingerprint, details = {}) {
@@ -1619,6 +1690,23 @@ export function summarizeProviderAttemptAudit(metadata) {
     || count(item.provider_failure_count) > 0 || count(item.validation_failure_count) > 0).length;
   const terminalUnresolvedFailedCount = Math.max(0,
     uniqueFailedObligations - recoveredFailedCount - pausedFailedCount - recoveryInProgressFailedCount);
+  const failedId = (item) => item.logical_obligation_id ?? null;
+  const failedObligationDispositions = {
+    retained_identity_scope: 'currently_retained_provider_obligations',
+    ever_failed: failedObligations.map(failedId).filter(Boolean),
+    recovered: recoveredFailedObligations.map(failedId).filter(Boolean),
+    recovery_in_progress: recoveriesInProgress
+      .filter((item) => failedObligations.includes(item)).map(failedId).filter(Boolean),
+    operationally_paused: operationalPauses
+      .filter((item) => failedObligations.includes(item)).map(failedId).filter(Boolean),
+    terminal_unresolved: unresolved
+      .filter((item) => failedObligations.includes(item)).map(failedId).filter(Boolean),
+    superseded_or_migrated: [],
+    archived_identity_count_unavailable: count(archived.ever_failed),
+    archived_identity_limitation: count(archived.ever_failed) > 0
+      ? 'Archived obligation scalars are exact, but pruned obligation identities cannot be reconstructed.'
+      : null,
+  };
   const childCoverageManifests = obligations.map((item) => summarizeRecoveryChildManifest(item.child_coverage_manifest))
     .filter(Boolean);
   const malformedPhysicalCount = Object.values(audit.malformed_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0);
@@ -1728,6 +1816,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       authoritative_scalars: aggregateCountsExact,
       retained_arrays_are_diagnostic_only: true,
     },
+    failed_obligation_dispositions: failedObligationDispositions,
     provider_failure_lineage: {
       exact_count: providerTransportFailureCount,
       retained: [...(audit.provider_failure_lineage ?? [])],

@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.78] - 2026-11-05
+
+### Added
+
+- Added a documented Memorize Chat authority model and canonical query API.
+  The provider-completion journal owns physical attempts, the obligation
+  ledger owns logical coverage, and compatibility/UI fields are now one-way
+  projections.
+- Added an idempotent projection rebuild for tier/owner obligations, tier and
+  general committed ranges, committed chunk counts, safe Resume offset, and
+  executable next-work selection. Rebuilds perform no provider or memory
+  persistence calls.
+- Added a redacted v0.9.77 stale-Session-projection fixture plus 41 focused
+  regressions and four projection property combinations covering Resume selection,
+  strict partial verification, recovery-window retirement, candidate mapping,
+  provider event ordering, and exact error partitions.
+
+### Changed
+
+- Resume now reconciles terminal provider completions, journal dispositions,
+  parent coverage, stale recovery windows, and compatibility projections before
+  selecting a range. Provider dispatch, checkpoint advancement, range blocking,
+  and finalization gating read the canonical ledger rather than legacy tier
+  arrays.
+- Session partial-record verification now requires an exact canonical
+  `pending_recovery` root, active unresolved recovery state, durable record
+  identities, matching root/range/source fingerprint, and the exact selected
+  action. Exact explicit aliases remain supported; loose range matches cannot
+  satisfy identity checks.
+- Long-Term and Session initial requests now register the physical attempt and
+  await the semantic `provider_attempt_started` transition as one dispatch
+  boundary. Long-Term durable persistence also retains exact candidate-to-record
+  mappings while keeping private candidate fields out of stored memories.
+- Provider-attempt audit schema is now 11; obligation-ledger schema is now 5
+  with implementation version 7. Failure summaries expose stable retained
+  identity sets for recovered, active, paused, unresolved, and migrated
+  dispositions.
+
+### Fixed
+
+- Repaired the v0.9.77 contradiction where canonical coverage and the durable
+  checkpoint proved 0–59 committed but stale Session compatibility fields
+  replayed 40–59. Reconciliation now projects committed count 60 and selects
+  normal traversal at 60–79 without re-running provider or persistence work for
+  0–59.
+- Terminal canonical roots now archive stale provider recovery windows, clear
+  active unresolved intent and private fragment payloads, preserve durable IDs
+  and historical accounting, and cannot re-enter partial verification.
+- Completion-journal evidence now restores the three supplied Session durable
+  candidate mappings idempotently. Proven prior transition gaps move to
+  reconciled historical observations; unproven current-runtime violations stay
+  active.
+- Run error accounting now includes recovery-in-progress and
+  superseded/migrated categories in the exact failed-obligation partition, and
+  a null next action is classified as blocked rather than resumable.
+- Compatibility projection now retains original source indices while
+  intersecting tier coverage, including chats whose filtered processing offsets
+  do not begin at the same numerical index as the source chat.
+
 ## [0.9.77] - 2026-11-04
 
 ### Added

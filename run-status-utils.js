@@ -23,8 +23,11 @@ export function deriveRunErrorAccounting(report = {}) {
     ?? provider.recovered_malformed_obligations ?? report.recovered_error_count);
   const operationalPauses = number(failure.operationally_paused_obligation_count
     ?? provider.operational_pause_count ?? report.operational_pause_count);
+  const recoveryInProgress = number(failure.recovery_in_progress_obligation_count);
+  const supersededOrMigrated = number(failure.superseded_or_migrated_obligation_count);
   const uniqueFailed = number(failure.unique_failed_obligation_count
-    ?? provider.unique_malformed_obligations) || unresolved + recovered + operationalPauses;
+    ?? provider.unique_malformed_obligations)
+    || unresolved + recovered + operationalPauses + recoveryInProgress + supersededOrMigrated;
   const observedTransportFailures = number(failure.provider_transport_failure_count
     ?? provider.terminal_counts?.provider_failure
     ?? logical.cumulative_request_counters?.provider_failure_count
@@ -84,6 +87,14 @@ export function deriveRunErrorAccounting(report = {}) {
       count: recovered, unit: 'unique_logical_obligations', scope: 'cumulative_provider_audit',
       includes_recovered: true, bounded: false, authoritative: true,
     },
+    recovery_in_progress_obligations: {
+      count: recoveryInProgress, unit: 'unique_logical_obligations', scope: 'current_operational_state',
+      includes_recovered: false, bounded: false, authoritative: true,
+    },
+    superseded_or_migrated_obligations: {
+      count: supersededOrMigrated, unit: 'unique_logical_obligations', scope: 'cumulative_provider_audit',
+      includes_recovered: false, bounded: false, authoritative: true,
+    },
     operational_pauses: {
       count: operationalPauses, unit: 'unique_logical_obligations', scope: 'current_operational_state',
       includes_recovered: false, bounded: false, authoritative: true,
@@ -132,7 +143,8 @@ export function deriveRunErrorAccounting(report = {}) {
     reconciliation: {
       terminal_unresolved_subset_of_failed: unresolved <= uniqueFailed,
       recovered_plus_unresolved_equals_failed: providerAggregateCountsExact
-        ? recovered + operationalPauses + unresolved === uniqueFailed : null,
+        ? recovered + operationalPauses + recoveryInProgress
+          + supersededOrMigrated + unresolved === uniqueFailed : null,
       recovered_and_unresolved_do_not_overlap: [...recoveredIds].every((id) => !unresolvedIds.has(id)),
       fatal_not_inferred_from_transient_provider_failures: fatalRunErrors === 0
         || Boolean(report.final_persistence_error || currentDetails.some((entry) => entry?.fatal === true)),
@@ -144,7 +156,8 @@ export function deriveRunErrorAccounting(report = {}) {
       malformed_transport_validation_reconcile: physicalCategoryAccountingAvailable
         ? cumulativeFailureObservations === categorizedPhysicalFailures : null,
       consistent: unresolved <= uniqueFailed
-        && (!providerAggregateCountsExact || recovered + operationalPauses + unresolved === uniqueFailed)
+        && (!providerAggregateCountsExact || recovered + operationalPauses + recoveryInProgress
+          + supersededOrMigrated + unresolved === uniqueFailed)
         && unresolved >= retainedUnresolvedCount
         && (recovered === 0 || cumulativeFailureObservations > 0)
         && cumulativeFailureObservations >= uniqueFailed

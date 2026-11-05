@@ -7,8 +7,8 @@
  * `explicit_no_update` make an obligation checkpoint eligible.
  */
 
-export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 4;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 6;
+export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 5;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 7;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -503,7 +503,7 @@ export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
   'validation_partially_accepted', 'validation_rejected', 'records_staged',
   'records_durably_persisted', 'explicit_no_update_accepted', 'recovery_required',
   'recovery_budget_exhausted', 'leaf_coverage_completed', 'parent_children_completed',
-  'obligation_blocked', 'controller_relinquished_ownership',
+  'obligation_blocked', 'candidate_mapping_reconciled', 'controller_relinquished_ownership',
 ]);
 
 const SEMANTIC_EVENT_SET = new Set(MEMORIZE_LIFECYCLE_EVENTS);
@@ -773,6 +773,34 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         'blocked_event_missing_typed_action', { missing_evidence: ['reason_code', 'next_action'] });
       result = transitionForSemanticEvent(ledger, identity, event, 'blocked', details);
       break;
+    case 'candidate_mapping_reconciled': {
+      const mapping = event.durable_record_candidate_map ?? {};
+      const pairs = Object.entries(mapping).filter(([recordId, candidateId]) =>
+        String(recordId).trim() && String(candidateId).trim());
+      if (!existing || pairs.length === 0) return recordSemanticViolation(
+        ledger, identity, event, 'candidate_mapping_reconciliation_missing_evidence', {
+          missing_evidence: ['durable_record_candidate_map'],
+        });
+      const durableIds = new Set(existing.lifecycle?.durably_persisted_record_ids ?? []);
+      if (pairs.some(([recordId]) => !durableIds.has(recordId))) return recordSemanticViolation(
+        ledger, identity, event, 'candidate_mapping_reconciliation_unknown_record', {
+          missing_evidence: ['matching_durable_record_identity'],
+        });
+      const candidateIds = normalizeIds(pairs.map(([, candidateId]) => candidateId));
+      result = transitionForSemanticEvent(ledger, identity, event, priorState, {
+        ...details,
+        lifecycle: {
+          parser_accepted_candidate_ids: candidateIds,
+          downstream_accepted_candidate_ids: candidateIds,
+          durable_record_candidate_map: Object.fromEntries(pairs),
+        },
+        metrics: {
+          ...(event.metrics ?? {}),
+          candidate_mapping_migration: event.migration ?? 'provider_completion_journal_v2',
+        },
+      });
+      break;
+    }
     case 'controller_relinquished_ownership':
       result = { applied: true, obligation: existing ?? null };
       break;
@@ -890,7 +918,8 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
   }
   const reusedAttemptIds = [];
   const preservedRecordIds = [];
-  for (const entry of journalEntries(input.journal)) {
+  const entries = journalEntries(input.journal);
+  for (const entry of entries) {
     if (!['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(entry?.terminal_outcome)) continue;
     const obligation = ledger.obligations[entry.child_obligation_id]
       ?? ledger.obligations[entry.root_obligation_id];
@@ -906,6 +935,9 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
     if (!terminallyCovered) continue;
     reusedAttemptIds.push(entry.attempt_id);
     preservedRecordIds.push(...durableIds);
+    const candidateMap = Object.fromEntries((entry.validated_record_identities ?? [])
+      .filter((item) => item?.id && item?.candidate_id && durableIds.includes(String(item.id)))
+      .map((item) => [String(item.id), String(item.candidate_id)]));
     if (!obligation.checkpoint_eligible) {
       if (!obligation.provider_attempt_lineage?.includes(entry.attempt_id)) {
         applyMemorizeLifecycleEvent(ledger, obligation, { type: 'provider_attempt_started',
@@ -943,8 +975,66 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
           provider_attempt_id: entry.attempt_id, event_id: `journal:${entry.attempt_id}:no-update`, at: input.at });
       }
     }
+    const reconciledObligation = ledger.obligations[obligation.obligation_id];
+    const missingMappings = Object.keys(candidateMap).filter((recordId) =>
+      !reconciledObligation.lifecycle?.durable_record_candidate_map?.[recordId]);
+    if (missingMappings.length) applyMemorizeLifecycleEvent(ledger, reconciledObligation, {
+      type: 'candidate_mapping_reconciled',
+      durable_record_candidate_map: Object.fromEntries(missingMappings
+        .map((recordId) => [recordId, candidateMap[recordId]])),
+      migration: 'v0.9.78_completion_journal_candidate_mapping',
+      event_id: `journal:${entry.attempt_id}:candidate-mapping`, at: input.at,
+    });
   }
   const aggregation = aggregateMemorizeObligationParents(ledger, input.at);
+  // A current-runtime violation remains active until durable journal evidence
+  // proves the missing step. Once proven, retain it as reconciled history
+  // instead of allowing it to keep a completed run inconsistent forever.
+  const journalByAttempt = new Map(entries.filter((entry) => entry?.attempt_id)
+    .map((entry) => [entry.attempt_id, entry]));
+  const evidenceForViolation = (violation) => {
+    const obligation = ledger.obligations[violation.obligation_id];
+    if (!obligation?.checkpoint_eligible) return false;
+    const scoped = entries.filter((entry) => entry.root_obligation_id === violation.obligation_id
+      || entry.child_obligation_id === violation.obligation_id);
+    const entry = journalByAttempt.get(violation.provider_attempt_id) ?? scoped.at(-1);
+    if (!entry || entry.terminal_outcome === 'running') return false;
+    const parser = Boolean(entry.parser_result?.status);
+    const validation = Boolean(entry.validation?.status
+      && entry.validation.status !== 'pending');
+    const persisted = ['committed', 'verified_existing', 'not_needed']
+      .includes(entry.persistence?.status);
+    switch (violation.code) {
+      case 'provider_response_without_registered_attempt':
+        return Boolean(entry.provider_disposition || entry.private_response_retained);
+      case 'parser_disposition_without_provider_response': return parser;
+      case 'validation_disposition_without_parser_disposition': return parser && validation;
+      case 'records_staged_without_validation_acceptance': return validation && persisted;
+      case 'durable_persistence_without_accepted_staged_records': return parser && validation && persisted;
+      case 'no_update_without_parser_or_validation_evidence': return parser && persisted;
+      case 'provider_retry_started_before_prior_attempt_disposition':
+        return scoped.length > 0 && scoped.every((item) => item.terminal_outcome !== 'running');
+      case 'durable_record_missing_candidate_mapping':
+        return Boolean(obligation.lifecycle?.durable_record_candidate_map?.[violation.record_id]);
+      case 'illegal_obligation_state_transition': return parser && persisted;
+      default: return false;
+    }
+  };
+  const reconciledViolations = [];
+  ledger.transition_violations = (ledger.transition_violations ?? []).filter((violation) => {
+    if (!evidenceForViolation(violation)) return true;
+    reconciledViolations.push({
+      ...violation,
+      original_classification: violation.classification ?? 'current_runtime',
+      classification: 'reconciled_from_provider_completion_journal',
+      reconciliation_version: 1,
+      reconciled_at: nowValue(input.at),
+    });
+    return false;
+  });
+  if (reconciledViolations.length) ledger.historical_transition_observations = [
+    ...(ledger.historical_transition_observations ?? []), ...reconciledViolations,
+  ].slice(-256);
   const safeResumeOffset = deriveMemorizeSafeResumeOffset(
     ledger, input.checkpoint_before ?? input.starting_offset ?? 0);
   const chunkSize = Math.max(1, Number(input.chunk_size ?? 20) || 20);
@@ -957,6 +1047,7 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
     provider_calls: 0, persistence_calls: 0,
     reused_attempt_ids: normalizeIds(reusedAttemptIds),
     preserved_durable_record_ids: normalizeIds(preservedRecordIds),
+    reconciled_transition_violation_count: reconciledViolations.length,
     safe_resume_offset: safeResumeOffset,
     next_source_range: sourceCount == null || safeResumeOffset >= sourceCount ? null : {
       start: safeResumeOffset, end: Math.min(sourceCount - 1, safeResumeOffset + chunkSize - 1),

@@ -19,6 +19,8 @@ export function createMemorizeExecutionContext(input = {}) {
       parent_attempt_id: input.provider?.parent_attempt_id ?? null,
       request_kind: input.provider?.request_kind ?? null,
       resumed_pending_obligation: input.provider?.resumed_pending_obligation === true,
+      root_obligation_state: input.provider?.root_obligation_state ?? null,
+      selected_recovery_action: input.provider?.selected_recovery_action ?? null,
       changed_recovery_dimensions: Object.freeze([...(input.provider?.changed_recovery_dimensions ?? [])]),
     }),
     recovery: Object.freeze({

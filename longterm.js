@@ -1280,15 +1280,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       logical_obligation_id: rootObligationId,
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
-    } : beginPhysicalAttempt();
-    if (!completionReplay && !bypassEquivalentRootReplay && providerAttempt?.attempt_id) {
-      await emitLifecycleEvent('provider_attempt_started', {
-        provider_attempt_id: providerAttempt.attempt_id,
-        exact_reason_code: 'provider_request_in_progress',
-        recovery_intent: providerAttempt.recovery_intent,
-        recovery_stage: providerAttempt.recovery_stage,
-      });
-    }
+    } : await pipeline.beginRegisteredAttempt();
     try {
       if (completionReplay) {
         response = completionReplay.response_text;
@@ -1501,11 +1493,15 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'downstream_validation', progress: true,
     });
+    parsed.forEach((item, index) => {
+      item._memorize_candidate_id ??= item.id
+        ?? `longterm-candidate:${leafObligationId}:${index}`;
+    });
     await emitLifecycleEvent('parser_accepted', {
       provider_attempt_id: lifecycleAttemptId,
       parser_result: 'accepted',
-      lifecycle: { parser_accepted_candidate_ids: parsed.map((item, index) =>
-        item.id ?? `longterm-candidate:${leafObligationId}:${index}`) },
+      lifecycle: { parser_accepted_candidate_ids: parsed.map((item) =>
+        item._memorize_candidate_id) },
     });
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsed.length } });
 
@@ -1535,6 +1531,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       child_key: completionChildKey,
       validated_record_identities: newMemories.map((memory) => ({
         id: memory.id ?? null, type: memory.type ?? null,
+        candidate_id: memory._memorize_candidate_id ?? null,
         source_message_indices: memory.source_message_indices ?? [],
       })),
       persistence: newMemories.length === 0
@@ -1922,10 +1919,17 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // Count new entries that made it into the final active set.
     const added = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`)).length;
 
-    // Save: final active set + all retired memories (history is preserved).
-    saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
     const durableRecordIds = finalActive.filter((memory) => newMemories.some((candidate) =>
       candidate.id === memory.id)).map((memory) => memory.id).filter(Boolean);
+    const durableIdSet = new Set(durableRecordIds.map(String));
+    const durableRecordCandidateMap = Object.fromEntries(newMemories
+      .filter((memory) => memory.id && memory._memorize_candidate_id
+        && durableIdSet.has(String(memory.id)))
+      .map((memory) => [String(memory.id), String(memory._memorize_candidate_id)]));
+    // Candidate identities are lifecycle evidence, not memory payload fields.
+    for (const memory of [...finalActive, ...updatedRetired]) delete memory._memorize_candidate_id;
+    // Save: final active set + all retired memories (history is preserved).
+    saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
     completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
       child_key: completionChildKey,
       persistence: { status: 'committed', durable_record_ids: durableRecordIds },
@@ -1945,8 +1949,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       persistence_result: 'committed', coverage_result: 'safely_committed',
       durable_record_ids: durableRecordIds,
       lifecycle: {
-        downstream_accepted_candidate_ids: newMemories.map((item, index) =>
-          item.id ?? `longterm-candidate:${leafObligationId}:${index}`),
+        downstream_accepted_candidate_ids: Object.values(durableRecordCandidateMap),
+        durable_record_candidate_map: durableRecordCandidateMap,
       },
     });
     if (stagedRecoveryObligationId) {

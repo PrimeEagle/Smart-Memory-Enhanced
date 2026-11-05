@@ -600,6 +600,12 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     ? obligationProjection.pending_obligation_count
     : Number(checkpoint.recovery_blocked?.unresolved_obligation_count ?? 0);
   const exactPending = obligationProjection.next_eligible_obligation;
+  const sourceMessageCount = Number(checkpoint.source_message_count ?? 0);
+  const safeOffset = Number(checkpoint.next_source_offset ?? 0);
+  const traversalAction = projectedPendingCount === 0 && safeOffset < sourceMessageCount
+    ? 'continue_source_traversal'
+    : projectedPendingCount === 0 && safeOffset >= sourceMessageCount
+      ? 'continue_finalization' : null;
   const pendingWithoutAction = projectedPendingCount > 0
     && !exactPending?.next_eligible_action;
   const blocked = explicitlyBlocked || pendingWithoutAction;
@@ -626,16 +632,19 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       ?? (obligationProjection.safely_committed_obligation_count > 0
         || Number(checkpoint.next_source_offset ?? 0) > 0),
     next_eligible_recovery_action: checkpoint.recovery_blocked?.next_eligible_recovery_action
-      ?? exactPending?.next_eligible_action ?? null,
+      ?? exactPending?.next_eligible_action ?? traversalAction,
     recovery_intent: exactPending?.recovery_intent
-      ?? exactPending?.next_eligible_action ?? null,
+      ?? exactPending?.next_eligible_action ?? traversalAction,
     recovery_stage: exactPending?.recovery_stage ?? null,
     status: checkpoint.status ?? 'unknown',
     reason_code: checkpoint.recovery_blocked?.reason_code
+      ?? (String(checkpoint.status ?? '').startsWith('invalidated')
+        ? checkpoint.run_manifest?.terminal_reason_code : null)
       ?? exactPending?.exact_reason_code
-      ?? checkpoint.run_manifest?.terminal_reason_code ?? null,
-    source_message_count: Number(checkpoint.source_message_count ?? 0),
-    safely_committed_offset: Number(checkpoint.next_source_offset ?? 0),
+      ?? (traversalAction === 'continue_source_traversal' ? 'source_traversal_incomplete'
+        : checkpoint.run_manifest?.terminal_reason_code ?? null),
+    source_message_count: sourceMessageCount,
+    safely_committed_offset: safeOffset,
     operational_pause: checkpoint.operational_pause ?? null,
     operational_pause_count: checkpoint.operational_pause ? 1 : 0,
     transaction_lifecycle: checkpoint.transaction_lifecycle ?? null,
