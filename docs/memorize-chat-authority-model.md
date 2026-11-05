@@ -8,6 +8,20 @@ provider work, advance a checkpoint, or classify a controller exit.
 
 ## Authorities
 
+### Shared lifecycle coordinator
+
+Every current-runtime Session and Long-Term extraction leaf uses one immutable
+identity containing the logical run, root obligation, exact leaf obligation,
+parent, physical attempt, tier/owner, source range, source fingerprint,
+recovery stage, and optional source-unit identity. The root remains stable
+through repartition; the leaf always names the exact dispatched range.
+
+The coordinator validates every reducer result. Only an applied result or an
+idempotent duplicate whose resulting state matches the requested boundary may
+advance. A rejection stops the pipeline with the durable provider journal left
+pending local reconciliation. Retry settlement resolves the exact leaf; range
+fallback is limited to the versioned legacy identity migration.
+
 ### Provider-completion journal: physical authority
 
 The provider-completion journal owns physical request facts: attempt identity,
@@ -63,15 +77,32 @@ Before selecting work, Resume performs this order:
 
 1. Load the checkpoint and manifest.
 2. Normalize and migrate schemas.
-3. Reconcile interrupted physical attempts.
-4. Migrate terminal provider completions.
-5. Replay journal-backed downstream dispositions.
-6. Aggregate terminal child obligations.
-7. Retire recovery windows whose canonical roots are terminal.
-8. Rebuild compatibility projections from the ledger.
-9. Derive the contiguous safe offset and select exactly one of:
+3. Restore exact leaf IDs from matching journal evidence.
+4. Reconcile interrupted physical attempts.
+5. Migrate terminal provider completions.
+6. Reconcile complete terminal evidence directly to the exact leaf.
+7. Aggregate terminal child obligations.
+8. Retire recovery windows whose canonical roots are terminal.
+9. Rebuild compatibility projections from the ledger.
+10. Derive the contiguous safe offset and select exactly one of:
    actionable recovery, normal source traversal, blocked work, or finalization.
-10. Only then open a transaction or dispatch a provider request.
+11. Only then open a transaction or dispatch a provider request.
+
+## Durability boundaries
+
+1. **Attempt start:** audit registration, running journal entry, verified
+   `provider_attempt_started`, and controller heartbeat.
+2. **Provider terminal:** retained response or transport disposition and the
+   physical terminal outcome.
+3. **Downstream:** parser/validation disposition, staged candidates,
+   persistence result, durable IDs, and candidate mappings.
+4. **Coverage:** verified terminal leaf receipt, derived parent aggregation,
+   compatibility projection, and checkpoint.
+
+A later boundary cannot acknowledge an earlier one on a caller's assertion.
+Journal ledger/manifest acknowledgements are written only from a verified
+reducer receipt or terminal-evidence reconciliation. A crash resumes at the
+first missing boundary without repeating completed external work.
 
 If no obligation is pending and source messages remain, the action is always
 `continue_source_traversal`. A null action is never advertised as resumable.
@@ -95,6 +126,8 @@ If no obligation is pending and source messages remain, the action is always
   attempt or durable-record evidence.
 - Reconciliation and projection repair make zero provider calls and zero memory
   persistence calls; a second pass makes zero mutations.
+- Terminal evidence reconciliation never manufactures candidate mappings and
+  never regresses an already terminal obligation.
 
 ## Migration behavior
 

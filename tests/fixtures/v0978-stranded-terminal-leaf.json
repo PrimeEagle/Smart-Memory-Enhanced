@@ -1,0 +1,137 @@
+{
+  "source": "redacted-v0.9.78-diagnostics",
+  "logical_run_id": "8294cc4f-28e7-4ab6-a8d8-d76cf577b1c6",
+  "root_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+  "children": [
+    {
+      "obligation_id": "session:chat:20-39:fnv1a-eeb22053:leaf:20-29:fnv1a-1284b3a9",
+      "range": [20, 29],
+      "fingerprint": "fnv1a-1284b3a9",
+      "initial_state": "pending_recovery",
+      "attempt_id": "provider-mw3ltmn5-7",
+      "record_ids": ["ecb6ac4a-92e3-430b-b138-9962a4fd47b5"]
+    },
+    {
+      "obligation_id": "session:chat:20-39:fnv1a-eeb22053:leaf:30-39:fnv1a-cdfa04b7",
+      "range": [30, 39],
+      "fingerprint": "fnv1a-cdfa04b7",
+      "initial_state": "durably_committed",
+      "attempt_id": "provider-mw3lub31-10",
+      "record_ids": [
+        "185d0a49-47f2-4748-8973-c3ebfdcc19fa",
+        "77232132-2f83-4136-a4a6-720da783a001",
+        "d8472b13-827e-4642-b6d4-ebf39b226b40"
+      ]
+    }
+  ],
+  "attempts": [
+    {
+      "attempt_id": "provider-mw3lpnng-3",
+      "at": 1793886512380,
+      "logical_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+      "root_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+      "child_obligation_id": null,
+      "tier": "session",
+      "source_range": { "start": 0, "end": 19, "message_count": 20 },
+      "source_fingerprint": "fnv1a-39c6c9f",
+      "terminal_outcome": "completed_no_candidates",
+      "downstream_terminal_outcome": "completed_no_candidates",
+      "downstream_validation_result": { "accepted_count": 0, "rejected_count": 0 },
+      "persistence_result": "not_required_validated_no_update"
+    },
+    {
+      "attempt_id": "provider-mw3ltmn5-7",
+      "at": 1793886697697,
+      "logical_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "root_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "child_obligation_id": null,
+      "tier": "session",
+      "source_range": { "start": 20, "end": 29, "message_count": 10 },
+      "source_fingerprint": "fnv1a-1284b3a9",
+      "terminal_outcome": "completed",
+      "persistence_result": "committed"
+    },
+    {
+      "attempt_id": "provider-mw3lub31-10",
+      "at": 1793886729373,
+      "logical_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "root_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "child_obligation_id": null,
+      "tier": "session",
+      "source_range": { "start": 30, "end": 39, "message_count": 10 },
+      "source_fingerprint": "fnv1a-cdfa04b7",
+      "terminal_outcome": "completed",
+      "persistence_result": "committed"
+    }
+  ],
+  "journal": [
+    {
+      "attempt_id": "provider-mw3lpnng-3",
+      "root_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+      "child_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+      "tier": "session",
+      "owner": null,
+      "source_range": { "start": 0, "end": 19, "message_count": 20 },
+      "source_fingerprint": "fnv1a-39c6c9f",
+      "terminal_outcome": "completed_no_candidates",
+      "parser_result": null,
+      "validation": { "status": "pending" },
+      "persistence": { "status": "pending", "durable_record_ids": [] },
+      "manifest_transition": { "status": "pending" },
+      "ledger_transition": { "status": "pending" }
+    },
+    {
+      "attempt_id": "provider-mw3ltmn5-7",
+      "root_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "child_obligation_id": "session:chat:20-39:fnv1a-eeb22053:leaf:20-29:fnv1a-1284b3a9",
+      "tier": "session",
+      "owner": null,
+      "source_range": { "start": 20, "end": 29, "message_count": 10 },
+      "source_fingerprint": "fnv1a-1284b3a9",
+      "terminal_outcome": "completed",
+      "parser_result": { "status": "accepted" },
+      "validation": { "status": "accepted", "accepted_count": 2 },
+      "validated_record_identities": [
+        { "id": "ecb6ac4a-92e3-430b-b138-9962a4fd47b5", "candidate_id": "session-candidate:fnv1a-1284b3a9:0:claim-fnv1a-e16033da" }
+      ],
+      "persistence": { "status": "committed", "durable_record_ids": ["ecb6ac4a-92e3-430b-b138-9962a4fd47b5"] },
+      "manifest_transition": { "status": "applied", "disposition": "leaf_covered" },
+      "ledger_transition": { "status": "applied", "disposition": "durably_committed" }
+    },
+    {
+      "attempt_id": "provider-mw3lub31-10",
+      "root_obligation_id": "session:chat:20-39:fnv1a-eeb22053",
+      "child_obligation_id": "session:chat:20-39:fnv1a-eeb22053:leaf:30-39:fnv1a-cdfa04b7",
+      "tier": "session",
+      "owner": null,
+      "source_range": { "start": 30, "end": 39, "message_count": 10 },
+      "source_fingerprint": "fnv1a-cdfa04b7",
+      "terminal_outcome": "completed",
+      "parser_result": { "status": "accepted" },
+      "validation": { "status": "accepted", "accepted_count": 3 },
+      "validated_record_identities": [
+        { "id": "185d0a49-47f2-4748-8973-c3ebfdcc19fa", "candidate_id": "session-candidate:fnv1a-cdfa04b7:0:claim-fnv1a-54667514" },
+        { "id": "77232132-2f83-4136-a4a6-720da783a001", "candidate_id": "session-candidate:fnv1a-cdfa04b7:2:claim-fnv1a-a754f576" },
+        { "id": "d8472b13-827e-4642-b6d4-ebf39b226b40", "candidate_id": "session-candidate:fnv1a-cdfa04b7:3:claim-fnv1a-d1eda289" }
+      ],
+      "persistence": { "status": "committed", "durable_record_ids": [
+        "185d0a49-47f2-4748-8973-c3ebfdcc19fa",
+        "77232132-2f83-4136-a4a6-720da783a001",
+        "d8472b13-827e-4642-b6d4-ebf39b226b40"
+      ] },
+      "manifest_transition": { "status": "applied", "disposition": "leaf_covered" },
+      "ledger_transition": { "status": "applied", "disposition": "durably_committed" }
+    }
+  ],
+  "initial_current_runtime_violation_count": 64,
+  "initial_violation_counts": {
+    "parser_disposition_without_provider_response": 13,
+    "provider_response_without_registered_attempt": 12,
+    "validation_disposition_without_parser_disposition": 12,
+    "durable_persistence_without_accepted_staged_records": 11,
+    "records_staged_without_validation_acceptance": 10,
+    "no_update_without_parser_or_validation_evidence": 3,
+    "candidate_mapping_reconciliation_unknown_record": 2,
+    "parent_completion_without_complete_registered_children": 1
+  }
+}

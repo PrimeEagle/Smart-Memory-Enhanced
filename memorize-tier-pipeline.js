@@ -1,4 +1,32 @@
 import { beginProviderAttempt } from './provider-attempt-audit.js';
+import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
+  requireAppliedLifecycleResult } from './memorize-lifecycle-coordinator.js';
+
+const EXPECTED_EVENT_STATES = Object.freeze({
+  obligation_registered: [],
+  provider_attempt_started: ['provider_running'],
+  provider_response_received: ['provider_response_received'],
+  provider_transport_failed: ['pending_recovery'],
+  parser_accepted: ['parser_accepted'],
+  parser_partially_accepted: ['parser_partial'],
+  parser_rejected: ['parser_rejected'],
+  validation_accepted: ['validation_accepted'],
+  validation_partially_accepted: ['validation_partial'],
+  validation_rejected: ['validation_rejected'],
+  records_staged: ['staged'],
+  records_durably_persisted: ['durably_committed'],
+  explicit_no_update_accepted: ['explicit_no_update'],
+  recovery_required: ['pending_recovery'],
+  recovery_budget_exhausted: ['operationally_paused'],
+  obligation_blocked: ['blocked'],
+});
+
+function completionJournalEntry(metadata, attemptId) {
+  const journal = metadata?.provider_completion_journal;
+  if (!journal || !attemptId) return null;
+  if (Array.isArray(journal.entries)) return journal.entries.find((entry) => entry.attempt_id === attemptId) ?? null;
+  return journal.entries?.[attemptId] ?? null;
+}
 
 export function recordTierCoverage(ledger, record) {
   if (!ledger) return record;
@@ -59,16 +87,61 @@ export function createMemorizeTierPipeline(input) {
     coverage_terminal_state: 'completed',
     all_source_messages_covered: true,
   });
-  const emitLifecycleEvent = (type, details = {}) => execution.hooks.obligation_event({
-    obligation_id: leafObligationId,
+  const lifecycleIdentity = createMemorizeLifecycleIdentity({
+    logical_run_id: metadata?.active_catchup_run_id ?? null,
+    root_obligation_id: rootObligationId,
+    leaf_obligation_id: leafObligationId,
     parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
-    tier,
-    owner,
+    tier, owner,
     source_range: { start: range.start, end: range.end, message_count: range.message_count },
     source_fingerprint: sourceFingerprint,
-    type,
-    ...details,
   });
+  const emitLifecycleEvent = async (type, details = {}) => {
+    const event = {
+      obligation_id: leafObligationId,
+      root_obligation_id: rootObligationId,
+      leaf_obligation_id: leafObligationId,
+      parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
+      tier, owner,
+      source_range: lifecycleIdentity.source_range,
+      source_fingerprint: sourceFingerprint,
+      type,
+      ...details,
+    };
+    const result = await execution.hooks.obligation_event(event);
+    if (!execution.controller.lifecycle_required) return result;
+    const receipt = requireAppliedLifecycleResult(result, EXPECTED_EVENT_STATES[type] ?? [], {
+      stage: type, obligation_id: leafObligationId, event_type: type,
+      prior_state: execution.provider.root_obligation_state,
+      evidence_fingerprint: details.evidence_fingerprint ?? null,
+    });
+    if (['records_durably_persisted', 'explicit_no_update_accepted'].includes(type)) {
+      const entry = completionJournalEntry(metadata, details.provider_attempt_id);
+      if (!entry) {
+        const error = new Error('Terminal lifecycle transition has no matching provider-completion journal entry.');
+        error.code = 'SME_TERMINAL_JOURNAL_ENTRY_REQUIRED';
+        error.sme_recovery_blocked = true;
+        error.sme_obligation_id = leafObligationId;
+        throw error;
+      }
+      const disposition = type === 'explicit_no_update_accepted'
+        ? 'explicit_no_update' : 'durably_committed';
+      acknowledgeJournalTransition(entry, 'ledger_transition', receipt, {
+        target_obligation_id: leafObligationId, disposition,
+      });
+      acknowledgeJournalTransition(entry, 'manifest_transition', receipt, {
+        target_obligation_id: leafObligationId,
+        disposition: type === 'explicit_no_update_accepted' ? 'explicit_no_update' : 'leaf_covered',
+      });
+      entry.completed_at ??= Date.now();
+      entry.updated_at = Date.now();
+      await execution.hooks.provider_completion_journal_updated(entry, {
+        await_point: 'obligation_update', progress: true,
+        last_durable_transition: disposition,
+      });
+    }
+    return receipt;
+  };
   const beginAttempt = (requestKind = execution.provider.request_kind
     ?? (depth ? 'repartition_child' : 'original'), changedDimensions = execution.provider.changed_recovery_dimensions.length
     ? execution.provider.changed_recovery_dimensions
@@ -131,6 +204,7 @@ export function createMemorizeTierPipeline(input) {
   return Object.freeze({
     tier, tierLabel, owner, range, rangeId, rootSourceRange,
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
+    lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
     beginRegisteredAttempt,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),

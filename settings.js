@@ -243,9 +243,11 @@ import {
   markProviderObligationRecoveryInProgress,
   providerConfigurationSignature,
   reconcileProviderRecoveryWindowsFromLedger,
+  reconcileProviderAttemptIdentitiesFromJournal,
   summarizeProviderAttemptAudit,
   PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
 } from './provider-attempt-audit.js';
+import { requireAppliedLifecycleResult } from './memorize-lifecycle-coordinator.js';
 import {
   buildTargetedReplayCandidates, createTargetedReplayCheckpoint,
   updateTargetedReplayCheckpoint, summarizeTargetedReplayCheckpoint,
@@ -266,8 +268,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.78',
-  build_fingerprint: 'sme-v0.9.78-canonical-authority-projection-r1',
+  extension_version: '0.9.79',
+  build_fingerprint: 'sme-v0.9.79-lifecycle-coordinator-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5351,19 +5353,25 @@ export function bindSettingsUI(ctrl) {
       );
       const pausedObligationId = requestDiagnostics.root_obligation_id ?? err?.sme_obligation_id;
       const pauseLedger = controllerRuntime?.checkpoint?.run_manifest?.obligation_ledger;
-      if (pauseLedger && pausedObligationId) applyMemorizeLifecycleEvent(pauseLedger, {
-        obligation_id: pausedObligationId,
-        logical_run_id: controllerRuntime.checkpoint.run_manifest.logical_run_id,
-      }, {
-        type: 'recovery_budget_exhausted', reason_code: pause.reason_code,
-        next_action: requestDiagnostics.next_eligible_recovery_action
-          ?? requestDiagnostics.recovery_intent ?? 'resume_exact_obligation',
-        recovery_intent: requestDiagnostics.recovery_intent
-          ?? 'recover_unresolved_partial_output_fragments',
-        recovery_stage: requestDiagnostics.recovery_stage ?? 'bounded_recovery_exhausted',
-        persistence_result: pause.accepted_records_preserved > 0
-          ? 'partial_records_committed' : undefined,
-      });
+      if (pauseLedger && pausedObligationId) {
+        const pauseResult = applyMemorizeLifecycleEvent(pauseLedger, {
+          obligation_id: pausedObligationId,
+          logical_run_id: controllerRuntime.checkpoint.run_manifest.logical_run_id,
+        }, {
+          type: 'recovery_budget_exhausted', reason_code: pause.reason_code,
+          next_action: requestDiagnostics.next_eligible_recovery_action
+            ?? requestDiagnostics.recovery_intent ?? 'resume_exact_obligation',
+          recovery_intent: requestDiagnostics.recovery_intent
+            ?? 'recover_unresolved_partial_output_fragments',
+          recovery_stage: requestDiagnostics.recovery_stage ?? 'bounded_recovery_exhausted',
+          persistence_result: pause.accepted_records_preserved > 0
+            ? 'partial_records_committed' : undefined,
+        });
+        requireAppliedLifecycleResult(pauseResult, ['operationally_paused'], {
+          stage: 'controller_operational_pause', obligation_id: pausedObligationId,
+          event_type: 'recovery_budget_exhausted',
+        });
+      }
       console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, pause);
     };
     const recordCatchUpWarning = (label, err, tier = null) => {
@@ -5568,6 +5576,9 @@ export function bindSettingsUI(ctrl) {
         },
       );
       const providerAudit = catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit;
+      const providerIdentityMigration = reconcileProviderAttemptIdentitiesFromJournal(
+        catchUpContext.chatMetadata?.[META_KEY],
+        catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal);
       const lifecycleMigration = migrateAmbiguousRecoveryParents({
         ledger: checkpoint.run_manifest.obligation_ledger,
         metadata: catchUpContext.chatMetadata?.[META_KEY],
@@ -5592,6 +5603,7 @@ export function bindSettingsUI(ctrl) {
         checkpoint.run_manifest.obligation_ledger, {
           logical_run_id: checkpoint.run_manifest.logical_run_id,
           journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+          provider_attempts: providerAudit,
           coverage_records: Object.values(persistedCoverage)
             .flatMap((tier) => tier?.records ?? []),
           checkpoint_before: checkpoint.next_source_offset,
@@ -5624,6 +5636,7 @@ export function bindSettingsUI(ctrl) {
         provider_audit_mutations: providerWindowRepair.mutations,
         safe_resume_offset: authoritativeOffset,
         selection: authorityProjection.selection,
+        provider_identity_migrations: providerIdentityMigration.mutations,
         provider_calls: 0,
         persistence_calls: 0,
         reconciled_at: Date.now(),
@@ -6129,32 +6142,59 @@ export function bindSettingsUI(ctrl) {
               ?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [];
             const terminal = [...attempts].reverse().find((attempt) =>
               attempt?.terminal_outcome && attempt.terminal_outcome !== 'running'
-              && (attempt.child_obligation_id === event.obligation_id
-                || (attempt.logical_obligation_id === event.obligation_id
-                  && prior?.provider_attempt_lineage?.includes(attempt.attempt_id))));
+              && attempt.child_obligation_id === event.obligation_id
+              && prior?.provider_attempt_lineage?.includes(attempt.attempt_id));
+            if (!terminal?.attempt_id) {
+              const identityError = new Error('The prior terminal provider attempt cannot be resolved to this exact recovery leaf.');
+              identityError.code = 'SME_LEAF_ATTEMPT_IDENTITY_RECONCILIATION_REQUIRED';
+              identityError.sme_recovery_blocked = true;
+              identityError.sme_obligation_id = event.obligation_id;
+              identityError.sme_reason_code = 'leaf_attempt_identity_reconciliation_required';
+              identityError.sme_request_diagnostics = {
+                root_obligation_id: event.root_obligation_id ?? null,
+                leaf_obligation_id: event.obligation_id,
+                source_range: event.source_range,
+                source_fingerprint: event.source_fingerprint,
+                next_eligible_recovery_action: 'reconcile_terminal_attempt_evidence',
+                provider_call_required: false,
+              };
+              throw identityError;
+            }
             if (prior.current_state === 'provider_running' && terminal?.attempt_id) {
-              applyMemorizeLifecycleEvent(ledger, identity, {
+              const responseResult = applyMemorizeLifecycleEvent(ledger, identity, {
                 type: 'provider_response_received', provider_attempt_id: terminal.attempt_id,
                 event_id: `retry-settlement:${terminal.attempt_id}:response`,
+              });
+              requireAppliedLifecycleResult(responseResult, ['provider_response_received'], {
+                stage: 'retry_settlement_response', obligation_id: event.obligation_id,
+                event_type: 'provider_response_received',
               });
             }
             const afterResponse = ledger.obligations[event.obligation_id];
             if (afterResponse?.current_state === 'provider_response_received') {
-              applyMemorizeLifecycleEvent(ledger, identity, {
+              const parserResult = applyMemorizeLifecycleEvent(ledger, identity, {
                 type: 'parser_rejected', provider_attempt_id: terminal?.attempt_id ?? null,
                 parser_result: 'malformed_output_rejected_for_recovery',
-                event_id: `retry-settlement:${terminal?.attempt_id ?? 'unknown'}:parser`,
+                event_id: `retry-settlement:${terminal.attempt_id}:parser`,
+              });
+              requireAppliedLifecycleResult(parserResult, ['parser_rejected'], {
+                stage: 'retry_settlement_parser', obligation_id: event.obligation_id,
+                event_type: 'parser_rejected',
               });
             }
             const afterParser = ledger.obligations[event.obligation_id];
             if (['parser_accepted', 'parser_partial', 'parser_rejected',
               'validation_rejected'].includes(afterParser?.current_state)) {
-              applyMemorizeLifecycleEvent(ledger, identity, {
+              const pendingResult = applyMemorizeLifecycleEvent(ledger, identity, {
                 type: 'recovery_required', reason_code: 'malformed_provider_output',
                 next_action: 'dispatch_bounded_recovery_attempt',
                 recovery_intent: 'recover_unresolved_partial_output_fragments',
                 recovery_stage: event.recovery_stage,
-                event_id: `retry-settlement:${terminal?.attempt_id ?? 'unknown'}:pending`,
+                event_id: `retry-settlement:${terminal.attempt_id}:pending`,
+              });
+              requireAppliedLifecycleResult(pendingResult, ['pending_recovery'], {
+                stage: 'retry_settlement_pending_recovery', obligation_id: event.obligation_id,
+                event_type: 'recovery_required',
               });
             }
           }
@@ -6207,7 +6247,8 @@ export function bindSettingsUI(ctrl) {
               extractionCoverage: runResult.extractionCoverage,
               liveHealth: longtermLiveHealth,
               executionContext: createMemorizeExecutionContext({
-                controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null },
+                controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
+                  lifecycle_required: true },
                 provider: {
                   resumed_pending_obligation: Boolean(resumableCheckpoint
                     && priorOwnerStatus && priorOwnerStatus.safely_committed !== true),
@@ -6275,7 +6316,8 @@ export function bindSettingsUI(ctrl) {
             extractionCoverage: runResult.extractionCoverage,
             liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
             executionContext: createMemorizeExecutionContext({
-              controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null },
+              controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
+                lifecycle_required: true },
               provider: {
                 resumed_pending_obligation: Boolean(resumableCheckpoint && priorSessionObligation
                   && priorSessionObligation.safely_committed !== true),
@@ -6459,6 +6501,8 @@ export function bindSettingsUI(ctrl) {
             checkpointForCommit.run_manifest.obligation_ledger, {
               logical_run_id: checkpointForCommit.run_manifest.logical_run_id,
               journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+              provider_attempts: catchUpContext.chatMetadata?.[META_KEY]
+                ?.live_memory_health?.provider_attempt_audit,
               coverage_records: Object.values(runResult.extractionCoverage ?? {})
                 .flatMap((tier) => tier?.records ?? []),
             });
@@ -6791,6 +6835,8 @@ export function bindSettingsUI(ctrl) {
               const commonOptions = {
                 extractionCoverage: runResult.extractionCoverage,
                 executionContext: createMemorizeExecutionContext({
+                  controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
+                    lifecycle_required: true },
                   provider: {
                     root_obligation_id: candidate.root_obligation_id,
                     root_source_range: candidate.source_range,
@@ -6802,7 +6848,13 @@ export function bindSettingsUI(ctrl) {
                     completed_child_keys: (checkpoint.context_overflow_recovery?.completed_children ?? [])
                       .map((item) => item?.key).filter(Boolean),
                   },
-                  hooks: { context_overflow_child_committed: commitSweepChild },
+                  hooks: {
+                    context_overflow_child_committed: commitSweepChild,
+                    recovery_child_manifest_updated: commitRecoveryChildManifest,
+                    provider_completion_journal_updated: commitProviderCompletionJournal,
+                    provider_await_point: commitProviderAwaitPoint,
+                    obligation_event: applyAuthoritativeLifecycleEvent,
+                  },
                 }),
               };
               const added = candidate.tier === 'session'

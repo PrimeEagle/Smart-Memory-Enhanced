@@ -97,7 +97,8 @@ test('v0.9.74 attempt 399/400 migration preserves records and exposes exact leav
   assert.equal(attempt399.persistence.status, 'verified_existing');
   assert.deepEqual(attempt399.persistence.durable_record_ids, fixture.durable_record_ids);
   assert.equal(attempt400.persistence.status, 'not_applicable');
-  assert.equal(attempt400.ledger_transition.disposition, 'operationally_paused');
+  assert.equal(attempt400.ledger_transition.status, 'pending_reconciliation');
+  assert.equal(attempt400.ledger_transition.requested_disposition, 'operationally_paused');
   const snapshot = structuredClone(ledger);
   const second = migrateAmbiguousRecoveryParents({ ledger, metadata,
     provider_audit: { recent_attempts: fixture.attempts } });

@@ -13,7 +13,7 @@ import {
   summarizeRecoveryChildManifest,
 } from './recovery-child-coverage.js';
 
-export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 11;
+export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 12;
 export const PROVIDER_ATTEMPT_EVENT_LIMIT = 160;
 // Large enough to retain every root obligation in the supplied 9,434-message
 // replay while remaining explicitly bounded for arbitrarily large chats.
@@ -588,6 +588,8 @@ export function beginProviderAttempt(metadata, input = {}) {
     at: Date.now(), run_id: audit.run_id, logical_run_id: audit.run_id,
     controller_attempt_number: Number(input.controller_attempt_number ?? 0) || null,
     logical_obligation_id: obligationId, root_obligation_id: obligationId,
+    child_obligation_id: input.child_obligation_id ?? obligationId,
+    leaf_obligation_id: input.child_obligation_id ?? obligationId,
     tier: input.tier ?? 'unknown', owner: input.owner ?? null,
     request_kind: input.request_kind ?? 'original',
     parent_attempt_id: input.parent_attempt_id ?? null,
@@ -1109,7 +1111,7 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
       : { status: 'rejected', reason_code: event.terminal_outcome }),
     ledger_transition: patch.ledger_transition ?? (providerSucceeded
       ? { status: 'pending' }
-      : { status: 'applied', disposition: 'pending_recovery' }),
+      : { status: 'pending_reconciliation', requested_disposition: 'pending_recovery' }),
     live_health_transition: patch.live_health_transition ?? (providerSucceeded
       ? { status: 'pending' }
       : { status: 'applied', disposition: event.terminal_outcome }),
@@ -1333,6 +1335,37 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
     enumerable: false,
   });
   return result;
+}
+
+/** Restores exact leaf identity only from the matching durable completion journal entry. */
+export function reconcileProviderAttemptIdentitiesFromJournal(metadata, journalValue, at = Date.now()) {
+  if (!metadata) return { mutations: 0, repaired_attempt_ids: [] };
+  const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
+  const entries = Array.isArray(journalValue) ? journalValue
+    : Array.isArray(journalValue?.entries) ? journalValue.entries
+      : (journalValue?.order ?? []).map((id) => journalValue?.entries?.[id]).filter(Boolean);
+  const byAttempt = new Map(entries.filter((entry) => entry?.attempt_id)
+    .map((entry) => [entry.attempt_id, entry]));
+  const repaired = [];
+  for (const attempt of audit.recent_attempts ?? []) {
+    const entry = byAttempt.get(attempt.attempt_id);
+    if (!entry?.child_obligation_id || !entry.root_obligation_id) continue;
+    const rangeMatches = Number(entry.source_range?.start) === Number(attempt.source_range?.start)
+      && Number(entry.source_range?.end) === Number(attempt.source_range?.end);
+    const identityMatches = entry.root_obligation_id === (attempt.root_obligation_id
+      ?? attempt.logical_obligation_id)
+      && entry.source_fingerprint === attempt.source_fingerprint && rangeMatches;
+    if (!identityMatches) continue;
+    const leaf = String(entry.child_obligation_id);
+    if (attempt.child_obligation_id === leaf && attempt.leaf_obligation_id === leaf) continue;
+    attempt.child_obligation_id = leaf;
+    attempt.leaf_obligation_id = leaf;
+    attempt.identity_reconciliation = {
+      schema_version: 1, source: 'provider_completion_journal', reconciled_at: at,
+    };
+    repaired.push(attempt.attempt_id);
+  }
+  return { mutations: repaired.length, repaired_attempt_ids: repaired };
 }
 
 /**

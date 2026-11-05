@@ -1,10 +1,26 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
 
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 2;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 3;
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
 const now = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now();
+const verifiedTransition = (value) => ['applied_verified', 'idempotent_duplicate_verified',
+  'not_applicable'].includes(value?.status);
+
+function mergeUnverifiedCallerTransition(priorValue, patchValue) {
+  const prior = clone(priorValue) ?? { status: 'pending' };
+  if (!patchValue) return prior;
+  if (verifiedTransition(prior)) return prior;
+  const patch = clone(patchValue);
+  if (patch.status === 'applied') return {
+    ...prior,
+    status: 'pending_reconciliation',
+    requested_disposition: patch.disposition ?? prior.requested_disposition ?? null,
+    legacy_caller_assertion: 'applied',
+  };
+  return { ...prior, ...patch };
+}
 
 function container(metadata) {
   if (!metadata) return null;
@@ -57,22 +73,22 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
       ?? prior.validated_record_identities ?? []),
     persistence: { status: 'not_started', durable_record_ids: [],
       ...(prior.persistence ?? {}), ...(clone(patch.persistence) ?? {}) },
-    manifest_transition: { status: 'pending', ...(prior.manifest_transition ?? {}),
-      ...(clone(patch.manifest_transition) ?? {}) },
-    ledger_transition: { status: 'pending', ...(prior.ledger_transition ?? {}),
-      ...(clone(patch.ledger_transition) ?? {}) },
+    manifest_transition: mergeUnverifiedCallerTransition(
+      prior.manifest_transition, patch.manifest_transition),
+    ledger_transition: mergeUnverifiedCallerTransition(
+      prior.ledger_transition, patch.ledger_transition),
     live_health_event_id: patch.live_health_event_id ?? prior.live_health_event_id ?? null,
-    live_health_transition: { status: 'pending', ...(prior.live_health_transition ?? {}),
-      ...(clone(patch.live_health_transition) ?? {}) },
+    live_health_transition: mergeUnverifiedCallerTransition(
+      prior.live_health_transition, patch.live_health_transition),
     started_at: prior.started_at ?? attempt.at ?? now(patch.at),
     updated_at: now(patch.at),
     completed_at: patch.completed_at ?? prior.completed_at ?? null,
     replay_count: Number(prior.replay_count ?? 0),
     migration: clone(patch.migration ?? prior.migration ?? null),
   };
-  if (entry.persistence.status === 'committed'
-    && entry.manifest_transition.status === 'applied'
-    && entry.ledger_transition.status === 'applied') entry.completed_at ??= entry.updated_at;
+  if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
+    && verifiedTransition(entry.manifest_transition)
+    && verifiedTransition(entry.ledger_transition)) entry.completed_at ??= entry.updated_at;
   journal.order = [...journal.order.filter((id) => id !== attempt.attempt_id), attempt.attempt_id].slice(-256);
   return entry;
 }
@@ -135,7 +151,7 @@ export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date
       event.attention_reason_codes = (event.attention_reason_codes ?? [])
         .filter((code) => code !== 'stale_live_health_reconciled');
       terminal.live_health_transition = {
-        status: 'applied', disposition: 'completed', applied_at: at,
+        status: 'applied_verified', requested_disposition: 'completed', acknowledged_at: at,
       };
       repairs.push({ event_id: event.event_id ?? null,
         attempt_id: terminal.attempt_id, reason_code: 'terminal_journal_completion_applied' });
@@ -212,7 +228,16 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
       'discarded', 'rejected'].includes(entry.persistence?.status)) {
       recordViolation({ code: 'terminal_attempt_missing_persistence_disposition',
         attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
-        persistence_status: entry.persistence?.status ?? null }, attempt);
+        persistence_status: entry.persistence?.status ?? null,
+        next_action: 'reconcile_terminal_attempt_evidence',
+        provider_call_required: false }, attempt);
+    } else if (!verifiedTransition(entry.ledger_transition)) {
+      recordViolation({ code: 'terminal_attempt_missing_verified_ledger_acknowledgement',
+        attempt_id: attempt.attempt_id, obligation_id: entry.child_obligation_id
+          ?? attempt.child_obligation_id ?? attempt.logical_obligation_id,
+        ledger_transition_status: entry.ledger_transition?.status ?? null,
+        next_action: 'reconcile_terminal_attempt_evidence',
+        provider_call_required: false }, attempt);
     }
   }
   for (const event of live_health?.recent_extraction_events ?? []) {
@@ -251,19 +276,25 @@ export async function replayProviderCompletion(entry, handlers = {}) {
     entry.persistence = { status: persistence.status ?? 'committed',
       durable_record_ids: [...new Set(persistence.durable_record_ids ?? [])] };
   }
-  if (entry.manifest_transition.status !== 'applied') {
-    await handlers.applyManifest?.(entry);
-    entry.manifest_transition = { status: 'applied', applied_at: Date.now() };
+  if (!verifiedTransition(entry.manifest_transition)) {
+    const result = await handlers.applyManifest?.(entry);
+    entry.manifest_transition = verifiedTransition(result) ? clone(result) : {
+      status: 'pending_reconciliation', requested_disposition: 'leaf_covered',
+      acknowledged_at: Date.now() };
   }
-  if (entry.ledger_transition.status !== 'applied') {
-    await handlers.applyLedger?.(entry);
-    entry.ledger_transition = { status: 'applied', applied_at: Date.now() };
+  if (!verifiedTransition(entry.ledger_transition)) {
+    const result = await handlers.applyLedger?.(entry);
+    entry.ledger_transition = verifiedTransition(result)
+      ? clone(result) : { status: 'pending_reconciliation', acknowledged_at: Date.now() };
   }
-  if (entry.live_health_transition.status !== 'applied') {
-    await handlers.closeHealth?.(entry);
-    entry.live_health_transition = { status: 'applied', applied_at: Date.now() };
+  if (!verifiedTransition(entry.live_health_transition)) {
+    const result = await handlers.closeHealth?.(entry);
+    entry.live_health_transition = verifiedTransition(result)
+      ? clone(result) : { status: 'pending_reconciliation',
+        requested_disposition: 'completed', acknowledged_at: Date.now() };
   }
-  entry.completed_at ??= Date.now();
+  if (verifiedTransition(entry.manifest_transition)
+    && verifiedTransition(entry.ledger_transition)) entry.completed_at ??= Date.now();
   entry.updated_at = Date.now();
   return { replayed: true, entry };
 }

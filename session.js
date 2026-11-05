@@ -950,9 +950,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         parser_result: { status: 'explicit_none', records: [], accepted_count: 0 },
         validation: { status: 'no_update' },
         persistence: { status: 'not_needed', durable_record_ids: [] },
-        manifest_transition: { status: 'applied', disposition: 'explicit_no_update' },
-        ledger_transition: { status: 'applied', disposition: 'explicit_no_update' },
-        live_health_transition: { status: 'applied', disposition: 'completed' },
+        manifest_transition: { status: 'pending_reconciliation', requested_disposition: 'explicit_no_update' },
+        ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'explicit_no_update' },
+        live_health_transition: { status: 'pending_reconciliation', requested_disposition: 'completed' },
       });
       markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
       await emitLifecycleEvent('parser_accepted', {
@@ -960,6 +960,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         parser_result: 'explicit_none',
       });
       await emitLifecycleEvent('explicit_no_update_accepted', {
+        provider_attempt_id: providerAttempt?.attempt_id ?? null,
         parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
         persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
       });
@@ -1597,7 +1598,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           : unresolvedPartialFragments > 0 ? 'partial_valid_output_has_unresolved_fragments' : null;
       if (!pendingReason) {
         markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
+        updateCompletionJournal(providerAttempt, {
+          validation: { status: 'validated_no_update', accepted_count: 0 },
+          persistence: { status: 'not_required_validated_no_update', durable_record_ids: [] },
+          manifest_transition: { status: 'pending_reconciliation', requested_disposition: 'explicit_no_update' },
+          ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'explicit_no_update' },
+        });
         await emitLifecycleEvent('explicit_no_update_accepted', {
+          provider_attempt_id: lifecycleAttemptId,
           parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
           downstream_validation_result: 'validated_duplicate_only_no_update',
           persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
@@ -1652,8 +1660,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         validation: { status: 'rejected', reason_code: pendingReason },
         persistence: { status: 'not_applicable', durable_record_ids: [], reason_code: pendingReason },
         manifest_transition: { status: 'rejected', reason_code: pendingReason },
-        ledger_transition: { status: 'applied', disposition: 'pending_recovery' },
-        live_health_transition: { status: 'applied', disposition: 'operationally_paused' },
+        ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'pending_recovery' },
+        live_health_transition: { status: 'pending_reconciliation', requested_disposition: 'operationally_paused' },
       });
       recordExtractionCoverage(coverageLedger, {
         ...coverageBase, request_sent: true,
@@ -1902,9 +1910,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         },
       });
       updateCompletionJournal(providerAttempt, {
-        manifest_transition: { status: 'applied', disposition: 'partial_child_pending' },
-        ledger_transition: { status: 'applied', disposition: 'pending_recovery' },
-        live_health_transition: { status: 'applied', disposition: 'operationally_paused' },
+        manifest_transition: { status: 'pending_reconciliation', requested_disposition: 'partial_child_pending' },
+        ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'pending_recovery' },
+        live_health_transition: { status: 'pending_reconciliation', requested_disposition: 'operationally_paused' },
       });
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
@@ -2034,9 +2042,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       },
     });
     updateCompletionJournal(providerAttempt, {
-      manifest_transition: { status: 'applied', disposition: 'leaf_covered' },
-      ledger_transition: { status: 'applied', disposition: 'durably_committed' },
-      live_health_transition: { status: 'applied', disposition: 'completed' },
+      manifest_transition: { status: 'pending_reconciliation', requested_disposition: 'leaf_covered' },
+      ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'durably_committed' },
+      live_health_transition: { status: 'pending_reconciliation', requested_disposition: 'completed' },
     });
     recordCompletedCoverage('completed_and_persisted');
     healthFinish({

@@ -33,8 +33,9 @@ test('completion journal replays missing transitions once and never duplicates p
   let persistCalls = 0, manifestCalls = 0, ledgerCalls = 0, healthCalls = 0;
   const handlers = {
     persist: async () => { persistCalls++; return { verified: true, status: 'committed', durable_record_ids: ['record-1'] }; },
-    applyManifest: async () => { manifestCalls++; }, applyLedger: async () => { ledgerCalls++; },
-    closeHealth: async () => { healthCalls++; },
+    applyManifest: async () => { manifestCalls++; return { status: 'applied_verified' }; },
+    applyLedger: async () => { ledgerCalls++; return { status: 'applied_verified' }; },
+    closeHealth: async () => { healthCalls++; return { status: 'applied_verified' }; },
   };
   assert.equal((await replayProviderCompletion(entry, handlers)).replayed, true);
   assert.equal((await replayProviderCompletion(entry, handlers)).replayed, true);
@@ -51,6 +52,19 @@ test('unverified records cannot complete the child', async () => {
   assert.equal(result.replayed, false);
   assert.equal(result.reason, 'persistence_unverified');
   assert.equal(entry.manifest_transition.status, 'pending');
+});
+
+test('journal replay cannot self-verify live-health closure', async () => {
+  const entry = recordProviderCompletion({}, attempt(), {
+    response_text: '[fact] retained', parser_result: { records: [{ id: 'candidate-1' }] },
+    persistence: { status: 'committed', durable_record_ids: ['record-1'] },
+  });
+  await replayProviderCompletion(entry, {
+    applyManifest: async () => ({ status: 'applied_verified' }),
+    applyLedger: async () => ({ status: 'applied_verified' }),
+    closeHealth: async () => undefined,
+  });
+  assert.equal(entry.live_health_transition.status, 'pending_reconciliation');
 });
 
 test('terminal provider attempt plus unattempted child and provider_running ledger is diagnosed directly', () => {

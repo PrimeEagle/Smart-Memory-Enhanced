@@ -11,6 +11,7 @@ export function createMemorizeExecutionContext(input = {}) {
     schema_version: 1,
     controller: Object.freeze({
       attempt_number: input.controller?.attempt_number ?? null,
+      lifecycle_required: input.controller?.lifecycle_required === true,
     }),
     provider: Object.freeze({
       root_obligation_id: input.provider?.root_obligation_id ?? null,

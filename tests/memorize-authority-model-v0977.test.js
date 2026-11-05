@@ -215,6 +215,8 @@ test('33 journal-backed candidate mappings repair all three records without dupl
   const ids = Object.keys(fixture.candidate_mappings); complete(ledger, item, ids);
   const journal = [{ attempt_id: 'provider-mw2lfprg-3', root_obligation_id: item.obligation_id,
     child_obligation_id: item.obligation_id, terminal_outcome: 'completed',
+    tier: 'session', source_range: item.source_range, source_fingerprint: item.source_fingerprint,
+    parser_result: { status: 'accepted' }, validation: { status: 'accepted' },
     persistence: { status: 'committed', durable_record_ids: ids }, manifest_transition: { status: 'applied' },
     validated_record_identities: ids.map((id) => ({ id, candidate_id: fixture.candidate_mappings[id] })) }];
   const first = reconcileMemorizeLifecycleFromJournal(ledger, { journal });

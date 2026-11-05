@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.79] - 2026-11-05
+
+### Added
+
+- Added one immutable root/leaf lifecycle identity contract and a shared
+  Session/Long-Term coordinator that validates reducer outcomes at each active
+  Memorize Chat boundary. Physical provider attempts now retain both root and
+  exact leaf IDs, including an idempotent journal-backed migration for v0.9.78
+  attempts that lost their leaf identity in the audit projection.
+- Added verified journal acknowledgement states (`applied_verified`,
+  `idempotent_duplicate_verified`, `rejected`, `pending_reconciliation`, and
+  `not_applicable`) plus a fail-closed reducer receipt contract. Extraction
+  callers can request a disposition but can no longer declare a ledger or
+  manifest transition applied.
+- Added `terminal_attempt_evidence_reconciled`, which validates exact identity,
+  range/fingerprint, parser and validation evidence, persistence disposition,
+  durable record/candidate mappings, leaf coverage, and later-attempt
+  compatibility before locally closing stranded terminal work.
+- Added a redacted v0.9.78 attempt-3/7/10 fixture and coordinator integration
+  tests covering exact identity migration, false acknowledgement prevention,
+  zero-call terminal repair, record preservation, parent gating, and
+  mutation-free second reconciliation.
+
+### Changed
+
+- Automatic/manual Resume now repairs terminal journal evidence before
+  selecting work. Exact-leaf retry settlement is mandatory; an unresolved
+  identity creates a local reconciliation blocker instead of emitting an
+  `unknown` settlement or dispatching another provider request.
+- Provider-attempt audit schema is now 12, provider-completion journal schema is
+  3, and the obligation ledger is schema 6 / implementation 8. Terminal journal
+  attempts with pending persistence or unverified ledger acknowledgement now
+  expose `reconcile_terminal_attempt_evidence` as a no-provider-call action.
+- Compatibility owner/tier/range writers are presentation-only. They no longer
+  create, settle, or invalidate canonical obligations; migration and
+  `rebuildMemorizeCompatibilityProjection()` remain the only compatibility
+  reconstruction boundaries.
+
+### Fixed
+
+- Repaired the supplied v0.9.78 Session 20–39 contradiction without repeating
+  provider or persistence work. Attempt 7 now commits 20–29 from its retained
+  durable record, attempt 10 remains committed with all three records, and the
+  parent aggregates only after both leaves are terminal.
+- Repaired terminal Session attempt 3 from its exact audit evidence to an
+  explicit validated no-update persistence disposition.
+- Removed direct production `ledger_transition: applied` /
+  `manifest_transition: applied` assertions from Session and Long-Term paths,
+  removed ambiguous root fallback from retry lookup, and prevented rejected
+  reducer transitions from advancing downstream lifecycle stages.
+- Candidate mappings are now applied as part of the same terminal evidence
+  transition, eliminating the prior unknown-record ordering window while still
+  refusing to fabricate missing candidate identities.
+
 ## [0.9.78] - 2026-11-05
 
 ### Added

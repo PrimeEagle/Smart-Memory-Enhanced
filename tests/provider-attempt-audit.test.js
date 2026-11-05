@@ -65,7 +65,7 @@ test('persisted schema-three summaries reclassify strict partial inflation witho
       successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
     },
   });
-  assert.equal(migrated.schema_version, 11);
+  assert.equal(migrated.schema_version, 12);
   assert.equal(migrated.malformed_physical_responses, 238);
   assert.equal(migrated.unique_malformed_obligations, 170);
   assert.equal(migrated.recovered_malformed_obligations, 170);
@@ -224,7 +224,7 @@ test('provider performance keeps exact cumulative request and segment accounting
   });
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'completed' });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.schema_version, 11);
+  assert.equal(summary.schema_version, 12);
   assert.equal(summary.performance.exact_cumulative_timing, true);
   assert.equal(summary.performance.request_counts_by_extraction_category.longterm, 1);
   assert.equal(summary.performance.source_messages_attempted, 20);

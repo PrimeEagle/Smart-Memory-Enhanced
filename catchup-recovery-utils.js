@@ -1,7 +1,6 @@
 import {
   ensureMemorizeObligationLedger,
   projectMemorizeObligationLedger,
-  applyMemorizeLifecycleEvent,
 } from './memorize-obligation-ledger.js';
 
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
@@ -181,22 +180,8 @@ export function recordCatchUpOwnerRange(manifest, owner, range, {
   };
   next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
     .slice(-MAX_OWNER_OBLIGATIONS);
-  const sourceStart = normalized.source_start_index ?? normalized.start_offset;
-  const sourceEnd = normalized.source_end_index ?? normalized.end_offset;
-  const ledgerId = `longterm:${String(owner).trim().toLowerCase()}:${sourceStart}-${sourceEnd}:${entry.source_fingerprint ?? 'range-ledger'}`;
-  applyMemorizeLifecycleEvent(next.obligation_ledger, {
-    obligation_id: ledgerId, logical_run_id: next.logical_run_id,
-    tier: 'longterm', owner: String(owner),
-    source_range: { start: sourceStart, end: sourceEnd },
-    source_fingerprint: entry.source_fingerprint,
-  }, safelyCommitted ? {
-    type: 'leaf_coverage_completed', verified_coverage: true,
-    downstream_validation_result: 'accepted',
-    persistence_result: 'verified_existing', coverage_result: 'safely_committed', at: now,
-  } : {
-    type: 'recovery_required', reason_code: terminalOutcome,
-    next_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
-  });
+  // Compatibility presentation only. Canonical lifecycle mutations are owned
+  // by the Memorize lifecycle coordinator and never flow back from this array.
   return next;
 }
 
@@ -222,21 +207,7 @@ export function invalidateCatchUpOwnerRange(manifest, owner, range, {
   };
   next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
     .slice(-MAX_OWNER_OBLIGATIONS);
-  const sourceStart = normalized.source_start_index ?? normalized.start_offset;
-  const sourceEnd = normalized.source_end_index ?? normalized.end_offset;
-  const matchingLedger = Object.values(next.obligation_ledger?.obligations ?? {}).find((item) =>
-    item.tier === 'longterm' && String(item.owner).toLowerCase() === String(owner).toLowerCase()
-    && Number(item.source_range?.start) === Number(sourceStart)
-    && Number(item.source_range?.end) === Number(sourceEnd));
-  applyMemorizeLifecycleEvent(next.obligation_ledger, {
-    obligation_id: matchingLedger?.obligation_id
-      ?? `longterm:${String(owner).trim().toLowerCase()}:${sourceStart}-${sourceEnd}:${entry.source_fingerprint ?? 'range-ledger'}`,
-    logical_run_id: next.logical_run_id, tier: 'longterm', owner: String(owner),
-    source_range: { start: sourceStart, end: sourceEnd }, source_fingerprint: entry.source_fingerprint,
-  }, {
-    type: 'recovery_required', reason_code: reasonCode,
-    next_action: 'resume_exact_obligation', coverage_result: 'pending', at: now,
-  });
+  // Compatibility presentation only. Revocation cannot mutate canonical truth.
   return next;
 }
 
@@ -420,38 +391,8 @@ export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(),
       checkpoint_boundary: normalized.end_offset,
     };
     next.tier_obligations = [...next.tier_obligations.filter((entry) => entry.key !== key), record].slice(-MAX_TIER_OBLIGATIONS);
-    const ledgerRange = {
-      start: normalized.source_start_index ?? normalized.start_offset,
-      end: normalized.source_end_index ?? normalized.end_offset,
-    };
-    const existingLedgerObligation = Object.values(next.obligation_ledger?.obligations ?? {}).find((entry) =>
-      entry?.tier === tier
-      && Number(entry?.source_range?.start) === Number(ledgerRange.start)
-      && Number(entry?.source_range?.end) === Number(ledgerRange.end));
-    const ledgerInput = {
-      obligation_id: existingLedgerObligation?.obligation_id
-        ?? `${tier}:chat:${ledgerRange.start}-${ledgerRange.end}:range-ledger`,
-      logical_run_id: next.logical_run_id,
-      tier, owner: existingLedgerObligation?.owner ?? null,
-      source_range: ledgerRange,
-      source_fingerprint: existingLedgerObligation?.source_fingerprint ?? null,
-    };
-    if (safelyCommitted) {
-      applyMemorizeLifecycleEvent(next.obligation_ledger, ledgerInput, {
-        type: 'leaf_coverage_completed', verified_coverage: true,
-        explicit_no_update: outcome.not_applicable === true,
-        downstream_validation_result: outcome.not_applicable ? 'not_applicable' : 'accepted',
-        persistence_result: outcome.not_applicable ? 'not_required' : 'committed',
-        coverage_result: 'safely_committed',
-      });
-    } else if (!existingLedgerObligation?.exact_reason_code) {
-      applyMemorizeLifecycleEvent(next.obligation_ledger, ledgerInput, {
-        type: 'recovery_required',
-        reason_code: outcome.reason_code ?? 'not_safely_committed',
-        next_action: 'resume_exact_obligation',
-        coverage_result: 'pending',
-      });
-    }
+    // Compatibility presentation only. This function must not create or
+    // settle authoritative obligations from projected tier outcomes.
     if (safelyCommitted && outcome.enabled) {
       next.tier_coverage[tier].committed_ranges = mergeRanges([
         ...next.tier_coverage[tier].committed_ranges,

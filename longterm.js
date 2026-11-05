@@ -1140,8 +1140,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           if (completedAttempt) {
             const childJournal = recordProviderCompletion(providerMetadata, completedAttempt, {
               child_key: childKey,
-              manifest_transition: { status: 'applied', applied_at: Date.now() },
-              ledger_transition: { status: 'applied', disposition: 'pending_child_coverage', applied_at: Date.now() },
+              manifest_transition: { status: 'pending_reconciliation',
+                requested_disposition: 'partial_child_pending' },
+              ledger_transition: { status: 'pending_reconciliation',
+                requested_disposition: 'pending_child_coverage' },
             });
             await execution.hooks.provider_completion_journal_updated(childJournal, {
               await_point: 'obligation_update', progress: true,
@@ -1351,6 +1353,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
         child_key: completionChildKey,
         parser_result: { status: 'explicit_none', records: [] },
+        validation: { status: 'validated_no_update', accepted_count: 0 },
         persistence: { status: 'not_needed', durable_record_ids: [] },
       });
       await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
@@ -1934,7 +1937,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       child_key: completionChildKey,
       persistence: { status: 'committed', durable_record_ids: durableRecordIds },
       manifest_transition: { status: execution.provider.request_kind ? 'pending' : 'not_applicable' },
-      ledger_transition: { status: execution.provider.request_kind ? 'pending' : 'applied' },
+      ledger_transition: { status: 'pending_reconciliation',
+        requested_disposition: 'durably_committed' },
     });
     await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
       await_point: 'child_manifest_update', progress: true,
