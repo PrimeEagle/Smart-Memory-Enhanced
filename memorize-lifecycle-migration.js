@@ -1,10 +1,12 @@
 import {
   ensureMemorizeObligationLedger,
   normalizeMemorizeLifecycleIdentity,
+  transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
 import { recordProviderCompletion } from './provider-completion-journal.js';
 
 export const MEMORIZE_LIFECYCLE_MIGRATION_VERSION = 1;
+export const SAME_RUN_EVIDENCE_MIGRATION_VERSION = 1;
 
 const success = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const malformed = (attempt) => attempt?.terminal_outcome === 'provider_response_malformed'
@@ -170,4 +172,127 @@ export function migrateAmbiguousRecoveryParents({ ledger: ledgerValue, metadata,
   };
   ledger.updated_at = detail.completed_at;
   return { ledger, migrated: migratedParents.length > 0, detail };
+}
+
+function completionEntries(journal) {
+  if (Array.isArray(journal?.entries)) return journal.entries;
+  if (journal?.entries && journal?.order) {
+    return journal.order.map((id) => journal.entries[id]).filter(Boolean);
+  }
+  return Object.values(journal?.entries ?? {});
+}
+
+/**
+ * Repairs the v0.9.80 projection that adopted a physically completed attempt
+ * from the active logical run as prior-run evidence. Durable accepted records
+ * remain untouched; only the downstream cursor/action and stale observations
+ * are normalized. No provider or memory-persistence callback is accepted.
+ */
+export function migrateV0980SameRunEvidenceState({ ledger: ledgerValue,
+  journal, logical_run_id: logicalRunId, provider_attempts: providerAttempts } = {}) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue, logicalRunId);
+  ledger.migrations ??= {};
+  const key = 'same_run_evidence_provenance_v0981';
+  if (ledger.migrations[key]?.completed === true) {
+    return { ledger, migrated: false, detail: ledger.migrations[key],
+      provider_calls: 0, persistence_calls: 0 };
+  }
+  const before = JSON.stringify(ledger);
+  const repaired = [];
+  const entries = completionEntries(journal);
+  const attempts = providerAttempts?.recent_attempts
+    ?? providerAttempts?.retained_attempts
+    ?? (Array.isArray(providerAttempts) ? providerAttempts : []);
+  const attemptById = new Map(attempts.filter((item) => item?.attempt_id)
+    .map((item) => [item.attempt_id, item]));
+  for (const entry of entries) {
+    const sameRunAdoption = entry?.logical_run_id === logicalRunId
+      && entry.adopted_from_logical_run_id === logicalRunId
+      && entry.adopted_from_attempt_id === entry.attempt_id;
+    if (!sameRunAdoption) continue;
+    const obligationId = entry.child_obligation_id ?? entry.root_obligation_id;
+    const obligation = ledger.obligations[obligationId];
+    if (!obligation) continue;
+    const durableIds = [...new Set(entry.persistence?.durable_record_ids
+      ?? obligation.lifecycle?.durably_persisted_record_ids ?? [])];
+    const unresolvedIds = [...new Set(obligation.lifecycle?.unresolved_fragment_ids ?? [])];
+    if (!durableIds.length || !unresolvedIds.length) continue;
+    const candidateMap = Object.fromEntries((entry.validated_record_identities ?? [])
+      .filter((item) => item?.id && item?.candidate_id && durableIds.includes(String(item.id)))
+      .map((item) => [String(item.id), String(item.candidate_id)]));
+    const physicalAttempt = attemptById.get(entry.attempt_id);
+    transitionMemorizeObligation(ledger, obligation, {
+      current_state: 'pending_recovery',
+      provider_attempt_id: entry.attempt_id,
+      parser_result: entry.parser_result?.status ?? obligation.parser_result ?? 'partial',
+      downstream_validation_result: entry.validation?.status === 'accepted'
+        ? 'accepted_partial_records' : obligation.downstream_validation_result,
+      persistence_result: 'partial_records_committed', coverage_result: 'pending',
+      exact_reason_code: 'partial_records_committed_unresolved_fragments_pending',
+      next_eligible_action: 'recover_exact_unresolved_fragments',
+      recovery_intent: 'recover_unresolved_partial_output_fragments',
+      recovery_stage: 'persisted_partial_fragment_recovery',
+      lifecycle: {
+        durably_persisted_record_ids: durableIds,
+        durable_record_candidate_map: candidateMap,
+        parser_accepted_candidate_ids: Object.values(candidateMap),
+        downstream_accepted_candidate_ids: Object.values(candidateMap),
+        unresolved_fragment_ids: unresolvedIds,
+      },
+      metrics: { persisted_records: durableIds.length,
+        producing_provider_attempt_id: entry.attempt_id,
+        physical_terminal_outcome: entry.terminal_outcome,
+        physical_completed_at: physicalAttempt?.completed_at ?? entry.updated_at },
+    });
+    entry.physical_terminal_outcome = entry.terminal_outcome;
+    entry.physical_completed_at ??= physicalAttempt?.completed_at
+      ?? (physicalAttempt?.at && physicalAttempt?.duration_ms
+        ? Number(physicalAttempt.at) + Number(physicalAttempt.duration_ms) : entry.updated_at);
+    entry.completed_at ??= entry.physical_completed_at;
+    entry.logical_disposition = 'unresolved_fragments_pending';
+    entry.downstream_cursor = 'unresolved_fragments_pending';
+    entry.logical_completed_at = null;
+    entry.migration = { ...(entry.migration ?? {}),
+      same_run_adoption_superseded: true,
+      original_adopted_from_logical_run_id: entry.adopted_from_logical_run_id,
+      migrated_at: Date.now() };
+    entry.adopted_from_logical_run_id = null;
+    entry.adopted_from_attempt_id = null;
+    entry.evidence_adoption_reason = null;
+    ledger.historical_transition_observations = [
+      ...(ledger.historical_transition_observations ?? []), {
+        code: 'same_run_prior_evidence_adoption_superseded',
+        obligation_id: obligationId, provider_attempt_id: entry.attempt_id,
+        classification: 'repaired_by_current_run_downstream_cursor',
+      },
+    ].slice(-256);
+    repaired.push({ obligation_id: obligationId, attempt_id: entry.attempt_id,
+      durable_record_ids: durableIds, unresolved_fragment_ids: unresolvedIds });
+  }
+  const retired = [];
+  ledger.transition_violations = (ledger.transition_violations ?? []).filter((violation) => {
+    const obligation = ledger.obligations[violation.obligation_id];
+    const retireTerminalEvidence = violation.code === 'terminal_attempt_reconciliation_missing_evidence'
+      && obligation?.checkpoint_eligible === true;
+    const retireMalformed = violation.code === 'terminal_malformed_settlement_cannot_regress_terminal_state'
+      && obligation?.checkpoint_eligible === true;
+    if (!retireTerminalEvidence && !retireMalformed) return true;
+    retired.push({ ...violation, original_classification: violation.classification,
+      classification: retireMalformed ? 'superseded_by_later_attempt'
+        : 'repaired_by_later_verified_downstream_evidence', migrated_at: Date.now() });
+    return false;
+  });
+  if (retired.length) ledger.historical_transition_observations = [
+    ...(ledger.historical_transition_observations ?? []), ...retired,
+  ].slice(-256);
+  const detail = {
+    version: SAME_RUN_EVIDENCE_MIGRATION_VERSION, completed: true,
+    repaired_leaf_count: repaired.length, repaired_leaves: repaired,
+    retired_violation_count: retired.length,
+    provider_calls: 0, persistence_calls: 0, completed_at: Date.now(),
+  };
+  ledger.migrations[key] = detail;
+  ledger.updated_at = detail.completed_at;
+  return { ledger, migrated: before !== JSON.stringify(ledger), detail,
+    provider_calls: 0, persistence_calls: 0 };
 }

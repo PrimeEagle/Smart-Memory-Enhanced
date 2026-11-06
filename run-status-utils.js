@@ -1,6 +1,6 @@
 import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
 
-export const RUN_STATUS_CLASSIFIER_VERSION = 5;
+export const RUN_STATUS_CLASSIFIER_VERSION = 6;
 
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const array = (value) => Array.isArray(value) ? value : [];
@@ -57,7 +57,9 @@ export function deriveRunErrorAccounting(report = {}) {
     || provider.obligation_history_truncated !== true;
   const classifyDisplayedError = (entry = {}) => {
     const text = `${entry.label ?? ''} ${entry.message ?? ''}`.toLowerCase();
-    if (/lifecycle transition|lifecycle.*rejected/.test(text)) return 'lifecycle_transition_rejection';
+    if (/lifecycle transition|lifecycle.*rejected|provider-evidence ingress.*reject|evidence ingress.*reject/.test(text)) {
+      return 'lifecycle_transition_rejection';
+    }
     if (/reconcil/.test(text)) return 'reconciliation_failure';
     if (entry.persistence === true || /persist|durable save/.test(text)) return 'persistence_failure';
     if (/validation|candidate.*reject/.test(text)) return 'downstream_validation_failure';

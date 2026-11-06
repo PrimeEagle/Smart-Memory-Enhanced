@@ -6,12 +6,15 @@ export const PROVIDER_EVIDENCE_INGRESS_OPERATIONS = Object.freeze([
   'register_new_attempt',
   'record_new_response',
   'adopt_exact_prior_run_evidence',
+  'continue_current_run_downstream',
+  'continue_partial_fragment_recovery',
   'continue_pending_downstream_processing',
   'settle_terminal_malformed_attempt',
   'dispatch_exact_recovery_attempt',
   'reconcile_terminal_attempt_evidence',
   'record_provider_transport_failure',
   'record_parser_disposition',
+  'enrich_parser_evidence',
   'record_validation_disposition',
   'record_records_staged',
   'record_durable_persistence',
@@ -329,6 +332,23 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     });
   }
 
+  if (input.operation === 'enrich_parser_evidence') {
+    const receipt = await invokeLifecycle('parser_evidence_enriched', input.details ?? {});
+    if (!['applied', 'idempotent_duplicate_verified'].includes(receipt?.status)) {
+      return rejectedIngress(input, 'parser_evidence_enrichment_rejected', {
+        next_action: 'reconcile_downstream_lifecycle_evidence',
+      });
+    }
+    return ingressResult(receipt.status, { ...input, identity }, {
+      receipt, physical_attempt_id: input.details?.provider_attempt_id ?? null,
+      resulting_state: receipt.resulting_state,
+      checkpoint_eligible: receipt.checkpoint_eligible === true,
+      reason_code: 'parser_evidence_enriched',
+      next_action: input.details?.next_eligible_action
+        ?? 'continue_pending_downstream_processing',
+    });
+  }
+
   if (input.operation === 'adopt_exact_prior_run_evidence') {
     const evidence = input.evidence ?? {};
     const evidenceRange = normalizedRange(evidence.source_range);
@@ -336,6 +356,12 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     const evidenceLeaf = evidence.child_obligation_id ?? evidence.leaf_obligation_id
       ?? evidence.root_obligation_id;
     const missing = [];
+    if (evidence.logical_run_id && identity.logical_run_id
+      && evidence.logical_run_id === identity.logical_run_id) {
+      return rejectedIngress(input, 'same_run_evidence_cannot_use_prior_run_adoption', {
+        next_action: 'continue_current_run_downstream',
+      });
+    }
     if (!evidence.attempt_id) missing.push('physical_attempt_id');
     if (!['completed', 'completed_no_candidates', 'completed_repartitioned']
       .includes(evidence.terminal_outcome)) missing.push('terminal_provider_success');
@@ -401,7 +427,8 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     });
   }
 
-  if (input.operation === 'continue_pending_downstream_processing') {
+  if (['continue_current_run_downstream',
+    'continue_pending_downstream_processing'].includes(input.operation)) {
     const evidence = input.evidence ?? {};
     if (evidence.response_text == null && !(evidence.parser_result?.records?.length)) {
       return rejectedIngress(input, 'accepted_output_private_evidence_unavailable', {
@@ -417,6 +444,42 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       provider_call_required: false, persistence_required: true,
       response_text: evidence.response_text ?? null,
       parser_records: evidence.parser_result?.records ?? [],
+      downstream_cursor: input.downstream_cursor ?? null,
+    });
+  }
+
+  if (input.operation === 'continue_partial_fragment_recovery') {
+    const evidence = input.evidence ?? {};
+    const unresolved = [...new Set(input.unresolved_fragment_ids ?? [])];
+    const durable = [...new Set(input.durable_record_ids
+      ?? evidence.persistence?.durable_record_ids ?? [])];
+    const candidateMap = input.durable_record_candidate_map ?? Object.fromEntries(
+      (evidence.validated_record_identities ?? []).filter((item) => item?.id && item?.candidate_id)
+        .map((item) => [String(item.id), String(item.candidate_id)]));
+    const missing = [
+      ...(!evidence.attempt_id ? ['producing_attempt_id'] : []),
+      ...(!durable.length ? ['durable_accepted_record_ids'] : []),
+      ...(!unresolved.length ? ['unresolved_fragment_ids'] : []),
+      ...(durable.some((id) => !candidateMap[id]) ? ['durable_record_candidate_mappings'] : []),
+    ];
+    if (missing.length) return rejectedIngress(input,
+      'partial_fragment_recovery_evidence_incomplete', {
+        status: 'blocked', missing_evidence: missing,
+        next_action: 'inspect_or_restore_partial_fragment_recovery_evidence',
+      });
+    return ingressResult('pending_reconciliation', { ...input, identity }, {
+      physical_attempt_id: evidence.attempt_id,
+      resulting_state: input.prior_state ?? 'pending_recovery',
+      reason_code: 'persisted_partial_records_require_fragment_recovery',
+      next_action: input.next_eligible_action ?? 'recover_exact_unresolved_fragments',
+      provider_call_required: input.provider_call_required !== false,
+      persistence_required: false,
+      downstream_cursor: 'unresolved_fragments_pending',
+      durable_record_ids: durable,
+      durable_record_candidate_map: candidateMap,
+      unresolved_fragment_ids: unresolved,
+      recovery_stage_history: input.recovery_stage_history ?? [],
+      next_eligible_recovery_stage: input.next_eligible_recovery_stage ?? null,
     });
   }
 

@@ -2,6 +2,16 @@
 
 export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 3;
 
+export const PROVIDER_EVIDENCE_PROVENANCE = Object.freeze({
+  PRIOR_RUN_ADOPTABLE: 'prior_run_adoptable',
+  CURRENT_RUN_CONTINUE_DOWNSTREAM: 'current_run_continue_downstream',
+  CURRENT_RUN_RECOVER_FRAGMENTS: 'current_run_recover_fragments',
+  ALREADY_TERMINAL: 'already_terminal',
+  SUPERSEDED: 'superseded_by_later_attempt',
+  MISSING_PRIVATE_EVIDENCE: 'unusable_missing_private_evidence',
+  IDENTITY_MISMATCH: 'identity_mismatch',
+});
+
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
 const now = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now();
@@ -70,6 +80,13 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     provider_disposition: patch.provider_disposition ?? attempt.terminal_outcome
       ?? prior.provider_disposition ?? 'running',
     terminal_outcome: attempt.terminal_outcome ?? prior.terminal_outcome ?? 'running',
+    physical_terminal_outcome: patch.physical_terminal_outcome
+      ?? (attempt.terminal_outcome && attempt.terminal_outcome !== 'running'
+        ? attempt.terminal_outcome : prior.physical_terminal_outcome ?? null),
+    physical_completed_at: patch.physical_completed_at
+      ?? prior.physical_completed_at
+      ?? (attempt.terminal_outcome && attempt.terminal_outcome !== 'running'
+        ? Number(attempt.at ?? now(patch.at)) + Number(attempt.duration_ms ?? 0) : null),
     response_text: patch.response_text ?? prior.response_text ?? null,
     parser_result: clone(patch.parser_result ?? prior.parser_result ?? null),
     validation: { status: 'pending', ...(prior.validation ?? {}),
@@ -87,7 +104,14 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
       prior.live_health_transition, patch.live_health_transition),
     started_at: prior.started_at ?? attempt.at ?? now(patch.at),
     updated_at: now(patch.at),
-    completed_at: patch.completed_at ?? prior.completed_at ?? null,
+    // Compatibility `completed_at` now means physical attempt completion.
+    // Logical completion is independently represented below.
+    completed_at: patch.completed_at ?? prior.completed_at
+      ?? (attempt.terminal_outcome && attempt.terminal_outcome !== 'running'
+        ? Number(attempt.at ?? now(patch.at)) + Number(attempt.duration_ms ?? 0) : null),
+    logical_completed_at: patch.logical_completed_at ?? prior.logical_completed_at ?? null,
+    downstream_cursor: patch.downstream_cursor ?? prior.downstream_cursor ?? null,
+    logical_disposition: patch.logical_disposition ?? prior.logical_disposition ?? null,
     replay_count: Number(prior.replay_count ?? 0),
     migration: clone(patch.migration ?? prior.migration ?? null),
     adopted_from_logical_run_id: patch.adopted_from_logical_run_id
@@ -99,7 +123,12 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
   };
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
     && verifiedTransition(entry.manifest_transition)
-    && verifiedTransition(entry.ledger_transition)) entry.completed_at ??= entry.updated_at;
+    && verifiedTransition(entry.ledger_transition)) {
+    entry.completed_at ??= entry.physical_completed_at ?? entry.updated_at;
+    entry.logical_completed_at ??= entry.updated_at;
+  }
+  entry.downstream_cursor = deriveProviderDownstreamCursor(entry);
+  entry.logical_disposition ??= entry.downstream_cursor;
   journal.order = [...journal.order.filter((id) => id !== attempt.attempt_id), attempt.attempt_id].slice(-256);
   return entry;
 }
@@ -109,6 +138,8 @@ export function findReplayableProviderCompletion(metadata, input = {}) {
   if (!journal) return null;
   const entries = journal.order.map((id) => journal.entries[id]).filter(Boolean).reverse();
   return entries.find((entry) => terminalSuccess.has(entry.terminal_outcome)
+    && (!input.current_logical_run_id
+      || entry.logical_run_id !== input.current_logical_run_id)
     && entry.root_obligation_id === input.root_obligation_id
     && (!input.child_obligation_id || (entry.child_obligation_id ?? entry.root_obligation_id)
       === input.child_obligation_id)
@@ -119,7 +150,117 @@ export function findReplayableProviderCompletion(metadata, input = {}) {
       && Number(entry.source_range?.end) === Number(input.source_range.end)))
     && entry.source_fingerprint === input.source_fingerprint
     && entry.response_text != null
-    && entry.completed_at == null) ?? null;
+    && entry.logical_completed_at == null
+    && (entry.completed_at == null || entry.physical_completed_at != null)) ?? null;
+}
+
+function exactCompletionIdentity(entry, input = {}) {
+  const leaf = entry?.child_obligation_id ?? entry?.root_obligation_id;
+  return entry?.root_obligation_id === input.root_obligation_id
+    && (!input.child_obligation_id || leaf === input.child_obligation_id)
+    && (!input.tier || entry.tier === input.tier)
+    && (input.owner === undefined || String(entry.owner ?? '').trim().toLowerCase()
+      === String(input.owner ?? '').trim().toLowerCase())
+    && (!input.source_range || (Number(entry.source_range?.start) === Number(input.source_range.start)
+      && Number(entry.source_range?.end) === Number(input.source_range.end)))
+    && entry.source_fingerprint === input.source_fingerprint;
+}
+
+/** Furthest verified local stage; physical completion is intentionally separate. */
+export function deriveProviderDownstreamCursor(entry = {}, obligation = null) {
+  if (obligation?.checkpoint_eligible === true
+    || ['durably_committed', 'explicit_no_update'].includes(obligation?.current_state)) {
+    return 'fully_terminal';
+  }
+  const unresolved = obligation?.lifecycle?.unresolved_fragment_ids?.length
+    ?? entry.unresolved_fragment_ids?.length ?? 0;
+  const durable = obligation?.lifecycle?.durably_persisted_record_ids?.length
+    ?? entry.persistence?.durable_record_ids?.length ?? 0;
+  if (unresolved > 0 && durable > 0) return 'unresolved_fragments_pending';
+  if (['committed', 'verified_existing'].includes(entry.persistence?.status) || durable > 0) {
+    return 'accepted_records_persisted';
+  }
+  if (entry.persistence?.status === 'not_needed') return 'explicit_no_update';
+  if (entry.validation?.status && entry.validation.status !== 'pending') return 'validation_complete';
+  if (entry.parser_result?.status === 'partial') return 'parser_partial';
+  if (entry.parser_result?.status) return 'parser_complete';
+  if (entry.response_text != null || entry.provider_disposition === 'response_received') {
+    return 'response_recorded';
+  }
+  return null;
+}
+
+/**
+ * Pure retained-evidence selector. Same-run continuation can never be routed
+ * through prior-run adoption, and persisted partial work selects only its
+ * unresolved fragments.
+ */
+export function classifyRetainedProviderEvidence(entry, input = {}) {
+  if (!entry || !exactCompletionIdentity(entry, input)) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
+    downstream_cursor: null, next_action: null,
+  };
+  const cursor = deriveProviderDownstreamCursor(entry, input.obligation ?? null);
+  const laterCompatible = (input.later_attempts ?? []).some((attempt) =>
+    attempt?.attempt_id !== entry.attempt_id && exactCompletionIdentity(attempt, input)
+    && Number(attempt.started_at ?? attempt.at ?? 0) > Number(entry.started_at ?? 0));
+  if (laterCompatible) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
+    downstream_cursor: cursor, next_action: null,
+  };
+  if (cursor === 'fully_terminal') return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL,
+    downstream_cursor: cursor, next_action: null,
+  };
+  if (!terminalSuccess.has(entry.terminal_outcome)) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
+    downstream_cursor: cursor, next_action: null,
+  };
+  const currentRun = Boolean(input.current_logical_run_id)
+    && entry.logical_run_id === input.current_logical_run_id;
+  if (currentRun && cursor === 'unresolved_fragments_pending') return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS,
+    downstream_cursor: cursor, next_action: 'recover_exact_unresolved_fragments',
+    provider_call_required: true, persistence_required: false,
+  };
+  if (entry.response_text == null && !entry.parser_result?.records?.length) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE,
+    downstream_cursor: cursor, next_action: 'inspect_or_restore_private_terminal_evidence',
+  };
+  if (currentRun) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM,
+    downstream_cursor: cursor, next_action: cursor === 'response_recorded'
+      ? 'parse_retained_response' : cursor === 'parser_complete' || cursor === 'parser_partial'
+        ? 'continue_validation' : cursor === 'validation_complete'
+          ? 'persist_validated_records' : 'continue_pending_downstream_processing',
+    provider_call_required: false,
+    persistence_required: !['accepted_records_persisted', 'unresolved_fragments_pending']
+      .includes(cursor),
+  };
+  return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE,
+    downstream_cursor: cursor, next_action: 'adopt_exact_prior_run_evidence',
+    provider_call_required: false, persistence_required: true,
+  };
+}
+
+export function selectRetainedProviderEvidence(metadata, input = {}) {
+  const journal = container(metadata);
+  if (!journal) return null;
+  const attempts = journal.order.map((id) => journal.entries[id]).filter(Boolean);
+  const candidates = attempts.filter((entry) => exactCompletionIdentity(entry, input)).reverse();
+  for (const entry of candidates) {
+    if (input.exclude_attempt_id && entry.attempt_id === input.exclude_attempt_id) continue;
+    const selection = classifyRetainedProviderEvidence(entry, {
+      ...input, later_attempts: attempts,
+    });
+    if (![PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
+      PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
+      PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL].includes(selection.classification)) {
+      return { entry, ...selection };
+    }
+  }
+  return null;
 }
 
 export function migrateTerminalProviderCompletions(metadata, providerAudit, eligibleAttemptIds = null) {
@@ -312,7 +453,10 @@ export async function replayProviderCompletion(entry, handlers = {}) {
         requested_disposition: 'completed', acknowledged_at: Date.now() };
   }
   if (verifiedTransition(entry.manifest_transition)
-    && verifiedTransition(entry.ledger_transition)) entry.completed_at ??= Date.now();
+    && verifiedTransition(entry.ledger_transition)) {
+    entry.completed_at ??= entry.physical_completed_at ?? Date.now();
+    entry.logical_completed_at ??= Date.now();
+  }
   entry.updated_at = Date.now();
   return { replayed: true, entry };
 }
@@ -330,6 +474,8 @@ export function exportProviderCompletionJournal(metadata) {
       child_obligation_id: entry.child_obligation_id,
       tier: entry.tier, owner: entry.owner, source_range: clone(entry.source_range),
       source_fingerprint: entry.source_fingerprint, terminal_outcome: entry.terminal_outcome,
+      physical_terminal_outcome: entry.physical_terminal_outcome ?? entry.terminal_outcome,
+      physical_completed_at: entry.physical_completed_at ?? null,
       request_kind: entry.request_kind, recovery_stage: entry.recovery_stage,
       provider_disposition: entry.provider_disposition,
       private_response_retained: entry.response_text != null,
@@ -344,6 +490,10 @@ export function exportProviderCompletionJournal(metadata) {
       live_health_transition: clone(entry.live_health_transition),
       started_at: entry.started_at, updated_at: entry.updated_at,
       completed_at: entry.completed_at, replay_count: entry.replay_count,
+      logical_completed_at: entry.logical_completed_at ?? null,
+      downstream_cursor: entry.downstream_cursor
+        ?? deriveProviderDownstreamCursor(entry),
+      logical_disposition: entry.logical_disposition ?? null,
       migration: clone(entry.migration),
       adopted_from_logical_run_id: entry.adopted_from_logical_run_id ?? null,
       adopted_from_attempt_id: entry.adopted_from_attempt_id ?? null,

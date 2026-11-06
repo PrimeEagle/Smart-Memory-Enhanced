@@ -114,7 +114,8 @@ import {
   stageProviderRejectedFragments,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
-import { findReplayableProviderCompletion, recordProviderCompletion }
+import { PROVIDER_EVIDENCE_PROVENANCE, selectRetainedProviderEvidence,
+  recordProviderCompletion }
   from './provider-completion-journal.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
 import {
@@ -767,17 +768,35 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // completed response may have been accepted just before a controller/page
     // interruption, so selecting it must happen before treating a missing
     // fragment payload as a blocker or dispatching another provider request.
-    const completionReplay = findReplayableProviderCompletion(providerMetadata, {
+    const retainedEvidence = selectRetainedProviderEvidence(providerMetadata, {
       root_obligation_id: rootObligationId,
       child_obligation_id: leafObligationId,
       tier: 'session', owner: null,
       source_range: { start: range.start, end: range.end },
       source_fingerprint: coverageBase.source_fingerprint,
+      current_logical_run_id: providerMetadata?.active_catchup_run_id ?? null,
+      obligation: {
+        current_state: execution.provider.root_obligation_state,
+        lifecycle: {
+          durably_persisted_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
+          unresolved_fragment_ids: resumeRecoveryState?.unresolved_semantic_units ?? [],
+        },
+      },
     });
+    const completionReplay = retainedEvidence?.classification
+      === PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE
+      ? retainedEvidence.entry : null;
+    const currentRunContinuation = retainedEvidence?.classification
+      === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM
+      ? retainedEvidence : null;
+    const currentRunFragmentRecovery = retainedEvidence?.classification
+      === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS
+      ? retainedEvidence : null;
+    const retainedWholeResponse = completionReplay ?? currentRunContinuation?.entry ?? null;
     if (execution.provider.resumed_pending_obligation
       && Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
       && (resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
-      && restoredFragments.length === 0 && !completionReplay) {
+      && restoredFragments.length === 0 && !retainedWholeResponse) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: 'missing_private_unresolved_fragment_payload',
         next_eligible_action: 'inspect_or_restore_unresolved_fragment_payload',
@@ -794,7 +813,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         ...resumeRecoveryState,
         has_unresolved_fragments: restoredFragments.length > 0,
       }) : null;
-    const automaticFragmentRecovery = completionReplay ? null
+    const automaticFragmentRecovery = retainedWholeResponse ? null
       : execution.recovery.automatic_fragment_recovery
       ?? (execution.provider.resumed_pending_obligation && restoredFragments.length ? {
         response: restoredFragments.map((item) => item.raw).join('\n'),
@@ -802,7 +821,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovery_of_attempt_id: restoredFragments[0]?.producing_attempt_id ?? null,
         focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, restoredFragments),
       } : null);
-    if (!completionReplay && execution.provider.resumed_pending_obligation && automaticFragmentRecovery
+    if (!retainedWholeResponse && execution.provider.resumed_pending_obligation && automaticFragmentRecovery
       && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
@@ -887,7 +906,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       };
       await execution.hooks.recovery_epoch_initialized(restoredResumeEpoch);
     }
-    if (!completionReplay && !automaticFragmentRecovery && resumeEligibility?.blocked === true) {
+    if (!retainedWholeResponse && !automaticFragmentRecovery && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code
           ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
@@ -900,7 +919,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       blocked.sme_obligation_id = rootObligationId;
       throw blocked;
     }
-    const recoveryOnlyMode = !completionReplay && !automaticFragmentRecovery
+    const recoveryOnlyMode = !retainedWholeResponse && !automaticFragmentRecovery
       && (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState)
         || resumeEligibility?.eligible_action === 'single_source_unit_regeneration');
     let replayIngress = null;
@@ -921,7 +940,42 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         throw error;
       }
     }
-    const registeredIngress = !completionReplay && !automaticFragmentRecovery && !recoveryOnlyMode
+    if (currentRunContinuation) {
+      replayIngress = await pipeline.ingestProviderEvidence('continue_current_run_downstream', {
+        evidence: currentRunContinuation.entry,
+        downstream_cursor: currentRunContinuation.downstream_cursor,
+      });
+      if (replayIngress.status !== 'pending_downstream_processing') {
+        const error = new Error('Session current-run provider evidence could not continue downstream.');
+        error.code = 'SME_CURRENT_RUN_DOWNSTREAM_CONTINUATION_REJECTED';
+        error.sme_recovery_blocked = true;
+        error.sme_obligation_id = rootObligationId;
+        error.sme_reason_code = replayIngress.reason_code;
+        error.sme_request_diagnostics = replayIngress;
+        throw error;
+      }
+    }
+    if (currentRunFragmentRecovery && automaticFragmentRecovery) {
+      const fragmentIngress = await pipeline.ingestProviderEvidence(
+        'continue_partial_fragment_recovery', {
+          evidence: currentRunFragmentRecovery.entry,
+          durable_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
+          unresolved_fragment_ids: automaticFragmentRecovery.fragment_ids,
+          recovery_stage_history: resumeRecoveryState?.recovery_stages_attempted ?? [],
+          next_eligible_recovery_stage: resumeEligibility?.eligible_action ?? null,
+          provider_call_required: true,
+        });
+      if (fragmentIngress.status !== 'pending_reconciliation') {
+        const error = new Error('Session persisted partial output could not enter fragment recovery.');
+        error.code = 'SME_PARTIAL_FRAGMENT_CONTINUATION_REJECTED';
+        error.sme_recovery_blocked = true;
+        error.sme_obligation_id = rootObligationId;
+        error.sme_reason_code = fragmentIngress.reason_code;
+        error.sme_request_diagnostics = fragmentIngress;
+        throw error;
+      }
+    }
+    const registeredIngress = !retainedWholeResponse && !automaticFragmentRecovery && !recoveryOnlyMode
       ? await pipeline.ingestProviderEvidence('register_new_attempt') : null;
     if (registeredIngress && registeredIngress.status !== 'applied') {
       const error = new Error('Session provider attempt could not be registered.');
@@ -931,18 +985,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       error.sme_request_diagnostics = registeredIngress;
       throw error;
     }
-    const providerAttempt = completionReplay ? {
-      attempt_id: completionReplay.attempt_id,
+    const providerAttempt = retainedWholeResponse ? {
+      attempt_id: retainedWholeResponse.attempt_id,
       logical_obligation_id: rootObligationId,
       root_obligation_id: rootObligationId,
       child_obligation_id: leafObligationId,
-      logical_run_id: completionReplay.logical_run_id,
+      logical_run_id: retainedWholeResponse.logical_run_id,
       tier: 'session', owner: null,
-      source_range: completionReplay.source_range,
-      source_fingerprint: completionReplay.source_fingerprint,
-      terminal_outcome: completionReplay.terminal_outcome,
-      recovery_stage: completionReplay.recovery_stage ?? 'completion_journal_replay',
-      _adopted_terminal_evidence: true,
+      source_range: retainedWholeResponse.source_range,
+      source_fingerprint: retainedWholeResponse.source_fingerprint,
+      terminal_outcome: retainedWholeResponse.terminal_outcome,
+      recovery_stage: retainedWholeResponse.recovery_stage ?? 'completion_journal_replay',
+      _adopted_terminal_evidence: Boolean(completionReplay),
     } : automaticFragmentRecovery ? {
       attempt_id: automaticFragmentRecovery.recovery_of_attempt_id ?? null,
       logical_obligation_id: rootObligationId,
@@ -951,7 +1005,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       _already_finished: true,
     } : recoveryOnlyMode ? null : registeredIngress.attempt;
     try {
-      if (completionReplay) {
+      if (retainedWholeResponse) {
         response = replayIngress.response_text;
         providerResponseReceived = true;
       } else if (automaticFragmentRecovery) {
@@ -1401,8 +1455,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         + shapeRepair.repaired_count;
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsedCandidates.length } });
-    await emitLifecycleEvent(unresolvedPartialFragments > 0
-      ? 'parser_partially_accepted' : 'parser_accepted', {
+    await emitLifecycleEvent('parser_evidence_enriched', {
+      provider_attempt_id: lifecycleAttemptId,
       lifecycle: { parser_accepted_candidate_ids: parserAcceptedCandidateIds },
     });
     const initiallyParsedCount = parserAcceptedCandidateIds.length;
@@ -2278,7 +2332,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     }
     const malformedExhausted = ['SME_MALFORMED_PROVIDER_OUTPUT', 'SME_RECOVERY_PATH_EXHAUSTED'].includes(err?.code);
     const partialRecordsPersisted = err?.sme_partial_records_persisted === true;
-    const preRequestInternalFailure = !malformedExhausted && !providerRequestSent;
+    const localIngressFailure = ['SME_PROVIDER_EVIDENCE_INGRESS_REJECTED',
+      'SME_CURRENT_RUN_DOWNSTREAM_CONTINUATION_REJECTED',
+      'SME_PARTIAL_FRAGMENT_CONTINUATION_REJECTED'].includes(err?.code);
+    const preRequestInternalFailure = !malformedExhausted && !providerRequestSent
+      && !providerResponseReceived;
     const providerFailure = !malformedExhausted && providerRequestSent && !providerResponseReceived;
     const persistenceFailure = !malformedExhausted && !partialRecordsPersisted
       && providerResponseReceived && persistenceStarted;
@@ -2306,10 +2364,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (!err?.sme_live_health_finished) healthFinish({
       terminal_health: terminalHealth,
       provider_outcome: malformedExhausted ? 'bounded_malformed_recovery_exhausted'
+        : localIngressFailure && providerResponseReceived ? 'post_response_lifecycle_failure'
         : preRequestInternalFailure ? 'request_not_sent_internal_error'
           : providerFailure ? 'provider_failure'
             : providerResponseReceived ? 'response_received' : 'request_not_sent',
       parser_outcome: malformedExhausted ? 'bounded_recovery_exhausted'
+        : localIngressFailure ? 'downstream_continuation_failure'
         : processingFailure ? 'post_response_processing_failed' : undefined,
       persistence: partialRecordsPersisted ? 'partial_valid_records_saved_obligation_pending'
         : persistenceFailure ? 'failed' : 'preserved',

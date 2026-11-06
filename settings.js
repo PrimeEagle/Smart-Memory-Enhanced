@@ -106,7 +106,8 @@ import {
   isAuthoritativeTierRangeSafelyCovered,
   rebuildMemorizeCompatibilityProjection,
 } from './memorize-authority-model.js';
-import { migrateAmbiguousRecoveryParents } from './memorize-lifecycle-migration.js';
+import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState }
+  from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
   checkpointCatchUpTransaction,
@@ -269,8 +270,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.80',
-  build_fingerprint: 'sme-v0.9.80-provider-evidence-ingress-r1',
+  extension_version: '0.9.81',
+  build_fingerprint: 'sme-v0.9.81-monotonic-downstream-cursor-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5618,6 +5619,24 @@ export function bindSettingsUI(ctrl) {
       });
       checkpoint.run_manifest.obligation_ledger = lifecycleMigration.ledger;
       if (lifecycleMigration.migrated) checkpoint.lifecycle_migration = lifecycleMigration.detail;
+      const sameRunEvidenceMigration = migrateV0980SameRunEvidenceState({
+        ledger: checkpoint.run_manifest.obligation_ledger,
+        journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+        logical_run_id: checkpoint.run_manifest.logical_run_id,
+        provider_attempts: providerAudit,
+      });
+      checkpoint.run_manifest.obligation_ledger = sameRunEvidenceMigration.ledger;
+      if (sameRunEvidenceMigration.migrated) {
+        checkpoint.same_run_evidence_migration = sameRunEvidenceMigration.detail;
+        checkpoint.run_manifest.terminal_reason_code = 'partial_result_continuation_pending';
+        const latestExit = checkpoint.run_manifest.obligation_ledger.controller_exits?.at(-1);
+        if (latestExit) {
+          latestExit.reason_code = 'partial_result_continuation_pending';
+          latestExit.classification = 'post_response_lifecycle_failure_repaired';
+          latestExit.resumable = true;
+          latestExit.next_eligible_action = 'recover_exact_unresolved_fragments';
+        }
+      }
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
         providerAudit,
@@ -5704,7 +5723,8 @@ export function bindSettingsUI(ctrl) {
           reconciled_at: Date.now(),
         };
       }
-      if (runningReconciliation.repairs.length || lifecycleJournalRepair.mutations
+      if (runningReconciliation.repairs.length || sameRunEvidenceMigration.migrated
+        || lifecycleJournalRepair.mutations
         || migratedCompletions.length || providerWindowRepair.mutations
         || authorityProjection.mutations) {
         checkpoint.runtime_obligation_repairs = [

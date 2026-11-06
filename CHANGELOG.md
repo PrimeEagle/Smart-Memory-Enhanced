@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.81] - 2026-11-05
+
+### Added
+
+- Added a pure retained-evidence provenance selector that distinguishes new
+  current-run work, current-run downstream continuation, persisted-partial
+  fragment recovery, exact prior-run adoption, terminal evidence, superseded
+  attempts, missing private evidence, and identity mismatches.
+- Added a first-class downstream cursor and separate physical/logical attempt
+  completion fields. Pending-obligation diagnostics now export the producing
+  attempt, furthest verified stage, durable-record and unresolved-fragment
+  counts, exact next action, provider/persistence requirements, actionability
+  reason, replay classification, and supersession status.
+- Added a redacted v0.9.80 same-run replay fixture, focused lifecycle and
+  migration regressions, and a read-only validator for the supplied diagnostics
+  export.
+
+### Changed
+
+- Prior-run evidence adoption now rejects evidence from the active logical run.
+  Current-run retained responses continue from their first incomplete local
+  stage, while persisted partial records recover only their exact unresolved
+  fragments without reparsing, revalidation, or repersistence.
+- Parser candidate identities are now attached through an idempotent
+  `parser_evidence_enriched` event instead of emitting parser disposition a
+  second time. Historical earlier-stage evidence is recorded as a no-op when a
+  later verified state already exists.
+- Resume actionability is derived from canonical ledger state plus downstream
+  cursor. Controller exit, run projection, and Resume now agree on exact
+  fragment recovery versus local continuation, prior-run adoption, or a
+  missing-private-evidence blocker.
+
+### Fixed
+
+- Fixed the supplied Session 10–19 failure where physical attempt 5 adopted
+  itself as prior-run evidence, regressed `pending_recovery` to
+  `provider_response_received`, and replayed `parser_partially_accepted` after
+  three records were already durable.
+- Added an idempotent v0.9.80 migration that preserves all five supplied Session
+  records, their candidate mappings, both unresolved fragment identities, and
+  physical attempt history while restoring exact fragment recovery. The repair
+  makes zero provider or memory-persistence calls and its second pass is
+  mutation-free.
+- Reclassified six completed Long-Term reconciliation observations and the
+  superseded malformed Session attempt as historical rather than current
+  invariant violations. Provider-evidence ingress failures are now local
+  lifecycle failures, and post-response failures are no longer labeled as
+  requests that were never sent.
+
 ## [0.9.80] - 2026-11-05
 
 ### Added

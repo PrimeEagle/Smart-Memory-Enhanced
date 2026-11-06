@@ -501,7 +501,7 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
 export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
   'obligation_registered', 'recovery_children_declared', 'provider_attempt_started',
   'provider_response_received', 'provider_transport_failed', 'parser_accepted',
-  'parser_partially_accepted', 'parser_rejected', 'validation_accepted',
+  'parser_partially_accepted', 'parser_rejected', 'parser_evidence_enriched', 'validation_accepted',
   'validation_partially_accepted', 'validation_rejected', 'records_staged',
   'records_durably_persisted', 'explicit_no_update_accepted', 'recovery_required',
   'recovery_budget_exhausted', 'leaf_coverage_completed', 'parent_children_completed',
@@ -516,7 +516,29 @@ function semanticEventId(identity, event) {
   if (event.event_id) return String(event.event_id);
   return [stableId(identity), event.type, event.provider_attempt_id ?? '',
     event.source_fingerprint ?? identity.source_fingerprint ?? '',
+    ...(event.type === 'parser_evidence_enriched'
+      ? normalizeIds(event.lifecycle?.parser_accepted_candidate_ids) : []),
     ...(normalizeIds(event.durable_record_ids))].join('|');
+}
+
+function recordHistoricalLifecycleNoop(ledger, identity, event, reasonCode) {
+  const observation = {
+    code: reasonCode, obligation_id: stableId(identity),
+    lifecycle_event: event?.type ?? null,
+    provider_attempt_id: event?.provider_attempt_id ?? null,
+    classification: 'not_applicable_due_to_later_verified_state',
+    observed_at: nowValue(event?.at),
+  };
+  const duplicate = (ledger.historical_transition_observations ?? []).some((item) =>
+    item.code === observation.code && item.obligation_id === observation.obligation_id
+    && item.lifecycle_event === observation.lifecycle_event
+    && item.provider_attempt_id === observation.provider_attempt_id);
+  if (!duplicate) ledger.historical_transition_observations = [
+    ...(ledger.historical_transition_observations ?? []), observation,
+  ].slice(-256);
+  const obligation = ledger.obligations[observation.obligation_id] ?? null;
+  return { applied: false, duplicate: true, status: 'idempotent_duplicate_verified',
+    obligation };
 }
 
 function recordSemanticViolation(ledger, identity, event, code, detail = {}) {
@@ -665,6 +687,11 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         return recordSemanticViolation(ledger, identity, event,
           'provider_response_without_registered_attempt', { missing_evidence: ['registered_provider_attempt'] });
       }
+      if (priorState !== 'provider_running' && priorState !== 'provider_response_received') {
+        result = recordHistoricalLifecycleNoop(ledger, identity, event,
+          'provider_response_not_applicable_due_to_later_verified_state');
+        break;
+      }
       result = transitionForSemanticEvent(ledger, identity, event, 'provider_response_received', {
         ...details, exact_reason_code: 'downstream_parser_pending',
       });
@@ -685,6 +712,18 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         'parser_disposition_without_provider_response', { missing_evidence: ['provider_response_received'] });
       }
       result = transitionForSemanticEvent(ledger, identity, event, targetParserState, details);
+      break;
+    }
+    case 'parser_evidence_enriched': {
+      if (!existing || !['parser_accepted', 'parser_partial', 'validation_accepted',
+        'validation_partial', 'staged', 'partial_records_committed', 'pending_recovery',
+        'durably_committed', 'explicit_no_update'].includes(priorState)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'parser_evidence_enrichment_without_parser_disposition', {
+            missing_evidence: ['parser_disposition'],
+          });
+      }
+      result = transitionForSemanticEvent(ledger, identity, event, priorState, details);
       break;
     }
     case 'validation_accepted':
@@ -746,6 +785,14 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         ...(!event.adopted_from_logical_run_id ? ['original_logical_run_id'] : []),
         ...(!event.evidence_fingerprint ? ['evidence_fingerprint'] : []),
       ];
+      if (event.adopted_from_logical_run_id
+        && event.adopted_from_logical_run_id === (identity.logical_run_id
+          ?? existing?.logical_run_id ?? ledger.logical_run_id)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'same_run_evidence_cannot_use_prior_run_adoption', {
+            safe_repair_action: 'continue_current_run_downstream',
+          });
+      }
       if (missingEvidence.length) return recordSemanticViolation(ledger, identity, event,
         'terminal_provider_evidence_adoption_missing_evidence', {
           missing_evidence: missingEvidence,
@@ -786,10 +833,11 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
             missing_evidence: ['terminal_physical_outcome'],
           });
       }
-      if (existing.checkpoint_eligible) return recordSemanticViolation(ledger, identity, event,
-        'terminal_malformed_settlement_cannot_regress_terminal_state', {
-          safe_repair_action: 'retain_existing_terminal_coverage',
-        });
+      if (existing.checkpoint_eligible) {
+        result = recordHistoricalLifecycleNoop(ledger, identity, event,
+          'terminal_malformed_attempt_superseded_by_later_terminal_coverage');
+        break;
+      }
       result = transitionForSemanticEvent(ledger, identity, event,
         event.operationally_paused === true ? 'operationally_paused' : 'pending_recovery', {
           ...details,
@@ -831,6 +879,19 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
       const terminalProvider = ['completed', 'completed_no_candidates', 'completed_repartitioned']
         .includes(evidence.terminal_outcome);
       const evidenceFingerprint = String(event.evidence_fingerprint ?? '').trim();
+      if (existing?.checkpoint_eligible) {
+        const expectedState = explicitNoUpdate ? 'explicit_no_update' : 'durably_committed';
+        if (existing.current_state === expectedState) {
+          const mappingsAlreadyPresent = explicitNoUpdate || durableIds.length === 0
+            || durableIds.every((recordId) =>
+              existing.lifecycle?.durable_record_candidate_map?.[recordId] === candidateMap[recordId]);
+          if (mappingsAlreadyPresent) {
+            result = recordHistoricalLifecycleNoop(ledger, identity, event,
+              'terminal_attempt_evidence_superseded_by_later_verified_downstream_evidence');
+            break;
+          }
+        }
+      }
       const missingEvidence = [
         ...(!exactIdentity ? ['exact_root_leaf_range_fingerprint_identity'] : []),
         ...(!terminalProvider ? ['terminal_provider_success'] : []),
@@ -1167,6 +1228,27 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
     const exactAttempt = exactAttemptForEntry(entry, attempts);
     if (entry?.terminal_outcome === 'provider_response_malformed') {
       if (!obligation.provider_attempt_lineage?.includes(entry.attempt_id)) continue;
+      if (obligation.checkpoint_eligible === true) {
+        entry.ledger_transition = {
+          status: 'not_applicable', requested_disposition: 'historical_superseded_attempt',
+          resulting_state: obligation.current_state,
+          reason_code: 'later_terminal_coverage_supersedes_malformed_attempt',
+          acknowledged_at: nowValue(input.at),
+        };
+        entry.completed_at ??= nowValue(input.at);
+        const observation = {
+          code: 'terminal_malformed_attempt_superseded_by_later_terminal_coverage',
+          obligation_id: obligation.obligation_id, provider_attempt_id: entry.attempt_id,
+          classification: 'superseded_by_later_attempt',
+        };
+        if (!(ledger.historical_transition_observations ?? []).some((item) =>
+          item.code === observation.code && item.provider_attempt_id === entry.attempt_id)) {
+          ledger.historical_transition_observations = [
+            ...(ledger.historical_transition_observations ?? []), observation,
+          ].slice(-256);
+        }
+        continue;
+      }
       const malformedResult = applyMemorizeLifecycleEvent(ledger, obligation, {
         type: 'terminal_malformed_attempt_settled',
         provider_attempt_id: entry.attempt_id,
@@ -1362,6 +1444,9 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
           && obligation.expected_child_obligation_ids.every((childId) =>
             ledger.obligations[childId]?.checkpoint_eligible === true);
       case 'illegal_obligation_state_transition': return parser && persisted;
+      case 'terminal_attempt_reconciliation_missing_evidence':
+      case 'terminal_malformed_settlement_cannot_regress_terminal_state':
+        return obligation.checkpoint_eligible === true;
       default: return false;
     }
   };
@@ -1523,6 +1608,48 @@ export function projectMemorizeObligationLedger(ledgerValue) {
   const obligations = Object.values(ledger.obligations);
   const safe = obligations.filter((item) => item.checkpoint_eligible);
   const pending = obligations.filter((item) => !item.checkpoint_eligible);
+  const localActions = new Set(['continue_pending_downstream_processing',
+    'continue_current_run_downstream', 'parse_retained_response', 'continue_validation',
+    'persist_validated_records', 'reconcile_terminal_attempt_evidence',
+    'settle_terminal_malformed_attempt']);
+  const diagnosticForPending = (item) => {
+    const durableCount = item.lifecycle?.durably_persisted_record_ids?.length ?? 0;
+    const unresolvedCount = item.lifecycle?.unresolved_fragment_ids?.length ?? 0;
+    const cursor = durableCount > 0 && unresolvedCount > 0
+      ? 'unresolved_fragments_pending'
+      : durableCount > 0 ? 'accepted_records_persisted'
+        : item.current_state === 'partial_records_committed' ? 'accepted_records_persisted'
+          : item.current_state === 'validation_accepted' || item.current_state === 'validation_partial'
+            ? 'validation_complete'
+            : item.current_state === 'parser_accepted' ? 'parser_complete'
+              : item.current_state === 'parser_partial' ? 'parser_partial'
+                : item.current_state === 'provider_response_received' ? 'response_recorded'
+                  : null;
+    const actionable = ACTIONABLE_STATES.has(item.current_state)
+      && Boolean(item.exact_reason_code && item.next_eligible_action);
+    const providerCallRequired = actionable && !localActions.has(item.next_eligible_action);
+    return {
+      ...item,
+      physical_attempt_id: item.provider_attempt_lineage?.at(-1) ?? null,
+      physical_terminal_outcome: item.metrics?.physical_terminal_outcome ?? null,
+      furthest_verified_downstream_stage: cursor,
+      accepted_durable_record_count: durableCount,
+      unresolved_fragment_count: unresolvedCount,
+      exact_next_action: item.next_eligible_action ?? null,
+      provider_call_required: providerCallRequired,
+      persistence_required: ['persist_validated_records', 'records_staged']
+        .includes(item.next_eligible_action),
+      actionability_reason: actionable ? 'canonical_exact_action_available'
+        : !ACTIONABLE_STATES.has(item.current_state) ? 'current_state_not_actionable'
+          : !item.exact_reason_code ? 'missing_exact_reason' : 'missing_next_action',
+      replay_adoption_classification: cursor === 'unresolved_fragments_pending'
+        ? 'current_run_recover_fragments' : null,
+      earlier_failure_superseded: (ledger.historical_transition_observations ?? [])
+        .some((observation) => observation.obligation_id === item.obligation_id
+          && /superseded|repaired_by_later/.test(String(observation.classification ?? ''))),
+    };
+  };
+  const pendingDiagnostics = pending.map(diagnosticForPending);
   // Parents summarize child coverage; only leaves may be dispatched. This
   // prevents Resume from selecting the ambiguous root and repeating a child
   // whose durable work is already complete.
@@ -1579,8 +1706,10 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     blocked_obligation_count: blocked.length,
     running_obligation_count: running.length,
     terminal_failed_obligation_count: terminalFailed.length,
-    pending_obligations: pending,
-    next_eligible_obligation: actionable[0] ?? null,
+    pending_obligations: pendingDiagnostics,
+    pending_obligation_diagnostics: pendingDiagnostics,
+    next_eligible_obligation: actionable[0]
+      ? diagnosticForPending(actionable[0]) : null,
     tier_coverage: byTier,
     chunks: Object.values(chunks),
     controller_exits: ledger.controller_exits,

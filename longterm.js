@@ -1247,6 +1247,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       tier: 'longterm', owner: characterName,
       source_range: { start: range.start, end: range.end },
       source_fingerprint: coverageBase.source_fingerprint,
+      current_logical_run_id: providerMetadata?.active_catchup_run_id ?? null,
     });
     const legacyTerminalWithoutOutput = !completionReplay
       ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]

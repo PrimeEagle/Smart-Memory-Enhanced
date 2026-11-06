@@ -3,6 +3,8 @@ import {
   ensureMemorizeObligationLedger,
   projectMemorizeObligationLedger,
 } from './memorize-obligation-ledger.js';
+import { classifyRetainedProviderEvidence, PROVIDER_EVIDENCE_PROVENANCE }
+  from './provider-completion-journal.js';
 
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
@@ -175,10 +177,20 @@ export function deriveMemorizeResumeEligibility({
       && Number(entry.source_range?.start) === Number(pending.source_range?.start)
       && Number(entry.source_range?.end) === Number(pending.source_range?.end)
       && entry.source_fingerprint === pending.source_fingerprint
-      && entry.private_response_retained === true
+      && (entry.private_response_retained === true || entry.response_text != null)
       && ['completed', 'completed_no_candidates', 'completed_repartitioned']
         .includes(entry.terminal_outcome);
   }) : null;
+  const retainedClassification = exactRetainedCompletion
+    ? classifyRetainedProviderEvidence(exactRetainedCompletion, {
+      current_logical_run_id: projection.logical_run_id ?? ledger?.logical_run_id ?? null,
+      root_obligation_id: pending.parent_obligation_id ?? pending.obligation_id,
+      child_obligation_id: pending.obligation_id,
+      tier: pending.tier, owner: pending.owner,
+      source_range: pending.source_range,
+      source_fingerprint: pending.source_fingerprint,
+      obligation: pending, later_attempts: journalEntries,
+    }) : null;
   const physicalRunning = (providerAudit?.recent_attempts ?? [])
     .filter((attempt) => attempt?.terminal_outcome === 'running');
   const currentRunningCount = Math.max(
@@ -198,10 +210,38 @@ export function deriveMemorizeResumeEligibility({
       ? 'pending_obligation_has_no_exact_action' : 'no_pending_resume_obligation',
     next_eligible_action: null, obligation_id: null, provider_call_required: false,
   };
-  if (exactRetainedCompletion) return {
+  if (retainedClassification?.classification
+    === PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE) return {
     eligible: true, mode: 'local_reconciliation_only',
     reason_code: 'exact_retained_terminal_evidence_available',
     next_eligible_action: 'adopt_exact_prior_run_evidence',
+    obligation_id: pending.obligation_id,
+    physical_attempt_id: exactRetainedCompletion.attempt_id,
+    provider_call_required: false,
+  };
+  if (retainedClassification?.classification
+    === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM) return {
+    eligible: true, mode: 'local_reconciliation_only',
+    reason_code: 'current_run_downstream_continuation_available',
+    next_eligible_action: retainedClassification.next_action,
+    obligation_id: pending.obligation_id,
+    physical_attempt_id: exactRetainedCompletion.attempt_id,
+    provider_call_required: false,
+  };
+  if (retainedClassification?.classification
+    === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS) return {
+    eligible: true, mode: 'provider_resume',
+    reason_code: 'exact_unresolved_fragment_recovery_available',
+    next_eligible_action: 'recover_exact_unresolved_fragments',
+    obligation_id: pending.obligation_id,
+    physical_attempt_id: exactRetainedCompletion.attempt_id,
+    provider_call_required: true,
+  };
+  if (retainedClassification?.classification
+    === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE) return {
+    eligible: false, mode: 'blocked',
+    reason_code: 'required_private_evidence_unavailable',
+    next_eligible_action: retainedClassification.next_action,
     obligation_id: pending.obligation_id,
     physical_attempt_id: exactRetainedCompletion.attempt_id,
     provider_call_required: false,

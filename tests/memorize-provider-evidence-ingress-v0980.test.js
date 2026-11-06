@@ -300,7 +300,7 @@ test('redacted v0.9.79 fixture converges to coherent local work with preserved S
     ledger, provider_audit: attempts, provider_completion_journal: journal,
   });
   assert.equal(eligibility.mode, 'local_reconciliation_only');
-  assert.equal(eligibility.next_eligible_action, 'adopt_exact_prior_run_evidence');
+  assert.equal(eligibility.next_eligible_action, 'continue_pending_downstream_processing');
   assert.equal(eligibility.provider_call_required, false);
   const second = reconcileMemorizeLifecycleFromJournal(ledger, {
     logical_run_id: fixture.logical_run_id, journal, provider_attempts: attempts, at: 20,

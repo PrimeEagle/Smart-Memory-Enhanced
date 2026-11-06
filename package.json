@@ -1,10 +1,11 @@
 {
   "name": "smart-memory",
-  "version": "0.9.80",
+  "version": "0.9.81",
   "type": "module",
   "description": "Smart Memory - SillyTavern extension",
   "license": "AGPL-3.0-or-later",
   "scripts": {
+    "test:same-run-continuation": "node --check tests/memorize-same-run-continuation-v0981.test.js && node --test tests/memorize-same-run-continuation-v0981.test.js",
     "pretest": "node --check page-run-lifecycle.js && node --check live-memory-health.js && node --check diagnostic-presentation-utils.js && node --check malformed-output-recovery.js && node --check provider-attempt-audit.js && node --check provider-completion-journal.js && node --check memorize-controller-heartbeat.js && node --check memorize-controller-runtime.js && node --check memorize-run-engine.js && node --check memorize-outcome.js && node --check memorize-reasons.js && node --check memorize-lifecycle-coordinator.js && node --check memorize-execution-context.js && node --check memorize-tier-pipeline.js && node --check memorize-recovery-scheduler.js && node --check memorize-projections.js && node --check memorize-obligation-ledger.js && node --check memorize-authority-model.js && node --check memorize-lifecycle-migration.js && node --check memorize-replay-harness.js && node --check session-partial-persistence.js && node --check relationship-quality-utils.js && node --check tests/memorize-provider-evidence-ingress-v0980.test.js && node --test tests/malformed-output-recovery.test.js tests/diagnostic-presentation-utils.test.js tests/provider-completion-journal.test.js tests/memorize-controller-heartbeat.test.js tests/memorize-canonical-lifecycle.test.js tests/memorize-semantic-lifecycle-v0975.test.js tests/memorize-authority-model-v0977.test.js tests/memorize-provider-evidence-ingress-v0980.test.js tests/memorize-outcome.test.js tests/memorize-execution-context.test.js tests/memorize-tier-pipeline.test.js tests/memorize-recovery-scheduler.test.js tests/memorize-projections.test.js tests/memorize-run-engine.test.js",
     "pretest:unit": "node --check page-run-lifecycle.js && node --check live-memory-health.js && node --check malformed-output-recovery.js && node --check provider-attempt-audit.js && node --check relationship-quality-utils.js && node --test tests/malformed-output-recovery.test.js",
     "test:round-fixes": "node --test tests/provider-stream-utils.test.js tests/profile-relationship-correction.test.js",
