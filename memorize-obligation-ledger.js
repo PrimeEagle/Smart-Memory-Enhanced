@@ -43,6 +43,12 @@ export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
   dispatch_provider_request: Object.freeze({ provider_call_required: true, persistence_required: false }),
   dispatch_registered_provider_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
   dispatch_bounded_recovery_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  compact_response_repair: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  changed_dimension_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  malformed_source_repartition: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  structured_json_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  minimal_record_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  single_source_unit_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
   retry_provider_with_backoff: Object.freeze({ provider_call_required: true, persistence_required: false }),
   recover_exact_unresolved_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
   recover_unresolved_partial_output_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
@@ -1312,6 +1318,36 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
       ?? ledger.obligations[entry.root_obligation_id];
     if (!obligation) continue;
     const exactAttempt = exactAttemptForEntry(entry, attempts);
+    const legacyExactEvidence = !entry.logical_run_id && Boolean(exactAttempt)
+      && exactAttempt.attempt_id === entry.attempt_id
+      && exactAttempt.source_fingerprint === entry.source_fingerprint
+      && (exactAttempt.child_obligation_id === entry.child_obligation_id
+        || exactAttempt.root_obligation_id === entry.root_obligation_id
+        || exactAttempt.logical_obligation_id === entry.root_obligation_id);
+    const sameLogicalRun = !input.logical_run_id
+      || entry.logical_run_id === input.logical_run_id
+      || legacyExactEvidence;
+    const exactCurrentLineage = obligation.provider_attempt_lineage
+      ?.includes(entry.attempt_id) === true;
+    if (!sameLogicalRun && !exactCurrentLineage) {
+      const observation = {
+        code: 'historical_provider_evidence_outside_current_lineage',
+        obligation_id: obligation.obligation_id,
+        provider_attempt_id: entry.attempt_id,
+        historical_logical_run_id: entry.logical_run_id ?? null,
+        current_logical_run_id: input.logical_run_id ?? null,
+        classification: 'informational_not_current_runtime_blocker',
+        blocking: false,
+      };
+      if (!(ledger.historical_transition_observations ?? []).some((item) =>
+        item.code === observation.code && item.provider_attempt_id === entry.attempt_id
+        && item.current_logical_run_id === observation.current_logical_run_id)) {
+        ledger.historical_transition_observations = [
+          ...(ledger.historical_transition_observations ?? []), observation,
+        ].slice(-256);
+      }
+      continue;
+    }
     if (entry?.terminal_outcome === 'provider_response_malformed') {
       if (!obligation.provider_attempt_lineage?.includes(entry.attempt_id)) continue;
       if (obligation.checkpoint_eligible === true) {

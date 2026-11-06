@@ -13,7 +13,7 @@ import {
   summarizeRecoveryChildManifest,
 } from './recovery-child-coverage.js';
 
-export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 12;
+export const PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION = 13;
 export const PROVIDER_ATTEMPT_EVENT_LIMIT = 160;
 // Large enough to retain every root obligation in the supplied 9,434-message
 // replay while remaining explicitly bounded for arbitrarily large chats.
@@ -21,6 +21,41 @@ export const PROVIDER_OBLIGATION_LIMIT = 4096;
 
 const count = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const SUCCESSFUL_TERMINAL_OUTCOMES = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
+export const PROVIDER_ATTEMPT_STATES = Object.freeze([
+  'created', 'dispatched', 'awaiting_response', 'response_received', 'parsing',
+  'validation', 'persistence_pending', 'safely_committed', 'malformed', 'failed',
+  'interrupted_completion_unknown', 'superseded', 'cancelled',
+]);
+
+const PROVIDER_ATTEMPT_TRANSITIONS = Object.freeze({
+  created: new Set(['dispatched', 'cancelled']),
+  dispatched: new Set(['awaiting_response', 'cancelled', 'failed', 'interrupted_completion_unknown']),
+  awaiting_response: new Set(['response_received', 'malformed', 'failed', 'cancelled',
+    'interrupted_completion_unknown', 'superseded', 'safely_committed']),
+  response_received: new Set(['parsing', 'malformed', 'failed', 'interrupted_completion_unknown']),
+  parsing: new Set(['validation', 'malformed', 'failed']),
+  validation: new Set(['persistence_pending', 'failed']),
+  persistence_pending: new Set(['safely_committed', 'failed', 'interrupted_completion_unknown']),
+});
+
+export function transitionProviderAttemptState(event, state, detail = {}, at = Date.now()) {
+  if (!event || !PROVIDER_ATTEMPT_STATES.includes(state)) return {
+    status: 'rejected', reason_code: 'unknown_provider_attempt_state', state: event?.lifecycle_state ?? null,
+  };
+  const prior = event.lifecycle_state ?? null;
+  if (prior === state) return { status: 'idempotent', state };
+  if (prior && !PROVIDER_ATTEMPT_TRANSITIONS[prior]?.has(state)) return {
+    status: 'rejected', reason_code: 'illegal_provider_attempt_transition', prior_state: prior, state,
+  };
+  event.lifecycle_state = state;
+  event.state_history = [...(event.state_history ?? []), {
+    state, at, reason_code: detail.reason_code ?? null,
+    controller_instance_id: detail.controller_instance_id ?? event.controller_instance_id ?? null,
+    transaction_id: detail.transaction_id ?? event.transaction_id ?? null,
+    transaction_revision: detail.transaction_revision ?? event.transaction_revision ?? null,
+  }].slice(-32);
+  return { status: 'applied', prior_state: prior, state };
+}
 
 function emptyArchivedObligationCounts(exact = true) {
   return {
@@ -143,6 +178,31 @@ function migrateLegacyAudit(audit) {
     }
     seenBySignature.set(key, event);
   }
+  let reconstructedAttemptStateCount = 0;
+  for (const event of audit.recent_attempts ?? []) {
+    if (event.lifecycle_state) continue;
+    const terminal = event.terminal_outcome ?? 'running';
+    const state = terminal === 'running' ? 'awaiting_response'
+      : terminal === 'interrupted_completion_unknown' ? 'interrupted_completion_unknown'
+        : terminal === 'provider_response_malformed' ? 'malformed'
+          : SUCCESSFUL_TERMINAL_OUTCOMES.has(terminal) ? 'safely_committed'
+            : terminal === 'cancelled' ? 'cancelled'
+              : terminal === 'superseded' ? 'superseded' : 'failed';
+    event.lifecycle_state = state;
+    event.state_history = [{
+      state, at: Number(event.at ?? Date.now()),
+      reason_code: 'legacy_terminal_state_reconstructed',
+      controller_instance_id: event.controller_instance_id ?? null,
+      transaction_id: event.transaction_id ?? null,
+      transaction_revision: event.transaction_revision ?? null,
+    }];
+    reconstructedAttemptStateCount++;
+  }
+  audit.schema_v13_migration = {
+    source_schema_version: sourceSchemaVersion,
+    reconstructed_attempt_state_count: reconstructedAttemptStateCount,
+    ownership_fields_available_only_when_originally_recorded: true,
+  };
   audit.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
   return audit;
 }
@@ -643,7 +703,14 @@ export function beginProviderAttempt(metadata, input = {}) {
     estimated_input_tokens: input.estimated_input_tokens ?? null,
     estimated_final_request_tokens: input.estimated_final_request_tokens ?? null,
     terminal_outcome: 'running',
+    controller_instance_id: input.controller_instance_id ?? null,
+    transaction_id: input.transaction_id ?? null,
+    transaction_revision: input.transaction_revision ?? null,
+    transaction_generation: input.transaction_generation ?? null,
   };
+  transitionProviderAttemptState(event, 'created', input, event.at);
+  transitionProviderAttemptState(event, 'dispatched', input, event.at);
+  transitionProviderAttemptState(event, 'awaiting_response', input, event.at);
   if (recoveryWindow.active_recovery_epoch
     && recoveryWindow.active_recovery_epoch.status === 'initialized_before_dispatch') {
     recoveryWindow.active_recovery_epoch.status = 'running';
@@ -705,6 +772,13 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
   if (!metadata || !event || event.terminal_outcome !== 'running') return event;
   const audit = ensure(metadata, event.run_id ?? metadata.active_catchup_run_id ?? null);
   event.terminal_outcome = patch.terminal_outcome ?? 'internal_failure';
+  const terminalState = event.terminal_outcome === 'interrupted_completion_unknown'
+    ? 'interrupted_completion_unknown'
+    : event.terminal_outcome === 'provider_response_malformed' ? 'malformed'
+      : SUCCESSFUL_TERMINAL_OUTCOMES.has(event.terminal_outcome) ? 'safely_committed'
+        : event.terminal_outcome === 'cancelled' ? 'cancelled'
+          : event.terminal_outcome === 'superseded' ? 'superseded' : 'failed';
+  transitionProviderAttemptState(event, terminalState, patch);
   event.malformed_reason = patch.malformed_reason ?? null;
   event.notice_reason = patch.notice_reason ?? null;
   event.failure_classification = patch.failure_classification ?? null;
@@ -1118,6 +1192,44 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
     completed_at: providerSucceeded ? null : Date.now(),
   });
   return event;
+}
+
+/** Idempotently closes attempts whose controller lease can no longer finish them. */
+export function settleOrphanedProviderAttempts(metadata, input = {}) {
+  const audit = metadata?.live_memory_health?.provider_attempt_audit;
+  if (!audit) return { mutations: 0, settled_attempt_ids: [], provider_calls: 0 };
+  const lineage = new Set(input.provider_attempt_lineage ?? []);
+  const settled = [];
+  for (const attempt of audit.recent_attempts ?? []) {
+    if (attempt?.terminal_outcome !== 'running') continue;
+    if (input.logical_run_id && attempt.logical_run_id !== input.logical_run_id) continue;
+    if (input.controller_instance_id
+      && attempt.controller_instance_id !== input.controller_instance_id
+      && !lineage.has(attempt.attempt_id)) continue;
+    if (input.transaction_id && attempt.transaction_id !== input.transaction_id
+      && !lineage.has(attempt.attempt_id)) continue;
+    if (input.obligation_id && ![
+      attempt.logical_obligation_id, attempt.root_obligation_id,
+      attempt.child_obligation_id, attempt.leaf_obligation_id,
+    ].includes(input.obligation_id)) continue;
+    if (lineage.size && !lineage.has(attempt.attempt_id)) continue;
+    finishProviderAttempt(metadata, attempt, {
+      terminal_outcome: 'interrupted_completion_unknown',
+      failure_classification: input.reason_code ?? 'controller_lease_closed_before_completion',
+      recoverable: true,
+      final_disposition: 'completion_unknown_recovery_required',
+      reason_code: input.reason_code ?? 'controller_lease_closed_before_completion',
+      controller_instance_id: input.controller_instance_id ?? null,
+      transaction_id: input.transaction_id ?? null,
+      transaction_revision: input.transaction_revision ?? null,
+      persistence: { status: 'not_applicable', durable_record_ids: [],
+        reason_code: 'interrupted_completion_unknown' },
+      manifest_transition: { status: 'pending_reconciliation',
+        reason_code: 'interrupted_completion_unknown' },
+    });
+    settled.push(attempt.attempt_id);
+  }
+  return { mutations: settled.length, settled_attempt_ids: settled, provider_calls: 0 };
 }
 
 /**

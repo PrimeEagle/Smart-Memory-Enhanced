@@ -4,10 +4,14 @@ import {
   transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
 import { recordProviderCompletion } from './provider-completion-journal.js';
+import { settleOrphanedProviderAttempts } from './provider-attempt-audit.js';
+import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
+import { deriveMemorizeRecoveryAuthority } from './memorize-recovery-authority.js';
 
 export const MEMORIZE_LIFECYCLE_MIGRATION_VERSION = 1;
 export const SAME_RUN_EVIDENCE_MIGRATION_VERSION = 1;
 export const RETAINED_EVIDENCE_RACE_MIGRATION_VERSION = 1;
+export const CONTROLLER_LEASE_RECOVERY_MIGRATION_VERSION = 1;
 
 const success = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const malformed = (attempt) => attempt?.terminal_outcome === 'provider_response_malformed'
@@ -423,4 +427,110 @@ export function migrateV0981RetainedEvidenceRaceState({ ledger: ledgerValue,
   ledger.updated_at = detail.completed_at;
   return { ledger, migrated: before !== JSON.stringify({ ledger, journal }), detail,
     provider_calls: 0, persistence_calls: 0 };
+}
+
+/** Repairs the v0.9.82 closed-controller/orphaned-attempt checkpoint shape. */
+export function migrateV0982ControllerLeaseRecoveryState({ checkpoint, metadata,
+  at = Date.now() } = {}) {
+  const ledger = checkpoint?.run_manifest?.obligation_ledger;
+  const logicalRunId = checkpoint?.run_manifest?.logical_run_id;
+  if (!checkpoint || !ledger || !logicalRunId || !metadata) return {
+    migrated: false, detail: null, provider_calls: 0, persistence_calls: 0,
+  };
+  ledger.migrations ??= {};
+  const key = 'controller_lease_recovery_v0983';
+  if (ledger.migrations[key]?.completed === true) return {
+    migrated: false, detail: ledger.migrations[key], provider_calls: 0, persistence_calls: 0,
+  };
+  const heartbeat = checkpoint.controller_heartbeat ?? null;
+  const transaction = checkpoint.transaction_lifecycle ?? null;
+  const providerAudit = metadata.live_memory_health?.provider_attempt_audit;
+  const pending = Object.values(ledger.obligations ?? {}).find((item) =>
+    item.logical_run_id === logicalRunId && !item.checkpoint_eligible
+    && ['provider_running', 'pending_recovery', 'operationally_paused'].includes(item.current_state));
+  const running = (providerAudit?.recent_attempts ?? []).filter((attempt) =>
+    attempt?.logical_run_id === logicalRunId && attempt?.terminal_outcome === 'running'
+    && (!pending || pending.provider_attempt_lineage?.includes(attempt.attempt_id)));
+  const closedController = heartbeat?.terminal === true
+    || checkpoint.controller_failure != null
+    || ['rolled_back', 'committed', 'commit_failed_with_exact_state',
+      'rollback_failed_with_exact_state'].includes(transaction?.state);
+  const contradictoryCheckpoint = checkpoint.status === 'in_progress' && closedController;
+  if (!pending || (!running.length && !contradictoryCheckpoint)) return {
+    migrated: false, detail: null, provider_calls: 0, persistence_calls: 0,
+  };
+  const preservedTerminalIds = Object.values(ledger.obligations ?? {})
+    .filter((item) => item.checkpoint_eligible).map((item) => item.obligation_id);
+  const settlement = settleOrphanedProviderAttempts(metadata, {
+    logical_run_id: logicalRunId,
+    obligation_id: pending.obligation_id,
+    provider_attempt_lineage: pending.provider_attempt_lineage,
+    controller_instance_id: heartbeat?.controller_invocation_id ?? null,
+    transaction_id: transaction?.transaction_id ?? null,
+    transaction_revision: transaction?.revision ?? null,
+    reason_code: 'controller_closed_before_provider_completion',
+  });
+  const auditObligation = providerAudit?.obligations?.[pending.parent_obligation_id
+    ?? pending.obligation_id];
+  const recoveryWindow = auditObligation?.recovery_windows?.[pending.source_fingerprint];
+  const eligibility = recoveryWindow ? deriveRecoveryStageEligibility(recoveryWindow) : null;
+  const exactAction = eligibility?.blocked === false
+    ? eligibility.eligible_action : pending.next_eligible_action;
+  if (pending.current_state === 'provider_running') pending.current_state = 'pending_recovery';
+  pending.exact_reason_code = pending.exact_reason_code ?? 'interrupted_completion_unknown';
+  pending.next_eligible_action = exactAction;
+  pending.recovery_intent = 'recover_malformed_provider_output';
+  pending.recovery_stage = exactAction;
+  pending.physical_terminal_outcome = 'interrupted_completion_unknown';
+  pending.revision = Number(pending.revision ?? 0) + 1;
+  pending.timestamps ??= {};
+  pending.timestamps.updated_at = at;
+  checkpoint.status = exactAction ? 'awaiting_manual_resume' : 'blocked_reconciliation_required';
+  checkpoint.updated_at = at;
+  const latestExit = ledger.controller_exits?.at(-1) ?? null;
+  if (!checkpoint.controller_failure && latestExit) checkpoint.controller_failure = {
+    schema_version: 1,
+    code: latestExit.reason_code ?? 'controller_closed_before_provider_completion',
+    normalized_exception_class: latestExit.normalized_exception_class ?? null,
+    bounded_message: latestExit.bounded_message ?? null,
+    stack_fingerprint: latestExit.stack_fingerprint ?? null,
+    recorded_at: latestExit.closed_at ?? latestExit.at ?? at,
+    recovered_by_migration: true,
+  };
+  const authority = deriveMemorizeRecoveryAuthority({
+    checkpoint,
+    ledger, provider_audit: providerAudit,
+    provider_completion_journal: metadata.provider_completion_journal,
+    controller_heartbeat: heartbeat,
+    transaction_lifecycle: transaction,
+    checkpoint_status: checkpoint.status,
+  });
+  checkpoint.authoritative_recovery = authority;
+  checkpoint.resume_eligibility = {
+    schema_version: 2,
+    eligible: authority.resume_eligible,
+    mode: authority.resume_eligible ? 'provider_resume' : 'blocked',
+    reason_code: authority.resume_eligible
+      ? 'exact_malformed_recovery_stage_available'
+      : authority.resume_blockers[0]?.reason_code ?? 'no_executable_recovery_action',
+    next_eligible_action: authority.next_executable_action,
+    obligation_id: pending.obligation_id,
+    provider_call_required: authority.provider_call_permitted,
+    evaluated_at: at,
+  };
+  const detail = ledger.migrations[key] = {
+    version: CONTROLLER_LEASE_RECOVERY_MIGRATION_VERSION,
+    completed: true,
+    logical_run_id: logicalRunId,
+    repaired_obligation_id: pending.obligation_id,
+    settled_orphan_attempt_ids: settlement.settled_attempt_ids,
+    exact_recovery_stage: exactAction,
+    preserved_terminal_obligation_ids: preservedTerminalIds,
+    preserved_terminal_obligation_count: preservedTerminalIds.length,
+    checkpoint_status: checkpoint.status,
+    provider_calls: 0,
+    persistence_calls: 0,
+    completed_at: at,
+  };
+  return { migrated: true, detail, provider_calls: 0, persistence_calls: 0 };
 }

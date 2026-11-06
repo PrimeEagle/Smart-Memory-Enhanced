@@ -1649,7 +1649,8 @@ test('long-chat extraction preflights final prompts and records bounded overflow
   assert.match(settings, /extraction_coverage_incomplete/);
   assert.match(settings, /extraction_coverage: runResult\.extractionCoverage/);
   assert.match(settings, /\['completed', 'repartitioned_completed'\]\.includes/);
-  assert.match(settings, /checkpointCatchUpTransaction\(chunkTransaction\)/);
+  assert.match(settings, /mutateAndCheckpointCatchUpTransaction/);
+  assert.match(settings, /createCatchUpTransactionLease/);
   assert.match(settings, /completed_child_keys: completedOverflowChildren/);
   assert.match(session, /execution\.recovery\.completed_child_keys/);
   assert.match(longterm, /execution\.recovery\.completed_child_keys/);

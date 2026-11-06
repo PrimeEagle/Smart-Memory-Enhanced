@@ -6,9 +6,11 @@
 import { getRequestHeaders, saveChat, saveSettingsDebounced } from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY } from './constants.js';
+import { createTransactionLease, inspectTransactionLease } from './catchup-transaction-lease.js';
 
 let activeTransaction = null;
 let transactionSequence = 0;
+let transactionGeneration = 0;
 
 function transactionOwner(context, ownership = {}) {
   return {
@@ -21,6 +23,7 @@ function transactionOwner(context, ownership = {}) {
     tier: ownership.tier ?? null,
     owner: ownership.owner ?? null,
     source_range: ownership.source_range ?? null,
+    controller_instance_id: ownership.controller_instance_id ?? null,
   };
 }
 
@@ -35,6 +38,8 @@ function terminalSnapshot(transaction) {
     started_at: transaction.started_at ?? null,
     settled_at: transaction.settled_at ?? null,
     exact_reason_code: transaction.exact_reason_code ?? null,
+    revision: transaction.revision ?? null,
+    generation: transaction.generation ?? null,
   };
 }
 
@@ -47,6 +52,8 @@ export function beginCatchUpTransaction(context, ownership = {}) {
   }
   activeTransaction = {
     transaction_id: `catchup-tx-${Date.now()}-${++transactionSequence}`,
+    revision: 1,
+    generation: ++transactionGeneration,
     state: 'active',
     terminal_disposition: null,
     owner: transactionOwner(context, ownership),
@@ -59,6 +66,38 @@ export function beginCatchUpTransaction(context, ownership = {}) {
     metadataDirty: false,
   };
   return activeTransaction;
+}
+
+/** Immutable authority captured by asynchronous callbacks at registration time. */
+export function createCatchUpTransactionLease(transaction, detail = {}) {
+  return createTransactionLease(transaction, detail);
+}
+
+export function inspectCatchUpTransactionLease(transaction, lease) {
+  return inspectTransactionLease(transaction, activeTransaction, lease, terminalSnapshot);
+}
+
+/**
+ * The only asynchronous callback mutation/checkpoint entry point. Stale leases
+ * are typed local rejections; true storage failures continue to throw.
+ */
+export async function mutateAndCheckpointCatchUpTransaction(transaction, lease, mutation) {
+  const before = inspectCatchUpTransactionLease(transaction, lease);
+  if (!before.allowed) return before;
+  const value = await mutation();
+  const after = inspectCatchUpTransactionLease(transaction, lease);
+  if (!after.allowed) return { ...after, mutation_completed_in_memory: true };
+  transaction.revision++;
+  await checkpointCatchUpTransaction(transaction);
+  return {
+    allowed: true,
+    disposition: 'checkpoint_persisted_under_current_lease',
+    reason_code: null,
+    captured_lease: { ...lease },
+    current_transaction: terminalSnapshot(transaction),
+    durable_mutation_performed: true,
+    value,
+  };
 }
 
 export function getActiveCatchUpTransactionSnapshot() {

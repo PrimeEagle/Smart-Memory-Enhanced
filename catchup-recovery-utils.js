@@ -555,15 +555,19 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       .includes(checkpoint.status);
   const blocked = explicitlyBlocked || pendingWithoutAction
     || (authoritativeResumeDecision && resumeEligibility.eligible === false);
-  const resumeCanMakeProgress = Boolean(normalized) && !blocked
+  const authoritativeRecovery = checkpoint.authoritative_recovery ?? null;
+  const resumeCanMakeProgress = authoritativeRecovery
+    ? authoritativeRecovery.resume_eligible === true
+    : Boolean(normalized) && !blocked
     && (projectedPendingCount === 0
       || Boolean(exactPending?.next_eligible_action))
     && (!authoritativeResumeDecision || resumeEligibility.eligible === true);
   return {
     available: true,
     resumable: resumeCanMakeProgress,
-    blocked,
-    blocked_reason_code: checkpoint.recovery_blocked?.reason_code ?? null,
+    blocked: authoritativeRecovery ? authoritativeRecovery.resume_eligible !== true : blocked,
+    blocked_reason_code: authoritativeRecovery?.resume_blockers?.[0]?.reason_code
+      ?? checkpoint.recovery_blocked?.reason_code ?? null,
     unresolved_obligation_count: projectedPendingCount,
     pending_obligation_count: projectedPendingCount,
     actionable_pending_obligation_count: obligationProjection.actionable_pending_obligation_count,
@@ -578,11 +582,13 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     safe_progress_preserved: checkpoint.recovery_blocked?.safe_progress_preserved
       ?? (obligationProjection.safely_committed_obligation_count > 0
         || Number(checkpoint.next_source_offset ?? 0) > 0),
-    next_eligible_recovery_action: checkpoint.recovery_blocked?.next_eligible_recovery_action
+    next_eligible_recovery_action: authoritativeRecovery?.next_executable_action
+      ?? checkpoint.recovery_blocked?.next_eligible_recovery_action
       ?? exactPending?.next_eligible_action ?? traversalAction,
     recovery_intent: exactPending?.recovery_intent
       ?? exactPending?.next_eligible_action ?? traversalAction,
-    recovery_stage: exactPending?.recovery_stage ?? null,
+    recovery_stage: authoritativeRecovery?.exact_recovery_stage
+      ?? exactPending?.recovery_stage ?? null,
     resume_mode: resumeEligibility?.mode ?? null,
     provider_call_required_on_resume: resumeEligibility?.provider_call_required ?? null,
     resume_eligibility: resumeEligibility,
@@ -600,6 +606,10 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     operational_pause_count: checkpoint.operational_pause ? 1 : 0,
     transaction_lifecycle: checkpoint.transaction_lifecycle ?? null,
     controller_failure: checkpoint.controller_failure ?? null,
+    secondary_finalization_failures: (checkpoint.secondary_finalization_failures ?? []).slice(-16),
+    stale_lease_callbacks: (checkpoint.stale_lease_callbacks ?? []).slice(-32),
+    authoritative_recovery: authoritativeRecovery,
+    controller_lease_recovery_migration: checkpoint.controller_lease_recovery_migration ?? null,
     cleanup_warnings: (checkpoint.cleanup_warnings ?? []).slice(-16),
     authoritative_obligation_ledger: obligationProjection,
     exact_pending_obligation: exactPending ?? null,

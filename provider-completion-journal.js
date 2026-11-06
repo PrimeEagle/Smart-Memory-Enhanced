@@ -2,7 +2,7 @@
 
 import { memorizeObligationStateFingerprint } from './memorize-obligation-ledger.js';
 
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 3;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 4;
 
 export const PROVIDER_EVIDENCE_PROVENANCE = Object.freeze({
   PRIOR_RUN_ADOPTABLE: 'prior_run_adoptable',
@@ -68,6 +68,13 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     schema_version: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
     attempt_id: attempt.attempt_id,
     logical_run_id: attempt.logical_run_id ?? attempt.run_id ?? prior.logical_run_id ?? null,
+    controller_instance_id: attempt.controller_instance_id
+      ?? prior.controller_instance_id ?? null,
+    transaction_id: attempt.transaction_id ?? prior.transaction_id ?? null,
+    transaction_revision: attempt.transaction_revision
+      ?? prior.transaction_revision ?? null,
+    transaction_generation: attempt.transaction_generation
+      ?? prior.transaction_generation ?? null,
     root_obligation_id: attempt.root_obligation_id ?? attempt.logical_obligation_id
       ?? prior.root_obligation_id ?? null,
     child_key: patch.child_key ?? prior.child_key ?? null,
@@ -385,7 +392,7 @@ function journalEntriesForHealth(metadata) {
 }
 
 export function inspectProviderCompletionConsistency({ metadata, provider_audit, ledger,
-  child_manifests, live_health } = {}) {
+  child_manifests, live_health, controller_heartbeat: controllerHeartbeat } = {}) {
   const journal = container(metadata) ?? { entries: {}, order: [] };
   const attempts = provider_audit?.recent_attempts ?? [];
   const obligations = ledger?.obligations ?? {};
@@ -394,6 +401,15 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
     .map((item) => item.attempt_id));
   const violations = [];
   const historicalObservations = [];
+  if (controllerHeartbeat?.terminal === true && runningAttemptIds.size > 0) {
+    violations.push({
+      code: 'closed_controller_retains_running_provider_attempt',
+      controller_invocation_id: controllerHeartbeat.controller_invocation_id ?? null,
+      active_attempt_ids: [...runningAttemptIds],
+      next_action: 'settle_orphaned_provider_attempt',
+      provider_call_required: false,
+    });
+  }
   const recordViolation = (violation, attempt = null) => {
     const historical = journal.historical_cutoff_enabled === true
       && attempt && Number(attempt.at ?? 0) > 0
@@ -517,6 +533,10 @@ export function exportProviderCompletionJournal(metadata) {
     reconciliation: clone(journal.reconciliation),
     entries: journal.order.map((id) => journal.entries[id]).filter(Boolean).map((entry) => ({
       attempt_id: entry.attempt_id, logical_run_id: entry.logical_run_id,
+      controller_instance_id: entry.controller_instance_id ?? null,
+      transaction_id: entry.transaction_id ?? null,
+      transaction_revision: entry.transaction_revision ?? null,
+      transaction_generation: entry.transaction_generation ?? null,
       root_obligation_id: entry.root_obligation_id, child_key: entry.child_key,
       child_obligation_id: entry.child_obligation_id,
       tier: entry.tier, owner: entry.owner, source_range: clone(entry.source_range),

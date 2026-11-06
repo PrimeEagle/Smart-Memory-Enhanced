@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.83] - 2026-11-06
+
+### Added
+
+- Added immutable transaction leases carrying logical-run, controller-instance,
+  transaction revision/generation, obligation, attempt, and callback identity.
+  Every asynchronous Memorize Chat persistence callback now validates its lease
+  before mutating metadata and again before checkpoint persistence; late work is
+  retained as a bounded `stale_lease_mutation_rejected` diagnostic instead of
+  changing a rolled-back or replacement transaction.
+- Added an explicit provider-attempt lifecycle state machine and state history,
+  including durable controller/transaction ownership and the terminal
+  `interrupted_completion_unknown` outcome. Schema-12 attempts receive an
+  honest, zero-call lifecycle migration when their prior terminal state is
+  known.
+- Added one pure recovery-authority projection shared by the controller, Resume
+  eligibility, recovery panel, and diagnostics, plus a non-throwing controller
+  finalizer that preserves the primary failure while retaining bounded
+  secondary cleanup failures.
+- Added a redacted v0.9.82 controller/transaction failure fixture, a read-only
+  supplied-export validator, and focused regressions for stale callbacks,
+  orphan settlement, exact recovery selection, UI/controller agreement,
+  ownership diagnostics, failure-safe finalization, and migration idempotence.
+
+### Changed
+
+- Long-Term and Session provider attempts now inherit the active controller and
+  transaction lease identity through their shared execution context. Provider
+  completion journal exports include the same ownership fields, while recovery
+  exports expose the exact pending obligation, exact recovery stage, terminal
+  obligation preservation, stale callback decisions, and secondary finalizer
+  failures.
+- Recovery UI states now distinguish actively running, automatically repairing,
+  awaiting safe Resume, blocked, and completed states using the same
+  authoritative projection as the backend. An authorized Resume names the
+  exact next action and explicitly preserves completed sibling obligations.
+- Historical provider evidence from another identified logical run is now
+  informational and cannot become a current runtime blocker. Legacy evidence
+  without a run ID remains usable only when attempt, obligation, source
+  fingerprint, and lineage identities match exactly.
+
+### Fixed
+
+- Fixed the supplied failure where a Long-Term provider callback remained
+  physically `running` after its transaction rolled back and controller closed,
+  while the checkpoint stayed `in_progress`. The migration settles only that
+  exact attempt as completion-unknown, preserves the completed Alex and Aster
+  obligations, and offers Lillian's next safe
+  `malformed_source_repartition` action without making a provider call.
+- Fixed controller cleanup replacing the original checkpoint-persistence error
+  with a `ReferenceError` from catch-only `canResume` and `pending` variables.
+  All terminal exits now pass through the single failure-safe finalizer.
+- Fixed generic ledger recovery text disagreeing with the detailed provider
+  recovery stage, and prevented closed controllers, rolled-back transactions,
+  running attempts, and resumable UI states from being projected
+  simultaneously.
+
 ## [0.9.82] - 2026-11-06
 
 ### Added

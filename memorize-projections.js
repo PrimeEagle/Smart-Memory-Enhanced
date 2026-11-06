@@ -49,6 +49,7 @@ export function selectRecoveryPresentation(input = {}) {
     checkpoint, rawSummary, recovery, manifest = {}, resumeEligibility = {},
     running = false, transaction = null, formatIdentifier = String,
   } = input;
+  const authority = recovery?.authoritative_recovery ?? null;
   if (!checkpoint) {
     const reason = rawSummary?.reason_code
       ? ` Reason: ${formatIdentifier(rawSummary.reason_code, 'unknown reason')}.` : '';
@@ -62,6 +63,31 @@ export function selectRecoveryPresentation(input = {}) {
       auto_resume_eligible: false,
     });
   }
+  if (authority?.state === 'completed') return Object.freeze({
+    visible: false, disabled: true, label: 'Resume Incomplete Run',
+    title: 'The prior Memorize Chat run completed.', status_text: '',
+    auto_resume_eligible: false,
+  });
+  if (authority?.state === 'terminal_failure') return Object.freeze({
+    visible: true, disabled: true, label: 'Terminal Failure',
+    title: 'The prior run ended in a terminal failure and has no safe executable Resume action.',
+    status_text: `Terminal failure — ${formatIdentifier(
+      authority.resume_blockers?.[0]?.reason_code, 'no safe recovery action is available')}. Completed work remains preserved.`,
+    auto_resume_eligible: false,
+  });
+  if (authority?.state === 'recoverable_after_automatic_repair') return Object.freeze({
+    visible: true, disabled: true, label: 'Repairing Incomplete Run',
+    title: 'A closed controller or stale transaction is being reconciled before Resume is enabled.',
+    status_text: 'Recoverable — automatic state repair is settling stale ownership before a safe Resume is offered. No provider request is sent during this repair.',
+    auto_resume_eligible: false,
+  });
+  if (authority?.state === 'resume_blocked') return Object.freeze({
+    visible: true, disabled: true, label: 'Recovery Change Required',
+    title: 'Resume is blocked until the exact recovery condition is resolved.',
+    status_text: `Blocked — ${formatIdentifier(
+      authority.resume_blockers?.[0]?.reason_code, 'no executable recovery action')}. Safely completed work remains preserved.`,
+    auto_resume_eligible: false,
+  });
   if (recovery?.blocked) {
     const blocked = recovery.blocked_obligations ?? [];
     const affected = blocked.map((item) => `${item.tier}${item.owner ? `/${item.owner}` : ''} ${item.source_range?.start ?? '?'}–${item.source_range?.end ?? '?'}`).join(', ');
@@ -90,21 +116,25 @@ export function selectRecoveryPresentation(input = {}) {
       ? ` Pending ${recovery.exact_pending_obligation.tier === 'session' ? 'Session' : 'Long-Term'} obligation ${recovery.exact_pending_obligation.source_range?.start ?? '?'}–${recovery.exact_pending_obligation.source_range?.end ?? '?'}: ${formatIdentifier(recovery.exact_pending_obligation.exact_reason_code, 'pending recovery')}. Next action: ${formatIdentifier(recovery.exact_pending_obligation.next_eligible_action, 'resume exact obligation')}.` : '';
   const transactionLocked = Boolean(transaction);
   const disabled = running || operatorActionRequired;
-  const label = reconstructing && !running ? 'Resume From Safe Boundary' : 'Resume Incomplete Run';
+  const label = running ? 'Resumed Automatically'
+    : reconstructing ? 'Resume From Safe Boundary' : 'Resume Incomplete Run';
   const title = running
     ? transactionLocked ? `Resume is unavailable until stale transaction ${transaction.transaction_id} is safely rolled back.`
       : 'This incomplete Memorize Chat run has already resumed automatically. Use Cancel only if you want to stop it.'
     : operatorActionRequired ? `Resume is blocked: ${formatIdentifier(resumeEligibility.reason, 'recovery change required')}.`
       : reconstructing ? 'Rebuild the missing successor plan from the safely committed Short-Term boundary without repeating the prior segment.'
         : 'Resume the last incomplete Memorize Chat run from its last safely committed chunk.';
+  const authorityText = authority?.state === 'awaiting_safe_resume'
+    ? ` Safe Resume is authorized for ${formatIdentifier(authority.next_executable_action, 'the exact pending obligation')}; no completed sibling obligation will be repeated.` : '';
   const status_text = running
     ? transactionLocked ? `Resume temporarily unavailable: an in-memory transaction lock remains for ${transaction.owner?.phase ?? 'unknown phase'}. Starting Resume will first audit and roll back that stale lock; no committed work will be discarded.`
       : `Resumed automatically — processing continues; ${progressText}${attemptText} (${rangeText}). Later safe work remains preserved while mandatory backlog recovery blocks finalization.${finalizationText}${providerText}`
     : operatorActionRequired ? `Short-Term finalization cannot ordinarily resume (${formatIdentifier(resumeEligibility.decision, 'blocked')}: ${formatIdentifier(resumeEligibility.reason, 'recovery change required')}). Completed extraction and phase checkpoints remain preserved.`
       : reconstructing ? `Short-Term progress is safely committed. Resume will reconstruct the missing successor plan at the committed boundary without regenerating the prior segment.${finalizationText}`
-        : `Incomplete Memorize Chat run available: ${progressText}${attemptText} (${rangeText}). Later safe work remains preserved; Resume continues the exact active obligation without restarting at the contiguous checkpoint.${finalizationText}${providerText}`;
+        : `Incomplete Memorize Chat run available: ${progressText}${attemptText} (${rangeText}). Later safe work remains preserved; Resume continues the exact active obligation without restarting at the contiguous checkpoint.${authorityText}${finalizationText}${providerText}`;
   return Object.freeze({ visible: true, disabled, label, title, status_text,
-    auto_resume_eligible: !operatorActionRequired && checkpoint.status === 'in_progress' && !running });
+    auto_resume_eligible: !operatorActionRequired
+      && ['in_progress', 'awaiting_manual_resume'].includes(checkpoint.status) && !running });
 }
 
 export function selectDiagnosticsProjection(input = {}) {

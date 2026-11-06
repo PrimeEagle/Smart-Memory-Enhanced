@@ -108,17 +108,20 @@ import {
   rebuildMemorizeCompatibilityProjection,
 } from './memorize-authority-model.js';
 import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState,
-  migrateV0981RetainedEvidenceRaceState }
+  migrateV0981RetainedEvidenceRaceState, migrateV0982ControllerLeaseRecoveryState }
   from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
-  checkpointCatchUpTransaction,
   commitCatchUpTransaction,
+  createCatchUpTransactionLease,
   getActiveCatchUpTransactionSnapshot,
+  mutateAndCheckpointCatchUpTransaction,
   recoverStaleCatchUpTransaction,
   rollbackCatchUpTransaction,
   saveChatMetadata,
 } from './catchup-transaction.js';
+import { finalizeMemorizeController } from './memorize-controller-finalizer.js';
+import { deriveMemorizeRecoveryAuthority } from './memorize-recovery-authority.js';
 import {
   bindMemorizeCheckpoint,
   buildMemorizeControllerExit,
@@ -248,6 +251,7 @@ import {
   providerConfigurationSignature,
   reconcileProviderRecoveryWindowsFromLedger,
   reconcileProviderAttemptIdentitiesFromJournal,
+  settleOrphanedProviderAttempts,
   summarizeProviderAttemptAudit,
   PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
 } from './provider-attempt-audit.js';
@@ -272,8 +276,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.82',
-  build_fingerprint: 'sme-v0.9.82-canonical-retained-evidence-transaction-r1',
+  extension_version: '0.9.83',
+  build_fingerprint: 'sme-v0.9.83-controller-lease-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2344,6 +2348,9 @@ export function bindSettingsUI(ctrl) {
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         rawCheckpoint.run_manifest.obligation_ledger = staleJournalReconciliation.ledger;
+        const leaseRepair = migrateV0982ControllerLeaseRecoveryState({
+          checkpoint: rawCheckpoint, metadata: liveMetadata,
+        });
         const healthRepairs = reconcileImpossibleLiveHealth(liveMetadata, audit);
         const transactionId = rawCheckpoint.transaction_lifecycle?.transaction_id ?? null;
         if (rawCheckpoint.transaction_lifecycle?.state === 'active') {
@@ -2353,12 +2360,24 @@ export function bindSettingsUI(ctrl) {
             exact_reason_code: 'stale_controller_no_active_operation', settled_at: Date.now(),
           };
         }
-        const staleResumeEligibility = deriveMemorizeResumeEligibility({
+        const staleAuthority = deriveMemorizeRecoveryAuthority({
+          checkpoint: rawCheckpoint,
           ledger: rawCheckpoint.run_manifest.obligation_ledger,
           provider_audit: audit,
           provider_completion_journal: liveMetadata?.provider_completion_journal,
-          active_transaction: null,
+          controller_heartbeat: rawCheckpoint.controller_heartbeat,
+          transaction_lifecycle: rawCheckpoint.transaction_lifecycle,
+          checkpoint_status: rawCheckpoint.status,
         });
+        const staleResumeEligibility = {
+          eligible: staleAuthority.resume_eligible,
+          mode: staleAuthority.resume_eligible ? 'provider_resume' : 'blocked',
+          reason_code: staleAuthority.resume_eligible ? 'exact_recovery_action_available'
+            : staleAuthority.resume_blockers[0]?.reason_code,
+          next_eligible_action: staleAuthority.next_executable_action,
+          obligation_id: staleAuthority.pending_obligation?.obligation_id ?? null,
+          provider_call_required: staleAuthority.provider_call_permitted,
+        };
         rawCheckpoint.resume_eligibility = {
           schema_version: 1, ...staleResumeEligibility, evaluated_at: Date.now(),
         };
@@ -2384,6 +2403,8 @@ export function bindSettingsUI(ctrl) {
             provider_calls: 0, persistence_calls: 0,
           },
           resume_eligibility: staleResumeEligibility,
+          authoritative_recovery: staleAuthority,
+          controller_lease_repair: leaseRepair.detail,
           live_health_repairs: healthRepairs, reconciled_at: Date.now() };
         rawCheckpoint.updated_at = Date.now();
         saveChatMetadata(getContext()).catch((error) => console.warn(
@@ -2463,7 +2484,23 @@ export function bindSettingsUI(ctrl) {
       return;
     }
     const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
-    const resumeEligibility = evaluateShortTermResumeEligibility(checkpoint);
+    const authority = deriveMemorizeRecoveryAuthority({
+      checkpoint,
+      ledger: checkpoint.run_manifest?.obligation_ledger,
+      provider_audit: liveMetadata?.live_memory_health?.provider_attempt_audit,
+      provider_completion_journal: liveMetadata?.provider_completion_journal,
+      controller_heartbeat: checkpoint.controller_heartbeat,
+      transaction_lifecycle: checkpoint.transaction_lifecycle,
+      checkpoint_status: checkpoint.status,
+    });
+    checkpointRecovery = { ...checkpointRecovery, authoritative_recovery: authority };
+    const resumeEligibility = authority.pending_obligation ? {
+      eligible: authority.resume_eligible,
+      decision: authority.resume_eligible ? 'resume_exact_obligation' : 'blocked',
+      reason: authority.resume_eligible ? 'exact_recovery_action_available'
+        : authority.resume_blockers[0]?.reason_code,
+      next_eligible_action: authority.next_executable_action,
+    } : evaluateShortTermResumeEligibility(checkpoint);
     const activeTransaction = getActiveCatchUpTransactionSnapshot();
     const transactionLocked = Boolean(activeTransaction);
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning || transactionLocked);
@@ -3026,14 +3063,34 @@ export function bindSettingsUI(ctrl) {
       ledger: liveLedger,
       child_manifests: metadata.catch_up_checkpoint?.recovery_child_manifests,
       live_health: metadata.live_memory_health,
+      controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat,
     });
     const transactionState = getActiveCatchUpTransactionSnapshot();
     const recoveryBase = reconcileCatchUpRecoverySummary(
       summarizeCatchUpCheckpoint(metadata.catch_up_checkpoint), liveProviderSummary,
     );
+    const recoveryAuthority = deriveMemorizeRecoveryAuthority({
+      checkpoint: metadata.catch_up_checkpoint,
+      ledger: liveLedger,
+      provider_audit: metadata.live_memory_health?.provider_attempt_audit,
+      provider_completion_journal: metadata.provider_completion_journal,
+      controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat,
+      transaction_lifecycle: metadata.catch_up_checkpoint?.transaction_lifecycle,
+      checkpoint_status: metadata.catch_up_checkpoint?.status,
+    });
     const recovery = {
       ...recoveryBase,
+      ...(recoveryAuthority.pending_obligation ? {
+        resumable: recoveryAuthority.resume_eligible,
+        resume_can_make_progress: recoveryAuthority.resume_eligible,
+        blocked: !recoveryAuthority.resume_eligible,
+        blocked_reason_code: recoveryAuthority.resume_blockers[0]?.reason_code ?? null,
+        next_eligible_recovery_action: recoveryAuthority.next_executable_action,
+        recovery_stage: recoveryAuthority.exact_recovery_stage,
+        provider_call_required_on_resume: recoveryAuthority.provider_call_permitted,
+      } : {}),
       ...(transactionState ? { resumable: false, resume_can_make_progress: false } : {}),
+      authoritative_recovery: recoveryAuthority,
       transaction_state: transactionState,
       transaction_resume_block_reason: transactionState ? 'active_transaction_must_settle' : null,
       shortterm_compaction_checkpoint: metadata.shortterm_compaction_checkpoint ? {
@@ -5279,6 +5336,8 @@ export function bindSettingsUI(ctrl) {
       page_instance_id: pageInstanceId,
       phase: 'initializing',
     });
+    let controllerPrimaryError = null;
+    let controllerFailureClassification = null;
     runResult.transactionRecovery = staleTransactionRecovery.recovered ? staleTransactionRecovery : null;
     let currentChunkFailed = false;
     let finalTransaction = null;
@@ -5292,6 +5351,7 @@ export function bindSettingsUI(ctrl) {
         logical_run_id: controllerRuntime.logical_run_id,
         attempt_number: controllerRuntime.attempt_number,
         page_instance_id: pageInstanceId,
+        controller_instance_id: controllerRuntime.invocation_id,
         phase,
         tier: detail.tier,
         owner: detail.owner,
@@ -5303,6 +5363,7 @@ export function bindSettingsUI(ctrl) {
         controllerRuntime.checkpoint.transaction_lifecycle = {
           schema_version: 1, transaction_id: transaction.transaction_id,
           state: 'active', owner: structuredClone(transaction.owner),
+          revision: transaction.revision, generation: transaction.generation,
           started_at: transaction.started_at, updated_at: Date.now(),
         };
       }
@@ -5313,6 +5374,7 @@ export function bindSettingsUI(ctrl) {
         controllerRuntime.checkpoint.transaction_lifecycle = {
           schema_version: 1, transaction_id: transaction?.transaction_id ?? null,
           state: 'committed', owner: structuredClone(transaction?.owner ?? {}),
+          revision: transaction?.revision ?? null, generation: transaction?.generation ?? null,
           started_at: transaction?.started_at ?? null, updated_at: Date.now(),
         };
       }
@@ -5327,6 +5389,7 @@ export function bindSettingsUI(ctrl) {
       if (checkpoint) checkpoint.transaction_lifecycle = {
         schema_version: 1, transaction_id: transaction.transaction_id,
         state: transaction.state, owner: structuredClone(transaction.owner ?? {}),
+        revision: transaction.revision ?? null, generation: transaction.generation ?? null,
         started_at: transaction.started_at ?? null, updated_at: Date.now(),
         exact_reason_code: transaction.exact_reason_code ?? reasonCode,
       };
@@ -5648,6 +5711,15 @@ export function bindSettingsUI(ctrl) {
       if (retainedEvidenceRaceMigration.migrated) {
         checkpoint.retained_evidence_race_migration = retainedEvidenceRaceMigration.detail;
         checkpoint.run_manifest.terminal_reason_code = 'recovery_child_not_attempted';
+      }
+      const controllerLeaseMigration = migrateV0982ControllerLeaseRecoveryState({
+        checkpoint,
+        metadata: catchUpContext.chatMetadata?.[META_KEY],
+      });
+      if (controllerLeaseMigration.migrated) {
+        checkpoint.controller_lease_recovery_migration = controllerLeaseMigration.detail;
+        checkpoint.run_manifest.terminal_reason_code = controllerLeaseMigration.detail
+          .exact_recovery_stage ?? 'interrupted_completion_unknown';
       }
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
@@ -6174,42 +6246,81 @@ export function bindSettingsUI(ctrl) {
         checkpoint.context_overflow_recovery.completed_children ??= [];
         const completedOverflowChildren = checkpoint.context_overflow_recovery.completed_children
           .map((entry) => entry?.key).filter(Boolean);
+        const runLeasedPersistence = async (callbackType, mutation, detail = {}) => {
+          const lease = createCatchUpTransactionLease(chunkTransaction, {
+            callback_type: callbackType,
+            obligation_id: detail.obligation_id ?? controllerRuntime.obligation_id,
+            provider_attempt_id: detail.provider_attempt_id ?? null,
+          });
+          const result = await mutateAndCheckpointCatchUpTransaction(
+            chunkTransaction, lease, async () => {
+              const value = await mutation();
+              if (checkpoint.transaction_lifecycle?.transaction_id
+                === chunkTransaction.transaction_id) {
+                checkpoint.transaction_lifecycle.revision
+                  = Number(chunkTransaction.revision ?? 0) + 1;
+                checkpoint.transaction_lifecycle.generation = chunkTransaction.generation;
+                checkpoint.transaction_lifecycle.updated_at = Date.now();
+              }
+              await saveChatMetadata(catchUpContext);
+              return value;
+            });
+          if (!result.allowed) {
+            controllerRuntime.stale_lease_callbacks ??= [];
+            controllerRuntime.stale_lease_callbacks.push({
+              callback_type: callbackType,
+              captured_lease: result.captured_lease,
+              current_lease: result.current_transaction,
+              attempted_operation: 'metadata_mutation_and_checkpoint',
+              disposition: result.disposition,
+              reason_code: result.reason_code,
+              durable_mutation_performed: false,
+              observed_at: Date.now(),
+            });
+            controllerRuntime.stale_lease_callbacks
+              = controllerRuntime.stale_lease_callbacks.slice(-32);
+          }
+          return result;
+        };
         const commitOverflowChild = async (record) => {
           if (!record?.key || completedOverflowChildren.includes(record.key)) return;
-          completedOverflowChildren.push(record.key);
-          checkpoint.context_overflow_recovery.completed_children = [
-            ...checkpoint.context_overflow_recovery.completed_children,
-            { ...record, committed_at: Date.now(), terminal_state: 'safely_committed' },
-          ].slice(-2048);
-          checkpoint.updated_at = Date.now();
-          await saveChatMetadata(catchUpContext);
-          await checkpointCatchUpTransaction(chunkTransaction);
+          return runLeasedPersistence('context_overflow_child_committed', () => {
+            completedOverflowChildren.push(record.key);
+            checkpoint.context_overflow_recovery.completed_children = [
+              ...checkpoint.context_overflow_recovery.completed_children,
+              { ...record, committed_at: Date.now(), terminal_state: 'safely_committed' },
+            ].slice(-2048);
+            checkpoint.updated_at = Date.now();
+          }, { obligation_id: record.obligation_id });
         };
         checkpoint.recovery_child_manifests ??= { schema_version: 1, roots: {} };
         checkpoint.recovery_child_manifests.roots ??= {};
         const commitRecoveryChildManifest = async (manifest) => {
-          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
-            await_point: 'child_manifest_update', progress: true,
-          });
           if (!manifest?.root_obligation_id) return;
-          checkpoint.recovery_child_manifests.roots[manifest.root_obligation_id] = manifest;
-          checkpoint.updated_at = Date.now();
-          await saveChatMetadata(catchUpContext);
-          await checkpointCatchUpTransaction(chunkTransaction);
+          return runLeasedPersistence('recovery_child_manifest_updated', () => {
+            updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
+              await_point: 'child_manifest_update', progress: true,
+            });
+            checkpoint.recovery_child_manifests.roots[manifest.root_obligation_id] = manifest;
+            checkpoint.updated_at = Date.now();
+          }, { obligation_id: manifest.root_obligation_id });
         };
-        const commitProviderCompletionJournal = async (_entry, heartbeatPatch = {}) => {
-          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
-          checkpoint.updated_at = Date.now();
-          await saveChatMetadata(catchUpContext);
-          await checkpointCatchUpTransaction(chunkTransaction);
+        const commitProviderCompletionJournal = async (entry, heartbeatPatch = {}) => {
+          return runLeasedPersistence('provider_completion_journal_updated', () => {
+            updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
+            checkpoint.updated_at = Date.now();
+          }, { obligation_id: entry?.child_obligation_id ?? entry?.root_obligation_id,
+            provider_attempt_id: entry?.attempt_id });
         };
         const commitProviderAwaitPoint = async (heartbeatPatch = {}) => {
-          updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
-          checkpoint.updated_at = Date.now();
-          await saveChatMetadata(catchUpContext);
-          await checkpointCatchUpTransaction(chunkTransaction);
+          return runLeasedPersistence('provider_await_point', () => {
+            updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
+            checkpoint.updated_at = Date.now();
+          }, { provider_attempt_id: heartbeatPatch.active_provider_attempt_id });
         };
         const applyAuthoritativeLifecycleEvent = async (event) => {
+          let lifecycleResult = null;
+          const leaseResult = await runLeasedPersistence('obligation_event', async () => {
           trackMemorizeTransaction(controllerRuntime, controllerRuntime.active_transaction, {
             phase: 'source_extraction', tier: event.tier, owner: event.owner,
             source_range: event.source_range, obligation_id: event.obligation_id,
@@ -6298,11 +6409,18 @@ export function bindSettingsUI(ctrl) {
               });
             }
           }
-          const result = applyMemorizeLifecycleEvent(ledger, identity, event);
+          lifecycleResult = applyMemorizeLifecycleEvent(ledger, identity, event);
           checkpoint.updated_at = Date.now();
-          await saveChatMetadata(catchUpContext);
-          await checkpointCatchUpTransaction(chunkTransaction);
-          return result;
+          return lifecycleResult;
+          }, { obligation_id: event.obligation_id,
+            provider_attempt_id: event.provider_attempt_id });
+          return leaseResult.allowed ? lifecycleResult : {
+            status: 'stale_lease_mutation_rejected',
+            reason_code: leaseResult.reason_code,
+            resulting_state: getCanonicalMemorizeObligation(
+              checkpoint.run_manifest.obligation_ledger, event.obligation_id,
+              checkpoint.run_manifest.logical_run_id)?.current_state ?? null,
+          };
         };
         const getCanonicalObligation = (obligationId, logicalRunId = null) => {
           const obligation = getCanonicalMemorizeObligation(
@@ -6354,7 +6472,11 @@ export function bindSettingsUI(ctrl) {
               liveHealth: longtermLiveHealth,
               executionContext: createMemorizeExecutionContext({
                 controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
-                  lifecycle_required: true },
+                  lifecycle_required: true,
+                  instance_id: controllerRuntime.invocation_id,
+                  transaction_id: chunkTransaction.transaction_id,
+                  transaction_revision: chunkTransaction.revision,
+                  transaction_generation: chunkTransaction.generation },
                 provider: {
                   resumed_pending_obligation: Boolean(resumableCheckpoint
                     && priorOwnerStatus && priorOwnerStatus.safely_committed !== true),
@@ -6424,7 +6546,11 @@ export function bindSettingsUI(ctrl) {
             liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
             executionContext: createMemorizeExecutionContext({
               controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
-                lifecycle_required: true },
+                lifecycle_required: true,
+                instance_id: controllerRuntime.invocation_id,
+                transaction_id: chunkTransaction.transaction_id,
+                transaction_revision: chunkTransaction.revision,
+                transaction_generation: chunkTransaction.generation },
               provider: {
                 resumed_pending_obligation: Boolean(resumableCheckpoint && priorSessionObligation
                   && priorSessionObligation.safely_committed !== true),
@@ -6441,12 +6567,13 @@ export function bindSettingsUI(ctrl) {
                 obligation_event: applyAuthoritativeLifecycleEvent,
                 get_canonical_obligation: getCanonicalObligation,
                 recovery_epoch_initialized: async (epoch) => {
-                  checkpoint.recovery_epoch = { ...epoch, status: 'initialized_before_dispatch' };
-                  checkpoint.updated_at = Date.now();
-                  await saveChatMetadata(catchUpContext);
-                  await checkpointCatchUpTransaction(chunkTransaction);
+                  return runLeasedPersistence('recovery_epoch_initialized', () => {
+                    checkpoint.recovery_epoch = { ...epoch, status: 'initialized_before_dispatch' };
+                    checkpoint.updated_at = Date.now();
+                  }, { obligation_id: epoch.root_obligation_id });
                 },
                 automatic_recovery_boundary: async (detail) => {
+                  return runLeasedPersistence('automatic_recovery_boundary', () => {
                   const recoveryElapsedMs = Math.max(0,
                     Date.now() - Number(detail.recovery_started_at ?? Date.now()));
                   const recoveryRequestsRemaining = Math.max(0,
@@ -6479,11 +6606,11 @@ export function bindSettingsUI(ctrl) {
                     updated_at: Date.now(),
                   };
                   checkpoint.updated_at = Date.now();
-                  await saveChatMetadata(catchUpContext);
-                  await checkpointCatchUpTransaction(chunkTransaction);
                   setStatusMessage(`Automatically recovering Session ${detail.source_range.start}–${detail.source_range.end}: ${formatDiagnosticIdentifier(detail.recovery_stage, 'recovery stage pending')}; ${detail.unresolved_fragment_count} unresolved fragment${detail.unresolved_fragment_count === 1 ? '' : 's'}, ${detail.accepted_records_preserved} accepted record${detail.accepted_records_preserved === 1 ? '' : 's'} preserved; recovery request budget ${detail.request_budget_used}/${detail.request_budget_maximum} (${detail.request_budget_remaining} remaining), elapsed ${formatCatchUpDuration(detail.recovery_elapsed_ms)}.`);
+                  }, { obligation_id: detail.root_obligation_id });
                 },
                 automatic_recovery_completed: async (detail) => {
+                  return runLeasedPersistence('automatic_recovery_completed', () => {
                   runResult.automaticRecovery ??= {
                     attempted: 0, completed: 0, paused: 0,
                     accepted_records_preserved: 0, recovered_records: 0,
@@ -6505,9 +6632,8 @@ export function bindSettingsUI(ctrl) {
                   };
                   delete checkpoint.operational_pause;
                   checkpoint.updated_at = Date.now();
-                  await saveChatMetadata(catchUpContext);
-                  await checkpointCatchUpTransaction(chunkTransaction);
                   setStatusMessage(`Session ${detail.source_range.start}–${detail.source_range.end} recovered automatically; continuing Memorize Chat.`);
+                  }, { obligation_id: detail.root_obligation_id });
                 },
               },
             }),
@@ -9998,7 +10124,8 @@ export function bindSettingsUI(ctrl) {
           recordControllerExit({
             logical_run_id: terminalCheckpoint.run_manifest.logical_run_id,
             reason_code: terminalReasonCode,
-            classification: terminalReasonCode,
+            classification: terminalReasonCode === 'manual_cancel'
+              ? 'manually_cancelled' : terminalReasonCode,
             resumable: !recoveryChangeRequired,
             next_eligible_action: summarizeCatchUpCheckpoint(terminalCheckpoint)
               .next_eligible_recovery_action,
@@ -10033,6 +10160,7 @@ export function bindSettingsUI(ctrl) {
           diagnostics.coverage_attention_reason = coverageAttention ? 'cumulative_source_or_tier_coverage_incomplete' : null;
         }
       } else if (terminalCheckpoint) {
+        terminalCheckpoint.status = 'completed';
         recordControllerExit({
           logical_run_id: terminalCheckpoint.run_manifest.logical_run_id,
           reason_code: 'finalization_committed',
@@ -10234,6 +10362,11 @@ export function bindSettingsUI(ctrl) {
       $('#sme_export_diagnostics').prop('disabled', false);
     } catch (err) {
       captureMemorizePrimaryFailure(controllerRuntime, err);
+      controllerPrimaryError = err;
+      controllerFailureClassification = err?.code === 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED'
+        ? 'transaction_commit_failure'
+        : err?.code === 'SME_CATCHUP_TRANSACTION_ROLLBACK_FAILED'
+          ? 'transaction_rollback_failure' : 'internal_exception';
       try {
         settleActiveRunTransaction(err?.code ?? 'internal_exception');
       } catch (rollbackError) {
@@ -10276,18 +10409,13 @@ export function bindSettingsUI(ctrl) {
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         failedCheckpoint.run_manifest.obligation_ledger = failedJournalReconciliation.ledger;
-        const projection = projectMemorizeObligationLedger(failedCheckpoint.run_manifest.obligation_ledger);
-        const resumeEligibility = deriveMemorizeResumeEligibility({
-          projection, provider_audit: failedProviderAudit,
-          provider_completion_journal:
-            catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
-          active_transaction: getActiveCatchUpTransactionSnapshot(),
+        const controllerLeaseRepair = migrateV0982ControllerLeaseRecoveryState({
+          checkpoint: failedCheckpoint,
+          metadata: catchUpContext.chatMetadata?.[META_KEY],
         });
-        failedCheckpoint.resume_eligibility = {
-          schema_version: 1, ...resumeEligibility, evaluated_at: Date.now(),
-        };
-        failedCheckpoint.status = resumeEligibility.eligible
-          ? 'awaiting_manual_resume' : 'blocked_recovery_change_required';
+        if (controllerLeaseRepair.migrated) {
+          failedCheckpoint.controller_lease_recovery_migration = controllerLeaseRepair.detail;
+        }
         failedCheckpoint.controller_failure = {
           schema_version: 1,
           phase: controllerRuntime.phase,
@@ -10307,16 +10435,6 @@ export function bindSettingsUI(ctrl) {
             ? diagnosticFingerprint(controllerRuntime.primary_failure.stack_fingerprint_input.replace(/https?:\/\/\S+/g, '<url>')) : null,
           recorded_at: Date.now(),
         };
-        recordControllerExit({
-          reason_code: err?.code ?? 'internal_exception',
-          classification: err?.code === 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED'
-            ? 'transaction_commit_failure'
-            : err?.code === 'SME_CATCHUP_TRANSACTION_ROLLBACK_FAILED'
-              ? 'transaction_rollback_failure' : 'internal_exception',
-          resumable: canResume,
-          obligation_id: pending?.obligation_id ?? null,
-          next_eligible_action: canResume ? pending.next_eligible_action : null,
-        });
         failedCheckpoint.run_manifest = finalizeCatchUpRunManifest(failedCheckpoint.run_manifest, {
           status: failedCheckpoint.status,
           reasonCode: err?.code ?? 'internal_exception',
@@ -10326,13 +10444,8 @@ export function bindSettingsUI(ctrl) {
           },
         });
         failedCheckpoint.updated_at = Date.now();
-        try {
-          await saveChatMetadata(catchUpContext);
-        } catch (diagnosticSaveError) {
-          console.warn('[Smart Memory Enhanced] Controller-exit persistence warning:', diagnosticSaveError);
-        }
       } else {
-        recordControllerExit({ reason_code: err?.code ?? 'internal_exception', classification: 'internal_exception', resumable: false });
+        controllerFailureClassification = 'internal_exception';
       }
       showError('Catch-up', err);
       setStatusMessage('Catch-up failed.');
@@ -10347,6 +10460,12 @@ export function bindSettingsUI(ctrl) {
       const exitCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
         ?? controllerRuntime.checkpoint;
       if (exitCheckpoint) {
+        if (controllerRuntime.stale_lease_callbacks?.length) {
+          exitCheckpoint.stale_lease_callbacks = [
+            ...(exitCheckpoint.stale_lease_callbacks ?? []),
+            ...controllerRuntime.stale_lease_callbacks,
+          ].slice(-32);
+        }
         reconcileImpossibleLiveHealth(
           catchUpContext.chatMetadata?.[META_KEY],
           catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit);
@@ -10357,30 +10476,69 @@ export function bindSettingsUI(ctrl) {
           ledger: exitCheckpoint.run_manifest?.obligation_ledger,
           child_manifests: exitCheckpoint.recovery_child_manifests,
           live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
+          controller_heartbeat: exitCheckpoint.controller_heartbeat,
         });
       }
-      if (!controllerRuntime.controller_exit) {
-        const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
-          ?? controllerRuntime.checkpoint;
-        const projection = projectMemorizeObligationLedger(checkpoint?.run_manifest?.obligation_ledger);
-        const pending = projection.next_eligible_obligation;
-        const manual = ctrl.catchUpStopReason === 'manual_cancel';
-        recordControllerExit({
-          reason_code: ctrl.catchUpStopReason ?? (pending?.exact_reason_code || 'handler_exited'),
-          classification: manual ? 'manually_cancelled'
-            : pending ? 'awaiting_actionable_recovery' : 'completed',
-          resumable: !manual && Boolean(pending?.next_eligible_action),
-          obligation_id: pending?.obligation_id ?? null,
-          next_eligible_action: pending?.next_eligible_action ?? null,
-        });
-      }
-      // The provisional exit may have been captured while a chunk transaction
-      // was still active. Replace only its transaction projection after the
-      // final settlement above; preserve its authoritative reason/classification.
-      if (controllerRuntime.controller_exit) recordControllerExit({
-        ...controllerRuntime.controller_exit,
-        finalize_transaction_evidence: true,
+      const terminalCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
+        ?? controllerRuntime.checkpoint;
+      const terminalMetadata = catchUpContext.chatMetadata?.[META_KEY];
+      const priorExit = controllerRuntime.controller_exit;
+      const manual = ctrl.catchUpStopReason === 'manual_cancel';
+      const provisionalReason = controllerPrimaryError?.code ?? ctrl.catchUpStopReason
+        ?? priorExit?.reason_code ?? 'handler_exited';
+      const provisionalClassification = controllerFailureClassification
+        ?? (manual ? 'manually_cancelled' : priorExit?.classification ?? null);
+      const finalization = await finalizeMemorizeController({
+        primary_error: controllerPrimaryError,
+        reason_code: provisionalReason,
+        classification: provisionalClassification ?? undefined,
+        checkpoint: terminalCheckpoint,
+        provider_audit: terminalMetadata?.live_memory_health?.provider_attempt_audit,
+        provider_completion_journal: terminalMetadata?.provider_completion_journal,
+        repair_state: () => {
+          if (!terminalCheckpoint?.run_manifest?.obligation_ledger) return null;
+          const projection = projectMemorizeObligationLedger(
+            terminalCheckpoint.run_manifest.obligation_ledger);
+          const pending = projection.next_eligible_obligation
+            ?? projection.pending_obligations?.[0] ?? null;
+          const settlement = settleOrphanedProviderAttempts(terminalMetadata, {
+            logical_run_id: terminalCheckpoint.run_manifest.logical_run_id,
+            obligation_id: pending?.obligation_id ?? null,
+            provider_attempt_lineage: pending?.provider_attempt_lineage ?? [],
+            controller_instance_id: controllerRuntime.invocation_id,
+            transaction_id: terminalCheckpoint.transaction_lifecycle?.transaction_id ?? null,
+            transaction_revision: terminalCheckpoint.transaction_lifecycle?.revision ?? null,
+            reason_code: manual ? 'cancelled_by_manual_stop'
+              : 'controller_closed_before_provider_completion',
+          });
+          const repaired = reconcileMemorizeRunningObligations(
+            terminalCheckpoint.run_manifest.obligation_ledger,
+            terminalMetadata?.live_memory_health?.provider_attempt_audit);
+          terminalCheckpoint.run_manifest.obligation_ledger = repaired.ledger;
+          return { provider_attempt_settlement: settlement,
+            logical_obligation_repairs: repaired.repairs };
+        },
+        close_controller: () => closeMemorizeControllerHeartbeat(
+          terminalCheckpoint, controllerRuntime, {
+            classification: provisionalClassification ?? (manual
+              ? 'manually_cancelled' : 'controller_finalizing'),
+            reason_code: provisionalReason,
+          }),
+        record_exit: recordControllerExit,
+        persist_diagnostics: terminalCheckpoint
+          ? async () => saveChatMetadata(catchUpContext) : null,
       });
+      if (terminalCheckpoint) {
+        terminalCheckpoint.authoritative_recovery = finalization.authority;
+        if (terminalMetadata?.catch_up_diagnostics) {
+          terminalMetadata.catch_up_diagnostics.controller_heartbeat
+            = terminalCheckpoint.controller_heartbeat;
+          terminalMetadata.catch_up_diagnostics.controller_exit
+            = finalization.exit;
+          terminalMetadata.catch_up_diagnostics.authoritative_recovery
+            = finalization.authority;
+        }
+      }
       if (resumeRequested) recordRuntimeEvidence('resume_handler_exited', {
         subsystem: 'memorize_chat_resume',
         request_state: controllerRuntime.controller_exit?.classification ?? 'unknown_exit',
