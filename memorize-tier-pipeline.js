@@ -211,6 +211,44 @@ export function createMemorizeTierPipeline(input) {
     begin_registered_attempt: beginRegisteredAttempt,
     ...details,
   });
+  const getCanonicalObligation = () => execution.hooks.get_canonical_obligation(
+    leafObligationId, lifecycleIdentity.logical_run_id);
+  const applyRetainedEvidenceDecision = async (selection, details = {}) => {
+    const result = await coordinateProviderEvidenceIngress({
+      operation: 'apply_retained_evidence_decision', identity: lifecycleIdentity,
+      prior_state: execution.provider.root_obligation_state,
+      emit_lifecycle_event: applyLifecycleEvent,
+      get_canonical_obligation: execution.hooks.get_canonical_obligation,
+      selection,
+      ...details,
+    });
+    if (selection?.entry) {
+      selection.entry.retained_evidence_decisions = [
+        ...(selection.entry.retained_evidence_decisions ?? []), {
+          selected_at: selection.selected_at ?? null,
+          applied_at: Date.now(),
+          selected_classification: selection.classification ?? null,
+          applied_classification: result.evidence_classification ?? null,
+          changed_since_selection: result.decision_revalidation?.changed_since_selection === true,
+          selected_obligation_revision:
+            result.decision_revalidation?.selected_obligation_revision ?? null,
+          applied_obligation_revision:
+            result.decision_revalidation?.applied_obligation_revision ?? null,
+          selected_state_fingerprint:
+            result.decision_revalidation?.selected_state_fingerprint ?? null,
+          applied_state_fingerprint:
+            result.decision_revalidation?.applied_state_fingerprint ?? null,
+          disposition: result.reason_code ?? result.status,
+          provider_call_required: result.provider_call_required === true,
+          persistence_required: result.persistence_required === true,
+        },
+      ].slice(-16);
+      await execution.hooks.provider_completion_journal_updated(selection.entry, {
+        await_point: 'retained_evidence_decision', progress: true,
+      });
+    }
+    return result;
+  };
   const coordinatedEventOperations = Object.freeze({
     provider_transport_failed: 'record_provider_transport_failure',
     parser_accepted: 'record_parser_disposition',
@@ -253,7 +291,8 @@ export function createMemorizeTierPipeline(input) {
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
     lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
-    beginRegisteredAttempt, ingestProviderEvidence,
+    beginRegisteredAttempt, ingestProviderEvidence, getCanonicalObligation,
+    applyRetainedEvidenceDecision,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

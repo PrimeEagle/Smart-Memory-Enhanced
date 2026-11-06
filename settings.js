@@ -98,6 +98,7 @@ import {
   applyMemorizeLifecycleEvent,
   reconcileMemorizeLifecycleFromJournal,
   recordMemorizeControllerExit,
+  getCanonicalMemorizeObligation,
 } from './memorize-obligation-ledger.js';
 import {
   deriveMemorizeResumeEligibility,
@@ -106,7 +107,8 @@ import {
   isAuthoritativeTierRangeSafelyCovered,
   rebuildMemorizeCompatibilityProjection,
 } from './memorize-authority-model.js';
-import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState }
+import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState,
+  migrateV0981RetainedEvidenceRaceState }
   from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
@@ -270,8 +272,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.81',
-  build_fingerprint: 'sme-v0.9.81-monotonic-downstream-cursor-r1',
+  extension_version: '0.9.82',
+  build_fingerprint: 'sme-v0.9.82-canonical-retained-evidence-transaction-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5637,6 +5639,16 @@ export function bindSettingsUI(ctrl) {
           latestExit.next_eligible_action = 'recover_exact_unresolved_fragments';
         }
       }
+      const retainedEvidenceRaceMigration = migrateV0981RetainedEvidenceRaceState({
+        ledger: checkpoint.run_manifest.obligation_ledger,
+        journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+        logical_run_id: checkpoint.run_manifest.logical_run_id,
+      });
+      checkpoint.run_manifest.obligation_ledger = retainedEvidenceRaceMigration.ledger;
+      if (retainedEvidenceRaceMigration.migrated) {
+        checkpoint.retained_evidence_race_migration = retainedEvidenceRaceMigration.detail;
+        checkpoint.run_manifest.terminal_reason_code = 'recovery_child_not_attempted';
+      }
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
         providerAudit,
@@ -6292,6 +6304,12 @@ export function bindSettingsUI(ctrl) {
           await checkpointCatchUpTransaction(chunkTransaction);
           return result;
         };
+        const getCanonicalObligation = (obligationId, logicalRunId = null) => {
+          const obligation = getCanonicalMemorizeObligation(
+            checkpoint.run_manifest.obligation_ledger, obligationId,
+            logicalRunId ?? checkpoint.run_manifest.logical_run_id);
+          return obligation ? structuredClone(obligation) : null;
+        };
         const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
         const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
         const canonicalSourceRange = {
@@ -6350,6 +6368,7 @@ export function bindSettingsUI(ctrl) {
                   provider_completion_journal_updated: commitProviderCompletionJournal,
                   provider_await_point: commitProviderAwaitPoint,
                   obligation_event: applyAuthoritativeLifecycleEvent,
+                  get_canonical_obligation: getCanonicalObligation,
                 },
               }),
             }).catch((err) => {
@@ -6420,6 +6439,7 @@ export function bindSettingsUI(ctrl) {
                 context_overflow_child_committed: commitOverflowChild,
                 recovery_child_manifest_updated: commitRecoveryChildManifest,
                 obligation_event: applyAuthoritativeLifecycleEvent,
+                get_canonical_obligation: getCanonicalObligation,
                 recovery_epoch_initialized: async (epoch) => {
                   checkpoint.recovery_epoch = { ...epoch, status: 'initialized_before_dispatch' };
                   checkpoint.updated_at = Date.now();

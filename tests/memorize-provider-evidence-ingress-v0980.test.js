@@ -454,7 +454,7 @@ test('displayed lifecycle failures reconcile without provider-transport misattri
 test('production replay branches use ingress and cannot construct null attempts', () => {
   for (const file of ['../longterm.js', '../session.js']) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /ingestProviderEvidence\('adopt_exact_prior_run_evidence'/);
+    assert.match(source, /applyRetainedEvidenceDecision/);
     assert.doesNotMatch(source, /bypassEquivalentRootReplay/);
     assert.doesNotMatch(source, /attempt_id:\s*null,[\s\S]{0,160}prior_window_recovery_state/);
     assert.match(source, /recoveryOnlyMode \? \[\] : parse(?:Extraction|Session)Output\(response\)/);

@@ -1,6 +1,7 @@
 import {
   deriveMemorizeSafeResumeOffset,
   ensureMemorizeObligationLedger,
+  getMemorizeActionContract,
   projectMemorizeObligationLedger,
 } from './memorize-obligation-ledger.js';
 import { classifyRetainedProviderEvidence, PROVIDER_EVIDENCE_PROVENANCE }
@@ -259,9 +260,13 @@ export function deriveMemorizeResumeEligibility({
     invariant_violations: projection.invariants?.violations ?? [],
   };
   return {
-    eligible: true, mode: 'provider_resume', reason_code: 'exact_resume_action_available',
+    eligible: getMemorizeActionContract(action)?.provider_call_required === true,
+    mode: getMemorizeActionContract(action)?.provider_call_required === true
+      ? 'provider_resume' : 'blocked',
+    reason_code: getMemorizeActionContract(action)?.provider_call_required === true
+      ? 'exact_resume_action_available' : 'unknown_or_non_provider_action_contract',
     next_eligible_action: action, obligation_id: pending.obligation_id,
-    provider_call_required: true,
+    provider_call_required: getMemorizeActionContract(action)?.provider_call_required === true,
   };
 }
 

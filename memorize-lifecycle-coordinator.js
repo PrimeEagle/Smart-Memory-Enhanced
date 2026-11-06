@@ -1,10 +1,14 @@
 /** Shared identity, reducer-result, and journal-acknowledgement contract. */
 
+import { PROVIDER_EVIDENCE_PROVENANCE, revalidateRetainedProviderEvidenceSelection }
+  from './provider-completion-journal.js';
+
 export const MEMORIZE_LIFECYCLE_COORDINATOR_VERSION = 2;
 
 export const PROVIDER_EVIDENCE_INGRESS_OPERATIONS = Object.freeze([
   'register_new_attempt',
   'record_new_response',
+  'apply_retained_evidence_decision',
   'adopt_exact_prior_run_evidence',
   'continue_current_run_downstream',
   'continue_partial_fragment_recovery',
@@ -224,6 +228,79 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     }
   };
 
+  if (input.operation === 'apply_retained_evidence_decision') {
+    const canonical = typeof input.get_canonical_obligation === 'function'
+      ? await input.get_canonical_obligation(identity.leaf_obligation_id,
+        identity.logical_run_id) : input.canonical_obligation ?? null;
+    if (!canonical) return rejectedIngress(input, 'canonical_obligation_unavailable_at_evidence_application', {
+      status: 'blocked', next_action: 'reconcile_terminal_attempt_evidence',
+      provider_call_required: false,
+    });
+    const decision = revalidateRetainedProviderEvidenceSelection(input.selection, {
+      root_obligation_id: identity.root_obligation_id,
+      child_obligation_id: identity.leaf_obligation_id,
+      tier: identity.tier, owner: identity.owner,
+      source_range: identity.source_range,
+      source_fingerprint: identity.source_fingerprint,
+      current_logical_run_id: identity.logical_run_id,
+      obligation: canonical,
+      later_attempts: input.later_attempts ?? [],
+    });
+    if (decision.classification === PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL) {
+      return ingressResult('idempotent_duplicate_verified', { ...input, identity }, {
+        resulting_state: canonical.current_state,
+        checkpoint_eligible: true,
+        reason_code: 'retained_evidence_target_already_terminal',
+        next_action: 'continue_next_incomplete_sibling',
+        provider_call_required: false, persistence_required: false,
+        evidence_classification: decision.classification,
+        selection_application_classification: decision.changed_since_selection
+          ? 'state_changed_reclassify' : 'selection_unchanged',
+        decision_revalidation: decision,
+      });
+    }
+    const operation = {
+      [PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE]: 'adopt_exact_prior_run_evidence',
+      [PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM]:
+        'continue_current_run_downstream',
+      [PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS]:
+        'continue_partial_fragment_recovery',
+    }[decision.classification];
+    if (!operation) return rejectedIngress(input,
+      decision.classification === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE
+        ? 'required_private_evidence_unavailable'
+        : 'retained_evidence_no_longer_applicable', {
+        status: decision.classification === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE
+          ? 'blocked' : 'rejected',
+        next_action: decision.next_action ?? 'reconcile_terminal_attempt_evidence',
+        provider_call_required: false,
+      });
+    const applied = await coordinateProviderEvidenceIngress({
+      ...input,
+      operation,
+      identity,
+      prior_state: canonical.current_state,
+      evidence: input.selection.entry,
+      downstream_cursor: decision.downstream_cursor,
+      evidence_adoption_reason: input.evidence_adoption_reason,
+      durable_record_ids: input.durable_record_ids,
+      unresolved_fragment_ids: input.unresolved_fragment_ids,
+      durable_record_candidate_map: input.durable_record_candidate_map,
+      recovery_stage_history: input.recovery_stage_history,
+      next_eligible_recovery_stage: input.next_eligible_recovery_stage,
+      provider_call_required: decision.provider_call_required,
+    });
+    return Object.freeze({
+      ...applied,
+      operation: input.operation,
+      applied_operation: operation,
+      evidence_classification: applied.evidence_classification ?? decision.classification,
+      decision_revalidation: decision,
+      selection_application_classification: decision.changed_since_selection
+        ? 'state_changed_reclassify' : 'selection_unchanged',
+    });
+  }
+
   if (['register_new_attempt', 'dispatch_exact_recovery_attempt'].includes(input.operation)) {
     if (input.attempt?.attempt_id) {
       const receipt = await invokeLifecycle('provider_attempt_started', {
@@ -406,6 +483,19 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     if (!['applied', 'idempotent_duplicate_verified'].includes(receipt?.status)) {
       return rejectedIngress(input, 'terminal_evidence_adoption_rejected', {
         status: 'pending_reconciliation', next_action: 'reconcile_terminal_attempt_evidence',
+      });
+    }
+    if (receipt.checkpoint_eligible === true
+      && TERMINAL_STATES.has(receipt.resulting_state)) {
+      return ingressResult('idempotent_duplicate_verified', { ...input, identity }, {
+        receipt, physical_attempt_id: evidence.attempt_id,
+        prior_state: input.prior_state ?? null,
+        resulting_state: receipt.resulting_state,
+        checkpoint_eligible: true,
+        reason_code: 'adoption_superseded_by_terminal_coverage',
+        next_action: 'continue_next_incomplete_sibling',
+        provider_call_required: false, persistence_required: false,
+        evidence_classification: PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL,
       });
     }
     return ingressResult('pending_downstream_processing', { ...input, identity }, {

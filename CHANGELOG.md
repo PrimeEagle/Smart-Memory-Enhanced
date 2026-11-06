@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.82] - 2026-11-06
+
+### Added
+
+- Added exact canonical-obligation lookup, per-obligation revisions, and a
+  privacy-safe state fingerprint to retained-provider-evidence decisions.
+  Selection and application diagnostics now retain both revisions,
+  fingerprints, classifications, and the zero-call disposition.
+- Added one authoritative action-contract table for provider-call and
+  persistence requirements. The obligation projection, Resume eligibility,
+  child scheduler, diagnostics, and UI status now consume the same contract and
+  fail closed for unknown actions.
+- Added a redacted v0.9.81 race fixture and 37 focused regressions covering the
+  deliberate selection/application race, complete child initialization,
+  terminal-child skipping, sibling dispatch, migration convergence, journal
+  synchronization, action contracts, exact lookup, and state fingerprints.
+
+### Changed
+
+- Retained evidence is now re-queried and reclassified against the exact
+  canonical leaf immediately before application. If reconciliation completed
+  the leaf after selection, application is an idempotent local success instead
+  of a rejected attempt to regress terminal coverage.
+- Recovery scheduling now consults canonical child state in addition to the
+  compatibility completion manifest. A terminal child is skipped even when a
+  stale manifest omits it, and the next actionable sibling is registered before
+  its provider request is dispatched.
+- Newly declared recovery children now begin with the complete contract
+  `recovery_child_not_attempted` / `dispatch_provider_request` /
+  `complete_recovery_child_coverage` / `initial_child_dispatch`, including an
+  explicit provider-call requirement and no persistence requirement.
+
+### Fixed
+
+- Fixed the supplied Session 0–19 stop where prior-run evidence for 0–9 was
+  selected before reconciliation, reconciliation made 0–9 terminal, and the
+  later adoption rejection aborted the controller before 10–19 could run.
+- Fixed the Session 10–19 child being exported as unattempted but unactionable
+  because its exact reason and recovery stage were null and its provider-call
+  requirement was incorrectly false.
+- Added an idempotent v0.9.81 migration that preserves both supplied 0–9 record
+  IDs and all Long-Term work, repairs the 10–19 action contract, synchronizes
+  terminal journal fields with the ledger, retires the stale adoption error,
+  makes zero provider or memory-persistence calls, and performs no mutations on
+  its second pass.
+
 ## [0.9.81] - 2026-11-05
 
 ### Added

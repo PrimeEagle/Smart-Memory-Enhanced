@@ -303,7 +303,7 @@ test('production Session uses provenance selection and explicit parser enrichmen
   const source = readFileSync(new URL('../session.js', import.meta.url), 'utf8');
   assert.match(source, /selectRetainedProviderEvidence/);
   assert.match(source, /CURRENT_RUN_RECOVER_FRAGMENTS/);
-  assert.match(source, /continue_partial_fragment_recovery/);
+  assert.match(source, /applyRetainedEvidenceDecision/);
   assert.match(source, /parser_evidence_enriched/);
   assert.doesNotMatch(source,
     /emitLifecycleEvent\(unresolvedPartialFragments > 0\s*\? 'parser_partially_accepted' : 'parser_accepted', \{\s*lifecycle:/);

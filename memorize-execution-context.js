@@ -5,6 +5,7 @@
  */
 
 const noopAsync = async () => {};
+const noopLookup = () => null;
 
 export function createMemorizeExecutionContext(input = {}) {
   return Object.freeze({
@@ -47,6 +48,7 @@ export function createMemorizeExecutionContext(input = {}) {
       recovery_epoch_initialized: input.hooks?.recovery_epoch_initialized ?? noopAsync,
       automatic_recovery_boundary: input.hooks?.automatic_recovery_boundary ?? noopAsync,
       automatic_recovery_completed: input.hooks?.automatic_recovery_completed ?? noopAsync,
+      get_canonical_obligation: input.hooks?.get_canonical_obligation ?? noopLookup,
     }),
   });
 }

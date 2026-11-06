@@ -9,8 +9,8 @@ import { acknowledgeJournalTransition, requireAppliedLifecycleResult } from './m
  * `explicit_no_update` make an obligation checkpoint eligible.
  */
 
-export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 6;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 8;
+export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 7;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 9;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -35,6 +35,78 @@ export const MEMORIZE_OBLIGATION_STATES = Object.freeze([
 const SAFE_STATES = new Set(['durably_committed', 'explicit_no_update']);
 const ACTIONABLE_STATES = new Set(['unattempted', 'pending_recovery', 'operationally_paused', 'blocked']);
 const nowValue = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now();
+
+// One action contract is shared by the reducer, scheduler, diagnostics, and
+// Resume projection. Unknown actions fail closed instead of being guessed from
+// the obligation state by each consumer.
+export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
+  dispatch_provider_request: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  dispatch_registered_provider_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  dispatch_bounded_recovery_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  retry_provider_with_backoff: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  recover_exact_unresolved_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  recover_unresolved_partial_output_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  resume_changed_dimension_or_single_source_recovery: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  fragment_decision_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  resume_exact_obligation: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  session_validation_repair_or_bounded_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  citation_repair_or_bounded_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  dispatch_after_prior_leaf_coverage: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  retry: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  continue_unattempted_recovery_child: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  resume_first_actionable_recovery_leaf: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  derive_parent_child_coverage: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  aggregate_completed_children: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  continue_next_incomplete_sibling: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  continue_pending_downstream_processing: Object.freeze({ provider_call_required: false, persistence_required: true }),
+  continue_current_run_downstream: Object.freeze({ provider_call_required: false, persistence_required: true }),
+  parse_retained_response: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  continue_validation: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  persist_validated_records: Object.freeze({ provider_call_required: false, persistence_required: true }),
+  reconcile_terminal_attempt_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  reconcile_provider_attempt_registration: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  reconcile_downstream_lifecycle_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  settle_terminal_malformed_attempt: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  adopt_exact_prior_run_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  inspect_or_restore_private_terminal_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  inspect_or_restore_unresolved_fragment_payload: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  inspect_or_restore_committed_partial_record: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  inspect_or_restore_partial_fragment_recovery_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  change_provider_configuration_or_install_updated_build: Object.freeze({ provider_call_required: false, persistence_required: false }),
+});
+
+export function getMemorizeActionContract(action) {
+  return action ? MEMORIZE_ACTION_CONTRACTS[action] ?? null : null;
+}
+
+export function getCanonicalMemorizeObligation(ledgerValue, obligationId, logicalRunId = null) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue, logicalRunId);
+  const obligation = ledger.obligations?.[String(obligationId ?? '')] ?? null;
+  if (!obligation) return null;
+  if (logicalRunId && obligation.logical_run_id && obligation.logical_run_id !== logicalRunId) return null;
+  return obligation;
+}
+
+export function memorizeObligationStateFingerprint(obligation = null) {
+  if (!obligation) return null;
+  const value = JSON.stringify({
+    obligation_id: obligation.obligation_id ?? null,
+    logical_run_id: obligation.logical_run_id ?? null,
+    current_state: obligation.current_state ?? null,
+    checkpoint_eligible: obligation.checkpoint_eligible === true,
+    exact_reason_code: obligation.exact_reason_code ?? null,
+    next_eligible_action: obligation.next_eligible_action ?? null,
+    provider_attempt_lineage: obligation.provider_attempt_lineage ?? [],
+    durable_record_ids: obligation.lifecycle?.durably_persisted_record_ids ?? [],
+    unresolved_fragment_ids: obligation.lifecycle?.unresolved_fragment_ids ?? [],
+  });
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
 
 // This table is intentionally exported: tests, migrations, and diagnostics use
 // the same lifecycle contract instead of maintaining parallel interpretations.
@@ -292,6 +364,7 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
         ? raw.semantic_event_history.slice(-128) : [],
       implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
       schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
+      revision: Number(raw?.revision ?? 0),
       metrics: { ...(raw?.metrics ?? {}) },
       lifecycle,
       recovery_epochs: falseNegativeV0972 ? [...(raw?.recovery_epochs ?? []), {
@@ -464,6 +537,7 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
       ? prior.semantic_event_history.slice(-128) : [],
     implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
     schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
+    revision: Number(prior.revision ?? 0) + 1,
     metrics: { ...(prior.metrics ?? {}), ...(transition.metrics ?? {}) },
     lifecycle: mergeLifecycleIdentity(prior.lifecycle, lifecyclePatch),
   };
@@ -662,7 +736,18 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           ...child, logical_run_id: identity.logical_run_id ?? ledger.logical_run_id,
           tier: child.tier ?? identity.tier, owner: child.owner ?? identity.owner,
           parent_obligation_id: id,
-        }, { current_state: ledger.obligations[child.obligation_id]?.current_state ?? 'unattempted', at: event.at });
+        }, {
+          current_state: ledger.obligations[child.obligation_id]?.current_state ?? 'unattempted',
+          exact_reason_code: ledger.obligations[child.obligation_id]?.exact_reason_code
+            ?? 'recovery_child_not_attempted',
+          next_eligible_action: ledger.obligations[child.obligation_id]?.next_eligible_action
+            ?? 'dispatch_provider_request',
+          recovery_intent: ledger.obligations[child.obligation_id]?.recovery_intent
+            ?? 'complete_recovery_child_coverage',
+          recovery_stage: ledger.obligations[child.obligation_id]?.recovery_stage
+            ?? 'initial_child_dispatch',
+          at: event.at,
+        });
       }
       result = { applied: true, obligation: parent };
       break;
@@ -798,10 +883,11 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           missing_evidence: missingEvidence,
           safe_repair_action: 'inspect_or_restore_private_terminal_evidence',
         });
-      if (existing?.checkpoint_eligible) return recordSemanticViolation(ledger, identity, event,
-        'terminal_provider_evidence_adoption_cannot_regress_terminal_state', {
-          safe_repair_action: 'retain_existing_terminal_coverage',
-        });
+      if (existing?.checkpoint_eligible) {
+        result = recordHistoricalLifecycleNoop(ledger, identity, event,
+          'terminal_provider_evidence_adoption_superseded_by_terminal_coverage');
+        break;
+      }
       result = transitionForSemanticEvent(ledger, identity, event,
         'provider_response_received', {
           ...details,
@@ -1608,10 +1694,6 @@ export function projectMemorizeObligationLedger(ledgerValue) {
   const obligations = Object.values(ledger.obligations);
   const safe = obligations.filter((item) => item.checkpoint_eligible);
   const pending = obligations.filter((item) => !item.checkpoint_eligible);
-  const localActions = new Set(['continue_pending_downstream_processing',
-    'continue_current_run_downstream', 'parse_retained_response', 'continue_validation',
-    'persist_validated_records', 'reconcile_terminal_attempt_evidence',
-    'settle_terminal_malformed_attempt']);
   const diagnosticForPending = (item) => {
     const durableCount = item.lifecycle?.durably_persisted_record_ids?.length ?? 0;
     const unresolvedCount = item.lifecycle?.unresolved_fragment_ids?.length ?? 0;
@@ -1625,9 +1707,10 @@ export function projectMemorizeObligationLedger(ledgerValue) {
               : item.current_state === 'parser_partial' ? 'parser_partial'
                 : item.current_state === 'provider_response_received' ? 'response_recorded'
                   : null;
+    const actionContract = getMemorizeActionContract(item.next_eligible_action);
     const actionable = ACTIONABLE_STATES.has(item.current_state)
-      && Boolean(item.exact_reason_code && item.next_eligible_action);
-    const providerCallRequired = actionable && !localActions.has(item.next_eligible_action);
+      && Boolean(item.exact_reason_code && item.next_eligible_action && actionContract);
+    const providerCallRequired = actionable && actionContract?.provider_call_required === true;
     return {
       ...item,
       physical_attempt_id: item.provider_attempt_lineage?.at(-1) ?? null,
@@ -1637,11 +1720,11 @@ export function projectMemorizeObligationLedger(ledgerValue) {
       unresolved_fragment_count: unresolvedCount,
       exact_next_action: item.next_eligible_action ?? null,
       provider_call_required: providerCallRequired,
-      persistence_required: ['persist_validated_records', 'records_staged']
-        .includes(item.next_eligible_action),
+      persistence_required: actionable && actionContract?.persistence_required === true,
       actionability_reason: actionable ? 'canonical_exact_action_available'
         : !ACTIONABLE_STATES.has(item.current_state) ? 'current_state_not_actionable'
-          : !item.exact_reason_code ? 'missing_exact_reason' : 'missing_next_action',
+          : !item.exact_reason_code ? 'missing_exact_reason'
+            : !item.next_eligible_action ? 'missing_next_action' : 'unknown_action_contract',
       replay_adoption_classification: cursor === 'unresolved_fragments_pending'
         ? 'current_run_recover_fragments' : null,
       earlier_failure_superseded: (ledger.historical_transition_observations ?? [])
@@ -1655,7 +1738,8 @@ export function projectMemorizeObligationLedger(ledgerValue) {
   // whose durable work is already complete.
   const actionable = pending.filter((item) => !(item.expected_child_obligation_ids?.length)
     && ACTIONABLE_STATES.has(item.current_state)
-    && item.exact_reason_code && item.next_eligible_action);
+    && item.exact_reason_code && item.next_eligible_action
+    && getMemorizeActionContract(item.next_eligible_action));
   const running = pending.filter((item) => item.current_state === 'provider_running');
   const paused = pending.filter((item) => item.current_state === 'operationally_paused');
   const blocked = pending.filter((item) => item.current_state === 'blocked');
@@ -1684,6 +1768,10 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     if (!ACTIONABLE_STATES.has(item.current_state)) violations.push({ code: 'uncommitted_obligation_not_actionable', obligation_id: item.obligation_id });
     if (!item.exact_reason_code) violations.push({ code: 'uncommitted_obligation_missing_exact_reason', obligation_id: item.obligation_id });
     if (!item.next_eligible_action) violations.push({ code: 'uncommitted_obligation_missing_next_action', obligation_id: item.obligation_id });
+    else if (!getMemorizeActionContract(item.next_eligible_action)) violations.push({
+      code: 'uncommitted_obligation_unknown_action_contract', obligation_id: item.obligation_id,
+      next_eligible_action: item.next_eligible_action,
+    });
   }
   for (const [key, chunk] of Object.entries(chunks)) {
     if (chunk.status === 'completed' && chunk.pending_obligation_ids.length) violations.push({ code: 'completed_chunk_has_pending_tier', chunk: key });

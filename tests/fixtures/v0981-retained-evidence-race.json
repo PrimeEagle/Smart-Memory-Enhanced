@@ -1,0 +1,26 @@
+{
+  "logical_run_id": "redacted-run-v0981",
+  "root_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+  "parent_source_fingerprint": "fnv1a-39c6c9f",
+  "terminal_leaf": {
+    "obligation_id": "session:chat:0-19:fnv1a-39c6c9f:leaf:0-9:fnv1a-9f08f7d4",
+    "source_range": { "start": 0, "end": 9, "message_count": 10 },
+    "source_fingerprint": "fnv1a-9f08f7d4",
+    "durable_record_ids": [
+      "0f0d5377-ee3b-45f6-adfc-b24221f0853f",
+      "0e415969-1765-4632-8de0-7c7ac5e7d68c"
+    ],
+    "candidate_map": {
+      "0f0d5377-ee3b-45f6-adfc-b24221f0853f": "session-candidate:fnv1a-9f08f7d4:0:claim-fnv1a-1054a48f",
+      "0e415969-1765-4632-8de0-7c7ac5e7d68c": "session-candidate:fnv1a-9f08f7d4:1:claim-fnv1a-e702e9fc"
+    },
+    "prior_attempt_id": "provider-redacted-prior-4"
+  },
+  "pending_leaf": {
+    "obligation_id": "session:chat:0-19:fnv1a-39c6c9f:leaf:10-19:fnv1a-c07b56b6",
+    "source_range": { "start": 10, "end": 19, "message_count": 10 },
+    "source_fingerprint": "fnv1a-c07b56b6"
+  },
+  "next_source_range": { "start": 20, "end": 39, "message_count": 20 },
+  "longterm_record_ids": ["redacted-longterm-record-1"]
+}

@@ -524,6 +524,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const recordCompletedCoverage = pipeline.recordCompletedCoverage;
     const emitLifecycleEvent = pipeline.emitLifecycleEvent;
     const beginPhysicalAttempt = pipeline.beginAttempt;
+    if (execution.controller.lifecycle_required) await emitLifecycleEvent('obligation_registered', {
+      exact_reason_code: 'provider_request_not_started',
+      next_eligible_action: 'dispatch_provider_request',
+      recovery_intent: 'complete_source_extraction', recovery_stage: 'initial_dispatch',
+    });
     const updateCompletionJournal = (attempt = providerAttempt, patch = {}) => {
       const attemptSucceeded = ['completed', 'completed_no_candidates',
         'completed_repartitioned'].includes(attempt?.terminal_outcome);
@@ -595,6 +600,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           tasks: split.partitions,
           keyOf: (child) => extractionRecoveryChildKey('session', null, child),
           completedKeys: execution.recovery.completed_child_keys,
+          shouldSkip: async (child) => {
+            const childRange = sourceRange(child);
+            const childId = `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${sourceWindowFingerprint(child)}`;
+            const canonical = execution.hooks.get_canonical_obligation(
+              childId, providerMetadata?.active_catchup_run_id ?? null);
+            return canonical?.checkpoint_eligible === true ? {
+              skip: true, terminal: true, reason_code: 'canonical_child_already_terminal',
+              obligation_id: childId,
+            } : { skip: false, terminal: false, obligation_id: childId };
+          },
           onSkipped: async (child) => {
           const childRange = sourceRange(child);
             recordExtractionCoverage(coverageLedger, {
@@ -635,6 +650,20 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             split_reason: reason, provider_parent_attempt_id: parentAttemptId,
           });
           },
+        });
+        await execution.hooks.recovery_child_manifest_updated({
+          schema_version: 2, root_obligation_id: rootObligationId, tier: 'session',
+          registered_children: split.partitions.map((child) => {
+            const childRange = sourceRange(child);
+            return `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${sourceWindowFingerprint(child)}`;
+          }),
+          terminal_children_skipped: schedule.terminal_skipped_task_keys,
+          locally_repaired_children: schedule.locally_repaired_task_keys,
+          selected_incomplete_child: schedule.selected_incomplete_task_key,
+          reason_no_child_selected: schedule.reason_no_task_selected,
+          parent_aggregation_status: schedule.parent_aggregation_status,
+          next_sibling_action: schedule.next_sibling_action,
+          updated_at: Date.now(),
         });
         added = schedule.added;
       } catch (err) {
@@ -701,6 +730,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           ...execution.recovery.completed_child_keys,
           ...budget.split_children_committed,
         ],
+        shouldSkip: async (child) => {
+          const childRange = sourceRange(child);
+          const childId = `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${sourceWindowFingerprint(child)}`;
+          const canonical = execution.hooks.get_canonical_obligation(
+            childId, providerMetadata?.active_catchup_run_id ?? null);
+          return canonical?.checkpoint_eligible === true ? {
+            skip: true, terminal: true, reason_code: 'canonical_child_already_terminal',
+            obligation_id: childId,
+          } : { skip: false, terminal: false, obligation_id: childId };
+        },
         allowance: async () => consumeMalformedRecoveryRequest(budget, 'malformed_source_repartition'),
         execute: async (child) => {
           const childRange = sourceRange(child);
@@ -733,6 +772,20 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           split_reason: 'malformed_output_repartition', malformed_reason: reason,
         });
         },
+      });
+      await execution.hooks.recovery_child_manifest_updated({
+        schema_version: 2, root_obligation_id: rootObligationId, tier: 'session',
+        registered_children: children.map((child) => {
+          const childRange = sourceRange(child);
+          return `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${sourceWindowFingerprint(child)}`;
+        }),
+        terminal_children_skipped: schedule.terminal_skipped_task_keys,
+        locally_repaired_children: schedule.locally_repaired_task_keys,
+        selected_incomplete_child: schedule.selected_incomplete_task_key,
+        reason_no_child_selected: schedule.reason_no_task_selected,
+        parent_aggregation_status: schedule.parent_aggregation_status,
+        next_sibling_action: schedule.next_sibling_action,
+        updated_at: Date.now(),
       });
       added = schedule.added;
       if (!schedule.completed) return { completed: false, reason: schedule.pause_reason };
@@ -768,21 +821,23 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // completed response may have been accepted just before a controller/page
     // interruption, so selecting it must happen before treating a missing
     // fragment payload as a blocker or dispatching another provider request.
-    const retainedEvidence = selectRetainedProviderEvidence(providerMetadata, {
+    const canonicalObligationAtSelection = pipeline.getCanonicalObligation();
+    const retainedEvidence = execution.controller.lifecycle_required
+      ? selectRetainedProviderEvidence(providerMetadata, {
       root_obligation_id: rootObligationId,
       child_obligation_id: leafObligationId,
       tier: 'session', owner: null,
       source_range: { start: range.start, end: range.end },
       source_fingerprint: coverageBase.source_fingerprint,
       current_logical_run_id: providerMetadata?.active_catchup_run_id ?? null,
-      obligation: {
+      obligation: canonicalObligationAtSelection ?? {
         current_state: execution.provider.root_obligation_state,
         lifecycle: {
           durably_persisted_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
           unresolved_fragment_ids: resumeRecoveryState?.unresolved_semantic_units ?? [],
         },
       },
-    });
+      }) : null;
     const completionReplay = retainedEvidence?.classification
       === PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE
       ? retainedEvidence.entry : null;
@@ -923,55 +978,36 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       && (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState)
         || resumeEligibility?.eligible_action === 'single_source_unit_regeneration');
     let replayIngress = null;
-    if (completionReplay) {
-      replayIngress = await pipeline.ingestProviderEvidence('adopt_exact_prior_run_evidence', {
-        evidence: completionReplay,
+    if (retainedEvidence) {
+      replayIngress = await pipeline.applyRetainedEvidenceDecision(retainedEvidence, {
         evidence_adoption_reason: 'session_pending_downstream_completion_replay',
+        durable_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
+        unresolved_fragment_ids: automaticFragmentRecovery?.fragment_ids ?? [],
+        recovery_stage_history: resumeRecoveryState?.recovery_stages_attempted ?? [],
+        next_eligible_recovery_stage: resumeEligibility?.eligible_action ?? null,
       });
-      if (replayIngress.status !== 'pending_downstream_processing') {
-        const error = new Error('Session retained provider evidence could not be adopted safely.');
+      if (replayIngress.checkpoint_eligible === true
+        && replayIngress.evidence_classification
+          === PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL) {
+        recordCompletedCoverage('retained_terminal_coverage');
+        healthFinish({ terminal_health: 'completed', persistence: 'verified_existing',
+          provider_outcome: 'retained_terminal_coverage' });
+        return 0;
+      }
+      const fragmentDecision = replayIngress.evidence_classification
+        === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS;
+      const accepted = fragmentDecision
+        ? replayIngress.status === 'pending_reconciliation'
+        : replayIngress.status === 'pending_downstream_processing';
+      if (!accepted) {
+        const error = new Error('Session retained provider evidence could not be applied safely.');
         error.code = replayIngress.status === 'blocked'
           ? 'SME_ACCEPTED_OUTPUT_PRIVATE_EVIDENCE_UNAVAILABLE'
-          : 'SME_PROVIDER_EVIDENCE_ADOPTION_REJECTED';
+          : 'SME_PROVIDER_EVIDENCE_DECISION_REJECTED';
         error.sme_recovery_blocked = true;
-        error.sme_obligation_id = rootObligationId;
+        error.sme_obligation_id = leafObligationId;
         error.sme_reason_code = replayIngress.reason_code;
         error.sme_request_diagnostics = replayIngress;
-        throw error;
-      }
-    }
-    if (currentRunContinuation) {
-      replayIngress = await pipeline.ingestProviderEvidence('continue_current_run_downstream', {
-        evidence: currentRunContinuation.entry,
-        downstream_cursor: currentRunContinuation.downstream_cursor,
-      });
-      if (replayIngress.status !== 'pending_downstream_processing') {
-        const error = new Error('Session current-run provider evidence could not continue downstream.');
-        error.code = 'SME_CURRENT_RUN_DOWNSTREAM_CONTINUATION_REJECTED';
-        error.sme_recovery_blocked = true;
-        error.sme_obligation_id = rootObligationId;
-        error.sme_reason_code = replayIngress.reason_code;
-        error.sme_request_diagnostics = replayIngress;
-        throw error;
-      }
-    }
-    if (currentRunFragmentRecovery && automaticFragmentRecovery) {
-      const fragmentIngress = await pipeline.ingestProviderEvidence(
-        'continue_partial_fragment_recovery', {
-          evidence: currentRunFragmentRecovery.entry,
-          durable_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
-          unresolved_fragment_ids: automaticFragmentRecovery.fragment_ids,
-          recovery_stage_history: resumeRecoveryState?.recovery_stages_attempted ?? [],
-          next_eligible_recovery_stage: resumeEligibility?.eligible_action ?? null,
-          provider_call_required: true,
-        });
-      if (fragmentIngress.status !== 'pending_reconciliation') {
-        const error = new Error('Session persisted partial output could not enter fragment recovery.');
-        error.code = 'SME_PARTIAL_FRAGMENT_CONTINUATION_REJECTED';
-        error.sme_recovery_blocked = true;
-        error.sme_obligation_id = rootObligationId;
-        error.sme_reason_code = fragmentIngress.reason_code;
-        error.sme_request_diagnostics = fragmentIngress;
         throw error;
       }
     }

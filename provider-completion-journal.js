@@ -1,5 +1,7 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
 
+import { memorizeObligationStateFingerprint } from './memorize-obligation-ledger.js';
+
 export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 3;
 
 export const PROVIDER_EVIDENCE_PROVENANCE = Object.freeze({
@@ -257,10 +259,55 @@ export function selectRetainedProviderEvidence(metadata, input = {}) {
     if (![PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
       PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
       PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL].includes(selection.classification)) {
-      return { entry, ...selection };
+      return {
+        entry, ...selection,
+        selected_obligation_id: input.child_obligation_id ?? input.root_obligation_id ?? null,
+        selected_obligation_revision: Number(input.obligation?.revision ?? 0),
+        selected_obligation_state_fingerprint:
+          memorizeObligationStateFingerprint(input.obligation ?? null),
+        selected_at: Date.now(),
+      };
     }
   }
   return null;
+}
+
+/**
+ * Revalidate a retained-evidence decision against the exact canonical leaf at
+ * the instant it is applied. A changed leaf is reclassified; terminal coverage
+ * is an idempotent success and can never be regressed to response processing.
+ */
+export function revalidateRetainedProviderEvidenceSelection(selection, input = {}) {
+  if (!selection?.entry) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
+    reason_code: 'retained_evidence_selection_missing', changed_since_selection: false,
+  };
+  const obligation = input.obligation ?? null;
+  const currentFingerprint = memorizeObligationStateFingerprint(obligation);
+  const changed = Number(selection.selected_obligation_revision ?? 0)
+      !== Number(obligation?.revision ?? 0)
+    || (selection.selected_obligation_state_fingerprint ?? null) !== currentFingerprint;
+  if (obligation?.checkpoint_eligible === true
+    || ['durably_committed', 'explicit_no_update'].includes(obligation?.current_state)) {
+    return {
+      classification: PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL,
+      downstream_cursor: 'fully_terminal', next_action: null,
+      provider_call_required: false, persistence_required: false,
+      changed_since_selection: changed,
+      selected_obligation_revision: selection.selected_obligation_revision ?? 0,
+      applied_obligation_revision: obligation?.revision ?? 0,
+      selected_state_fingerprint: selection.selected_obligation_state_fingerprint ?? null,
+      applied_state_fingerprint: currentFingerprint,
+    };
+  }
+  return {
+    ...classifyRetainedProviderEvidence(selection.entry, { ...input, obligation }),
+    changed_since_selection: changed,
+    selected_obligation_revision: selection.selected_obligation_revision ?? 0,
+    applied_obligation_revision: obligation?.revision ?? 0,
+    selected_state_fingerprint: selection.selected_obligation_state_fingerprint ?? null,
+    applied_state_fingerprint: currentFingerprint,
+  };
 }
 
 export function migrateTerminalProviderCompletions(metadata, providerAudit, eligibleAttemptIds = null) {
