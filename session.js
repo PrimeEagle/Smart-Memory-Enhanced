@@ -822,6 +822,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // interruption, so selecting it must happen before treating a missing
     // fragment payload as a blocker or dispatching another provider request.
     const canonicalObligationAtSelection = pipeline.getCanonicalObligation();
+    const canonicalDurableRecordIds = canonicalObligationAtSelection?.lifecycle
+      ?.durably_persisted_record_ids ?? [];
+    const canonicalUnresolvedFragmentIds = canonicalObligationAtSelection?.lifecycle
+      ?.unresolved_fragment_ids ?? [];
+    const retainedApplicationDurableIds = (resumeRecoveryState?.durably_persisted_record_ids
+      ?? []).length ? resumeRecoveryState.durably_persisted_record_ids
+      : canonicalDurableRecordIds;
     const retainedEvidence = execution.controller.lifecycle_required
       ? selectRetainedProviderEvidence(providerMetadata, {
       root_obligation_id: rootObligationId,
@@ -849,8 +856,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       ? retainedEvidence : null;
     const retainedWholeResponse = completionReplay ?? currentRunContinuation?.entry ?? null;
     if (execution.provider.resumed_pending_obligation
-      && Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
-      && (resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
+      && (Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
+        || canonicalDurableRecordIds.length > 0)
+      && ((resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
+        || canonicalUnresolvedFragmentIds.length > 0)
       && restoredFragments.length === 0 && !retainedWholeResponse) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: 'missing_private_unresolved_fragment_payload',
@@ -876,6 +885,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovery_of_attempt_id: restoredFragments[0]?.producing_attempt_id ?? null,
         focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, restoredFragments),
       } : null);
+    const retainedApplicationFragmentIds = automaticFragmentRecovery?.fragment_ids?.length
+      ? automaticFragmentRecovery.fragment_ids : canonicalUnresolvedFragmentIds;
     if (!retainedWholeResponse && execution.provider.resumed_pending_obligation && automaticFragmentRecovery
       && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
@@ -981,8 +992,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (retainedEvidence) {
       replayIngress = await pipeline.applyRetainedEvidenceDecision(retainedEvidence, {
         evidence_adoption_reason: 'session_pending_downstream_completion_replay',
-        durable_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
-        unresolved_fragment_ids: automaticFragmentRecovery?.fragment_ids ?? [],
+        durable_record_ids: retainedApplicationDurableIds,
+        unresolved_fragment_ids: retainedApplicationFragmentIds,
         recovery_stage_history: resumeRecoveryState?.recovery_stages_attempted ?? [],
         next_eligible_recovery_stage: resumeEligibility?.eligible_action ?? null,
       });

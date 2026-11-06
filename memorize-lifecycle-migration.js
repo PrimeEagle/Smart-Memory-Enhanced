@@ -7,11 +7,14 @@ import { recordProviderCompletion } from './provider-completion-journal.js';
 import { settleOrphanedProviderAttempts } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import { deriveMemorizeRecoveryAuthority } from './memorize-recovery-authority.js';
+import { planRetainedProviderEvidence, PROVIDER_EVIDENCE_PROVENANCE }
+  from './retained-evidence-plan.js';
 
 export const MEMORIZE_LIFECYCLE_MIGRATION_VERSION = 1;
 export const SAME_RUN_EVIDENCE_MIGRATION_VERSION = 1;
 export const RETAINED_EVIDENCE_RACE_MIGRATION_VERSION = 1;
 export const CONTROLLER_LEASE_RECOVERY_MIGRATION_VERSION = 1;
+export const RETAINED_EVIDENCE_RECOVERY_MIGRATION_VERSION = 1;
 
 const success = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const malformed = (attempt) => attempt?.terminal_outcome === 'provider_response_malformed'
@@ -533,4 +536,188 @@ export function migrateV0982ControllerLeaseRecoveryState({ checkpoint, metadata,
     completed_at: at,
   };
   return { migrated: true, detail, provider_calls: 0, persistence_calls: 0 };
+}
+
+/**
+ * Repairs v0.9.83 retained-evidence recovery loops. This migration changes
+ * only lifecycle authority metadata: no provider request and no memory-store
+ * persistence callback is permitted.
+ */
+export function migrateV0983RetainedEvidenceRecoveryState({ checkpoint, metadata,
+  at = Date.now() } = {}) {
+  const ledgerValue = checkpoint?.run_manifest?.obligation_ledger;
+  const logicalRunId = checkpoint?.run_manifest?.logical_run_id;
+  if (!checkpoint || !ledgerValue || !logicalRunId || !metadata) return {
+    migrated: false, detail: null, provider_calls: 0, persistence_calls: 0,
+  };
+  const ledger = ensureMemorizeObligationLedger(ledgerValue, logicalRunId);
+  ledger.migrations ??= {};
+  const key = 'retained_evidence_recovery_v0984';
+  if (ledger.migrations[key]?.completed === true) return {
+    migrated: false, detail: ledger.migrations[key], provider_calls: 0,
+    persistence_calls: 0,
+  };
+  const journal = metadata.provider_completion_journal;
+  const entries = completionEntries(journal);
+  const before = JSON.stringify({ ledger, journal });
+  const removedLegacyObligations = [];
+  const plannedObligations = [];
+  const reconciledJournalEntries = [];
+
+  // Collapse compatibility-only range obligations into the fingerprinted
+  // canonical record. The compatibility record never contributes coverage.
+  for (const legacy of Object.values(ledger.obligations ?? {})) {
+    const legacyShape = !legacy?.source_fingerprint
+      || String(legacy?.obligation_id ?? '').endsWith(':legacy');
+    if (!legacyShape || !legacy?.source_range) continue;
+    const canonical = Object.values(ledger.obligations ?? {}).find((item) =>
+      item !== legacy && item?.source_fingerprint && item.tier === legacy.tier
+        && String(item.owner ?? '').trim().toLowerCase()
+          === String(legacy.owner ?? '').trim().toLowerCase()
+        && Number(item.source_range?.start) === Number(legacy.source_range.start)
+        && Number(item.source_range?.end) === Number(legacy.source_range.end));
+    if (!canonical) continue;
+    canonical.provider_attempt_lineage = [...new Set([
+      ...(canonical.provider_attempt_lineage ?? []),
+      ...(legacy.provider_attempt_lineage ?? []),
+    ])].slice(-64);
+    canonical.evidence_adoptions = [...new Map([
+      ...(canonical.evidence_adoptions ?? []), ...(legacy.evidence_adoptions ?? []),
+    ].filter((item) => item?.origin_attempt_id).map((item) => [
+      [item.origin_attempt_id, item.adopted_into_logical_run_id,
+        item.canonical_obligation_id].join('|'), item,
+    ])).values()].slice(-64);
+    delete ledger.obligations[legacy.obligation_id];
+    ledger.recovery_backlog = (ledger.recovery_backlog ?? [])
+      .filter((item) => item.obligation_id !== legacy.obligation_id);
+    removedLegacyObligations.push({ legacy_obligation_id: legacy.obligation_id,
+      canonical_obligation_id: canonical.obligation_id });
+  }
+
+  // Reconcile a journal entry only when the canonical reducer already proves
+  // terminal durable coverage and supplies the exact durable record IDs.
+  for (const entry of entries) {
+    const obligationId = entry.child_obligation_id ?? entry.root_obligation_id;
+    const obligation = ledger.obligations?.[obligationId];
+    const reducerProvesTerminal = entry.ledger_transition?.checkpoint_eligible === true
+      || obligation?.checkpoint_eligible === true;
+    const durableIds = [...new Set([
+      ...(obligation?.lifecycle?.durably_persisted_record_ids ?? []),
+      ...(entry.persistence?.durable_record_ids ?? []),
+    ])];
+    if (!reducerProvesTerminal || !durableIds.length
+      || ['committed', 'verified_existing'].includes(entry.persistence?.status)) continue;
+    entry.persistence = { ...(entry.persistence ?? {}), status: 'verified_existing',
+      durable_record_ids: durableIds,
+      reconciliation_source: 'canonical_terminal_obligation_v0984' };
+    entry.downstream_cursor = 'fully_terminal';
+    entry.logical_disposition = obligation?.current_state ?? 'durably_committed';
+    entry.logical_completed_at ??= obligation?.timestamps?.updated_at ?? at;
+    reconciledJournalEntries.push({ attempt_id: entry.attempt_id,
+      obligation_id: obligationId, durable_record_ids: durableIds });
+  }
+
+  for (const obligation of Object.values(ledger.obligations ?? {})) {
+    if (obligation.checkpoint_eligible || !obligation.source_fingerprint) continue;
+    const plan = planRetainedProviderEvidence({
+      current_logical_run_id: logicalRunId,
+      root_obligation_id: obligation.parent_obligation_id ?? obligation.obligation_id,
+      child_obligation_id: obligation.obligation_id,
+      tier: obligation.tier, owner: obligation.owner,
+      source_range: obligation.source_range,
+      source_fingerprint: obligation.source_fingerprint,
+      obligation, candidates: entries,
+    });
+    if (!plan.selected_entry) continue;
+    const selected = plan.selected_entry;
+    const patch = {
+      current_state: obligation.current_state,
+      exact_reason_code: obligation.exact_reason_code,
+      next_eligible_action: plan.exact_next_action ?? obligation.next_eligible_action,
+      recovery_intent: plan.exact_next_action ?? obligation.recovery_intent,
+      recovery_stage: obligation.recovery_stage,
+      at,
+    };
+    if (plan.evidence_classification
+      === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS) {
+      const adoption = {
+        origin_attempt_id: selected.attempt_id,
+        origin_logical_run_id: selected.logical_run_id,
+        adopted_into_logical_run_id: logicalRunId,
+        canonical_obligation_id: obligation.obligation_id,
+        obligation_revision_at_adoption: Number(obligation.revision ?? 0),
+        evidence_fingerprint: obligation.metrics?.adopted_evidence_fingerprint
+          ?? `${selected.logical_run_id}|${selected.attempt_id}|${obligation.source_fingerprint}`,
+        downstream_cursor: plan.downstream_cursor,
+        adopted_at: obligation.timestamps?.updated_at ?? at,
+        reconstructed_from_v0983: true,
+      };
+      patch.evidence_adoptions = [adoption];
+      patch.next_eligible_action = ['recover_exact_unresolved_fragments',
+        'recover_unresolved_partial_output_fragments']
+        .includes(obligation.next_eligible_action)
+        ? obligation.next_eligible_action : plan.exact_next_action;
+      patch.recovery_intent = 'recover_unresolved_partial_output_fragments';
+    } else if (plan.evidence_classification
+      !== PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE
+      && plan.evidence_classification
+        !== PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM) continue;
+    const updated = transitionMemorizeObligation(ledger, obligation, patch);
+    plannedObligations.push({ obligation_id: obligation.obligation_id,
+      evidence_origin_attempt_id: selected.attempt_id,
+      evidence_classification: plan.evidence_classification,
+      downstream_cursor: plan.downstream_cursor,
+      exact_next_action: updated.next_eligible_action,
+      candidate_precedence_rationale: plan.candidate_precedence_rationale });
+  }
+
+  if (removedLegacyObligations.length) ledger.historical_transition_observations = [
+    ...(ledger.historical_transition_observations ?? []),
+    ...removedLegacyObligations.map((item) => ({
+      code: 'legacy_parallel_obligation_superseded_by_fingerprinted_canonical_obligation',
+      ...item, classification: 'historical_normalized', observed_at: at,
+    })),
+  ].slice(-256);
+  const authority = deriveMemorizeRecoveryAuthority({
+    checkpoint, ledger,
+    provider_audit: metadata.live_memory_health?.provider_attempt_audit,
+    provider_completion_journal: journal,
+    controller_heartbeat: checkpoint.controller_heartbeat,
+    transaction_lifecycle: checkpoint.transaction_lifecycle,
+    checkpoint_status: checkpoint.status,
+  });
+  checkpoint.authoritative_recovery = authority;
+  checkpoint.resume_eligibility = {
+    schema_version: 2,
+    eligible: authority.resume_eligible,
+    mode: authority.resume_eligible
+      ? (authority.provider_call_permitted ? 'provider_resume' : 'local_reconciliation_only')
+      : 'blocked',
+    reason_code: authority.base_resume_eligibility?.reason_code
+      ?? authority.resume_blockers?.[0]?.reason_code ?? 'no_executable_recovery_action',
+    next_eligible_action: authority.next_executable_action,
+    obligation_id: authority.pending_obligation?.obligation_id ?? null,
+    provider_call_required: authority.provider_call_permitted,
+    evaluated_at: at,
+  };
+  if (authority.resume_eligible && checkpoint.status !== 'completed') {
+    checkpoint.status = 'awaiting_manual_resume';
+  }
+  const detail = ledger.migrations[key] = {
+    version: RETAINED_EVIDENCE_RECOVERY_MIGRATION_VERSION,
+    completed: true,
+    logical_run_id: logicalRunId,
+    removed_legacy_obligation_count: removedLegacyObligations.length,
+    removed_legacy_obligations: removedLegacyObligations,
+    planned_obligation_count: plannedObligations.length,
+    planned_obligations: plannedObligations,
+    reconciled_journal_entry_count: reconciledJournalEntries.length,
+    reconciled_journal_entries: reconciledJournalEntries,
+    provider_calls: 0, persistence_calls: 0, completed_at: at,
+  };
+  ledger.updated_at = at;
+  checkpoint.retained_evidence_recovery_migration = detail;
+  checkpoint.updated_at = at;
+  return { ledger, migrated: before !== JSON.stringify({ ledger, journal }), detail,
+    provider_calls: 0, persistence_calls: 0 };
 }

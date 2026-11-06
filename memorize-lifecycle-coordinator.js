@@ -257,6 +257,15 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
         selection_application_classification: decision.changed_since_selection
           ? 'state_changed_reclassify' : 'selection_unchanged',
         decision_revalidation: decision,
+        retained_evidence_plan: decision.retained_evidence_plan ? Object.freeze({
+          ...decision.retained_evidence_plan,
+          application_result: {
+            status: 'idempotent_duplicate_verified',
+            resulting_state: canonical.current_state,
+            progress_occurred: false,
+            reason_code: 'retained_evidence_target_already_terminal',
+          },
+        }) : null,
       });
     }
     const operation = {
@@ -274,6 +283,16 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
           ? 'blocked' : 'rejected',
         next_action: decision.next_action ?? 'reconcile_terminal_attempt_evidence',
         provider_call_required: false,
+        retained_evidence_plan: decision.retained_evidence_plan ? Object.freeze({
+          ...decision.retained_evidence_plan,
+          application_result: {
+            status: decision.classification === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE
+              ? 'blocked' : 'rejected',
+            resulting_state: canonical.current_state,
+            progress_occurred: false,
+            reason_code: decision.blockers?.[0] ?? 'retained_evidence_no_longer_applicable',
+          },
+        }) : null,
       });
     const applied = await coordinateProviderEvidenceIngress({
       ...input,
@@ -298,6 +317,19 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       decision_revalidation: decision,
       selection_application_classification: decision.changed_since_selection
         ? 'state_changed_reclassify' : 'selection_unchanged',
+      retained_evidence_plan: decision.retained_evidence_plan ? Object.freeze({
+        ...decision.retained_evidence_plan,
+        application_result: {
+          status: applied.status,
+          resulting_state: applied.resulting_state ?? canonical.current_state,
+          progress_occurred: applied.resulting_state != null
+            && applied.resulting_state !== canonical.current_state,
+          reason_code: applied.reason_code ?? null,
+          exact_next_action: applied.next_action ?? decision.next_action ?? null,
+          provider_call_required: applied.provider_call_required
+            ?? decision.provider_call_required ?? false,
+        },
+      }) : null,
     });
   }
 

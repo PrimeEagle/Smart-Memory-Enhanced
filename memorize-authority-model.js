@@ -4,8 +4,8 @@ import {
   getMemorizeActionContract,
   projectMemorizeObligationLedger,
 } from './memorize-obligation-ledger.js';
-import { classifyRetainedProviderEvidence, PROVIDER_EVIDENCE_PROVENANCE }
-  from './provider-completion-journal.js';
+import { PROVIDER_EVIDENCE_PROVENANCE, planRetainedProviderEvidence }
+  from './retained-evidence-plan.js';
 
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
@@ -168,30 +168,24 @@ export function deriveMemorizeResumeEligibility({
   const journalEntries = Array.isArray(providerCompletionJournal?.entries)
     ? providerCompletionJournal.entries
     : Object.values(providerCompletionJournal?.entries ?? {});
-  const exactRetainedCompletion = pending ? [...journalEntries].reverse().find((entry) => {
-    const leaf = entry?.child_obligation_id ?? entry?.root_obligation_id;
-    return entry?.root_obligation_id === (pending.parent_obligation_id ?? pending.obligation_id)
-      && leaf === pending.obligation_id
-      && entry.tier === pending.tier
-      && String(entry.owner ?? '').trim().toLowerCase()
-        === String(pending.owner ?? '').trim().toLowerCase()
-      && Number(entry.source_range?.start) === Number(pending.source_range?.start)
-      && Number(entry.source_range?.end) === Number(pending.source_range?.end)
-      && entry.source_fingerprint === pending.source_fingerprint
-      && (entry.private_response_retained === true || entry.response_text != null)
-      && ['completed', 'completed_no_candidates', 'completed_repartitioned']
-        .includes(entry.terminal_outcome);
+  const retainedPlan = pending ? planRetainedProviderEvidence({
+    current_logical_run_id: projection.logical_run_id ?? ledger?.logical_run_id ?? null,
+    root_obligation_id: pending.parent_obligation_id ?? pending.obligation_id,
+    child_obligation_id: pending.obligation_id,
+    tier: pending.tier, owner: pending.owner,
+    source_range: pending.source_range,
+    source_fingerprint: pending.source_fingerprint,
+    obligation: pending,
+    candidates: journalEntries,
   }) : null;
-  const retainedClassification = exactRetainedCompletion
-    ? classifyRetainedProviderEvidence(exactRetainedCompletion, {
-      current_logical_run_id: projection.logical_run_id ?? ledger?.logical_run_id ?? null,
-      root_obligation_id: pending.parent_obligation_id ?? pending.obligation_id,
-      child_obligation_id: pending.obligation_id,
-      tier: pending.tier, owner: pending.owner,
-      source_range: pending.source_range,
-      source_fingerprint: pending.source_fingerprint,
-      obligation: pending, later_attempts: journalEntries,
-    }) : null;
+  const exactRetainedCompletion = retainedPlan?.selected_entry ?? null;
+  const retainedClassification = retainedPlan?.evidence_classification ? {
+    classification: retainedPlan.evidence_classification,
+    downstream_cursor: retainedPlan.downstream_cursor,
+    next_action: retainedPlan.exact_next_action,
+    provider_call_required: retainedPlan.provider_call_required,
+    persistence_required: retainedPlan.persistence_required,
+  } : null;
   const physicalRunning = (providerAudit?.recent_attempts ?? [])
     .filter((attempt) => attempt?.terminal_outcome === 'running');
   const currentRunningCount = Math.max(
@@ -219,6 +213,7 @@ export function deriveMemorizeResumeEligibility({
     obligation_id: pending.obligation_id,
     physical_attempt_id: exactRetainedCompletion.attempt_id,
     provider_call_required: false,
+    retained_evidence_plan: retainedPlan,
   };
   if (retainedClassification?.classification
     === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM) return {
@@ -228,15 +223,17 @@ export function deriveMemorizeResumeEligibility({
     obligation_id: pending.obligation_id,
     physical_attempt_id: exactRetainedCompletion.attempt_id,
     provider_call_required: false,
+    retained_evidence_plan: retainedPlan,
   };
   if (retainedClassification?.classification
     === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS) return {
     eligible: true, mode: 'provider_resume',
     reason_code: 'exact_unresolved_fragment_recovery_available',
-    next_eligible_action: 'recover_exact_unresolved_fragments',
+    next_eligible_action: retainedPlan.exact_next_action,
     obligation_id: pending.obligation_id,
     physical_attempt_id: exactRetainedCompletion.attempt_id,
     provider_call_required: true,
+    retained_evidence_plan: retainedPlan,
   };
   if (retainedClassification?.classification
     === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE) return {
@@ -246,6 +243,20 @@ export function deriveMemorizeResumeEligibility({
     obligation_id: pending.obligation_id,
     physical_attempt_id: exactRetainedCompletion.attempt_id,
     provider_call_required: false,
+    retained_evidence_plan: retainedPlan,
+  };
+  if (retainedClassification?.classification
+    === PROVIDER_EVIDENCE_PROVENANCE.INCOMPLETE_RECONCILIATION
+    && ['completed', 'completed_no_candidates', 'completed_repartitioned']
+      .includes(exactRetainedCompletion?.terminal_outcome)) return {
+    eligible: false, mode: 'blocked',
+    reason_code: retainedPlan.exact_blockers?.[0]
+      ?? 'retained_evidence_reconciliation_incomplete',
+    next_eligible_action: retainedPlan.exact_next_action,
+    obligation_id: pending.obligation_id,
+    physical_attempt_id: exactRetainedCompletion?.attempt_id ?? null,
+    provider_call_required: false,
+    retained_evidence_plan: retainedPlan,
   };
   if (LOCAL_RECONCILIATION_ACTIONS.has(action)) return {
     eligible: true, mode: 'local_reconciliation_only',

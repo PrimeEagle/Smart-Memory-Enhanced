@@ -2,6 +2,8 @@ import { deriveMemorizeResumeEligibility } from './memorize-authority-model.js';
 import { getMemorizeActionContract, projectMemorizeObligationLedger }
   from './memorize-obligation-ledger.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
+import { resumeNoProgressBlockIsCurrent, snapshotMemorizeResumeProgress }
+  from './memorize-resume-progress.js';
 
 const terminalTransactionStates = new Set([
   'committed', 'rolled_back', 'commit_failed_with_exact_state',
@@ -38,7 +40,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
   const finalizationPending = !pending && !sourceTraversalPending
     && checkpoint != null && !['completed', 'terminal_failure'].includes(
       input.checkpoint_status ?? checkpoint.status);
-  const exactAction = stageEligibility?.blocked === false
+  const preliminaryAction = stageEligibility?.blocked === false
     ? stageEligibility.eligible_action : pending?.next_eligible_action
       ?? (sourceTraversalPending ? 'continue_source_traversal'
         : finalizationPending ? 'continue_finalization' : null);
@@ -50,7 +52,21 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     provider_completion_journal: input.provider_completion_journal,
     active_transaction: activeTransaction,
   });
+  // The retained-evidence planner owns the action whenever it found an exact,
+  // executable plan. Recovery-window projections may describe the same work,
+  // but cannot override that canonical decision with a stale adoption action.
+  const exactAction = pending && base.eligible === true
+    ? base.next_eligible_action : preliminaryAction;
   const blockers = [];
+  const currentProgressSnapshot = snapshotMemorizeResumeProgress({
+    checkpoint, ledger, provider_audit: providerAudit,
+    retained_evidence_plan: base.retained_evidence_plan,
+  });
+  if (resumeNoProgressBlockIsCurrent(checkpoint?.resume_progress,
+    currentProgressSnapshot)) blockers.push({
+    reason_code: 'resume_no_progress_same_action',
+    evidence: checkpoint.resume_progress,
+  });
   if (transactionContradiction) blockers.push({
     reason_code: 'transaction_checkpoint_lifecycle_requires_repair',
     evidence: { transaction_id: transaction?.transaction_id ?? null,

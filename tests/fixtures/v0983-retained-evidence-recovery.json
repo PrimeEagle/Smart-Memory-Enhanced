@@ -1,0 +1,9 @@
+{
+  "logical_run_id": "762154f5-12e7-4e2a-87f4-6286c07a601d",
+  "adopted_ranges": [
+    { "start": 40, "end": 59, "attempt_id": "provider-mw2ls0mr-8", "durable_ids": ["record-40-a", "record-40-b", "record-40-c"], "fragment_ids": ["fragment-40-a", "fragment-40-b"] },
+    { "start": 80, "end": 99, "attempt_id": "provider-mw0ukct9-61", "durable_ids": ["record-80-a", "record-80-b"], "fragment_ids": ["fragment-80-a"] }
+  ],
+  "precedence_range": { "start": 120, "end": 139, "verified_attempt_id": "provider-mw0v4ljk-80", "newer_incomplete_attempt_id": "provider-mw0v6mzn-83" },
+  "journal_reconciliation_attempt_id": "provider-mw560z41-20"
+}

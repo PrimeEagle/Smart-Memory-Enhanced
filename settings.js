@@ -108,7 +108,8 @@ import {
   rebuildMemorizeCompatibilityProjection,
 } from './memorize-authority-model.js';
 import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState,
-  migrateV0981RetainedEvidenceRaceState, migrateV0982ControllerLeaseRecoveryState }
+  migrateV0981RetainedEvidenceRaceState, migrateV0982ControllerLeaseRecoveryState,
+  migrateV0983RetainedEvidenceRecoveryState }
   from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
@@ -122,6 +123,8 @@ import {
 } from './catchup-transaction.js';
 import { finalizeMemorizeController } from './memorize-controller-finalizer.js';
 import { deriveMemorizeRecoveryAuthority } from './memorize-recovery-authority.js';
+import { deriveMemorizeResumeProgress, snapshotMemorizeResumeProgress }
+  from './memorize-resume-progress.js';
 import {
   bindMemorizeCheckpoint,
   buildMemorizeControllerExit,
@@ -276,8 +279,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.83',
-  build_fingerprint: 'sme-v0.9.83-controller-lease-recovery-r1',
+  extension_version: '0.9.84',
+  build_fingerprint: 'sme-v0.9.84-retained-evidence-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2351,6 +2354,12 @@ export function bindSettingsUI(ctrl) {
         const leaseRepair = migrateV0982ControllerLeaseRecoveryState({
           checkpoint: rawCheckpoint, metadata: liveMetadata,
         });
+        const retainedRecoveryRepair = migrateV0983RetainedEvidenceRecoveryState({
+          checkpoint: rawCheckpoint, metadata: liveMetadata,
+        });
+        if (retainedRecoveryRepair.migrated) {
+          rawCheckpoint.retained_evidence_recovery_migration = retainedRecoveryRepair.detail;
+        }
         const healthRepairs = reconcileImpossibleLiveHealth(liveMetadata, audit);
         const transactionId = rawCheckpoint.transaction_lifecycle?.transaction_id ?? null;
         if (rawCheckpoint.transaction_lifecycle?.state === 'active') {
@@ -5282,6 +5291,7 @@ export function bindSettingsUI(ctrl) {
       extractionFailuresByTier: {},
       saveFailures: 0,
       providerFailures: [],
+      localLifecycleFailures: [],
       operationalPauses: [],
       errors: [],
       warnings: [],
@@ -5337,6 +5347,8 @@ export function bindSettingsUI(ctrl) {
       phase: 'initializing',
     });
     let controllerPrimaryError = null;
+    let firstLocalLifecycleError = null;
+    let resumeProgressBefore = null;
     let controllerFailureClassification = null;
     runResult.transactionRecovery = staleTransactionRecovery.recovered ? staleTransactionRecovery : null;
     let currentChunkFailed = false;
@@ -5423,12 +5435,36 @@ export function bindSettingsUI(ctrl) {
         persistence: isSave,
         message: String(err?.message ?? err ?? 'Unknown error').replace(/\s+/g, ' ').slice(0, 300),
       });
-      if (err?.sme_request_diagnostics) {
+      const requestDiagnostics = err?.sme_request_diagnostics ?? null;
+      const physicalProviderFailure = Boolean(requestDiagnostics)
+        && requestDiagnostics.request_prevented !== true
+        && (Boolean(requestDiagnostics.provider)
+          || Boolean(requestDiagnostics.endpoint_category)
+          || requestDiagnostics.transport_completed === false
+          || (requestDiagnostics.http_status != null
+            && Number.isFinite(Number(requestDiagnostics.http_status))));
+      if (physicalProviderFailure) {
         runResult.providerFailures.push({
           label,
           tier,
-          ...err.sme_request_diagnostics,
+          ...requestDiagnostics,
         });
+      } else if (requestDiagnostics || /provider-evidence|lifecycle|retained provider evidence/i
+        .test(`${err?.message ?? ''} ${err?.code ?? ''}`)) {
+        const localFailure = {
+          label, tier,
+          code: err?.code ?? 'SME_LOCAL_LIFECYCLE_FAILURE',
+          reason_code: err?.sme_reason_code ?? requestDiagnostics?.reason_code ?? null,
+          obligation_id: err?.sme_obligation_id
+            ?? requestDiagnostics?.obligation_id ?? requestDiagnostics?.selected_obligation_id ?? null,
+          provider_call_required: requestDiagnostics?.provider_call_required === true,
+          message: String(err?.message ?? err ?? 'Unknown local lifecycle failure')
+            .replace(/\s+/g, ' ').slice(0, 300),
+          recorded_at: Date.now(),
+        };
+        runResult.localLifecycleFailures.push(localFailure);
+        firstLocalLifecycleError ??= err instanceof Error ? err
+          : Object.assign(new Error(localFailure.message), { code: localFailure.code });
       }
       console.error(`[Smart Memory Enhanced] Catch-up ${label}:`, err);
     };
@@ -5721,6 +5757,17 @@ export function bindSettingsUI(ctrl) {
         checkpoint.run_manifest.terminal_reason_code = controllerLeaseMigration.detail
           .exact_recovery_stage ?? 'interrupted_completion_unknown';
       }
+      const retainedEvidenceRecoveryMigration = migrateV0983RetainedEvidenceRecoveryState({
+        checkpoint,
+        metadata: catchUpContext.chatMetadata?.[META_KEY],
+      });
+      if (retainedEvidenceRecoveryMigration.migrated) {
+        checkpoint.retained_evidence_recovery_migration
+          = retainedEvidenceRecoveryMigration.detail;
+        checkpoint.run_manifest.terminal_reason_code
+          = retainedEvidenceRecoveryMigration.detail.planned_obligations?.[0]
+            ?.exact_next_action ?? checkpoint.run_manifest.terminal_reason_code;
+      }
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
         providerAudit,
@@ -5852,6 +5899,23 @@ export function bindSettingsUI(ctrl) {
           error.sme_obligation_id = reconciledResumeEligibility.obligation_id;
           throw error;
         }
+      }
+      if (resumeRequested) {
+        resumeProgressBefore = snapshotMemorizeResumeProgress({
+          checkpoint,
+          ledger: checkpoint.run_manifest.obligation_ledger,
+          provider_audit: providerAudit,
+          retained_evidence_plan: checkpoint.authoritative_recovery
+            ?.base_resume_eligibility?.retained_evidence_plan,
+        });
+        checkpoint.resume_progress_in_flight = {
+          schema_version: 1,
+          invocation_id: controllerRuntime.invocation_id,
+          before: resumeProgressBefore,
+          planned_exact_action: checkpoint.resume_eligibility?.next_eligible_action
+            ?? resumeProgressBefore.exact_action,
+          started_at: Date.now(),
+        };
       }
       // v0.9.57 could run and commit final reconciliation after source-tier
       // ingestion paused. On resume, remove every premature finalization
@@ -9933,6 +9997,7 @@ export function bindSettingsUI(ctrl) {
         arcExtraction: restoredArcExtraction,
         arcPipeline: runResult.arcPipeline,
         provider_failures: runResult.providerFailures,
+        local_lifecycle_failures: runResult.localLifecycleFailures,
         extraction_coverage: runResult.extractionCoverage,
         extraction_coverage_scope: 'current_attempt',
         sessionExtraction: runResult.sessionExtraction,
@@ -10416,6 +10481,14 @@ export function bindSettingsUI(ctrl) {
         if (controllerLeaseRepair.migrated) {
           failedCheckpoint.controller_lease_recovery_migration = controllerLeaseRepair.detail;
         }
+        const retainedEvidenceRecoveryRepair = migrateV0983RetainedEvidenceRecoveryState({
+          checkpoint: failedCheckpoint,
+          metadata: catchUpContext.chatMetadata?.[META_KEY],
+        });
+        if (retainedEvidenceRecoveryRepair.migrated) {
+          failedCheckpoint.retained_evidence_recovery_migration
+            = retainedEvidenceRecoveryRepair.detail;
+        }
         failedCheckpoint.controller_failure = {
           schema_version: 1,
           phase: controllerRuntime.phase,
@@ -10482,14 +10555,47 @@ export function bindSettingsUI(ctrl) {
       const terminalCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
         ?? controllerRuntime.checkpoint;
       const terminalMetadata = catchUpContext.chatMetadata?.[META_KEY];
+      if (resumeRequested && terminalCheckpoint && resumeProgressBefore) {
+        const resumeProgressAfter = snapshotMemorizeResumeProgress({
+          checkpoint: terminalCheckpoint,
+          ledger: terminalCheckpoint.run_manifest?.obligation_ledger,
+          provider_audit: terminalMetadata?.live_memory_health?.provider_attempt_audit,
+          retained_evidence_plan: terminalCheckpoint.authoritative_recovery
+            ?.base_resume_eligibility?.retained_evidence_plan,
+        });
+        terminalCheckpoint.resume_progress = deriveMemorizeResumeProgress(
+          resumeProgressBefore, resumeProgressAfter, {
+            invocation_id: controllerRuntime.invocation_id,
+            planned_exact_action: terminalCheckpoint.resume_progress_in_flight
+              ?.planned_exact_action,
+            action_actually_executed: controllerRuntime.obligation_id
+              ? terminalCheckpoint.resume_progress_in_flight?.planned_exact_action : null,
+            exact_blocker: firstLocalLifecycleError?.sme_reason_code
+              ?? firstLocalLifecycleError?.code ?? null,
+          });
+        delete terminalCheckpoint.resume_progress_in_flight;
+      }
+      const terminalProjection = terminalCheckpoint?.run_manifest?.obligation_ledger
+        ? projectMemorizeObligationLedger(terminalCheckpoint.run_manifest.obligation_ledger)
+        : null;
+      const unresolvedLocalLifecycleError = !controllerPrimaryError
+        && Number(terminalProjection?.pending_obligation_count ?? 0) > 0
+        ? firstLocalLifecycleError : null;
+      if (unresolvedLocalLifecycleError) {
+        captureMemorizePrimaryFailure(controllerRuntime, unresolvedLocalLifecycleError);
+      }
       const priorExit = controllerRuntime.controller_exit;
       const manual = ctrl.catchUpStopReason === 'manual_cancel';
-      const provisionalReason = controllerPrimaryError?.code ?? ctrl.catchUpStopReason
+      const provisionalReason = controllerPrimaryError?.code
+        ?? unresolvedLocalLifecycleError?.sme_reason_code
+        ?? unresolvedLocalLifecycleError?.code ?? ctrl.catchUpStopReason
         ?? priorExit?.reason_code ?? 'handler_exited';
       const provisionalClassification = controllerFailureClassification
-        ?? (manual ? 'manually_cancelled' : priorExit?.classification ?? null);
+        ?? (manual ? 'manually_cancelled'
+          : unresolvedLocalLifecycleError ? 'downstream_validation_pending'
+            : priorExit?.classification ?? null);
       const finalization = await finalizeMemorizeController({
-        primary_error: controllerPrimaryError,
+        primary_error: controllerPrimaryError ?? unresolvedLocalLifecycleError,
         reason_code: provisionalReason,
         classification: provisionalClassification ?? undefined,
         checkpoint: terminalCheckpoint,

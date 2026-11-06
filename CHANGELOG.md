@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.84] - 2026-11-06
+
+### Added
+
+- Added one immutable retained-evidence plan that records the canonical
+  obligation and revision, physical evidence origin, current-run adoption
+  relationship, evidence fitness, downstream cursor, exact lifecycle
+  operation, provider/persistence requirements, blockers, candidate ordering,
+  and application result. Selection, application-time revalidation, Resume
+  eligibility, authoritative recovery, Session extraction, UI projection, and
+  diagnostics now consume this shared decision.
+- Added durable evidence-adoption relationships without rewriting a historical
+  provider attempt's origin run, plus a pure Resume progress audit that compares
+  obligation revisions, exact actions, downstream cursors, provider attempts,
+  committed coverage, and pending counts. An unchanged Resume is now blocked as
+  `resume_no_progress_same_action` until canonical state actually changes.
+- Added a minimized redacted v0.9.83 retained-evidence fixture and focused
+  regressions for adoption idempotence, monotonic recovery, verified candidate
+  precedence, validated no-update evidence, UI/controller agreement, no-progress
+  blocking, local-error accounting, legacy consolidation, journal repair, and
+  migration convergence.
+
+### Changed
+
+- Retained evidence is ranked by verified usability rather than timestamp. A
+  newer `completed_no_candidates` entry can replace earlier usable evidence
+  only when parser and validation explicitly accept no candidates, persistence
+  is settled as not required, and the ledger transition is verified.
+- Canonical obligation state is now monotonic across repeat evidence
+  observations. Evidence already adopted into an obligation with durable
+  partial records and unresolved fragments routes directly to provider-backed
+  fragment recovery; observing the same adoption again is an idempotent local
+  no-op rather than a backward transition.
+- Current local lifecycle and retained-evidence failures are exported and
+  counted separately from provider transport failures. They remain unresolved
+  until repaired, participate in terminal status, and can become the
+  controller's preserved primary failure when they prevent progress.
+
+### Fixed
+
+- Fixed the v0.9.83 Session Resume loop where the 40–59 and 80–99 provider
+  responses were repeatedly treated as unadopted prior-run evidence after their
+  accepted records had already been persisted. Both now retain their exact
+  durable records and fragment sets and resume with
+  `recover_unresolved_partial_output_fragments`.
+- Fixed 120–139 choosing a newer response with no private, parser, validation,
+  persistence, or verified no-update evidence over the earlier usable partial
+  response. Candidate precedence now selects the strongest verified exact
+  evidence and exposes why every alternative was rejected or superseded.
+- Added an idempotent zero-call v0.9.83 repair that removes parallel `:legacy`
+  Session obligations when a fingerprinted canonical obligation exists,
+  reconstructs adoption relationships, preserves committed work and attempt
+  history, and reconciles pending completion-journal persistence only from
+  canonical durable record IDs. A second pass performs no mutations.
+- Fixed base Resume eligibility and authoritative recovery disagreeing about
+  adoption versus fragment recovery, misleading `provider_request_not_started`
+  exits after local lifecycle failures, false zero-unresolved-error summaries,
+  and local reconciliation errors being counted as provider transport failures.
+
 ## [0.9.83] - 2026-11-06
 
 ### Added

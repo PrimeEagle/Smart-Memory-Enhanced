@@ -1,18 +1,16 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
 
 import { memorizeObligationStateFingerprint } from './memorize-obligation-ledger.js';
+import {
+  PROVIDER_EVIDENCE_PROVENANCE,
+  deriveRetainedEvidenceDownstreamCursor,
+  exactRetainedEvidenceIdentity,
+  planRetainedProviderEvidence,
+} from './retained-evidence-plan.js';
+
+export { PROVIDER_EVIDENCE_PROVENANCE } from './retained-evidence-plan.js';
 
 export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 4;
-
-export const PROVIDER_EVIDENCE_PROVENANCE = Object.freeze({
-  PRIOR_RUN_ADOPTABLE: 'prior_run_adoptable',
-  CURRENT_RUN_CONTINUE_DOWNSTREAM: 'current_run_continue_downstream',
-  CURRENT_RUN_RECOVER_FRAGMENTS: 'current_run_recover_fragments',
-  ALREADY_TERMINAL: 'already_terminal',
-  SUPERSEDED: 'superseded_by_later_attempt',
-  MISSING_PRIVATE_EVIDENCE: 'unusable_missing_private_evidence',
-  IDENTITY_MISMATCH: 'identity_mismatch',
-});
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
@@ -164,39 +162,12 @@ export function findReplayableProviderCompletion(metadata, input = {}) {
 }
 
 function exactCompletionIdentity(entry, input = {}) {
-  const leaf = entry?.child_obligation_id ?? entry?.root_obligation_id;
-  return entry?.root_obligation_id === input.root_obligation_id
-    && (!input.child_obligation_id || leaf === input.child_obligation_id)
-    && (!input.tier || entry.tier === input.tier)
-    && (input.owner === undefined || String(entry.owner ?? '').trim().toLowerCase()
-      === String(input.owner ?? '').trim().toLowerCase())
-    && (!input.source_range || (Number(entry.source_range?.start) === Number(input.source_range.start)
-      && Number(entry.source_range?.end) === Number(input.source_range.end)))
-    && entry.source_fingerprint === input.source_fingerprint;
+  return exactRetainedEvidenceIdentity(entry, input);
 }
 
 /** Furthest verified local stage; physical completion is intentionally separate. */
 export function deriveProviderDownstreamCursor(entry = {}, obligation = null) {
-  if (obligation?.checkpoint_eligible === true
-    || ['durably_committed', 'explicit_no_update'].includes(obligation?.current_state)) {
-    return 'fully_terminal';
-  }
-  const unresolved = obligation?.lifecycle?.unresolved_fragment_ids?.length
-    ?? entry.unresolved_fragment_ids?.length ?? 0;
-  const durable = obligation?.lifecycle?.durably_persisted_record_ids?.length
-    ?? entry.persistence?.durable_record_ids?.length ?? 0;
-  if (unresolved > 0 && durable > 0) return 'unresolved_fragments_pending';
-  if (['committed', 'verified_existing'].includes(entry.persistence?.status) || durable > 0) {
-    return 'accepted_records_persisted';
-  }
-  if (entry.persistence?.status === 'not_needed') return 'explicit_no_update';
-  if (entry.validation?.status && entry.validation.status !== 'pending') return 'validation_complete';
-  if (entry.parser_result?.status === 'partial') return 'parser_partial';
-  if (entry.parser_result?.status) return 'parser_complete';
-  if (entry.response_text != null || entry.provider_disposition === 'response_received') {
-    return 'response_recorded';
-  }
-  return null;
+  return deriveRetainedEvidenceDownstreamCursor(entry, obligation);
 }
 
 /**
@@ -209,47 +180,27 @@ export function classifyRetainedProviderEvidence(entry, input = {}) {
     classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
     downstream_cursor: null, next_action: null,
   };
-  const cursor = deriveProviderDownstreamCursor(entry, input.obligation ?? null);
-  const laterCompatible = (input.later_attempts ?? []).some((attempt) =>
-    attempt?.attempt_id !== entry.attempt_id && exactCompletionIdentity(attempt, input)
-    && Number(attempt.started_at ?? attempt.at ?? 0) > Number(entry.started_at ?? 0));
-  if (laterCompatible) return {
+  const plan = planRetainedProviderEvidence({
+    ...input,
+    candidates: [...(input.later_attempts ?? []), entry],
+  });
+  if (plan.evidence_origin_attempt_id !== entry.attempt_id) return {
     classification: PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
-    downstream_cursor: cursor, next_action: null,
-  };
-  if (cursor === 'fully_terminal') return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL,
-    downstream_cursor: cursor, next_action: null,
-  };
-  if (!terminalSuccess.has(entry.terminal_outcome)) return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
-    downstream_cursor: cursor, next_action: null,
-  };
-  const currentRun = Boolean(input.current_logical_run_id)
-    && entry.logical_run_id === input.current_logical_run_id;
-  if (currentRun && cursor === 'unresolved_fragments_pending') return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS,
-    downstream_cursor: cursor, next_action: 'recover_exact_unresolved_fragments',
-    provider_call_required: true, persistence_required: false,
-  };
-  if (entry.response_text == null && !entry.parser_result?.records?.length) return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE,
-    downstream_cursor: cursor, next_action: 'inspect_or_restore_private_terminal_evidence',
-  };
-  if (currentRun) return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM,
-    downstream_cursor: cursor, next_action: cursor === 'response_recorded'
-      ? 'parse_retained_response' : cursor === 'parser_complete' || cursor === 'parser_partial'
-        ? 'continue_validation' : cursor === 'validation_complete'
-          ? 'persist_validated_records' : 'continue_pending_downstream_processing',
+    downstream_cursor: deriveProviderDownstreamCursor(entry, input.obligation ?? null),
+    next_action: null,
     provider_call_required: false,
-    persistence_required: !['accepted_records_persisted', 'unresolved_fragments_pending']
-      .includes(cursor),
+    persistence_required: false,
+    retained_evidence_plan: plan,
   };
   return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE,
-    downstream_cursor: cursor, next_action: 'adopt_exact_prior_run_evidence',
-    provider_call_required: false, persistence_required: true,
+    classification: plan.evidence_classification,
+    downstream_cursor: plan.downstream_cursor,
+    next_action: plan.exact_next_action,
+    lifecycle_operation: plan.lifecycle_operation,
+    provider_call_required: plan.provider_call_required,
+    persistence_required: plan.persistence_required,
+    blockers: plan.exact_blockers,
+    retained_evidence_plan: plan,
   };
 }
 
@@ -257,26 +208,26 @@ export function selectRetainedProviderEvidence(metadata, input = {}) {
   const journal = container(metadata);
   if (!journal) return null;
   const attempts = journal.order.map((id) => journal.entries[id]).filter(Boolean);
-  const candidates = attempts.filter((entry) => exactCompletionIdentity(entry, input)).reverse();
-  for (const entry of candidates) {
-    if (input.exclude_attempt_id && entry.attempt_id === input.exclude_attempt_id) continue;
-    const selection = classifyRetainedProviderEvidence(entry, {
-      ...input, later_attempts: attempts,
-    });
-    if (![PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
-      PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
-      PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL].includes(selection.classification)) {
-      return {
-        entry, ...selection,
-        selected_obligation_id: input.child_obligation_id ?? input.root_obligation_id ?? null,
-        selected_obligation_revision: Number(input.obligation?.revision ?? 0),
-        selected_obligation_state_fingerprint:
-          memorizeObligationStateFingerprint(input.obligation ?? null),
-        selected_at: Date.now(),
-      };
-    }
-  }
-  return null;
+  const plan = planRetainedProviderEvidence({ ...input, candidates: attempts });
+  if (!plan.selected_entry || [PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
+    PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
+    PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL].includes(plan.evidence_classification)) return null;
+  return {
+    entry: plan.selected_entry,
+    classification: plan.evidence_classification,
+    downstream_cursor: plan.downstream_cursor,
+    next_action: plan.exact_next_action,
+    lifecycle_operation: plan.lifecycle_operation,
+    provider_call_required: plan.provider_call_required,
+    persistence_required: plan.persistence_required,
+    blockers: plan.exact_blockers,
+    retained_evidence_plan: plan,
+    selected_obligation_id: input.child_obligation_id ?? input.root_obligation_id ?? null,
+    selected_obligation_revision: Number(input.obligation?.revision ?? 0),
+    selected_obligation_state_fingerprint:
+      memorizeObligationStateFingerprint(input.obligation ?? null),
+    selected_at: Date.now(),
+  };
 }
 
 /**
@@ -307,8 +258,13 @@ export function revalidateRetainedProviderEvidenceSelection(selection, input = {
       applied_state_fingerprint: currentFingerprint,
     };
   }
+  const revalidated = classifyRetainedProviderEvidence(selection.entry, {
+    ...input, obligation,
+    later_attempts: input.later_attempts?.length
+      ? input.later_attempts : [selection.entry],
+  });
   return {
-    ...classifyRetainedProviderEvidence(selection.entry, { ...input, obligation }),
+    ...revalidated,
     changed_since_selection: changed,
     selected_obligation_revision: selection.selected_obligation_revision ?? 0,
     applied_obligation_revision: obligation?.revision ?? 0,

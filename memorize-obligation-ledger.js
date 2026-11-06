@@ -368,6 +368,9 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
       semantic_event_ids: normalizeIds(raw?.semantic_event_ids).slice(-256),
       semantic_event_history: Array.isArray(raw?.semantic_event_history)
         ? raw.semantic_event_history.slice(-128) : [],
+      evidence_adoptions: Array.isArray(raw?.evidence_adoptions)
+        ? raw.evidence_adoptions.filter((item) => item?.origin_attempt_id)
+          .slice(-64) : [],
       implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
       schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
       revision: Number(raw?.revision ?? 0),
@@ -541,6 +544,13 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
     semantic_event_ids: normalizeIds(prior.semantic_event_ids).slice(-256),
     semantic_event_history: Array.isArray(prior.semantic_event_history)
       ? prior.semantic_event_history.slice(-128) : [],
+    evidence_adoptions: [...new Map([
+      ...(prior.evidence_adoptions ?? []),
+      ...(transition.evidence_adoptions ?? []),
+    ].filter((item) => item?.origin_attempt_id).map((item) => [
+      [item.origin_attempt_id, item.adopted_into_logical_run_id,
+        item.canonical_obligation_id].join('|'), item,
+    ])).values()].slice(-64),
     implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
     schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
     revision: Number(prior.revision ?? 0) + 1,
@@ -889,6 +899,20 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           missing_evidence: missingEvidence,
           safe_repair_action: 'inspect_or_restore_private_terminal_evidence',
         });
+      const alreadyAdopted = (existing?.evidence_adoptions ?? []).some((item) =>
+        item?.origin_attempt_id === event.provider_attempt_id
+          && item?.adopted_into_logical_run_id === (identity.logical_run_id
+            ?? existing?.logical_run_id ?? ledger.logical_run_id)
+          && item?.canonical_obligation_id === id)
+        || existing?.metrics?.adopted_from_attempt_id === event.provider_attempt_id
+        || (existing?.semantic_event_history ?? []).some((item) =>
+          item?.type === 'terminal_provider_evidence_adopted'
+            && item?.provider_attempt_id === event.provider_attempt_id);
+      if (alreadyAdopted) {
+        result = recordHistoricalLifecycleNoop(ledger, identity, event,
+          'terminal_provider_evidence_already_adopted_into_canonical_obligation');
+        break;
+      }
       if (existing?.checkpoint_eligible) {
         result = recordHistoricalLifecycleNoop(ledger, identity, event,
           'terminal_provider_evidence_adoption_superseded_by_terminal_coverage');
@@ -901,6 +925,17 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           next_eligible_action: 'continue_pending_downstream_processing',
           recovery_intent: 'continue_pending_downstream_processing',
           recovery_stage: 'adopted_terminal_response_downstream_processing',
+          evidence_adoptions: [{
+            origin_attempt_id: event.provider_attempt_id,
+            origin_logical_run_id: event.adopted_from_logical_run_id,
+            adopted_into_logical_run_id: identity.logical_run_id
+              ?? existing?.logical_run_id ?? ledger.logical_run_id,
+            canonical_obligation_id: id,
+            obligation_revision_at_adoption: Number(existing?.revision ?? 0) + 1,
+            evidence_fingerprint: event.evidence_fingerprint,
+            downstream_cursor: event.downstream_cursor ?? null,
+            adopted_at: nowValue(event.at),
+          }],
           metrics: {
             adopted_from_logical_run_id: event.adopted_from_logical_run_id,
             adopted_from_attempt_id: event.adopted_from_attempt_id,
@@ -1905,6 +1940,15 @@ export function migrateLegacyMemorizeObligations(ledgerValue, input = {}) {
     const matchingProvider = providerObligations.find((provider) => provider.tier === legacy.tier
       && Number(provider.root_source_range?.start) === Number(legacy.source_start_index ?? range.start)
       && Number(provider.root_source_range?.end) === Number(legacy.source_end_index ?? range.end));
+    const existingCanonical = Object.values(ledger.obligations ?? {}).find((item) =>
+      item.tier === legacy.tier && item.parent_obligation_id == null
+        && Number(item.source_range?.start) === Number(range.start)
+        && Number(item.source_range?.end) === Number(range.end)
+        && item.source_fingerprint);
+    // The canonical fingerprinted obligation supersedes compatibility range
+    // records. Replaying the legacy projection must never create a parallel
+    // `:legacy` authority path or overwrite the canonical action contract.
+    if (existingCanonical && !matchingProvider) continue;
     const id = matchingProvider?.logical_obligation_id
       ?? `${legacy.tier}:chat:${range.start}-${range.end}:${matchingProvider?.root_source_fingerprint ?? 'legacy'}`;
     const safe = legacy.safely_committed === true;

@@ -15,10 +15,14 @@ export function deriveRunErrorAccounting(report = {}) {
   const providerNoticeCategories = Object.values(provider.notice_reason_counts ?? {})
     .filter((value) => number(value) > 0).length;
   const failure = provider.failure_accounting ?? {};
-  const unresolved = number(failure.terminal_unresolved_obligation_count
+  const providerUnresolved = number(failure.terminal_unresolved_obligation_count
     ?? provider.terminally_unresolved_malformed_obligations
     ?? provider.coverage?.terminal_failed_obligations
     ?? report.unresolved_error_count);
+  const currentLocalFailures = array(report.local_lifecycle_failures)
+    .filter((item) => item?.resolved !== true);
+  const currentLocalFailureKeys = new Set(currentLocalFailures.map((item, index) =>
+    item?.obligation_id ?? `${item?.code ?? item?.reason_code ?? item?.label ?? 'local'}:${index}`));
   const recovered = number(failure.recovered_failed_obligation_count
     ?? provider.recovered_malformed_obligations ?? report.recovered_error_count);
   const operationalPauses = number(failure.operationally_paused_obligation_count
@@ -27,7 +31,7 @@ export function deriveRunErrorAccounting(report = {}) {
   const supersededOrMigrated = number(failure.superseded_or_migrated_obligation_count);
   const uniqueFailed = number(failure.unique_failed_obligation_count
     ?? provider.unique_malformed_obligations)
-    || unresolved + recovered + operationalPauses + recoveryInProgress + supersededOrMigrated;
+    || providerUnresolved + recovered + operationalPauses + recoveryInProgress + supersededOrMigrated;
   const observedTransportFailures = number(failure.provider_transport_failure_count
     ?? provider.terminal_counts?.provider_failure
     ?? logical.cumulative_request_counters?.provider_failure_count
@@ -49,6 +53,9 @@ export function deriveRunErrorAccounting(report = {}) {
   );
   const unresolvedIds = new Set(array(provider.terminal_unresolved_obligations)
     .map((item) => item?.root_obligation_id).filter(Boolean));
+  const localOnlyFailureCount = [...currentLocalFailureKeys]
+    .filter((key) => !unresolvedIds.has(key)).length;
+  const unresolved = providerUnresolved + localOnlyFailureCount;
   const recoveredIds = new Set(array(provider.recovered_obligation_ids).filter(Boolean));
   const retainedUnresolvedCount = array(provider.terminal_unresolved_obligations).length;
   const unresolvedLimit = number(provider.terminal_unresolved_obligation_detail_limit) || null;
@@ -106,6 +113,13 @@ export function deriveRunErrorAccounting(report = {}) {
       count: displayedErrorCategoryCounts.lifecycle_transition_rejection,
       unit: 'retained_error_records', scope: 'current_attempt', authoritative: true,
       provider_fault_attribution: false,
+    },
+    current_local_lifecycle_failures: {
+      count: currentLocalFailureKeys.size,
+      additional_unresolved_count: localOnlyFailureCount,
+      unit: 'unique_local_lifecycle_failures', scope: 'current_attempt',
+      authoritative: true, provider_fault_attribution: false,
+      records: currentLocalFailures,
     },
     locally_repairable_reconciliation_failures: {
       count: locallyRepairableReconciliationFailures,
@@ -207,24 +221,24 @@ export function deriveRunErrorAccounting(report = {}) {
         displayedErrorCategoryCounts.lifecycle_transition_rejection === 0
         || displayedErrorCategoryCounts.provider_transport_failure === 0
         || observedTransportFailures > 0,
-      terminal_unresolved_subset_of_failed: unresolved <= uniqueFailed,
+      terminal_unresolved_subset_of_failed: providerUnresolved <= uniqueFailed,
       recovered_plus_unresolved_equals_failed: providerAggregateCountsExact
         ? recovered + operationalPauses + recoveryInProgress
-          + supersededOrMigrated + unresolved === uniqueFailed : null,
+          + supersededOrMigrated + providerUnresolved === uniqueFailed : null,
       recovered_and_unresolved_do_not_overlap: [...recoveredIds].every((id) => !unresolvedIds.has(id)),
       fatal_not_inferred_from_transient_provider_failures: fatalRunErrors === 0
         || Boolean(report.final_persistence_error || currentDetails.some((entry) => entry?.fatal === true)),
-      displayed_unresolved_equals_authoritative_set: unresolved === number(provider.terminally_unresolved_malformed_obligations
-        ?? provider.coverage?.terminal_failed_obligations ?? unresolved),
+      displayed_unresolved_equals_authoritative_set: providerUnresolved === number(provider.terminally_unresolved_malformed_obligations
+        ?? provider.coverage?.terminal_failed_obligations ?? providerUnresolved),
       bounded_detail_does_not_replace_authoritative_count: unresolved >= retainedUnresolvedCount,
       recovered_failures_have_historical_observation: recovered === 0 || cumulativeFailureObservations > 0,
       physical_failure_observations_not_less_than_unique_failed: cumulativeFailureObservations >= uniqueFailed,
       malformed_transport_validation_reconcile: physicalCategoryAccountingAvailable
         ? cumulativeFailureObservations === categorizedPhysicalFailures : null,
-      consistent: unresolved <= uniqueFailed
+      consistent: providerUnresolved <= uniqueFailed
         && displayedCategoryTotal <= displayedErrorCount
         && (!providerAggregateCountsExact || recovered + operationalPauses + recoveryInProgress
-          + supersededOrMigrated + unresolved === uniqueFailed)
+          + supersededOrMigrated + providerUnresolved === uniqueFailed)
         && unresolved >= retainedUnresolvedCount
         && (recovered === 0 || cumulativeFailureObservations > 0)
         && cumulativeFailureObservations >= uniqueFailed
