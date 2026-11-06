@@ -549,10 +549,16 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       ? 'continue_finalization' : null;
   const pendingWithoutAction = projectedPendingCount > 0
     && !exactPending?.next_eligible_action;
-  const blocked = explicitlyBlocked || pendingWithoutAction;
+  const resumeEligibility = checkpoint.resume_eligibility ?? null;
+  const authoritativeResumeDecision = resumeEligibility
+    && ['awaiting_manual_resume', 'blocked_recovery_change_required']
+      .includes(checkpoint.status);
+  const blocked = explicitlyBlocked || pendingWithoutAction
+    || (authoritativeResumeDecision && resumeEligibility.eligible === false);
   const resumeCanMakeProgress = Boolean(normalized) && !blocked
     && (projectedPendingCount === 0
-      || Boolean(exactPending?.next_eligible_action));
+      || Boolean(exactPending?.next_eligible_action))
+    && (!authoritativeResumeDecision || resumeEligibility.eligible === true);
   return {
     available: true,
     resumable: resumeCanMakeProgress,
@@ -577,8 +583,12 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     recovery_intent: exactPending?.recovery_intent
       ?? exactPending?.next_eligible_action ?? traversalAction,
     recovery_stage: exactPending?.recovery_stage ?? null,
+    resume_mode: resumeEligibility?.mode ?? null,
+    provider_call_required_on_resume: resumeEligibility?.provider_call_required ?? null,
+    resume_eligibility: resumeEligibility,
     status: checkpoint.status ?? 'unknown',
     reason_code: checkpoint.recovery_blocked?.reason_code
+      ?? resumeEligibility?.reason_code
       ?? (String(checkpoint.status ?? '').startsWith('invalidated')
         ? checkpoint.run_manifest?.terminal_reason_code : null)
       ?? exactPending?.exact_reason_code

@@ -1,6 +1,6 @@
 import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
 
-export const RUN_STATUS_CLASSIFIER_VERSION = 4;
+export const RUN_STATUS_CLASSIFIER_VERSION = 5;
 
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const array = (value) => Array.isArray(value) ? value : [];
@@ -55,8 +55,61 @@ export function deriveRunErrorAccounting(report = {}) {
   const detailTruncated = unresolvedLimit !== null && unresolved > retainedUnresolvedCount;
   const providerAggregateCountsExact = provider.obligation_aggregate_counts_exact === true
     || provider.obligation_history_truncated !== true;
+  const classifyDisplayedError = (entry = {}) => {
+    const text = `${entry.label ?? ''} ${entry.message ?? ''}`.toLowerCase();
+    if (/lifecycle transition|lifecycle.*rejected/.test(text)) return 'lifecycle_transition_rejection';
+    if (/reconcil/.test(text)) return 'reconciliation_failure';
+    if (entry.persistence === true || /persist|durable save/.test(text)) return 'persistence_failure';
+    if (/validation|candidate.*reject/.test(text)) return 'downstream_validation_failure';
+    if (/malformed|parser|invalid output/.test(text)) return 'malformed_or_parser_failure';
+    if (/provider|transport|api request|http /.test(text)) return 'provider_transport_failure';
+    return 'other_run_error';
+  };
+  const displayedErrorCategoryCounts = Object.fromEntries([
+    'lifecycle_transition_rejection', 'reconciliation_failure', 'persistence_failure',
+    'downstream_validation_failure', 'malformed_or_parser_failure',
+    'provider_transport_failure', 'other_run_error',
+  ].map((category) => [category, 0]));
+  for (const entry of currentDetails) displayedErrorCategoryCounts[classifyDisplayedError(entry)]++;
+  const currentViolations = array(report.authoritative_obligation_ledger?.invariants?.violations
+    ?? report.catch_up_recovery?.authoritative_obligation_ledger?.invariants?.violations);
+  const journalEntries = array(report.provider_completion_journal?.entries);
+  const journalByAttempt = new Map(journalEntries.filter((entry) => entry?.attempt_id)
+    .map((entry) => [entry.attempt_id, entry]));
+  const locallyRepairableReconciliationFailures = currentViolations.filter((violation) => {
+    if (violation?.code === 'provider_response_without_registered_attempt') {
+      const evidence = journalByAttempt.get(violation.provider_attempt_id);
+      return Boolean(evidence?.private_response_retained
+        && ['completed', 'completed_no_candidates', 'completed_repartitioned']
+          .includes(evidence.terminal_outcome));
+    }
+    if (violation?.code === 'ledger_provider_running_without_physical_attempt') {
+      return journalEntries.some((entry) => entry?.child_obligation_id === violation.obligation_id
+        || entry?.root_obligation_id === violation.obligation_id);
+    }
+    return false;
+  }).length;
+  const displayedCategoryTotal = Object.values(displayedErrorCategoryCounts)
+    .reduce((sum, value) => sum + number(value), 0);
+  const displayedErrorCount = Math.max(number(report.errors), currentDetails.length);
   return {
-    schema_version: 3,
+    schema_version: 4,
+    displayed_error_records: {
+      count: displayedErrorCount, unit: 'display_records', scope: 'current_attempt',
+      bounded: false, authoritative: true, categories: displayedErrorCategoryCounts,
+      retained_categorized_record_count: displayedCategoryTotal,
+      category_detail_truncated: displayedCategoryTotal < displayedErrorCount,
+    },
+    lifecycle_transition_rejections: {
+      count: displayedErrorCategoryCounts.lifecycle_transition_rejection,
+      unit: 'retained_error_records', scope: 'current_attempt', authoritative: true,
+      provider_fault_attribution: false,
+    },
+    locally_repairable_reconciliation_failures: {
+      count: locallyRepairableReconciliationFailures,
+      unit: 'current_lifecycle_violations', scope: 'authoritative_obligation_ledger',
+      authoritative: true, provider_call_required: false,
+    },
     current_attempt_error_records: {
       count: currentDetails.length, unit: 'retained_events', scope: 'current_attempt',
       includes_recovered: true, bounded: true, authoritative: false,
@@ -141,6 +194,17 @@ export function deriveRunErrorAccounting(report = {}) {
       includes_recovered: false, bounded: false, authoritative: true,
     },
     reconciliation: {
+      displayed_error_records_reconcile_to_categories:
+        displayedCategoryTotal === displayedErrorCount,
+      displayed_minus_unresolved_logical_errors:
+        Math.max(0, displayedErrorCount - unresolved),
+      physical_minus_unresolved_logical_errors:
+        Math.max(0, cumulativeFailureObservations - unresolved),
+      event_and_logical_error_units_intentionally_distinct: true,
+      lifecycle_rejections_not_counted_as_provider_transport_failures:
+        displayedErrorCategoryCounts.lifecycle_transition_rejection === 0
+        || displayedErrorCategoryCounts.provider_transport_failure === 0
+        || observedTransportFailures > 0,
       terminal_unresolved_subset_of_failed: unresolved <= uniqueFailed,
       recovered_plus_unresolved_equals_failed: providerAggregateCountsExact
         ? recovered + operationalPauses + recoveryInProgress
@@ -156,6 +220,7 @@ export function deriveRunErrorAccounting(report = {}) {
       malformed_transport_validation_reconcile: physicalCategoryAccountingAvailable
         ? cumulativeFailureObservations === categorizedPhysicalFailures : null,
       consistent: unresolved <= uniqueFailed
+        && displayedCategoryTotal <= displayedErrorCount
         && (!providerAggregateCountsExact || recovered + operationalPauses + recoveryInProgress
           + supersededOrMigrated + unresolved === uniqueFailed)
         && unresolved >= retainedUnresolvedCount
@@ -247,9 +312,14 @@ export function deriveRunStatus(report = {}) {
     }
   } else if (lifecycleStatus === 'incomplete') {
     outcomeStatus = 'incomplete_resumable'; severity = 'warning'; icon = 'circle-pause';
-    label = operationalPauseCount > 0
+    label = recovery.resume_mode === 'local_reconciliation_only'
+      ? 'Incomplete — local reconciliation required'
+      : operationalPauseCount > 0
       ? 'Incomplete — recovery budget reached; Resume available'
       : 'Incomplete — resumable';
+    if (recovery.resume_mode === 'local_reconciliation_only') {
+      statusReasonCodes.push('local_reconciliation_required', 'provider_call_not_required');
+    }
   } else if (lifecycleStatus === 'blocked') {
     outcomeStatus = 'blocked'; severity = 'error'; icon = 'ban';
     label = recovery.reason_code === 'recovery_change_required'

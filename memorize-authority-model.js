@@ -6,6 +6,12 @@ import {
 
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
+const LOCAL_RECONCILIATION_ACTIONS = new Set([
+  'continue_pending_downstream_processing',
+  'replay_terminal_provider_downstream_lifecycle',
+  'settle_terminal_malformed_attempt',
+  'reconcile_terminal_attempt_evidence',
+]);
 
 const clone = (value) => typeof structuredClone === 'function'
   ? structuredClone(value) : JSON.parse(JSON.stringify(value));
@@ -137,6 +143,86 @@ export function getAuthoritativeOwnerRangeStatus(ledgerValue, owner, rangeValue)
 
 export function getFirstActionableObligation(ledgerValue) {
   return projectMemorizeObligationLedger(ledgerValue).next_eligible_obligation ?? null;
+}
+
+/**
+ * Derives Resume eligibility from current authoritative state. Historical
+ * transition observations may remain for diagnostics, but they can authorize
+ * only a local reconciliation step; they can never authorize another provider
+ * transmission. This keeps recovery fail-closed without making exact retained
+ * terminal evidence impossible to finish.
+ */
+export function deriveMemorizeResumeEligibility({
+  ledger = null,
+  projection: suppliedProjection = null,
+  provider_audit: providerAudit = null,
+  provider_completion_journal: providerCompletionJournal = null,
+  active_transaction = null,
+} = {}) {
+  const projection = suppliedProjection ?? projectMemorizeObligationLedger(ledger);
+  const pending = projection.next_eligible_obligation ?? null;
+  const action = pending?.next_eligible_action ?? null;
+  const journalEntries = Array.isArray(providerCompletionJournal?.entries)
+    ? providerCompletionJournal.entries
+    : Object.values(providerCompletionJournal?.entries ?? {});
+  const exactRetainedCompletion = pending ? [...journalEntries].reverse().find((entry) => {
+    const leaf = entry?.child_obligation_id ?? entry?.root_obligation_id;
+    return entry?.root_obligation_id === (pending.parent_obligation_id ?? pending.obligation_id)
+      && leaf === pending.obligation_id
+      && entry.tier === pending.tier
+      && String(entry.owner ?? '').trim().toLowerCase()
+        === String(pending.owner ?? '').trim().toLowerCase()
+      && Number(entry.source_range?.start) === Number(pending.source_range?.start)
+      && Number(entry.source_range?.end) === Number(pending.source_range?.end)
+      && entry.source_fingerprint === pending.source_fingerprint
+      && entry.private_response_retained === true
+      && ['completed', 'completed_no_candidates', 'completed_repartitioned']
+        .includes(entry.terminal_outcome);
+  }) : null;
+  const physicalRunning = (providerAudit?.recent_attempts ?? [])
+    .filter((attempt) => attempt?.terminal_outcome === 'running');
+  const currentRunningCount = Math.max(
+    Number(projection.running_obligation_count ?? 0), physicalRunning.length);
+  if (active_transaction) return {
+    eligible: false, mode: 'blocked', reason_code: 'active_transaction_not_settled',
+    next_eligible_action: action, obligation_id: pending?.obligation_id ?? null,
+    provider_call_required: false,
+  };
+  if (currentRunningCount > 0) return {
+    eligible: false, mode: 'blocked', reason_code: 'provider_runtime_not_reconciled',
+    next_eligible_action: action, obligation_id: pending?.obligation_id ?? null,
+    provider_call_required: false, running_count: currentRunningCount,
+  };
+  if (!pending || !action) return {
+    eligible: false, mode: 'blocked', reason_code: projection.pending_obligation_count > 0
+      ? 'pending_obligation_has_no_exact_action' : 'no_pending_resume_obligation',
+    next_eligible_action: null, obligation_id: null, provider_call_required: false,
+  };
+  if (exactRetainedCompletion) return {
+    eligible: true, mode: 'local_reconciliation_only',
+    reason_code: 'exact_retained_terminal_evidence_available',
+    next_eligible_action: 'adopt_exact_prior_run_evidence',
+    obligation_id: pending.obligation_id,
+    physical_attempt_id: exactRetainedCompletion.attempt_id,
+    provider_call_required: false,
+  };
+  if (LOCAL_RECONCILIATION_ACTIONS.has(action)) return {
+    eligible: true, mode: 'local_reconciliation_only',
+    reason_code: 'exact_terminal_evidence_requires_local_reconciliation',
+    next_eligible_action: action, obligation_id: pending.obligation_id,
+    provider_call_required: false,
+  };
+  if (projection.invariants?.valid !== true) return {
+    eligible: false, mode: 'blocked', reason_code: 'lifecycle_invariants_invalid_for_provider_resume',
+    next_eligible_action: action, obligation_id: pending.obligation_id,
+    provider_call_required: false,
+    invariant_violations: projection.invariants?.violations ?? [],
+  };
+  return {
+    eligible: true, mode: 'provider_resume', reason_code: 'exact_resume_action_available',
+    next_eligible_action: action, obligation_id: pending.obligation_id,
+    provider_call_required: true,
+  };
 }
 
 export function getContiguousSafeSourceOffset(ledgerValue, startingOffset = 0) {

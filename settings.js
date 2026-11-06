@@ -100,6 +100,7 @@ import {
   recordMemorizeControllerExit,
 } from './memorize-obligation-ledger.js';
 import {
+  deriveMemorizeResumeEligibility,
   getAuthoritativeOwnerRangeStatus,
   getAuthoritativeTierRangeStatus,
   isAuthoritativeTierRangeSafelyCovered,
@@ -268,8 +269,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.79',
-  build_fingerprint: 'sme-v0.9.79-lifecycle-coordinator-r1',
+  extension_version: '0.9.80',
+  build_fingerprint: 'sme-v0.9.80-provider-evidence-ingress-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2326,6 +2327,20 @@ export function bindSettingsUI(ctrl) {
         rawCheckpoint.run_manifest.obligation_ledger = repaired.ledger;
         migrateTerminalProviderCompletions(liveMetadata, audit,
           repaired.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
+        const staleCoverage = liveMetadata?.catch_up_diagnostics?.extractionCoverage ?? {};
+        const staleJournalReconciliation = reconcileMemorizeLifecycleFromJournal(
+          rawCheckpoint.run_manifest.obligation_ledger, {
+            logical_run_id: rawCheckpoint.run_manifest.logical_run_id,
+            journal: liveMetadata?.provider_completion_journal,
+            provider_attempts: audit,
+            coverage_records: Object.values(staleCoverage)
+              .flatMap((tier) => tier?.records ?? []),
+            checkpoint_before: rawCheckpoint.next_source_offset,
+            source_message_count: rawCheckpoint.source_message_count
+              ?? rawCheckpoint.run_manifest?.source_message_count,
+            chunk_size: CATCH_UP_CHUNK_SIZE,
+          });
+        rawCheckpoint.run_manifest.obligation_ledger = staleJournalReconciliation.ledger;
         const healthRepairs = reconcileImpossibleLiveHealth(liveMetadata, audit);
         const transactionId = rawCheckpoint.transaction_lifecycle?.transaction_id ?? null;
         if (rawCheckpoint.transaction_lifecycle?.state === 'active') {
@@ -2335,6 +2350,15 @@ export function bindSettingsUI(ctrl) {
             exact_reason_code: 'stale_controller_no_active_operation', settled_at: Date.now(),
           };
         }
+        const staleResumeEligibility = deriveMemorizeResumeEligibility({
+          ledger: rawCheckpoint.run_manifest.obligation_ledger,
+          provider_audit: audit,
+          provider_completion_journal: liveMetadata?.provider_completion_journal,
+          active_transaction: null,
+        });
+        rawCheckpoint.resume_eligibility = {
+          schema_version: 1, ...staleResumeEligibility, evaluated_at: Date.now(),
+        };
         recordMemorizeControllerExit(rawCheckpoint.run_manifest.obligation_ledger, {
           controller_invocation_id: rawCheckpoint.controller_heartbeat?.controller_invocation_id
             ?? `stale:${transactionId ?? rawCheckpoint.run_id}`,
@@ -2344,12 +2368,20 @@ export function bindSettingsUI(ctrl) {
           phase: rawCheckpoint.controller_heartbeat?.phase ?? 'source_extraction',
           active_transaction_id: transactionId, active_transaction_state: 'stale_controller_reconciled',
           classification: 'stale_controller_reconciled', reason_code: 'stale_controller_no_active_operation',
-          resumable: true, next_eligible_action: repaired.repairs[0]?.reason_code
-            ? 'replay_terminal_provider_downstream_lifecycle' : 'resume_exact_obligation',
+          resumable: staleResumeEligibility.eligible,
+          next_eligible_action: staleResumeEligibility.next_eligible_action,
         });
-        rawCheckpoint.status = 'awaiting_manual_resume';
+        rawCheckpoint.status = staleResumeEligibility.eligible
+          ? 'awaiting_manual_resume' : 'blocked_recovery_change_required';
         rawCheckpoint.stale_controller_audit = { ...staleAudit, reconciled: true,
-          repaired_obligations: repaired.repairs, live_health_repairs: healthRepairs, reconciled_at: Date.now() };
+          repaired_obligations: repaired.repairs,
+          lifecycle_journal_reconciliation: {
+            mutations: staleJournalReconciliation.mutations,
+            reused_attempt_ids: staleJournalReconciliation.reused_attempt_ids,
+            provider_calls: 0, persistence_calls: 0,
+          },
+          resume_eligibility: staleResumeEligibility,
+          live_health_repairs: healthRepairs, reconciled_at: Date.now() };
         rawCheckpoint.updated_at = Date.now();
         saveChatMetadata(getContext()).catch((error) => console.warn(
           `[${MODULE_NAME}] Could not persist stale-controller reconciliation:`, error));
@@ -5680,6 +5712,42 @@ export function bindSettingsUI(ctrl) {
         ].slice(-16);
         checkpoint.updated_at = Date.now();
         await saveChatMetadata(catchUpContext);
+      }
+      const reconciledProjection = projectMemorizeObligationLedger(
+        checkpoint.run_manifest.obligation_ledger);
+      if (reconciledProjection.pending_obligation_count > 0) {
+        const reconciledResumeEligibility = deriveMemorizeResumeEligibility({
+          projection: reconciledProjection,
+          provider_audit: providerAudit,
+          provider_completion_journal:
+            catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+          active_transaction: getActiveCatchUpTransactionSnapshot(),
+        });
+        checkpoint.resume_eligibility = {
+          schema_version: 1, ...reconciledResumeEligibility, evaluated_at: Date.now(),
+        };
+        if (!reconciledResumeEligibility.eligible) {
+          checkpoint.status = 'blocked_recovery_change_required';
+          checkpoint.recovery_blocked = {
+            blocked: true,
+            reason_code: reconciledResumeEligibility.reason_code,
+            next_eligible_recovery_action:
+              reconciledResumeEligibility.next_eligible_action,
+            obligations: reconciledProjection.pending_obligations.slice(0, 16)
+              .map((item) => ({ obligation_id: item.obligation_id,
+                current_state: item.current_state,
+                exact_reason_code: item.exact_reason_code,
+                next_eligible_action: item.next_eligible_action })),
+          };
+          checkpoint.updated_at = Date.now();
+          await saveChatMetadata(catchUpContext);
+          const error = new Error('Resume reconciliation did not produce a safe executable action.');
+          error.code = 'SME_RESUME_RECONCILIATION_REQUIRED';
+          error.sme_recovery_blocked = true;
+          error.sme_reason_code = reconciledResumeEligibility.reason_code;
+          error.sme_obligation_id = reconciledResumeEligibility.obligation_id;
+          throw error;
+        }
       }
       // v0.9.57 could run and commit final reconciliation after source-tier
       // ingestion paused. On resume, remove every premature finalization
@@ -10137,9 +10205,11 @@ export function bindSettingsUI(ctrl) {
       recordCatchUpError('run failure', err);
       const failedCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
       if (failedCheckpoint?.run_manifest) {
+        const failedProviderAudit = catchUpContext.chatMetadata?.[META_KEY]
+          ?.live_memory_health?.provider_attempt_audit;
         const failedRunningReconciliation = reconcileMemorizeRunningObligations(
           failedCheckpoint.run_manifest.obligation_ledger,
-          catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
+          failedProviderAudit,
         );
         failedCheckpoint.run_manifest.obligation_ledger = failedRunningReconciliation.ledger;
         if (failedRunningReconciliation.repairs.length) {
@@ -10148,11 +10218,36 @@ export function bindSettingsUI(ctrl) {
             ...failedRunningReconciliation.repairs,
           ].slice(-16);
         }
+        migrateTerminalProviderCompletions(
+          catchUpContext.chatMetadata?.[META_KEY], failedProviderAudit,
+          failedRunningReconciliation.repairs
+            .map((item) => item.terminal_attempt_id).filter(Boolean));
+        const failedCoverage = catchUpContext.chatMetadata?.[META_KEY]
+          ?.catch_up_diagnostics?.extractionCoverage ?? {};
+        const failedJournalReconciliation = reconcileMemorizeLifecycleFromJournal(
+          failedCheckpoint.run_manifest.obligation_ledger, {
+            logical_run_id: failedCheckpoint.run_manifest.logical_run_id,
+            journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+            provider_attempts: failedProviderAudit,
+            coverage_records: Object.values(failedCoverage)
+              .flatMap((tier) => tier?.records ?? []),
+            checkpoint_before: failedCheckpoint.next_source_offset,
+            source_message_count: total,
+            chunk_size: CATCH_UP_CHUNK_SIZE,
+          });
+        failedCheckpoint.run_manifest.obligation_ledger = failedJournalReconciliation.ledger;
         const projection = projectMemorizeObligationLedger(failedCheckpoint.run_manifest.obligation_ledger);
-        const pending = projection.next_eligible_obligation;
-        const canResume = Boolean(pending?.next_eligible_action)
-          && getActiveCatchUpTransactionSnapshot() == null;
-        failedCheckpoint.status = canResume ? 'awaiting_manual_resume' : 'blocked_recovery_change_required';
+        const resumeEligibility = deriveMemorizeResumeEligibility({
+          projection, provider_audit: failedProviderAudit,
+          provider_completion_journal:
+            catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
+          active_transaction: getActiveCatchUpTransactionSnapshot(),
+        });
+        failedCheckpoint.resume_eligibility = {
+          schema_version: 1, ...resumeEligibility, evaluated_at: Date.now(),
+        };
+        failedCheckpoint.status = resumeEligibility.eligible
+          ? 'awaiting_manual_resume' : 'blocked_recovery_change_required';
         failedCheckpoint.controller_failure = {
           schema_version: 1,
           phase: controllerRuntime.phase,

@@ -1,0 +1,30 @@
+{
+  "source": "redacted-v0.9.79-diagnostics",
+  "logical_run_id": "ec76f33c-7e92-4884-8251-02f88ff95b82",
+  "prior_logical_run_id": "dea1c1f2-72b8-4706-9431-46e8d5b0b08f",
+  "source_range": { "start": 0, "end": 19, "message_count": 20 },
+  "source_fingerprint": "fnv1a-39c6c9f",
+  "longterm_attempts": [
+    { "attempt_id": "provider-mvzrjqfz-1", "owner": "Alex Mercer", "record_count": 2 },
+    { "attempt_id": "provider-mvzrkpa6-2", "owner": "Aster Graves", "record_count": 6 },
+    { "attempt_id": "provider-mvzrm458-3", "owner": "Lillian Kraft", "record_count": 1 },
+    { "attempt_id": "provider-mvzrnxr4-4", "owner": "Lisette Dumont", "record_count": 3 },
+    { "attempt_id": "provider-mvzrp8um-5", "owner": "Nyx Watson", "record_count": 6 },
+    { "attempt_id": "provider-mvzrrd6w-6", "owner": "Valerie Erikssen", "record_count": 1 }
+  ],
+  "session": {
+    "root_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
+    "accepted_pending_attempt_id": "provider-mw3wl6fa-4",
+    "malformed_attempt_ids": ["provider-mw3y5041-5", "provider-mw3y564p-6"],
+    "durable_record_ids": [
+      "87ff7a95-9b5f-4daa-8ed1-50d60ad660ec",
+      "3dcd9b3e-2680-4dd3-9591-bd332cb73b57",
+      "a909ebce-65b1-4589-9242-daa1a62da726"
+    ],
+    "durable_record_candidate_map": {
+      "87ff7a95-9b5f-4daa-8ed1-50d60ad660ec": "session-candidate:fnv1a-39c6c9f:0:claim-fnv1a-985d705a",
+      "3dcd9b3e-2680-4dd3-9591-bd332cb73b57": "session-candidate:fnv1a-39c6c9f:1:claim-fnv1a-f9140e20",
+      "a909ebce-65b1-4589-9242-daa1a62da726": "session-candidate:fnv1a-39c6c9f:2:claim-fnv1a-1c107ab2"
+    }
+  }
+}

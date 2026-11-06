@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.80] - 2026-11-05
+
+### Added
+
+- Added one exhaustive provider-evidence ingress contract for new dispatch,
+  response completion, exact prior-run adoption, pending downstream work,
+  parser/validation/persistence dispositions, transport failure, malformed
+  settlement, recovery exhaustion, and terminal reconciliation. Every result
+  now states whether another provider call or persistence step is required.
+- Added an exact v0.9.79 repair fixture covering all six retained Long-Term
+  completions, Session accepted attempt 4, malformed attempts 5 and 6, the
+  three pre-existing durable Session record IDs and their candidate mappings,
+  strict Resume selection, error partitions, and mutation-free second repair.
+- Added explicit error-accounting fields for displayed records, lifecycle
+  transition rejections, locally repairable reconciliation failures, and the
+  intentional distinction between physical failure events and unresolved
+  logical obligations.
+
+### Changed
+
+- Resume is reconciliation-first and fail-closed. It repairs journal/audit
+  evidence, settles terminal attempts, validates the current ledger/runtime,
+  rebuilds compatibility projections, and only then selects work. Exact
+  retained evidence is advertised as local reconciliation with
+  `provider_call_required: false`; inconsistent state cannot authorize a new
+  provider request.
+- Long-Term and Session completion replay now adopt exact terminal evidence
+  with original run/attempt provenance instead of fabricating a current-run
+  provider start. Owner, tier, root/leaf, range, fingerprint, terminal outcome,
+  and private evidence must all match.
+- Bounded malformed recovery now waits for each terminal physical attempt's
+  semantic disposition before registering its successor. Provider transport
+  failures, malformed responses, and accepted partial output retain distinct
+  lifecycle classifications.
+
+### Fixed
+
+- Removed the equivalent-recovery/null-attempt fallthrough and prevented
+  response journaling when neither a registered attempt nor exact retained
+  response exists.
+- Reused the six supplied Long-Term completions without provider calls and
+  continued Session's accepted pending output locally before any equivalent
+  regeneration. Missing private evidence now produces a precise local blocker.
+- Settled physically terminal Session attempts out of `provider_running`,
+  matched recovery by exact child identity, preserved all three durable
+  Session records and mappings, and made repeated reconciliation idempotent.
+- Corrected recovery presentation so local reconciliation, provider resume,
+  and blocked evidence states are distinct; visible lifecycle errors are no
+  longer attributed to provider transport.
+
 ## [0.9.79] - 2026-11-05
 
 ### Added

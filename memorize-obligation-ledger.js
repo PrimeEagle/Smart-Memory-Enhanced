@@ -505,7 +505,8 @@ export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
   'validation_partially_accepted', 'validation_rejected', 'records_staged',
   'records_durably_persisted', 'explicit_no_update_accepted', 'recovery_required',
   'recovery_budget_exhausted', 'leaf_coverage_completed', 'parent_children_completed',
-  'obligation_blocked', 'candidate_mapping_reconciled', 'terminal_attempt_evidence_reconciled',
+  'obligation_blocked', 'candidate_mapping_reconciled', 'terminal_provider_evidence_adopted',
+  'terminal_malformed_attempt_settled', 'terminal_attempt_evidence_reconciled',
   'controller_relinquished_ownership',
 ]);
 
@@ -718,6 +719,89 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           persistence_result: event.persistence_result
             ?? (event.explicit_no_update ? 'not_required' : 'verified_existing'),
           coverage_result: 'safely_committed',
+        });
+      break;
+    }
+    case 'terminal_provider_evidence_adopted': {
+      const evidence = event.adopted_terminal_evidence ?? {};
+      const evidenceRange = normalizeRange(evidence.source_range ?? {});
+      const identityRange = normalizeRange(identity.source_range ?? existing?.source_range ?? {});
+      const exactIdentity = evidence.original_root_obligation_id
+          === (identity.root_obligation_id ?? existing?.parent_obligation_id ?? id)
+        && evidence.original_leaf_obligation_id === id
+        && evidence.tier === (identity.tier ?? existing?.tier)
+        && String(evidence.owner ?? '').trim().toLowerCase()
+          === String(identity.owner ?? existing?.owner ?? '').trim().toLowerCase()
+        && evidenceRange?.start === identityRange?.start
+        && evidenceRange?.end === identityRange?.end
+        && evidence.source_fingerprint === (identity.source_fingerprint
+          ?? existing?.source_fingerprint);
+      const terminalSuccess = ['completed', 'completed_no_candidates', 'completed_repartitioned']
+        .includes(evidence.terminal_outcome);
+      const missingEvidence = [
+        ...(!event.provider_attempt_id ? ['physical_attempt_id'] : []),
+        ...(!exactIdentity ? ['exact_root_leaf_tier_owner_range_fingerprint_identity'] : []),
+        ...(!terminalSuccess ? ['terminal_provider_success'] : []),
+        ...(evidence.private_response_retained !== true ? ['private_terminal_response'] : []),
+        ...(!event.adopted_from_logical_run_id ? ['original_logical_run_id'] : []),
+        ...(!event.evidence_fingerprint ? ['evidence_fingerprint'] : []),
+      ];
+      if (missingEvidence.length) return recordSemanticViolation(ledger, identity, event,
+        'terminal_provider_evidence_adoption_missing_evidence', {
+          missing_evidence: missingEvidence,
+          safe_repair_action: 'inspect_or_restore_private_terminal_evidence',
+        });
+      if (existing?.checkpoint_eligible) return recordSemanticViolation(ledger, identity, event,
+        'terminal_provider_evidence_adoption_cannot_regress_terminal_state', {
+          safe_repair_action: 'retain_existing_terminal_coverage',
+        });
+      result = transitionForSemanticEvent(ledger, identity, event,
+        'provider_response_received', {
+          ...details,
+          exact_reason_code: 'accepted_output_pending_downstream_processing',
+          next_eligible_action: 'continue_pending_downstream_processing',
+          recovery_intent: 'continue_pending_downstream_processing',
+          recovery_stage: 'adopted_terminal_response_downstream_processing',
+          metrics: {
+            adopted_from_logical_run_id: event.adopted_from_logical_run_id,
+            adopted_from_attempt_id: event.adopted_from_attempt_id,
+            evidence_adoption_reason: event.evidence_adoption_reason,
+            adopted_evidence_fingerprint: event.evidence_fingerprint,
+          },
+        });
+      break;
+    }
+    case 'terminal_malformed_attempt_settled': {
+      if (!event.provider_attempt_id
+        || !existing?.provider_attempt_lineage?.includes(event.provider_attempt_id)) {
+        return recordSemanticViolation(ledger, identity, event,
+          'terminal_malformed_settlement_without_registered_attempt', {
+            missing_evidence: ['registered_provider_attempt'],
+            safe_repair_action: 'reconcile_exact_physical_attempt_identity',
+          });
+      }
+      if (!event.terminal_outcome || event.terminal_outcome === 'running') {
+        return recordSemanticViolation(ledger, identity, event,
+          'terminal_malformed_settlement_without_terminal_outcome', {
+            missing_evidence: ['terminal_physical_outcome'],
+          });
+      }
+      if (existing.checkpoint_eligible) return recordSemanticViolation(ledger, identity, event,
+        'terminal_malformed_settlement_cannot_regress_terminal_state', {
+          safe_repair_action: 'retain_existing_terminal_coverage',
+        });
+      result = transitionForSemanticEvent(ledger, identity, event,
+        event.operationally_paused === true ? 'operationally_paused' : 'pending_recovery', {
+          ...details,
+          parser_result: 'rejected_malformed_provider_output',
+          downstream_validation_result: 'not_applicable_parser_rejected',
+          persistence_result: 'not_applicable',
+          exact_reason_code: event.exact_reason_code ?? event.malformed_reason
+            ?? 'terminal_malformed_provider_output',
+          next_eligible_action: event.next_eligible_action
+            ?? 'dispatch_bounded_recovery_attempt',
+          recovery_intent: 'recover_malformed_provider_output',
+          recovery_stage: event.recovery_stage ?? 'bounded_malformed_recovery',
         });
       break;
     }
@@ -1077,15 +1161,53 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
   const entries = journalEntries(input.journal);
   const attempts = input.provider_attempts?.recent_attempts ?? input.provider_attempts ?? [];
   for (const entry of entries) {
-    if (!['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(entry?.terminal_outcome)) continue;
     const obligation = ledger.obligations[entry.child_obligation_id]
       ?? ledger.obligations[entry.root_obligation_id];
     if (!obligation) continue;
+    const exactAttempt = exactAttemptForEntry(entry, attempts);
+    if (entry?.terminal_outcome === 'provider_response_malformed') {
+      if (!obligation.provider_attempt_lineage?.includes(entry.attempt_id)) continue;
+      const malformedResult = applyMemorizeLifecycleEvent(ledger, obligation, {
+        type: 'terminal_malformed_attempt_settled',
+        provider_attempt_id: entry.attempt_id,
+        terminal_outcome: entry.terminal_outcome,
+        malformed_reason: exactAttempt?.malformed_reason
+          ?? entry.persistence?.reason_code ?? 'terminal_malformed_provider_output',
+        exact_reason_code: exactAttempt?.malformed_reason
+          ?? entry.persistence?.reason_code ?? 'terminal_malformed_provider_output',
+        next_eligible_action: 'dispatch_bounded_recovery_attempt',
+        recovery_stage: entry.recovery_stage ?? exactAttempt?.recovery_stage ?? null,
+        event_id: `terminal-malformed-settlement:${entry.attempt_id}`,
+        at: input.at,
+      });
+      try {
+        const receipt = requireAppliedLifecycleResult(malformedResult, ['pending_recovery'], {
+          stage: 'terminal_malformed_attempt_reconciliation',
+          obligation_id: obligation.obligation_id,
+          event_type: 'terminal_malformed_attempt_settled',
+        });
+        acknowledgeJournalTransition(entry, 'ledger_transition', receipt, {
+          target_obligation_id: obligation.obligation_id,
+          disposition: 'pending_recovery',
+        });
+        reusedAttemptIds.push(entry.attempt_id);
+      } catch (error) {
+        entry.ledger_transition = {
+          status: 'pending_reconciliation',
+          requested_disposition: 'pending_recovery',
+          rejection_reason: error.sme_reason_code ?? error.code,
+          next_action: 'settle_terminal_malformed_attempt',
+          acknowledged_at: nowValue(input.at),
+        };
+      }
+      continue;
+    }
+    if (!['completed', 'completed_no_candidates', 'completed_repartitioned']
+      .includes(entry?.terminal_outcome)) continue;
     // Journal entries for a repartition parent describe the superseded
     // physical attempt, not terminal leaf coverage. Parents close only after
     // their registered children aggregate.
     if (obligation.expected_child_obligation_ids?.length) continue;
-    const exactAttempt = exactAttemptForEntry(entry, attempts);
     if ((!entry.validation?.status || entry.validation.status === 'pending')
       && exactAttempt?.downstream_validation_result
       && ['committed', 'verified_existing'].includes(exactAttempt.persistence_result)
@@ -1281,9 +1403,11 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
 /** Repairs persisted running states when no physical provider attempt is active. */
 export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit = null) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue);
+  const attemptObligationId = (attempt) => attempt?.child_obligation_id
+    ?? attempt?.logical_obligation_id ?? attempt?.root_obligation_id ?? null;
   const runningAttempts = new Map((providerAudit?.recent_attempts ?? [])
-    .filter((attempt) => attempt?.terminal_outcome === 'running' && attempt?.logical_obligation_id)
-    .map((attempt) => [attempt.logical_obligation_id, attempt]));
+    .filter((attempt) => attempt?.terminal_outcome === 'running' && attemptObligationId(attempt))
+    .map((attempt) => [attemptObligationId(attempt), attempt]));
   const repairs = [];
   for (const obligation of Object.values(ledger.obligations)) {
     if (obligation.current_state !== 'provider_running') continue;
@@ -1295,17 +1419,26 @@ export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit =
       continue;
     }
     const terminalAttempt = [...(providerAudit?.recent_attempts ?? [])].reverse()
-      .find((attempt) => attempt?.logical_obligation_id === obligation.obligation_id
-        && attempt?.terminal_outcome !== 'running');
+      .find((attempt) => attemptObligationId(attempt) === obligation.obligation_id
+        && attempt?.terminal_outcome && attempt.terminal_outcome !== 'running');
+    const malformedTerminal = terminalAttempt && [
+      'provider_response_malformed', 'malformed', 'invalid_output',
+    ].includes(terminalAttempt.terminal_outcome);
+    const successfulTerminal = terminalAttempt && [
+      'completed', 'completed_no_candidates', 'completed_repartitioned',
+    ].includes(terminalAttempt.terminal_outcome);
     const persisted = Number(obligation.metrics?.persisted_records ?? 0);
     obligation.current_state = 'pending_recovery';
     obligation.checkpoint_eligible = false;
-    obligation.exact_reason_code = terminalAttempt
-      ? 'terminal_provider_attempt_pending_downstream_reconciliation'
+    obligation.exact_reason_code = malformedTerminal
+      ? 'terminal_malformed_attempt_pending_semantic_settlement'
+      : successfulTerminal
+        ? 'terminal_provider_attempt_pending_downstream_reconciliation'
       : 'stale_provider_running_without_physical_attempt';
     obligation.next_eligible_action = Number(obligation.metrics?.unresolved_parser_fragments ?? 0) > 0
       ? 'recover_unresolved_partial_output_fragments'
-      : terminalAttempt ? 'replay_terminal_provider_downstream_lifecycle'
+      : malformedTerminal ? 'settle_terminal_malformed_attempt'
+        : successfulTerminal ? 'continue_pending_downstream_processing'
         : obligation.recovery_intent ?? 'resume_exact_obligation';
     obligation.recovery_intent = obligation.next_eligible_action;
     obligation.recovery_stage = 'resume_epoch_initialization';
@@ -1321,6 +1454,8 @@ export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit =
     repairs.push({ obligation_id: obligation.obligation_id,
       reason_code: obligation.exact_reason_code, persisted_records_preserved: persisted,
       terminal_attempt_id: terminalAttempt?.attempt_id ?? null,
+      terminal_outcome: terminalAttempt?.terminal_outcome ?? null,
+      next_eligible_action: obligation.next_eligible_action,
       provider_request_must_not_repeat: Boolean(terminalAttempt) });
   }
   if (repairs.length) ledger.updated_at = Date.now();

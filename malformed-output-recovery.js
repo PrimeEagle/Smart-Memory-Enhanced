@@ -763,11 +763,26 @@ function terminalMalformedError(tier, reason, stage, budget, cause = null) {
  */
 export async function recoverMalformedTaggedOutput({
   response, tier, parse, generate, originalPrompt, responseLength,
-  originalAttempt, beginAttempt, finishAttempt, splitWindow = null,
+  originalAttempt, beginAttempt, finishAttempt: finishPhysicalAttempt, splitWindow = null,
   budget = createMalformedRecoveryBudget(), splitDepth = 0, resumeState = null,
   sourceUnits = [], owner = null, stagePartialRecords = null, providerCapabilities = {},
-  unresolvedFragments = [], onAttemptRegistered = null,
+  unresolvedFragments = [], onAttemptRegistered = null, onAttemptSettled = null,
 } = {}) {
+  let pendingAttemptSettlement = Promise.resolve();
+  const finishAttempt = (attempt, patch = {}) => {
+    const finished = finishPhysicalAttempt(attempt, patch) ?? attempt;
+    if (!attempt?._already_finished && typeof onAttemptSettled === 'function'
+      && ['provider_failure', 'provider_response_malformed', 'partial_output_pending']
+        .includes(patch.terminal_outcome)) {
+      pendingAttemptSettlement = pendingAttemptSettlement
+        .then(() => onAttemptSettled(finished, patch));
+    }
+    return finished;
+  };
+  const registerAttempt = async (attempt, details) => {
+    await pendingAttemptSettlement;
+    return onAttemptRegistered?.(attempt, details);
+  };
   const effectiveResumeState = resumeState ?? originalAttempt?.prior_window_recovery_state
     ?? (originalAttempt?.resumed_pending_obligation === true
     && (originalAttempt?.prior_recovery_stages_attempted ?? []).length
@@ -839,7 +854,7 @@ export async function recoverMalformedTaggedOutput({
       recovery_of_attempt_id: originalAttempt?.attempt_id ?? null, repair_reason: originalReason,
       recovery_stage: 'compact_response_repair', expected_output_format: `${tier}_tagged_lines_v1`,
     });
-    await onAttemptRegistered?.(attempt, { recovery_stage: 'compact_response_repair' });
+    await registerAttempt(attempt, { recovery_stage: 'compact_response_repair' });
     let repairedResponse;
     try {
       repairedResponse = await generate(buildCompactFormatRepairPrompt(response, { tier }), {
@@ -886,7 +901,7 @@ export async function recoverMalformedTaggedOutput({
       recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null, repair_reason: lastReason,
       recovery_stage: 'changed_dimension_regeneration', expected_output_format: `${tier}_tagged_lines_v1`,
     });
-    await onAttemptRegistered?.(attempt, { recovery_stage: 'changed_dimension_regeneration' });
+    await registerAttempt(attempt, { recovery_stage: 'changed_dimension_regeneration' });
     let regeneratedResponse;
     try {
       regeneratedResponse = await generate(buildChangedDimensionRegenerationPrompt(originalPrompt, { tier }), {
@@ -965,7 +980,7 @@ export async function recoverMalformedTaggedOutput({
         repair_reason: lastReason, recovery_stage: 'structured_json_regeneration',
         expected_output_format: `${tier}_json_records_v1`,
       });
-      await onAttemptRegistered?.(attempt, { recovery_stage: 'structured_json_regeneration' });
+      await registerAttempt(attempt, { recovery_stage: 'structured_json_regeneration' });
       let jsonResponse;
       try {
         jsonResponse = await generate(buildStructuredJsonRegenerationPrompt(originalPrompt, { tier }), {
@@ -1094,7 +1109,7 @@ export async function recoverMalformedTaggedOutput({
         repair_reason: lastReason, recovery_stage: 'minimal_record_regeneration',
         expected_output_format: `${tier}_minimal_tagged_record_v1`,
       });
-    await onAttemptRegistered?.(attempt, { recovery_stage: 'minimal_record_regeneration' });
+    await registerAttempt(attempt, { recovery_stage: 'minimal_record_regeneration' });
     let minimalResponse;
     try {
       minimalResponse = await generate(buildMinimalRecordRegenerationPrompt(originalPrompt, { tier }), {
@@ -1173,7 +1188,7 @@ export async function recoverMalformedTaggedOutput({
           repair_reason: lastReason, recovery_stage: 'fragment_decision_regeneration',
           expected_output_format: `${tier}_fragment_decisions_v1`,
         });
-      await onAttemptRegistered?.(attempt, { recovery_stage: 'fragment_decision_regeneration' });
+      await registerAttempt(attempt, { recovery_stage: 'fragment_decision_regeneration' });
       let decisionResponse;
       try {
         decisionResponse = await generate(buildFragmentDecisionRecoveryPrompt(
@@ -1227,6 +1242,7 @@ export async function recoverMalformedTaggedOutput({
   const completedUnitKeys = stagedCompletedUnitKeys;
   const unresolvedUnits = (sourceUnits ?? []).filter((unit) => !completedUnitKeys.has(String(unit.unit_key)));
   if ((sourceUnits ?? []).length > 0 && unresolvedUnits.length === 0) {
+    await pendingAttemptSettlement;
     return { records: acceptedPartialRecords, explicit_none: acceptedPartialRecords.length === 0,
       stage: 'single_source_unit_regeneration', budget, original_reason: originalReason,
       logical_obligation_id: originalAttempt?.logical_obligation_id ?? null,
@@ -1298,7 +1314,7 @@ export async function recoverMalformedTaggedOutput({
         applicability_decision: applicability,
         provider_capability_path: requestPlan.capability_path,
       });
-      await onAttemptRegistered?.(attempt, { recovery_stage: 'single_source_unit_regeneration' });
+      await registerAttempt(attempt, { recovery_stage: 'single_source_unit_regeneration' });
       let unitResponse;
       try {
         unitResponse = await generate(requestPlan.prompt, {
@@ -1369,7 +1385,7 @@ export async function recoverMalformedTaggedOutput({
             permitted_citation_indexes: [0], context_only_messages_eligible: false,
             applicability_decision: applicability, provider_capability_path: requestPlan.capability_path,
           });
-          await onAttemptRegistered?.(attempt, { recovery_stage: 'single_source_contract_enforcement' });
+          await registerAttempt(attempt, { recovery_stage: 'single_source_contract_enforcement' });
           try {
             unitResponse = await generate(requestPlan.prompt, {
               responseLength: Math.min(Number(responseLength) || 80, 80),
@@ -1561,6 +1577,7 @@ export async function recoverMalformedTaggedOutput({
     }
     if (completedUnitKeys.size === (sourceUnits ?? []).length) {
       markMalformedRecoverySuccess(budget, 'single_source_unit_regeneration');
+      await pendingAttemptSettlement;
       return { records: acceptedPartialRecords, explicit_none: acceptedPartialRecords.length === 0,
         stage: 'single_source_unit_regeneration', budget, original_reason: originalReason,
         logical_obligation_id: originalAttempt?.logical_obligation_id ?? null,
@@ -1587,6 +1604,7 @@ export async function recoverMalformedTaggedOutput({
   terminal.sme_unit_outcomes = unitOutcomes;
   if (acceptedPartialRecords.length || completedUnitKeys.size > 0) {
     terminal.sme_accepted_partial_records = acceptedPartialRecords;
+    await pendingAttemptSettlement;
     return { records: acceptedPartialRecords, stage: 'partial_records_preserved_pending', budget,
       original_reason: originalReason, partial_unresolved: true, terminal_error: terminal,
       logical_obligation_id: lastFailedAttempt?.logical_obligation_id ?? originalAttempt?.logical_obligation_id ?? null,
@@ -1595,5 +1613,6 @@ export async function recoverMalformedTaggedOutput({
       validated_no_update_source_units: [...noUpdateUnitKeys],
       blocked_source_units: [...blockedUnitKeys], unit_outcomes: unitOutcomes };
   }
+  await pendingAttemptSettlement;
   throw terminal;
 }

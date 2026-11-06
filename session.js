@@ -114,7 +114,8 @@ import {
   stageProviderRejectedFragments,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
-import { recordProviderCompletion } from './provider-completion-journal.js';
+import { findReplayableProviderCompletion, recordProviderCompletion }
+  from './provider-completion-journal.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
 import {
   analyzeMalformedResponse,
@@ -762,10 +763,21 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const resumeRecoveryState = storedRecoveryState?.configuration_signature === providerConfigSignature
       ? storedRecoveryState : null;
     const restoredFragments = resumeRecoveryState?.unresolved_fragments ?? [];
+    // Exact retained provider evidence outranks fragment-level recovery.  A
+    // completed response may have been accepted just before a controller/page
+    // interruption, so selecting it must happen before treating a missing
+    // fragment payload as a blocker or dispatching another provider request.
+    const completionReplay = findReplayableProviderCompletion(providerMetadata, {
+      root_obligation_id: rootObligationId,
+      child_obligation_id: leafObligationId,
+      tier: 'session', owner: null,
+      source_range: { start: range.start, end: range.end },
+      source_fingerprint: coverageBase.source_fingerprint,
+    });
     if (execution.provider.resumed_pending_obligation
       && Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
       && (resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
-      && restoredFragments.length === 0) {
+      && restoredFragments.length === 0 && !completionReplay) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: 'missing_private_unresolved_fragment_payload',
         next_eligible_action: 'inspect_or_restore_unresolved_fragment_payload',
@@ -782,14 +794,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         ...resumeRecoveryState,
         has_unresolved_fragments: restoredFragments.length > 0,
       }) : null;
-    const automaticFragmentRecovery = execution.recovery.automatic_fragment_recovery
+    const automaticFragmentRecovery = completionReplay ? null
+      : execution.recovery.automatic_fragment_recovery
       ?? (execution.provider.resumed_pending_obligation && restoredFragments.length ? {
         response: restoredFragments.map((item) => item.raw).join('\n'),
         fragment_ids: restoredFragments.map((item) => item.fragment_id),
         recovery_of_attempt_id: restoredFragments[0]?.producing_attempt_id ?? null,
         focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, restoredFragments),
       } : null);
-    if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery
+    if (!completionReplay && execution.provider.resumed_pending_obligation && automaticFragmentRecovery
       && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
@@ -874,35 +887,91 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       };
       await execution.hooks.recovery_epoch_initialized(restoredResumeEpoch);
     }
-    const bypassEquivalentRootReplay = Boolean(automaticFragmentRecovery)
-      || (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState))
-      || resumeEligibility?.blocked === true
-      || resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
-    const providerAttempt = automaticFragmentRecovery ? {
+    if (!completionReplay && !automaticFragmentRecovery && resumeEligibility?.blocked === true) {
+      await emitLifecycleEvent('obligation_blocked', {
+        exact_reason_code: resumeEligibility.reason_code
+          ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
+        next_eligible_action: 'change_provider_configuration_or_install_updated_build',
+        recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
+      });
+      const blocked = new Error('Session recovery has no eligible changed recovery stage.');
+      blocked.code = 'SME_RECOVERY_CHANGE_REQUIRED';
+      blocked.sme_recovery_blocked = true;
+      blocked.sme_obligation_id = rootObligationId;
+      throw blocked;
+    }
+    const recoveryOnlyMode = !completionReplay && !automaticFragmentRecovery
+      && (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState)
+        || resumeEligibility?.eligible_action === 'single_source_unit_regeneration');
+    let replayIngress = null;
+    if (completionReplay) {
+      replayIngress = await pipeline.ingestProviderEvidence('adopt_exact_prior_run_evidence', {
+        evidence: completionReplay,
+        evidence_adoption_reason: 'session_pending_downstream_completion_replay',
+      });
+      if (replayIngress.status !== 'pending_downstream_processing') {
+        const error = new Error('Session retained provider evidence could not be adopted safely.');
+        error.code = replayIngress.status === 'blocked'
+          ? 'SME_ACCEPTED_OUTPUT_PRIVATE_EVIDENCE_UNAVAILABLE'
+          : 'SME_PROVIDER_EVIDENCE_ADOPTION_REJECTED';
+        error.sme_recovery_blocked = true;
+        error.sme_obligation_id = rootObligationId;
+        error.sme_reason_code = replayIngress.reason_code;
+        error.sme_request_diagnostics = replayIngress;
+        throw error;
+      }
+    }
+    const registeredIngress = !completionReplay && !automaticFragmentRecovery && !recoveryOnlyMode
+      ? await pipeline.ingestProviderEvidence('register_new_attempt') : null;
+    if (registeredIngress && registeredIngress.status !== 'applied') {
+      const error = new Error('Session provider attempt could not be registered.');
+      error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
+      error.sme_recovery_blocked = true;
+      error.sme_obligation_id = rootObligationId;
+      error.sme_request_diagnostics = registeredIngress;
+      throw error;
+    }
+    const providerAttempt = completionReplay ? {
+      attempt_id: completionReplay.attempt_id,
+      logical_obligation_id: rootObligationId,
+      root_obligation_id: rootObligationId,
+      child_obligation_id: leafObligationId,
+      logical_run_id: completionReplay.logical_run_id,
+      tier: 'session', owner: null,
+      source_range: completionReplay.source_range,
+      source_fingerprint: completionReplay.source_fingerprint,
+      terminal_outcome: completionReplay.terminal_outcome,
+      recovery_stage: completionReplay.recovery_stage ?? 'completion_journal_replay',
+      _adopted_terminal_evidence: true,
+    } : automaticFragmentRecovery ? {
       attempt_id: automaticFragmentRecovery.recovery_of_attempt_id ?? null,
       logical_obligation_id: rootObligationId,
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
       _already_finished: true,
-    } : bypassEquivalentRootReplay ? {
-      attempt_id: resumeRecoveryState?.prior_attempt_id ?? null,
-      logical_obligation_id: rootObligationId,
-      resumed_pending_obligation: true,
-      prior_window_recovery_state: resumeRecoveryState,
-      _already_finished: true,
-    } : await pipeline.beginRegisteredAttempt();
+    } : recoveryOnlyMode ? null : registeredIngress.attempt;
     try {
-      if (automaticFragmentRecovery) {
+      if (completionReplay) {
+        response = replayIngress.response_text;
+        providerResponseReceived = true;
+      } else if (automaticFragmentRecovery) {
         response = automaticFragmentRecovery.response;
         providerResponseReceived = true;
-      } else if (!bypassEquivalentRootReplay) {
+      } else if (!recoveryOnlyMode) {
         providerRequestSent = true;
         response = await generateMemoryExtract(prompt, { responseLength });
         providerResponseReceived = true;
-        await emitLifecycleEvent('provider_response_received', {
-          provider_attempt_id: providerAttempt?.attempt_id ?? null,
-          exact_reason_code: 'downstream_parser_pending',
+        const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
+          attempt: providerAttempt,
         });
+        if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
+          const error = new Error('Session provider response could not enter the lifecycle.');
+          error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
+          error.sme_recovery_blocked = true;
+          error.sme_obligation_id = rootObligationId;
+          error.sme_request_diagnostics = responseIngress;
+          throw error;
+        }
       }
     } catch (err) {
       const overflow = classifyContextOverflow(err);
@@ -923,6 +992,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         failure_classification: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
           : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure',
       });
+      await emitLifecycleEvent('provider_transport_failed', {
+        provider_attempt_id: providerAttempt?.attempt_id ?? null,
+        exact_reason_code: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
+          : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure',
+        next_eligible_action: 'dispatch_bounded_recovery_attempt',
+        recovery_intent: 'recover_provider_transport_failure',
+      });
       if (err && typeof err === 'object') {
         err.sme_provider_request_sent = true;
         err.sme_failure_stage ??= 'provider_request';
@@ -938,13 +1014,19 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       throw err;
     }
 
-    smLog('[Smart Memory Enhanced] Session extraction response:', response);
-
-    healthUpdate({ response_received: true, parser_outcome: 'not_started' });
-    updateCompletionJournal(providerAttempt, {
-      provider_disposition: 'response_received', response_text: response,
-    });
-    if (String(response ?? '').trim().toUpperCase() === 'NONE') {
+    if (!recoveryOnlyMode) {
+      smLog('[Smart Memory Enhanced] Session extraction response:', response);
+      healthUpdate({ response_received: true, parser_outcome: 'not_started' });
+      updateCompletionJournal(providerAttempt, {
+        provider_disposition: 'response_received', response_text: response,
+        ...(completionReplay ? {
+          adopted_from_logical_run_id: completionReplay.logical_run_id,
+          adopted_from_attempt_id: completionReplay.attempt_id,
+          evidence_adoption_reason: 'session_pending_downstream_completion_replay',
+        } : {}),
+      });
+    }
+    if (!recoveryOnlyMode && String(response ?? '').trim().toUpperCase() === 'NONE') {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
       updateCompletionJournal(providerAttempt, {
         parser_result: { status: 'explicit_none', records: [], accepted_count: 0 },
@@ -1002,10 +1084,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     let rejectedPartialFragments = [];
     let recoveredRecordFragmentIds = [];
     let recoveredNoUpdateFragmentIds = [];
-    let parsedCandidates = parseSessionOutput(response);
+    // A recovery-only Resume has no parent response to parse. The bounded
+    // scheduler below creates and registers each exact recovery attempt before
+    // its provider call instead of fabricating a null-attempt response.
+    let parsedCandidates = recoveryOnlyMode ? [] : parseSessionOutput(response);
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
-      const recovery = await recoverMalformedTaggedOutput({
+      let recovery;
+      try {
+        recovery = await recoverMalformedTaggedOutput({
         response, tier: 'session', parse: parseSessionOutput,
         generate: generateMemoryExtract,
         originalPrompt: automaticFragmentRecovery?.focused_prompt ?? prompt,
@@ -1022,12 +1109,63 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           ? restoredFragments.length ? restoredFragments : rejectedPartialFragments : [],
         onAttemptRegistered: async (attempt, detail = {}) => {
           if (!attempt?.attempt_id) throw new Error('Provider recovery attempt registration failed.');
-          await emitLifecycleEvent('provider_attempt_started', {
-            provider_attempt_id: attempt.attempt_id,
-            exact_reason_code: 'provider_request_in_progress',
-            recovery_intent: 'recover_unresolved_partial_output_fragments',
-            recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
-          });
+          attempt.recovery_intent ??= 'recover_unresolved_partial_output_fragments';
+          attempt.recovery_stage = detail.recovery_stage ?? attempt.recovery_stage;
+          const ingress = await pipeline.ingestProviderEvidence('register_new_attempt', { attempt });
+          if (!['applied', 'idempotent_duplicate_verified'].includes(ingress.status)) {
+            const error = new Error('Session recovery attempt registration was rejected.');
+            error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
+            error.sme_recovery_blocked = true;
+            error.sme_request_diagnostics = ingress;
+            throw error;
+          }
+        },
+        onAttemptSettled: async (attempt, detail = {}) => {
+          if (!attempt?.attempt_id) return;
+          if (detail.terminal_outcome === 'provider_failure') {
+            await emitLifecycleEvent('provider_transport_failed', {
+              provider_attempt_id: attempt.attempt_id,
+              exact_reason_code: attempt.failure_classification
+                ?? 'provider_transport_failure',
+              next_eligible_action: 'dispatch_bounded_recovery_attempt',
+            });
+            return;
+          }
+          if (detail.terminal_outcome === 'provider_response_malformed') {
+            const settled = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
+              evidence: attempt,
+              reason_code: detail.malformed_reason ?? attempt.malformed_reason,
+              next_action: 'dispatch_bounded_recovery_attempt',
+              recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
+            });
+            if (!['pending_reconciliation', 'operationally_paused',
+              'idempotent_duplicate_verified'].includes(settled.status)) {
+              throw Object.assign(new Error('Malformed recovery attempt settlement was rejected.'), {
+                code: 'SME_TERMINAL_MALFORMED_SETTLEMENT_REJECTED',
+                sme_recovery_blocked: true, sme_request_diagnostics: settled,
+              });
+            }
+            return;
+          }
+          if (detail.terminal_outcome === 'partial_output_pending') {
+            const responseIngress = await pipeline.ingestProviderEvidence(
+              'record_new_response', { attempt });
+            if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
+              throw Object.assign(new Error('Partial recovery response ingress was rejected.'), {
+                code: 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED',
+                sme_recovery_blocked: true, sme_request_diagnostics: responseIngress,
+              });
+            }
+            await emitLifecycleEvent('parser_partially_accepted', {
+              provider_attempt_id: attempt.attempt_id,
+              parser_result: 'partial_output_pending',
+            });
+            await emitLifecycleEvent('recovery_required', {
+              provider_attempt_id: attempt.attempt_id,
+              exact_reason_code: 'partial_output_pending',
+              next_action: 'dispatch_bounded_recovery_attempt',
+            });
+          }
         },
         sourceUnits: automaticFragmentRecovery
           ? [] : buildRecoverySourceUnits(sourceMessages, range.start, sourceWindowFingerprint),
@@ -1036,17 +1174,85 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             records, { ...details, source_range: { start: range.start, end: range.end, message_count: range.message_count } });
           await saveChatMetadata(getContext());
         },
-      });
+        });
+      } catch (recoveryError) {
+        const terminalAttempt = [...(providerMetadata?.live_memory_health
+          ?.provider_attempt_audit?.recent_attempts ?? [])].reverse().find((attempt) =>
+          attempt.child_obligation_id === leafObligationId
+          && attempt.terminal_outcome !== 'running');
+        if (terminalAttempt?.attempt_id) {
+          if (terminalAttempt.terminal_outcome === 'provider_failure') {
+            await emitLifecycleEvent('provider_transport_failed', {
+              provider_attempt_id: terminalAttempt.attempt_id,
+              exact_reason_code: terminalAttempt.failure_classification
+                ?? 'provider_transport_failure',
+              next_eligible_action: recoveryError?.sme_recovery_blocked
+                ? 'change_provider_configuration_or_install_updated_build'
+                : 'dispatch_bounded_recovery_attempt',
+            });
+          } else {
+            const settlement = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
+              evidence: terminalAttempt,
+              reason_code: terminalAttempt.malformed_reason
+                ?? 'terminal_malformed_provider_output',
+              next_action: recoveryError?.sme_request_diagnostics?.next_eligible_recovery_action
+                ?? 'dispatch_bounded_recovery_attempt',
+              recovery_stage: terminalAttempt.recovery_stage,
+              operationally_paused: recoveryError?.sme_recovery_blocked === true,
+            });
+            if (!['pending_reconciliation', 'operationally_paused',
+              'idempotent_duplicate_verified'].includes(settlement.status)) {
+              recoveryError.sme_recovery_blocked = true;
+              recoveryError.sme_request_diagnostics = settlement;
+            }
+          }
+        }
+        throw recoveryError;
+      }
       const terminalRecoveryAttempt = [...(providerMetadata?.live_memory_health
         ?.provider_attempt_audit?.recent_attempts ?? [])].reverse().find((attempt) =>
         attempt.child_obligation_id === leafObligationId && attempt.terminal_outcome !== 'running');
       if (terminalRecoveryAttempt?.attempt_id
         && terminalRecoveryAttempt.attempt_id !== providerAttempt?.attempt_id) {
         lifecycleAttemptId = terminalRecoveryAttempt.attempt_id;
-        await emitLifecycleEvent('provider_response_received', {
-          provider_attempt_id: lifecycleAttemptId,
-          exact_reason_code: 'downstream_parser_pending',
-        });
+        if (['completed', 'completed_no_candidates', 'completed_repartitioned']
+          .includes(terminalRecoveryAttempt.terminal_outcome)) {
+          const ingress = await pipeline.ingestProviderEvidence('record_new_response', {
+            attempt: terminalRecoveryAttempt,
+          });
+          if (!['applied', 'idempotent_duplicate_verified'].includes(ingress.status)) {
+            const error = new Error('Session recovery response lifecycle ingress was rejected.');
+            error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
+            error.sme_recovery_blocked = true;
+            error.sme_request_diagnostics = ingress;
+            throw error;
+          }
+        } else if (terminalRecoveryAttempt.terminal_outcome === 'provider_failure') {
+          await emitLifecycleEvent('provider_transport_failed', {
+            provider_attempt_id: terminalRecoveryAttempt.attempt_id,
+            exact_reason_code: terminalRecoveryAttempt.failure_classification
+              ?? 'provider_transport_failure',
+            next_eligible_action: 'dispatch_bounded_recovery_attempt',
+          });
+        } else {
+          const settlement = await pipeline.ingestProviderEvidence(
+            'settle_terminal_malformed_attempt', {
+              evidence: terminalRecoveryAttempt,
+              reason_code: terminalRecoveryAttempt.malformed_reason
+                ?? 'terminal_malformed_provider_output',
+              next_action: recovery?.terminal_error?.sme_request_diagnostics
+                ?.next_eligible_recovery_action ?? 'dispatch_bounded_recovery_attempt',
+              recovery_stage: terminalRecoveryAttempt.recovery_stage,
+            });
+          if (!['pending_reconciliation', 'operationally_paused',
+            'idempotent_duplicate_verified'].includes(settlement.status)) {
+            const error = new Error('Session malformed terminal attempt could not be settled.');
+            error.code = 'SME_TERMINAL_MALFORMED_SETTLEMENT_REJECTED';
+            error.sme_recovery_blocked = true;
+            error.sme_request_diagnostics = settlement;
+            throw error;
+          }
+        }
       }
       if (recovery.repartitioned) {
         markProviderDownstreamOutcome(providerMetadata, rootObligationId, {

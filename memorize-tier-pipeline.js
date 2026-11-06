@@ -1,6 +1,7 @@
 import { beginProviderAttempt } from './provider-attempt-audit.js';
 import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
-  requireAppliedLifecycleResult } from './memorize-lifecycle-coordinator.js';
+  coordinateProviderEvidenceIngress, requireAppliedLifecycleResult }
+  from './memorize-lifecycle-coordinator.js';
 
 const EXPECTED_EVENT_STATES = Object.freeze({
   obligation_registered: [],
@@ -19,6 +20,8 @@ const EXPECTED_EVENT_STATES = Object.freeze({
   recovery_required: ['pending_recovery'],
   recovery_budget_exhausted: ['operationally_paused'],
   obligation_blocked: ['blocked'],
+  terminal_provider_evidence_adopted: ['provider_response_received'],
+  terminal_malformed_attempt_settled: ['pending_recovery', 'operationally_paused'],
 });
 
 function completionJournalEntry(metadata, attemptId) {
@@ -96,7 +99,7 @@ export function createMemorizeTierPipeline(input) {
     source_range: { start: range.start, end: range.end, message_count: range.message_count },
     source_fingerprint: sourceFingerprint,
   });
-  const emitLifecycleEvent = async (type, details = {}) => {
+  const applyLifecycleEvent = async (type, details = {}) => {
     const event = {
       obligation_id: leafObligationId,
       root_obligation_id: rootObligationId,
@@ -192,7 +195,7 @@ export function createMemorizeTierPipeline(input) {
   // dispatch boundary. Callers cannot send the provider request between them.
   const beginRegisteredAttempt = async (...args) => {
     const attempt = beginAttempt(...args);
-    if (attempt?.attempt_id) await emitLifecycleEvent('provider_attempt_started', {
+    if (attempt?.attempt_id) await applyLifecycleEvent('provider_attempt_started', {
       provider_attempt_id: attempt.attempt_id,
       exact_reason_code: 'provider_request_in_progress',
       recovery_intent: attempt.recovery_intent,
@@ -200,13 +203,55 @@ export function createMemorizeTierPipeline(input) {
     });
     return attempt;
   };
+  const ingestProviderEvidence = (operation, details = {}) => coordinateProviderEvidenceIngress({
+    operation, identity: lifecycleIdentity,
+    prior_state: execution.provider.root_obligation_state,
+    emit_lifecycle_event: applyLifecycleEvent,
+    begin_registered_attempt: beginRegisteredAttempt,
+    ...details,
+  });
+  const coordinatedEventOperations = Object.freeze({
+    provider_transport_failed: 'record_provider_transport_failure',
+    parser_accepted: 'record_parser_disposition',
+    parser_partially_accepted: 'record_parser_disposition',
+    parser_rejected: 'record_parser_disposition',
+    validation_accepted: 'record_validation_disposition',
+    validation_partially_accepted: 'record_validation_disposition',
+    validation_rejected: 'record_validation_disposition',
+    records_staged: 'record_records_staged',
+    records_durably_persisted: 'record_durable_persistence',
+    explicit_no_update_accepted: 'record_explicit_no_update',
+    recovery_required: 'record_recovery_required',
+    recovery_budget_exhausted: 'settle_recovery_exhaustion',
+    obligation_blocked: 'record_obligation_blocked',
+    terminal_attempt_evidence_reconciled: 'reconcile_terminal_attempt_evidence',
+  });
+  // Keep tree/coverage-only events on the raw reducer, while every event that
+  // consumes physical provider evidence or decides provider recovery crosses
+  // the exhaustive coordinator ingress contract.
+  const emitLifecycleEvent = async (type, details = {}) => {
+    const operation = coordinatedEventOperations[type];
+    if (!operation) return applyLifecycleEvent(type, details);
+    const result = await ingestProviderEvidence(operation, {
+      semantic_event_type: type, details,
+    });
+    if (['applied', 'idempotent_duplicate_verified', 'operationally_paused']
+      .includes(result.status)) return result;
+    const error = new Error(`Memorize provider-evidence ingress rejected ${type}.`);
+    error.code = 'SME_PROVIDER_EVIDENCE_INGRESS_REJECTED';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = result.reason_code;
+    error.sme_obligation_id = leafObligationId;
+    error.sme_provider_evidence_ingress = result;
+    throw error;
+  };
 
   return Object.freeze({
     tier, tierLabel, owner, range, rangeId, rootSourceRange,
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
     lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
-    beginRegisteredAttempt,
+    beginRegisteredAttempt, ingestProviderEvidence,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

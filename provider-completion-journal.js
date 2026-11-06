@@ -10,7 +10,12 @@ const verifiedTransition = (value) => ['applied_verified', 'idempotent_duplicate
 
 function mergeUnverifiedCallerTransition(priorValue, patchValue) {
   const prior = clone(priorValue) ?? { status: 'pending' };
-  if (!patchValue) return prior;
+  if (!patchValue) return prior.status === 'applied' ? {
+    ...prior,
+    status: 'pending_reconciliation',
+    requested_disposition: prior.disposition ?? prior.requested_disposition ?? null,
+    legacy_caller_assertion: 'applied',
+  } : prior;
   if (verifiedTransition(prior)) return prior;
   const patch = clone(patchValue);
   if (patch.status === 'applied') return {
@@ -85,6 +90,12 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     completed_at: patch.completed_at ?? prior.completed_at ?? null,
     replay_count: Number(prior.replay_count ?? 0),
     migration: clone(patch.migration ?? prior.migration ?? null),
+    adopted_from_logical_run_id: patch.adopted_from_logical_run_id
+      ?? prior.adopted_from_logical_run_id ?? null,
+    adopted_from_attempt_id: patch.adopted_from_attempt_id
+      ?? prior.adopted_from_attempt_id ?? null,
+    evidence_adoption_reason: patch.evidence_adoption_reason
+      ?? prior.evidence_adoption_reason ?? null,
   };
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
     && verifiedTransition(entry.manifest_transition)
@@ -99,6 +110,13 @@ export function findReplayableProviderCompletion(metadata, input = {}) {
   const entries = journal.order.map((id) => journal.entries[id]).filter(Boolean).reverse();
   return entries.find((entry) => terminalSuccess.has(entry.terminal_outcome)
     && entry.root_obligation_id === input.root_obligation_id
+    && (!input.child_obligation_id || (entry.child_obligation_id ?? entry.root_obligation_id)
+      === input.child_obligation_id)
+    && (!input.tier || entry.tier === input.tier)
+    && (input.owner === undefined || String(entry.owner ?? '').trim().toLowerCase()
+      === String(input.owner ?? '').trim().toLowerCase())
+    && (!input.source_range || (Number(entry.source_range?.start) === Number(input.source_range.start)
+      && Number(entry.source_range?.end) === Number(input.source_range.end)))
     && entry.source_fingerprint === input.source_fingerprint
     && entry.response_text != null
     && entry.completed_at == null) ?? null;
@@ -327,6 +345,9 @@ export function exportProviderCompletionJournal(metadata) {
       started_at: entry.started_at, updated_at: entry.updated_at,
       completed_at: entry.completed_at, replay_count: entry.replay_count,
       migration: clone(entry.migration),
+      adopted_from_logical_run_id: entry.adopted_from_logical_run_id ?? null,
+      adopted_from_attempt_id: entry.adopted_from_attempt_id ?? null,
+      evidence_adoption_reason: entry.evidence_adoption_reason ?? null,
     })),
   };
 }
