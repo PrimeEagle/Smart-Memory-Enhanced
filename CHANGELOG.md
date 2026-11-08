@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.85] - 2026-11-08
+
+### Added
+
+- Added an explicit owner/applicability proof to retained provider evidence,
+  canonical adoption, Resume authority, journal exports, and lifecycle events.
+  Long-Term evidence now requires the exact owner scope, Session evidence
+  requires chat scope, and an explicit irrelevant/non-substantive decision
+  cannot be overridden by matching request identity.
+- Added a journal-owned retained-evidence decision effect and a semantic
+  `retained_provider_evidence_reopened` transition. Immutable planner snapshots
+  remain read-only while canonical state is reopened before parser,
+  validation, or persistence continuation.
+- Added production-path regression coverage, a minimized frozen-snapshot
+  fixture, and a supplied-export release gate for the 9,434-message v0.9.84
+  failure.
+
+### Changed
+
+- Retained-evidence planning is now a pure immutable decision boundary.
+  Decision audits are appended through the provider-completion journal under
+  the active controller transaction lease instead of being written onto the
+  selected planner snapshot.
+- Local effect-boundary failures are classified separately from provider
+  transport failures. Resolved local failures remain available as historical
+  diagnostics but no longer inflate the active error count or provider-fault
+  accounting.
+- Diagnostic projection now strips private retained provider response text and
+  parsed record bodies from embedded recovery plans while preserving structural
+  counts, owner/applicability proof, attempt identity, and lifecycle evidence.
+
+### Fixed
+
+- Fixed `Cannot add property retained_evidence_decisions, object is not
+  extensible`, which occurred after v0.9.84 correctly froze its retained-
+  evidence plan but the tier pipeline attempted to mutate the frozen cloned
+  journal entry. The failure happened before any provider request.
+- Fixed retained responses adopted from prior runs remaining in
+  `pending_recovery` without a legal transition back to downstream processing,
+  which made Resume repeat the same action and trigger
+  `resume_no_progress_same_action`.
+- Added an idempotent, zero-provider-call v0.9.84 migration that validates each
+  adopted response against its exact owner scope, preserves valid adoption and
+  durable-record identity, removes invalid adoption relationships, resolves
+  the repeated local frozen-object errors, clears only the matching stale
+  no-progress block, and recomputes Resume authority. A second migration pass
+  makes no changes.
+- Fixed legacy request-owner labels being treated as sufficient proof of record
+  applicability. Parsed Long-Term records must target the requested owner (or
+  carry a persisted semantic applicability proof); otherwise the retained
+  response is rejected and the exact obligation is safely regenerated.
+
 ## [0.9.84] - 2026-11-06
 
 ### Added

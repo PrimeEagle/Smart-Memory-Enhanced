@@ -22,6 +22,7 @@ const EXPECTED_EVENT_STATES = Object.freeze({
   recovery_budget_exhausted: ['operationally_paused'],
   obligation_blocked: ['blocked'],
   terminal_provider_evidence_adopted: ['provider_response_received'],
+  retained_provider_evidence_reopened: ['provider_response_received'],
   terminal_malformed_attempt_settled: ['pending_recovery', 'operationally_paused'],
 });
 
@@ -227,27 +228,28 @@ export function createMemorizeTierPipeline(input) {
       ...details,
     });
     if (selection?.entry) {
-      selection.entry.retained_evidence_decisions = [
-        ...(selection.entry.retained_evidence_decisions ?? []), {
-          selected_at: selection.selected_at ?? null,
-          applied_at: Date.now(),
-          selected_classification: selection.classification ?? null,
-          applied_classification: result.evidence_classification ?? null,
-          changed_since_selection: result.decision_revalidation?.changed_since_selection === true,
-          selected_obligation_revision:
-            result.decision_revalidation?.selected_obligation_revision ?? null,
-          applied_obligation_revision:
-            result.decision_revalidation?.applied_obligation_revision ?? null,
-          selected_state_fingerprint:
-            result.decision_revalidation?.selected_state_fingerprint ?? null,
-          applied_state_fingerprint:
-            result.decision_revalidation?.applied_state_fingerprint ?? null,
-          disposition: result.reason_code ?? result.status,
-          provider_call_required: result.provider_call_required === true,
-          persistence_required: result.persistence_required === true,
-        },
-      ].slice(-16);
-      await execution.hooks.provider_completion_journal_updated(selection.entry, {
+      const decisionAudit = {
+        selected_at: selection.selected_at ?? null,
+        applied_at: Date.now(),
+        selected_classification: selection.classification ?? null,
+        applied_classification: result.evidence_classification ?? null,
+        changed_since_selection: result.decision_revalidation?.changed_since_selection === true,
+        selected_obligation_revision:
+          result.decision_revalidation?.selected_obligation_revision ?? null,
+        applied_obligation_revision:
+          result.decision_revalidation?.applied_obligation_revision ?? null,
+        selected_state_fingerprint:
+          result.decision_revalidation?.selected_state_fingerprint ?? null,
+        applied_state_fingerprint:
+          result.decision_revalidation?.applied_state_fingerprint ?? null,
+        disposition: result.reason_code ?? result.status,
+        provider_call_required: result.provider_call_required === true,
+        persistence_required: result.persistence_required === true,
+        owner_applicability: result.decision_revalidation?.owner_applicability
+          ?? selection.retained_evidence_plan?.owner_applicability ?? null,
+      };
+      await execution.hooks.retained_evidence_decision_recorded(
+        selection.entry.attempt_id, decisionAudit, {
         await_point: 'retained_evidence_decision', progress: true,
       });
     }

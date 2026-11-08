@@ -109,7 +109,8 @@ import {
 } from './memorize-authority-model.js';
 import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState,
   migrateV0981RetainedEvidenceRaceState, migrateV0982ControllerLeaseRecoveryState,
-  migrateV0983RetainedEvidenceRecoveryState }
+  migrateV0983RetainedEvidenceRecoveryState,
+  migrateV0984RetainedEvidenceEffectBoundaryState }
   from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
@@ -146,6 +147,7 @@ import {
 } from './memorize-controller-heartbeat.js';
 import {
   inspectProviderCompletionConsistency,
+  appendRetainedEvidenceDecision,
   migrateTerminalProviderCompletions,
   reconcileImpossibleLiveHealth,
   exportProviderCompletionJournal,
@@ -279,8 +281,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.84',
-  build_fingerprint: 'sme-v0.9.84-retained-evidence-recovery-r1',
+  extension_version: '0.9.85',
+  build_fingerprint: 'sme-v0.9.85-retained-evidence-effect-boundary-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2322,6 +2324,17 @@ export function bindSettingsUI(ctrl) {
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
     const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
     const liveMetadata = getContext().chatMetadata?.[META_KEY];
+    if (rawCheckpoint?.run_manifest?.obligation_ledger && liveMetadata) {
+      const effectBoundaryRepair = migrateV0984RetainedEvidenceEffectBoundaryState({
+        checkpoint: rawCheckpoint, metadata: liveMetadata,
+      });
+      if (effectBoundaryRepair.migrated) {
+        rawCheckpoint.retained_evidence_effect_boundary_migration
+          = effectBoundaryRepair.detail;
+        saveChatMetadata(getContext()).catch((error) => console.warn(
+          `[${MODULE_NAME}] Could not persist retained-evidence effect-boundary repair:`, error));
+      }
+    }
     if (rawCheckpoint?.status === 'in_progress' && !ctrl.extractionRunning && !ctrl.compactionRunning
       && !getActiveCatchUpTransactionSnapshot()) {
       const audit = liveMetadata?.live_memory_health?.provider_attempt_audit;
@@ -5429,10 +5442,15 @@ export function bindSettingsUI(ctrl) {
       currentChunkFailed = true;
       if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
       if (isSave) runResult.saveFailures++;
+      const localEffectBoundaryFailure = /retained_evidence_decisions|object is not extensible|frozen.*snapshot/i
+        .test(`${err?.message ?? ''} ${err?.code ?? ''}`);
       runResult.errors.push({
         label,
         tier,
         persistence: isSave,
+        code: err?.code ?? (localEffectBoundaryFailure
+          ? 'SME_RETAINED_EVIDENCE_EFFECT_BOUNDARY_FROZEN_SNAPSHOT' : null),
+        provider_fault_attribution: localEffectBoundaryFailure ? false : undefined,
         message: String(err?.message ?? err ?? 'Unknown error').replace(/\s+/g, ' ').slice(0, 300),
       });
       const requestDiagnostics = err?.sme_request_diagnostics ?? null;
@@ -5449,11 +5467,14 @@ export function bindSettingsUI(ctrl) {
           tier,
           ...requestDiagnostics,
         });
-      } else if (requestDiagnostics || /provider-evidence|lifecycle|retained provider evidence/i
+      } else if (requestDiagnostics || localEffectBoundaryFailure
+        || /provider-evidence|lifecycle|retained provider evidence/i
         .test(`${err?.message ?? ''} ${err?.code ?? ''}`)) {
         const localFailure = {
           label, tier,
-          code: err?.code ?? 'SME_LOCAL_LIFECYCLE_FAILURE',
+          code: err?.code ?? (localEffectBoundaryFailure
+            ? 'SME_RETAINED_EVIDENCE_EFFECT_BOUNDARY_FROZEN_SNAPSHOT'
+            : 'SME_LOCAL_LIFECYCLE_FAILURE'),
           reason_code: err?.sme_reason_code ?? requestDiagnostics?.reason_code ?? null,
           obligation_id: err?.sme_obligation_id
             ?? requestDiagnostics?.obligation_id ?? requestDiagnostics?.selected_obligation_id ?? null,
@@ -5766,6 +5787,17 @@ export function bindSettingsUI(ctrl) {
           = retainedEvidenceRecoveryMigration.detail;
         checkpoint.run_manifest.terminal_reason_code
           = retainedEvidenceRecoveryMigration.detail.planned_obligations?.[0]
+            ?.exact_next_action ?? checkpoint.run_manifest.terminal_reason_code;
+      }
+      const retainedEvidenceEffectBoundaryMigration
+        = migrateV0984RetainedEvidenceEffectBoundaryState({
+          checkpoint, metadata: catchUpContext.chatMetadata?.[META_KEY],
+        });
+      if (retainedEvidenceEffectBoundaryMigration.migrated) {
+        checkpoint.retained_evidence_effect_boundary_migration
+          = retainedEvidenceEffectBoundaryMigration.detail;
+        checkpoint.run_manifest.terminal_reason_code
+          = retainedEvidenceEffectBoundaryMigration.detail.repaired_obligations?.[0]
             ?.exact_next_action ?? checkpoint.run_manifest.terminal_reason_code;
       }
       const runningReconciliation = reconcileMemorizeRunningObligations(
@@ -6376,6 +6408,28 @@ export function bindSettingsUI(ctrl) {
           }, { obligation_id: entry?.child_obligation_id ?? entry?.root_obligation_id,
             provider_attempt_id: entry?.attempt_id });
         };
+        const commitRetainedEvidenceDecision = async (attemptId, decision,
+          heartbeatPatch = {}) => runLeasedPersistence(
+          'retained_evidence_decision_recorded', () => {
+            const entry = appendRetainedEvidenceDecision(
+              catchUpContext.chatMetadata?.[META_KEY], attemptId, decision);
+            if (!entry) {
+              const error = new Error('Retained-evidence decision has no authoritative journal entry.');
+              error.code = 'SME_RETAINED_EVIDENCE_JOURNAL_ENTRY_MISSING';
+              error.sme_reason_code = 'retained_evidence_journal_entry_missing';
+              error.sme_obligation_id = decision?.canonical_obligation_id ?? null;
+              error.sme_request_diagnostics = {
+                reason_code: error.sme_reason_code,
+                provider_attempt_id: attemptId ?? null,
+                provider_call_required: false,
+                effect_boundary: 'provider_completion_journal',
+              };
+              throw error;
+            }
+            updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
+            checkpoint.updated_at = Date.now();
+            return entry;
+          }, { provider_attempt_id: attemptId });
         const commitProviderAwaitPoint = async (heartbeatPatch = {}) => {
           return runLeasedPersistence('provider_await_point', () => {
             updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
@@ -6552,6 +6606,7 @@ export function bindSettingsUI(ctrl) {
                   context_overflow_child_committed: commitOverflowChild,
                   recovery_child_manifest_updated: commitRecoveryChildManifest,
                   provider_completion_journal_updated: commitProviderCompletionJournal,
+                  retained_evidence_decision_recorded: commitRetainedEvidenceDecision,
                   provider_await_point: commitProviderAwaitPoint,
                   obligation_event: applyAuthoritativeLifecycleEvent,
                   get_canonical_obligation: getCanonicalObligation,
@@ -7150,6 +7205,7 @@ export function bindSettingsUI(ctrl) {
                     context_overflow_child_committed: commitSweepChild,
                     recovery_child_manifest_updated: commitRecoveryChildManifest,
                     provider_completion_journal_updated: commitProviderCompletionJournal,
+                    retained_evidence_decision_recorded: commitRetainedEvidenceDecision,
                     provider_await_point: commitProviderAwaitPoint,
                     obligation_event: applyAuthoritativeLifecycleEvent,
                   },
@@ -10488,6 +10544,15 @@ export function bindSettingsUI(ctrl) {
         if (retainedEvidenceRecoveryRepair.migrated) {
           failedCheckpoint.retained_evidence_recovery_migration
             = retainedEvidenceRecoveryRepair.detail;
+        }
+        const retainedEvidenceEffectBoundaryRepair
+          = migrateV0984RetainedEvidenceEffectBoundaryState({
+            checkpoint: failedCheckpoint,
+            metadata: catchUpContext.chatMetadata?.[META_KEY],
+          });
+        if (retainedEvidenceEffectBoundaryRepair.migrated) {
+          failedCheckpoint.retained_evidence_effect_boundary_migration
+            = retainedEvidenceEffectBoundaryRepair.detail;
         }
         failedCheckpoint.controller_failure = {
           schema_version: 1,

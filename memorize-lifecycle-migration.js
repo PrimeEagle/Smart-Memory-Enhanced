@@ -3,11 +3,13 @@ import {
   normalizeMemorizeLifecycleIdentity,
   transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
-import { recordProviderCompletion } from './provider-completion-journal.js';
+import { appendRetainedEvidenceDecision, recordProviderCompletion }
+  from './provider-completion-journal.js';
 import { settleOrphanedProviderAttempts } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import { deriveMemorizeRecoveryAuthority } from './memorize-recovery-authority.js';
-import { planRetainedProviderEvidence, PROVIDER_EVIDENCE_PROVENANCE }
+import { assessRetainedEvidenceOwnerApplicability, planRetainedProviderEvidence,
+  PROVIDER_EVIDENCE_PROVENANCE }
   from './retained-evidence-plan.js';
 
 export const MEMORIZE_LIFECYCLE_MIGRATION_VERSION = 1;
@@ -15,6 +17,7 @@ export const SAME_RUN_EVIDENCE_MIGRATION_VERSION = 1;
 export const RETAINED_EVIDENCE_RACE_MIGRATION_VERSION = 1;
 export const CONTROLLER_LEASE_RECOVERY_MIGRATION_VERSION = 1;
 export const RETAINED_EVIDENCE_RECOVERY_MIGRATION_VERSION = 1;
+export const RETAINED_EVIDENCE_EFFECT_BOUNDARY_MIGRATION_VERSION = 1;
 
 const success = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const malformed = (attempt) => attempt?.terminal_outcome === 'provider_response_malformed'
@@ -720,4 +723,184 @@ export function migrateV0983RetainedEvidenceRecoveryState({ checkpoint, metadata
   checkpoint.updated_at = at;
   return { ledger, migrated: before !== JSON.stringify({ ledger, journal }), detail,
     provider_calls: 0, persistence_calls: 0 };
+}
+
+/**
+ * Repairs v0.9.84 states where an adopted retained response reached the
+ * canonical ledger and then the caller attempted to write an audit field onto
+ * the planner's frozen snapshot. Only lifecycle metadata, decision audits,
+ * diagnostics, and Resume eligibility are changed.
+ */
+export function migrateV0984RetainedEvidenceEffectBoundaryState({ checkpoint, metadata,
+  at = Date.now() } = {}) {
+  const ledgerValue = checkpoint?.run_manifest?.obligation_ledger;
+  const logicalRunId = checkpoint?.run_manifest?.logical_run_id;
+  if (!checkpoint || !ledgerValue || !logicalRunId || !metadata) return {
+    migrated: false, detail: null, provider_calls: 0, persistence_calls: 0,
+  };
+  const ledger = ensureMemorizeObligationLedger(ledgerValue, logicalRunId);
+  ledger.migrations ??= {};
+  const key = 'retained_evidence_effect_boundary_v0985';
+  if (ledger.migrations[key]?.completed === true) return {
+    ledger, migrated: false, detail: ledger.migrations[key],
+    provider_calls: 0, persistence_calls: 0,
+  };
+  const diagnostics = metadata.catch_up_diagnostics ?? null;
+  const frozenMessage = /cannot add property retained_evidence_decisions, object is not extensible/i;
+  const frozenErrors = (diagnostics?.error_details ?? [])
+    .filter((item) => frozenMessage.test(String(item?.message ?? '')));
+  const staleNoProgress = checkpoint.resume_progress?.no_progress_reason
+    === 'resume_no_progress_same_action';
+  const buildFingerprint = diagnostics?.build_identity?.build_fingerprint ?? '';
+  const affectedBuild = /sme-v0\.9\.84-retained-evidence-recovery-r1/i
+    .test(buildFingerprint);
+  const affected = frozenErrors.length > 0 || (affectedBuild && staleNoProgress);
+  const entries = completionEntries(metadata.provider_completion_journal);
+  const entryByAttempt = new Map(entries.filter((item) => item?.attempt_id)
+    .map((item) => [item.attempt_id, item]));
+  const repairedObligations = [];
+  const rejectedAdoptions = [];
+  const priorResumeProgress = checkpoint.resume_progress
+    ? structuredClone(checkpoint.resume_progress) : null;
+
+  if (affected) {
+    for (const obligation of Object.values(ledger.obligations ?? {})) {
+      if (obligation?.checkpoint_eligible === true) continue;
+      const adoption = [...(obligation?.evidence_adoptions ?? [])].reverse().find((item) =>
+        item?.adopted_into_logical_run_id === logicalRunId
+          && item?.canonical_obligation_id === obligation.obligation_id);
+      const entry = entryByAttempt.get(adoption?.origin_attempt_id);
+      if (!entry) continue;
+      const applicability = assessRetainedEvidenceOwnerApplicability(entry, {
+        tier: obligation.tier, owner: obligation.owner,
+      });
+      if (!applicability.eligible) {
+        obligation.evidence_adoptions = (obligation.evidence_adoptions ?? [])
+          .filter((item) => item !== adoption);
+        if (obligation.metrics?.adopted_from_attempt_id === entry.attempt_id) {
+          delete obligation.metrics.adopted_from_attempt_id;
+          delete obligation.metrics.adopted_from_logical_run_id;
+          delete obligation.metrics.adopted_evidence_fingerprint;
+          delete obligation.metrics.evidence_adoption_reason;
+        }
+        const updated = transitionMemorizeObligation(ledger, obligation, {
+          current_state: 'pending_recovery',
+          exact_reason_code: 'retained_evidence_owner_applicability_not_verified',
+          next_eligible_action: 'dispatch_provider_request',
+          recovery_intent: 'dispatch_provider_request',
+          recovery_stage: 'retained_evidence_applicability_rejected',
+          metrics: { retained_evidence_owner_applicability: applicability }, at,
+        });
+        appendRetainedEvidenceDecision(metadata, entry.attempt_id, {
+          applied_at: at, selected_classification: 'current_run_continue_downstream',
+          applied_classification: PROVIDER_EVIDENCE_PROVENANCE.OWNER_INAPPLICABLE,
+          disposition: 'retained_evidence_owner_applicability_not_verified',
+          owner_applicability: applicability,
+        }, at);
+        rejectedAdoptions.push({ obligation_id: updated.obligation_id,
+          attempt_id: entry.attempt_id, owner_applicability: applicability });
+        continue;
+      }
+      const plan = planRetainedProviderEvidence({
+        current_logical_run_id: logicalRunId,
+        root_obligation_id: obligation.parent_obligation_id ?? obligation.obligation_id,
+        child_obligation_id: obligation.obligation_id,
+        tier: obligation.tier, owner: obligation.owner,
+        source_range: obligation.source_range,
+        source_fingerprint: obligation.source_fingerprint,
+        obligation, candidates: entries,
+      });
+      if (![PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM,
+        PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE]
+        .includes(plan.evidence_classification)) continue;
+      const updated = transitionMemorizeObligation(ledger, obligation, {
+        current_state: 'pending_recovery',
+        exact_reason_code: 'retained_evidence_effect_boundary_repaired',
+        next_eligible_action: plan.exact_next_action
+          ?? 'continue_pending_downstream_processing',
+        recovery_intent: 'continue_pending_downstream_processing',
+        recovery_stage: 'retained_terminal_response_downstream_processing',
+        metrics: {
+          retained_evidence_owner_applicability: applicability,
+          frozen_decision_effect_boundary_repaired: true,
+        }, at,
+      });
+      appendRetainedEvidenceDecision(metadata, entry.attempt_id, {
+        applied_at: at, selected_classification: plan.evidence_classification,
+        applied_classification: plan.evidence_classification,
+        selected_obligation_revision: obligation.revision ?? null,
+        applied_obligation_revision: updated.revision ?? null,
+        disposition: 'frozen_decision_effect_boundary_repaired',
+        provider_call_required: false, persistence_required: true,
+        owner_applicability: applicability,
+      }, at);
+      repairedObligations.push({ obligation_id: updated.obligation_id,
+        attempt_id: entry.attempt_id,
+        exact_next_action: updated.next_eligible_action,
+        owner_applicability: applicability });
+    }
+    if (checkpoint.resume_progress?.no_progress_reason === 'resume_no_progress_same_action') {
+      delete checkpoint.resume_progress;
+    }
+    if (diagnostics) {
+      diagnostics.error_details = (diagnostics.error_details ?? []).map((item) =>
+        frozenMessage.test(String(item?.message ?? '')) ? {
+          ...item, resolved: true,
+          resolution_code: 'retained_evidence_effect_boundary_repaired_v0985',
+          provider_fault_attribution: false,
+        } : item);
+      diagnostics.resolved_local_lifecycle_failures = [
+        ...(diagnostics.resolved_local_lifecycle_failures ?? []),
+        ...frozenErrors.map((item) => ({ ...item,
+          code: 'SME_RETAINED_EVIDENCE_EFFECT_BOUNDARY_FROZEN_SNAPSHOT',
+          resolved: true, resolved_at: at, provider_call_required: false,
+        })),
+      ].slice(-64);
+      diagnostics.errors = diagnostics.error_details.filter((item) => item?.resolved !== true).length;
+    }
+  }
+
+  const detail = ledger.migrations[key] = {
+    version: RETAINED_EVIDENCE_EFFECT_BOUNDARY_MIGRATION_VERSION,
+    completed: true, logical_run_id: logicalRunId,
+    affected_v0984_state_detected: affected,
+    frozen_error_count: frozenErrors.length,
+    repaired_obligation_count: repairedObligations.length,
+    repaired_obligations: repairedObligations,
+    rejected_adoption_count: rejectedAdoptions.length,
+    rejected_adoptions: rejectedAdoptions,
+    stale_no_progress_block_cleared: affected && staleNoProgress,
+    prior_resume_progress: priorResumeProgress,
+    provider_calls: 0, persistence_calls: 0, completed_at: at,
+  };
+  ledger.updated_at = at;
+  const authority = deriveMemorizeRecoveryAuthority({
+    checkpoint, ledger,
+    provider_audit: metadata.live_memory_health?.provider_attempt_audit,
+    provider_completion_journal: metadata.provider_completion_journal,
+    controller_heartbeat: checkpoint.controller_heartbeat,
+    transaction_lifecycle: checkpoint.transaction_lifecycle,
+    checkpoint_status: checkpoint.status,
+  });
+  checkpoint.authoritative_recovery = authority;
+  checkpoint.resume_eligibility = {
+    schema_version: 2, eligible: authority.resume_eligible,
+    mode: authority.resume_eligible
+      ? (authority.provider_call_permitted ? 'provider_resume' : 'local_reconciliation_only')
+      : 'blocked',
+    reason_code: authority.base_resume_eligibility?.reason_code
+      ?? authority.resume_blockers?.[0]?.reason_code ?? 'no_executable_recovery_action',
+    next_eligible_action: authority.next_executable_action,
+    obligation_id: authority.pending_obligation?.obligation_id ?? null,
+    provider_call_required: authority.provider_call_permitted,
+    evaluated_at: at,
+  };
+  if (authority.resume_eligible && checkpoint.status !== 'completed') {
+    checkpoint.status = 'awaiting_manual_resume';
+    delete checkpoint.recovery_blocked;
+  }
+  checkpoint.retained_evidence_effect_boundary_migration = detail;
+  checkpoint.updated_at = at;
+  return { ledger, migrated: true,
+    detail, provider_calls: 0, persistence_calls: 0 };
 }

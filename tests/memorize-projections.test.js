@@ -21,12 +21,26 @@ test('recovery projection distinguishes absent, blocked, and resumable states', 
 });
 
 test('diagnostics projection returns a new read model without mutating sources', () => {
-  const completed = { status: 'completed', nested: { value: 1 } };
+  const completed = { status: 'completed', nested: { value: 1 },
+    authoritative_recovery: { base_resume_eligibility: {
+      retained_evidence_plan: { selected_entry: {
+        attempt_id: 'attempt-1', response_text: 'private provider response',
+        parser_result: { status: 'accepted', accepted_count: 1,
+          records: [{ id: 'private-record', content: 'private record' }] },
+      } },
+    } } };
   const result = selectDiagnosticsProjection({ completedRun: completed, current: { live_memory_health: { status: 'idle' } } });
   assert.notEqual(result, completed);
   assert.equal(result.status, 'completed');
   assert.equal(result.live_memory_health.status, 'idle');
   result.nested.value = 2;
   assert.equal(completed.nested.value, 1);
+  const selected = result.authoritative_recovery.base_resume_eligibility
+    .retained_evidence_plan.selected_entry;
+  assert.equal(Object.hasOwn(selected, 'response_text'), false);
+  assert.deepEqual(selected.parser_result, { status: 'accepted', accepted_count: 1,
+    record_count: 1, private_records_retained: true });
+  assert.equal(completed.authoritative_recovery.base_resume_eligibility
+    .retained_evidence_plan.selected_entry.response_text, 'private provider response');
 });
 

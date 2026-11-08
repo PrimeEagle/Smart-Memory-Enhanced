@@ -9,6 +9,7 @@ export const PROVIDER_EVIDENCE_PROVENANCE = Object.freeze({
   MISSING_PRIVATE_EVIDENCE: 'unusable_missing_private_evidence',
   INCOMPLETE_RECONCILIATION: 'incomplete_reconciliation_evidence',
   IDENTITY_MISMATCH: 'identity_mismatch',
+  OWNER_INAPPLICABLE: 'owner_or_applicability_mismatch',
 });
 
 const TERMINAL_SUCCESS = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
@@ -28,6 +29,108 @@ const freeze = (value) => {
 };
 const sameOwner = (left, right) => String(left ?? '').trim().toLowerCase()
   === String(right ?? '').trim().toLowerCase();
+
+const INAPPLICABLE_OWNER_CLASSIFICATIONS = new Set([
+  'owner_irrelevant', 'non_substantive_fragment', 'not_applicable', 'rejected',
+]);
+
+const normalizedOwnerName = (value) => String(value ?? '')
+  .replace(/\/(?:character|user|persona|group|entity)\s*$/iu, '')
+  .trim().toLocaleLowerCase();
+
+function recordOwnerNames(record = {}) {
+  const values = [
+    ...(Array.isArray(record._raw_entity_names) ? record._raw_entity_names : []),
+    ...(Array.isArray(record.entity_names) ? record.entity_names : []),
+    ...(Array.isArray(record.entities) ? record.entities : []),
+    record.owner, record.owner_name, record.character_name,
+  ];
+  return [...new Set(values.map((value) => typeof value === 'object' && value
+    ? value.canonical_name ?? value.display_name ?? value.name ?? value.label ?? null
+    : value).map(normalizedOwnerName).filter(Boolean))];
+}
+
+function semanticOwnerEvidence(entry = {}, expectedOwner = null) {
+  const expected = normalizedOwnerName(expectedOwner);
+  const records = entry.parser_result?.records ?? [];
+  const inspected = records.map((record) => ({
+    id: record?.id ?? record?.candidate_id ?? null,
+    names: recordOwnerNames(record),
+  })).filter((item) => item.names.length > 0);
+  const exact = inspected.filter((item) => item.names.includes(expected));
+  const mismatch = inspected.filter((item) => !item.names.includes(expected));
+  return {
+    available: inspected.length > 0,
+    inspected_record_count: inspected.length,
+    exact_record_count: exact.length,
+    mismatched_record_count: mismatch.length,
+    mismatched_record_ids: mismatch.map((item) => item.id).filter(Boolean),
+  };
+}
+
+/**
+ * Pure proof that retained provider evidence is eligible for the requested
+ * owner scope. Request identity and semantic source applicability are distinct:
+ * an exact owner label cannot override an explicit owner-irrelevant decision.
+ */
+export function assessRetainedEvidenceOwnerApplicability(entry = {}, input = {}) {
+  const tier = input.tier ?? entry.tier ?? null;
+  const expectedOwner = input.owner;
+  const evidenceOwner = entry.owner;
+  const explicit = entry.owner_applicability ?? entry.applicability_decision ?? null;
+  const explicitClassification = explicit?.classification ?? explicit?.status ?? null;
+  const explicitlyInapplicable = explicit?.local_no_update_validated === true
+    || INAPPLICABLE_OWNER_CLASSIFICATIONS.has(explicitClassification);
+  const trustedExplicitEligibility = explicit?.eligible === true
+    && ['parsed_record_target_entities', 'persisted_applicability_decision']
+      .includes(explicit?.proof_source);
+  if (tier === 'session') return freeze({
+    eligible: !explicitlyInapplicable && sameOwner(expectedOwner, null)
+      && sameOwner(evidenceOwner, null),
+    scope: 'chat', expected_owner: null, evidence_owner: evidenceOwner ?? null,
+    classification: explicitlyInapplicable
+      ? 'explicitly_inapplicable' : 'chat_scoped_exact',
+    proof_source: explicit ? 'persisted_applicability_decision' : 'session_identity',
+    explicit_classification: explicitClassification,
+    reason_codes: explicitlyInapplicable
+      ? ['retained_evidence_explicitly_inapplicable']
+      : sameOwner(expectedOwner, null) && sameOwner(evidenceOwner, null)
+        ? ['session_chat_scope_verified'] : ['session_owner_scope_mismatch'],
+  });
+  const expectedPresent = String(expectedOwner ?? '').trim().length > 0;
+  const evidencePresent = String(evidenceOwner ?? '').trim().length > 0;
+  const exactOwner = expectedPresent && evidencePresent
+    && sameOwner(evidenceOwner, expectedOwner);
+  const semantic = semanticOwnerEvidence(entry, expectedOwner);
+  const semanticMismatch = semantic.available && semantic.mismatched_record_count > 0;
+  const semanticExact = semantic.available && semantic.exact_record_count > 0
+    && semantic.mismatched_record_count === 0;
+  const applicabilityVerified = semanticExact || trustedExplicitEligibility;
+  const eligible = tier === 'longterm' && exactOwner && !explicitlyInapplicable
+    && !semanticMismatch && applicabilityVerified;
+  return freeze({
+    eligible,
+    scope: tier === 'longterm' ? 'owner' : 'unsupported',
+    expected_owner: expectedOwner ?? null,
+    evidence_owner: evidenceOwner ?? null,
+    classification: explicitlyInapplicable ? 'explicitly_inapplicable'
+      : semanticMismatch ? 'parsed_record_owner_scope_mismatch'
+        : semanticExact ? 'parsed_records_exact_owner_scope'
+          : exactOwner ? 'owner_applicability_unverified' : 'owner_scope_mismatch',
+    proof_source: semantic.available ? 'parsed_record_target_entities'
+      : explicit ? 'persisted_applicability_decision'
+        : exactOwner ? 'legacy_exact_request_identity' : 'missing_owner_identity',
+    explicit_classification: explicitClassification,
+    semantic_record_evidence: semantic,
+    reason_codes: explicitlyInapplicable
+      ? ['retained_evidence_explicitly_inapplicable']
+      : semanticMismatch ? ['retained_evidence_record_owner_scope_mismatch']
+      : exactOwner && applicabilityVerified
+        ? ['exact_longterm_owner_applicability_verified']
+        : exactOwner ? ['longterm_owner_applicability_not_verified']
+        : ['longterm_owner_identity_missing_or_mismatched'],
+  });
+}
 
 export function exactRetainedEvidenceIdentity(entry, input = {}) {
   const leaf = entry?.child_obligation_id ?? entry?.root_obligation_id;
@@ -109,7 +212,7 @@ export function verifiedNoUpdateEvidence(entry = {}) {
     && parserAcceptedNone && validationAcceptedNone && persistenceSettled && ledgerSettled;
 }
 
-function evidenceFitness(entry, input, adoption) {
+function evidenceFitness(entry, input, adoption, ownerApplicability) {
   const terminal = TERMINAL_SUCCESS.has(entry?.terminal_outcome);
   const privateResponse = entry?.response_text != null || entry?.private_response_retained === true;
   const parserRecords = Number(entry?.parser_result?.records?.length
@@ -121,7 +224,8 @@ function evidenceFitness(entry, input, adoption) {
   const mappings = (entry?.validated_record_identities ?? [])
     .filter((item) => item?.id && item?.candidate_id).length;
   const verifiedNoUpdate = verifiedNoUpdateEvidence(entry);
-  const usable = terminal && (privateResponse || parserRecords || verifiedNoUpdate
+  const usable = ownerApplicability.eligible && terminal
+    && (privateResponse || parserRecords || verifiedNoUpdate
     || (persistenceSettled && durableIds.length > 0));
   const cursor = deriveRetainedEvidenceDownstreamCursor(entry,
     adoption.adopted || entry.logical_run_id === input.current_logical_run_id
@@ -138,10 +242,16 @@ function evidenceFitness(entry, input, adoption) {
     parser_records_retained: parserRecords, validation_settled: Boolean(validationSettled),
     persistence_settled: persistenceSettled, durable_record_count: durableIds.length,
     durable_candidate_mapping_count: mappings, verified_no_update: verifiedNoUpdate,
-    usable, downstream_cursor: cursor, score };
+    usable, owner_applicability_verified: ownerApplicability.eligible,
+    downstream_cursor: cursor, score };
 }
 
-function classificationFor(entry, input, adoption, fitness) {
+function classificationFor(entry, input, adoption, fitness, ownerApplicability) {
+  if (!ownerApplicability.eligible) return {
+    classification: PROVIDER_EVIDENCE_PROVENANCE.OWNER_INAPPLICABLE,
+    next_action: 'reconcile_retained_evidence_owner_applicability',
+    blockers: ownerApplicability.reason_codes,
+  };
   if (!fitness.terminal) return {
     classification: PROVIDER_EVIDENCE_PROVENANCE.INCOMPLETE_RECONCILIATION,
     next_action: null, blockers: ['physical_attempt_not_terminal_success'],
@@ -194,15 +304,19 @@ export function planRetainedProviderEvidence(input = {}) {
   const evaluated = candidates.map((entry, candidateIndex) => {
     const adoption = retainedEvidenceAdoption(entry, input.obligation,
       input.current_logical_run_id);
-    const fitness = evidenceFitness(entry, input, adoption);
-    const decision = classificationFor(entry, input, adoption, fitness);
-    return { entry, candidate_index: candidateIndex, adoption, fitness, ...decision,
+    const ownerApplicability = assessRetainedEvidenceOwnerApplicability(entry, input);
+    const fitness = evidenceFitness(entry, input, adoption, ownerApplicability);
+    const decision = classificationFor(entry, input, adoption, fitness,
+      ownerApplicability);
+    return { entry, candidate_index: candidateIndex, adoption,
+      owner_applicability: ownerApplicability, fitness, ...decision,
       started_at: Number(entry.started_at ?? entry.at ?? 0) };
   }).sort((left, right) => right.fitness.score - left.fitness.score
     || right.started_at - left.started_at
     || String(left.entry.attempt_id).localeCompare(String(right.entry.attempt_id)));
   const selected = evaluated.find((item) => item.fitness.usable)
-    ?? evaluated[0] ?? null;
+    ?? evaluated.find((item) => item.classification
+      !== PROVIDER_EVIDENCE_PROVENANCE.OWNER_INAPPLICABLE) ?? null;
   const candidateDecisions = evaluated.map((item, order) => ({
     order: order + 1, attempt_id: item.entry.attempt_id,
     physical_origin_logical_run_id: item.entry.logical_run_id ?? null,
@@ -210,8 +324,11 @@ export function planRetainedProviderEvidence(input = {}) {
       : item.fitness.usable ? PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED
         : item.classification,
     disposition: item === selected ? 'selected' : item.fitness.usable
-      ? 'superseded_by_fitter_evidence' : 'rejected_unusable_evidence',
+      ? 'superseded_by_fitter_evidence'
+      : item.classification === PROVIDER_EVIDENCE_PROVENANCE.OWNER_INAPPLICABLE
+        ? 'rejected_owner_inapplicable' : 'rejected_unusable_evidence',
     evidence_fitness: item.fitness,
+    owner_applicability: item.owner_applicability,
     adoption: item.adoption,
     blockers: item.blockers,
   }));
@@ -231,6 +348,7 @@ export function planRetainedProviderEvidence(input = {}) {
     evidence_origin_attempt_id: selected?.entry.attempt_id ?? null,
     evidence_origin_logical_run_id: selected?.entry.logical_run_id ?? null,
     adoption_state: selected?.adoption ?? null,
+    owner_applicability: selected?.owner_applicability ?? null,
     evidence_classification: selected?.classification ?? null,
     downstream_cursor: selected?.fitness.downstream_cursor ?? null,
     lifecycle_operation: selected?.lifecycle_operation ?? null,

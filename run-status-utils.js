@@ -10,7 +10,12 @@ const cleanIntegrity = (status) => ['clean', 'repaired'].includes(String(status 
 export function deriveRunErrorAccounting(report = {}) {
   const provider = report.provider_attempt_audit ?? {};
   const logical = report.logical_run ?? {};
-  const currentDetails = array(report.error_details);
+  const allCurrentDetails = array(report.error_details);
+  const currentDetails = allCurrentDetails.filter((entry) => entry?.resolved !== true);
+  const resolvedLocalDetails = allCurrentDetails.filter((entry) => entry?.resolved === true
+    && (entry?.provider_fault_attribution === false
+      || /retained_evidence|object is not extensible|lifecycle/i
+        .test(`${entry?.resolution_code ?? ''} ${entry?.message ?? ''}`)));
   const notices = array(report.quality?.notices ?? report.quality_notices);
   const providerNoticeCategories = Object.values(provider.notice_reason_counts ?? {})
     .filter((value) => number(value) > 0).length;
@@ -64,6 +69,9 @@ export function deriveRunErrorAccounting(report = {}) {
     || provider.obligation_history_truncated !== true;
   const classifyDisplayedError = (entry = {}) => {
     const text = `${entry.label ?? ''} ${entry.message ?? ''}`.toLowerCase();
+    if (/retained_evidence_decisions|object is not extensible|frozen.*snapshot/.test(text)) {
+      return 'local_effect_boundary_failure';
+    }
     if (/lifecycle transition|lifecycle.*rejected|provider-evidence ingress.*reject|evidence ingress.*reject/.test(text)) {
       return 'lifecycle_transition_rejection';
     }
@@ -77,7 +85,7 @@ export function deriveRunErrorAccounting(report = {}) {
   const displayedErrorCategoryCounts = Object.fromEntries([
     'lifecycle_transition_rejection', 'reconciliation_failure', 'persistence_failure',
     'downstream_validation_failure', 'malformed_or_parser_failure',
-    'provider_transport_failure', 'other_run_error',
+    'provider_transport_failure', 'local_effect_boundary_failure', 'other_run_error',
   ].map((category) => [category, 0]));
   for (const entry of currentDetails) displayedErrorCategoryCounts[classifyDisplayedError(entry)]++;
   const currentViolations = array(report.authoritative_obligation_ledger?.invariants?.violations
@@ -100,7 +108,8 @@ export function deriveRunErrorAccounting(report = {}) {
   }).length;
   const displayedCategoryTotal = Object.values(displayedErrorCategoryCounts)
     .reduce((sum, value) => sum + number(value), 0);
-  const displayedErrorCount = Math.max(number(report.errors), currentDetails.length);
+  const displayedErrorCount = allCurrentDetails.length
+    ? currentDetails.length : Math.max(number(report.errors), currentDetails.length);
   return {
     schema_version: 4,
     displayed_error_records: {
@@ -120,6 +129,12 @@ export function deriveRunErrorAccounting(report = {}) {
       unit: 'unique_local_lifecycle_failures', scope: 'current_attempt',
       authoritative: true, provider_fault_attribution: false,
       records: currentLocalFailures,
+    },
+    resolved_local_lifecycle_failures: {
+      count: resolvedLocalDetails.length,
+      unit: 'resolved_local_failure_records', scope: 'current_logical_run_history',
+      authoritative: true, provider_fault_attribution: false,
+      records: resolvedLocalDetails,
     },
     locally_repairable_reconciliation_failures: {
       count: locallyRepairableReconciliationFailures,

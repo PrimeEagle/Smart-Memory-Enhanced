@@ -60,7 +60,8 @@ function priorEvidence(owner = 'Alex Mercer', patch = {}) {
     source_range: fixture.source_range, source_fingerprint: fixture.source_fingerprint,
     terminal_outcome: 'completed', request_kind: 'original',
     response_text: '[fact:2:permanent] retained exact response',
-    parser_result: { status: 'accepted', records: [{ id: 'candidate-1' }] },
+    parser_result: { status: 'accepted', records: [{ id: 'candidate-1',
+      _raw_entity_names: [`${owner}/character`] }] },
     validation: { status: 'pending' }, persistence: { status: 'committed', durable_record_ids: [] },
     ...patch,
   };

@@ -2,6 +2,8 @@
 
 import { PROVIDER_EVIDENCE_PROVENANCE, revalidateRetainedProviderEvidenceSelection }
   from './provider-completion-journal.js';
+import { assessRetainedEvidenceOwnerApplicability }
+  from './retained-evidence-plan.js';
 
 export const MEMORIZE_LIFECYCLE_COORDINATOR_VERSION = 2;
 
@@ -278,6 +280,8 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     if (!operation) return rejectedIngress(input,
       decision.classification === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE
         ? 'required_private_evidence_unavailable'
+        : decision.classification === PROVIDER_EVIDENCE_PROVENANCE.OWNER_INAPPLICABLE
+          ? 'retained_evidence_owner_applicability_not_verified'
         : 'retained_evidence_no_longer_applicable', {
         status: decision.classification === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE
           ? 'blocked' : 'rejected',
@@ -308,6 +312,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       recovery_stage_history: input.recovery_stage_history,
       next_eligible_recovery_stage: input.next_eligible_recovery_stage,
       provider_call_required: decision.provider_call_required,
+      owner_applicability: decision.owner_applicability,
     });
     return Object.freeze({
       ...applied,
@@ -460,6 +465,10 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
 
   if (input.operation === 'adopt_exact_prior_run_evidence') {
     const evidence = input.evidence ?? {};
+    const ownerApplicability = input.owner_applicability
+      ?? assessRetainedEvidenceOwnerApplicability(evidence, {
+        tier: identity.tier, owner: identity.owner,
+      });
     const evidenceRange = normalizedRange(evidence.source_range);
     const expectedRange = identity.source_range;
     const evidenceLeaf = evidence.child_obligation_id ?? evidence.leaf_obligation_id
@@ -482,6 +491,9 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       || evidenceRange.end !== expectedRange.end) missing.push('source_range');
     if (evidence.source_fingerprint !== identity.source_fingerprint) missing.push('source_fingerprint');
     if (evidence.response_text == null) missing.push('private_terminal_response');
+    if (ownerApplicability?.eligible !== true) {
+      missing.push('verified_owner_applicability');
+    }
     if (missing.length) return rejectedIngress(input,
       missing.includes('private_terminal_response')
         ? 'exact_prior_run_private_evidence_unavailable' : 'exact_prior_run_evidence_mismatch', {
@@ -506,7 +518,9 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
         request_kind: evidence.request_kind ?? null,
         terminal_outcome: evidence.terminal_outcome,
         private_response_retained: true,
+        owner_applicability: ownerApplicability,
       },
+      owner_applicability: ownerApplicability,
       adopted_from_logical_run_id: evidence.logical_run_id ?? null,
       adopted_from_attempt_id: evidence.attempt_id,
       evidence_adoption_reason: input.evidence_adoption_reason
@@ -558,9 +572,39 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
         missing_evidence: ['response_text_or_parser_records'],
       });
     }
+    const ownerApplicability = input.owner_applicability
+      ?? assessRetainedEvidenceOwnerApplicability(evidence, {
+        tier: identity.tier, owner: identity.owner,
+      });
+    if (ownerApplicability?.eligible !== true) {
+      return rejectedIngress(input, 'retained_evidence_owner_applicability_not_verified', {
+        status: 'blocked', next_action: 'reconcile_retained_evidence_owner_applicability',
+        missing_evidence: ['verified_owner_applicability'],
+      });
+    }
+    let receipt = null;
+    if (['pending_recovery', 'blocked', 'operationally_paused']
+      .includes(input.prior_state)) {
+      receipt = await invokeLifecycle('retained_provider_evidence_reopened', {
+        provider_attempt_id: evidence.attempt_id ?? null,
+        evidence_fingerprint: [evidence.logical_run_id, evidence.attempt_id,
+          evidence.source_fingerprint].join('|'),
+        owner_applicability: ownerApplicability,
+        exact_reason_code: 'accepted_output_pending_downstream_processing',
+        next_eligible_action: 'continue_pending_downstream_processing',
+      });
+      if (!['applied', 'idempotent_duplicate_verified'].includes(receipt?.status)) {
+        return rejectedIngress(input, 'retained_evidence_reopen_rejected', {
+          status: 'pending_reconciliation', receipt,
+          next_action: 'reconcile_downstream_lifecycle_evidence',
+        });
+      }
+    }
     return ingressResult('pending_downstream_processing', { ...input, identity }, {
+      receipt,
       physical_attempt_id: evidence.attempt_id ?? null,
-      resulting_state: input.prior_state ?? 'provider_response_received',
+      resulting_state: receipt?.resulting_state
+        ?? input.prior_state ?? 'provider_response_received',
       reason_code: 'accepted_output_pending_downstream_processing',
       next_action: 'continue_pending_downstream_processing',
       provider_call_required: false, persistence_required: true,

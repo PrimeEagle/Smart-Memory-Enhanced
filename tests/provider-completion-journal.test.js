@@ -54,6 +54,24 @@ test('unverified records cannot complete the child', async () => {
   assert.equal(entry.manifest_transition.status, 'pending');
 });
 
+test('completion journal persists semantic owner applicability, not request labels alone', () => {
+  const valid = recordProviderCompletion({}, attempt(), {
+    response_text: '[fact] retained', parser_result: { status: 'accepted', records: [{
+      id: 'candidate-valid', _raw_entity_names: ['Lisette Dumont/character'],
+    }] },
+  });
+  assert.equal(valid.owner_applicability.eligible, true);
+  assert.equal(valid.owner_applicability.proof_source, 'parsed_record_target_entities');
+  const mismatch = recordProviderCompletion({}, attempt({ attempt_id: 'provider-wrong-owner' }), {
+    response_text: '[fact] retained', parser_result: { status: 'accepted', records: [{
+      id: 'candidate-wrong', _raw_entity_names: ['Aster Graves/character'],
+    }] },
+  });
+  assert.equal(mismatch.owner_applicability.eligible, false);
+  assert.equal(mismatch.owner_applicability.classification,
+    'parsed_record_owner_scope_mismatch');
+});
+
 test('journal replay cannot self-verify live-health closure', async () => {
   const entry = recordProviderCompletion({}, attempt(), {
     response_text: '[fact] retained', parser_result: { records: [{ id: 'candidate-1' }] },

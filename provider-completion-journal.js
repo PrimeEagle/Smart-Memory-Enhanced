@@ -3,6 +3,7 @@
 import { memorizeObligationStateFingerprint } from './memorize-obligation-ledger.js';
 import {
   PROVIDER_EVIDENCE_PROVENANCE,
+  assessRetainedEvidenceOwnerApplicability,
   deriveRetainedEvidenceDownstreamCursor,
   exactRetainedEvidenceIdentity,
   planRetainedProviderEvidence,
@@ -10,14 +11,13 @@ import {
 
 export { PROVIDER_EVIDENCE_PROVENANCE } from './retained-evidence-plan.js';
 
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 4;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 5;
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
 const now = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now();
 const verifiedTransition = (value) => ['applied_verified', 'idempotent_duplicate_verified',
   'not_applicable'].includes(value?.status);
-
 function mergeUnverifiedCallerTransition(priorValue, patchValue) {
   const prior = clone(priorValue) ?? { status: 'pending' };
   if (!patchValue) return prior.status === 'applied' ? {
@@ -127,7 +127,14 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
       ?? prior.adopted_from_attempt_id ?? null,
     evidence_adoption_reason: patch.evidence_adoption_reason
       ?? prior.evidence_adoption_reason ?? null,
+    owner_applicability: clone(patch.owner_applicability
+      ?? attempt.owner_applicability ?? attempt.applicability_decision
+      ?? prior.owner_applicability ?? null),
+    retained_evidence_decisions: clone(prior.retained_evidence_decisions ?? []),
   };
+  entry.owner_applicability = clone(assessRetainedEvidenceOwnerApplicability(entry, {
+    tier: entry.tier, owner: entry.owner,
+  }));
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
     && verifiedTransition(entry.manifest_transition)
     && verifiedTransition(entry.ledger_transition)) {
@@ -138,6 +145,45 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
   entry.logical_disposition ??= entry.downstream_cursor;
   journal.order = [...journal.order.filter((id) => id !== attempt.attempt_id), attempt.attempt_id].slice(-256);
   return entry;
+}
+
+/**
+ * Journal-owned effect boundary for retained-evidence decision audits.
+ * Planner selections are immutable snapshots and are never mutated here.
+ */
+export function appendRetainedEvidenceDecision(metadata, attemptId, decision = {}, at = Date.now()) {
+  const journal = container(metadata);
+  const prior = journal?.entries?.[attemptId] ?? null;
+  if (!prior) return null;
+  const normalized = {
+    selected_at: decision.selected_at ?? null,
+    applied_at: Number.isFinite(Number(decision.applied_at))
+      ? Number(decision.applied_at) : at,
+    selected_classification: decision.selected_classification ?? null,
+    applied_classification: decision.applied_classification ?? null,
+    changed_since_selection: decision.changed_since_selection === true,
+    selected_obligation_revision: decision.selected_obligation_revision ?? null,
+    applied_obligation_revision: decision.applied_obligation_revision ?? null,
+    selected_state_fingerprint: decision.selected_state_fingerprint ?? null,
+    applied_state_fingerprint: decision.applied_state_fingerprint ?? null,
+    disposition: decision.disposition ?? null,
+    provider_call_required: decision.provider_call_required === true,
+    persistence_required: decision.persistence_required === true,
+    owner_applicability: clone(decision.owner_applicability ?? null),
+    effect_owner: 'provider_completion_journal',
+  };
+  const signature = JSON.stringify(normalized);
+  const retained = (prior.retained_evidence_decisions ?? [])
+    .filter((item) => JSON.stringify(item) !== signature);
+  const next = {
+    ...prior,
+    owner_applicability: clone(decision.owner_applicability
+      ?? prior.owner_applicability ?? null),
+    retained_evidence_decisions: [...retained, normalized].slice(-16),
+    updated_at: Math.max(Number(prior.updated_at ?? 0), normalized.applied_at),
+  };
+  journal.entries[attemptId] = next;
+  return next;
 }
 
 export function findReplayableProviderCompletion(metadata, input = {}) {
@@ -190,6 +236,7 @@ export function classifyRetainedProviderEvidence(entry, input = {}) {
     next_action: null,
     provider_call_required: false,
     persistence_required: false,
+    owner_applicability: plan.owner_applicability,
     retained_evidence_plan: plan,
   };
   return {
@@ -200,6 +247,7 @@ export function classifyRetainedProviderEvidence(entry, input = {}) {
     provider_call_required: plan.provider_call_required,
     persistence_required: plan.persistence_required,
     blockers: plan.exact_blockers,
+    owner_applicability: plan.owner_applicability,
     retained_evidence_plan: plan,
   };
 }
@@ -221,6 +269,7 @@ export function selectRetainedProviderEvidence(metadata, input = {}) {
     provider_call_required: plan.provider_call_required,
     persistence_required: plan.persistence_required,
     blockers: plan.exact_blockers,
+    owner_applicability: plan.owner_applicability,
     retained_evidence_plan: plan,
     selected_obligation_id: input.child_obligation_id ?? input.root_obligation_id ?? null,
     selected_obligation_revision: Number(input.obligation?.revision ?? 0),
@@ -521,6 +570,8 @@ export function exportProviderCompletionJournal(metadata) {
       adopted_from_logical_run_id: entry.adopted_from_logical_run_id ?? null,
       adopted_from_attempt_id: entry.adopted_from_attempt_id ?? null,
       evidence_adoption_reason: entry.evidence_adoption_reason ?? null,
+      owner_applicability: clone(entry.owner_applicability ?? null),
+      retained_evidence_decisions: clone(entry.retained_evidence_decisions ?? []),
     })),
   };
 }

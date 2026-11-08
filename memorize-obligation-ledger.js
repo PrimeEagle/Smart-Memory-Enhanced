@@ -10,7 +10,7 @@ import { acknowledgeJournalTransition, requireAppliedLifecycleResult } from './m
  */
 
 export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 7;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 9;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 10;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -72,6 +72,7 @@ export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
   reconcile_terminal_attempt_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
   reconcile_provider_attempt_registration: Object.freeze({ provider_call_required: false, persistence_required: false }),
   reconcile_downstream_lifecycle_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  reconcile_retained_evidence_owner_applicability: Object.freeze({ provider_call_required: false, persistence_required: false }),
   settle_terminal_malformed_attempt: Object.freeze({ provider_call_required: false, persistence_required: false }),
   adopt_exact_prior_run_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
   inspect_or_restore_private_terminal_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
@@ -596,6 +597,7 @@ export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
   'records_durably_persisted', 'explicit_no_update_accepted', 'recovery_required',
   'recovery_budget_exhausted', 'leaf_coverage_completed', 'parent_children_completed',
   'obligation_blocked', 'candidate_mapping_reconciled', 'terminal_provider_evidence_adopted',
+  'retained_provider_evidence_reopened',
   'terminal_malformed_attempt_settled', 'terminal_attempt_evidence_reconciled',
   'controller_relinquished_ownership',
 ]);
@@ -876,6 +878,13 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         && evidenceRange?.end === identityRange?.end
         && evidence.source_fingerprint === (identity.source_fingerprint
           ?? existing?.source_fingerprint);
+      const ownerApplicability = event.owner_applicability
+        ?? evidence.owner_applicability ?? {
+          eligible: exactIdentity,
+          classification: exactIdentity ? 'legacy_exact_owner_scope'
+            : 'owner_scope_mismatch',
+          proof_source: 'legacy_exact_lifecycle_identity',
+        };
       const terminalSuccess = ['completed', 'completed_no_candidates', 'completed_repartitioned']
         .includes(evidence.terminal_outcome);
       const missingEvidence = [
@@ -883,6 +892,8 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         ...(!exactIdentity ? ['exact_root_leaf_tier_owner_range_fingerprint_identity'] : []),
         ...(!terminalSuccess ? ['terminal_provider_success'] : []),
         ...(evidence.private_response_retained !== true ? ['private_terminal_response'] : []),
+        ...(ownerApplicability?.eligible !== true
+          ? ['verified_owner_applicability'] : []),
         ...(!event.adopted_from_logical_run_id ? ['original_logical_run_id'] : []),
         ...(!event.evidence_fingerprint ? ['evidence_fingerprint'] : []),
       ];
@@ -934,6 +945,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
             obligation_revision_at_adoption: Number(existing?.revision ?? 0) + 1,
             evidence_fingerprint: event.evidence_fingerprint,
             downstream_cursor: event.downstream_cursor ?? null,
+            owner_applicability: ownerApplicability,
             adopted_at: nowValue(event.at),
           }],
           metrics: {
@@ -941,6 +953,46 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
             adopted_from_attempt_id: event.adopted_from_attempt_id,
             evidence_adoption_reason: event.evidence_adoption_reason,
             adopted_evidence_fingerprint: event.evidence_fingerprint,
+            retained_evidence_owner_applicability: ownerApplicability,
+          },
+        });
+      break;
+    }
+    case 'retained_provider_evidence_reopened': {
+      if (!existing || existing.checkpoint_eligible) {
+        result = recordHistoricalLifecycleNoop(ledger, identity, event,
+          'retained_evidence_reopen_superseded_by_terminal_coverage');
+        break;
+      }
+      const ownerApplicability = event.owner_applicability ?? {};
+      const missingEvidence = [
+        ...(!event.provider_attempt_id ? ['physical_attempt_id'] : []),
+        ...(!existing.provider_attempt_lineage?.includes(event.provider_attempt_id)
+          ? ['registered_or_adopted_provider_attempt'] : []),
+        ...(ownerApplicability.eligible !== true
+          ? ['verified_owner_applicability'] : []),
+        ...(!event.evidence_fingerprint ? ['evidence_fingerprint'] : []),
+      ];
+      if (missingEvidence.length) return recordSemanticViolation(ledger, identity, event,
+        'retained_provider_evidence_reopen_missing_evidence', {
+          missing_evidence: missingEvidence,
+          safe_repair_action: 'reconcile_retained_evidence_owner_applicability',
+        });
+      if (existing.current_state === 'provider_response_received') {
+        result = recordHistoricalLifecycleNoop(ledger, identity, event,
+          'retained_provider_evidence_already_reopened');
+        break;
+      }
+      result = transitionForSemanticEvent(ledger, identity, event,
+        'provider_response_received', {
+          ...details,
+          exact_reason_code: 'accepted_output_pending_downstream_processing',
+          next_eligible_action: 'continue_pending_downstream_processing',
+          recovery_intent: 'continue_pending_downstream_processing',
+          recovery_stage: 'retained_terminal_response_downstream_processing',
+          metrics: {
+            retained_evidence_owner_applicability: ownerApplicability,
+            retained_evidence_reopened_from_state: priorState,
           },
         });
       break;
