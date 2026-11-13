@@ -28,10 +28,10 @@ test('engine rejects overlapping ownership without invoking a second operation',
   assert.equal((await first).kind, 'completed');
 });
 
-test('expected legacy pauses become outcomes while unexpected exceptions still throw', async () => {
+test('expected operational pauses become outcomes while unexpected exceptions still throw', async () => {
   const engine = createMemorizeRunEngine();
   const pause = Object.assign(new Error('pause'), {
-    code: 'SME_RECOVERY_BUDGET_PAUSE', sme_operational_pause: true,
+    code: 'recovery_request_budget_reached_with_pending_children', sme_operational_pause: true,
   });
   const paused = await engine.execute({}, async () => { throw pause; });
   assert.equal(paused.kind, 'paused');

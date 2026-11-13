@@ -1,4 +1,6 @@
 import { beginProviderAttempt } from './provider-attempt-audit.js';
+import { assessMemorizeProviderDispatch, createMemorizeProviderProfile }
+  from './memorize-provider-policy.js';
 import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
   coordinateProviderEvidenceIngress, requireAppliedLifecycleResult }
   from './memorize-lifecycle-coordinator.js';
@@ -150,7 +152,40 @@ export function createMemorizeTierPipeline(input) {
   const beginAttempt = (requestKind = execution.provider.request_kind
     ?? (depth ? 'repartition_child' : 'original'), changedDimensions = execution.provider.changed_recovery_dimensions.length
     ? execution.provider.changed_recovery_dimensions
-    : (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => beginProviderAttempt(metadata, {
+    : (depth ? ['source_range', 'estimated_request_size'] : []), recovery = {}) => {
+    const activeRunId = metadata?.active_catchup_run_id ?? null;
+    const attempts = (metadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])
+      .filter((attempt) => !activeRunId || !attempt.logical_run_id
+        || attempt.logical_run_id === activeRunId);
+    const leafAttemptCount = attempts.filter((attempt) =>
+      (attempt.child_obligation_id ?? attempt.logical_obligation_id) === leafObligationId).length;
+    const logicalIds = new Set(attempts.map((attempt) => attempt.logical_obligation_id).filter(Boolean));
+    logicalIds.add(rootObligationId);
+    const persistedProfile = metadata?.catch_up_checkpoint?.run_manifest?.provider_profile;
+    const matchingProfile = persistedProfile?.signature === providerConfigSignature
+      ? persistedProfile : {};
+    const policy = assessMemorizeProviderDispatch(createMemorizeProviderProfile({
+      ...matchingProfile,
+      signature: providerConfigSignature,
+      logical_obligation_count: Math.max(Number(matchingProfile.logical_obligation_count) || 0,
+        logicalIds.size),
+      physical_attempt_count: Math.max(Number(matchingProfile.physical_attempt_count) || 0,
+        attempts.length),
+      native_json_schema_observed: expectedOutputFormat === 'structured_json_schema_v1',
+    }), { leaf_attempt_count: leafAttemptCount });
+    if (requestKind !== 'original' && !policy.allowed) {
+      const error = new Error('The bounded provider-attempt policy stopped another recovery transmission.');
+      error.code = 'SME_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED';
+      error.sme_operational_pause = true;
+      error.sme_reason_code = policy.reason_code;
+      error.sme_obligation_id = leafObligationId;
+      error.sme_request_diagnostics = {
+        ...policy, root_obligation_id: rootObligationId,
+        leaf_obligation_id: leafObligationId, provider_call_required: false,
+      };
+      throw error;
+    }
+    return beginProviderAttempt(metadata, {
       tier,
       owner,
       logical_obligation_id: rootObligationId,
@@ -197,6 +232,7 @@ export function createMemorizeTierPipeline(input) {
       schema_version: schemaVersion,
       configuration_signature: providerConfigSignature,
     });
+  };
   // Registration and the canonical running transition form one awaited
   // dispatch boundary. Callers cannot send the provider request between them.
   const beginRegisteredAttempt = async (...args) => {
@@ -255,6 +291,43 @@ export function createMemorizeTierPipeline(input) {
     }
     return result;
   };
+  const atomicCompletionEnabled = typeof execution.hooks.provider_completion_command === 'function';
+  if (execution.controller.lifecycle_required && !atomicCompletionEnabled) {
+    const error = new Error('Controller-managed Memorize Chat extraction requires the execution kernel.');
+    error.code = 'SME_MEMORIZE_EXECUTION_KERNEL_REQUIRED';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = 'execution_kernel_required';
+    error.sme_obligation_id = leafObligationId;
+    throw error;
+  }
+  const applyProviderCompletion = async (details = {}) => {
+    if (!atomicCompletionEnabled) return null;
+    const attemptId = details.attempt_id ?? details.provider_attempt_id;
+    const commandId = details.command_id ?? `provider-completion:${attemptId}:${leafObligationId}`;
+    const result = await execution.hooks.provider_completion_command({
+      command_id: commandId,
+      logical_run_id: lifecycleIdentity.logical_run_id,
+      root_obligation_id: rootObligationId,
+      obligation_leaf_id: leafObligationId,
+      attempt_id: attemptId,
+      tier, owner,
+      source_range: lifecycleIdentity.source_range,
+      source_fingerprint: sourceFingerprint,
+      provider_profile_signature: providerConfigSignature,
+      provider_protocol: expectedOutputFormat,
+      ...details,
+    });
+    if (!['applied', 'idempotent_duplicate', 'late_callback_ignored'].includes(result?.status)) {
+      const error = new Error('Atomic Memorize provider completion was rejected.');
+      error.code = 'SME_ATOMIC_PROVIDER_COMPLETION_REJECTED';
+      error.sme_recovery_blocked = true;
+      error.sme_reason_code = result?.reason_code ?? 'atomic_completion_rejected';
+      error.sme_obligation_id = leafObligationId;
+      error.sme_kernel_result = result;
+      throw error;
+    }
+    return result;
+  };
   const coordinatedEventOperations = Object.freeze({
     provider_transport_failed: 'record_provider_transport_failure',
     parser_accepted: 'record_parser_disposition',
@@ -298,7 +371,7 @@ export function createMemorizeTierPipeline(input) {
     lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
     beginRegisteredAttempt, ingestProviderEvidence, getCanonicalObligation,
-    applyRetainedEvidenceDecision,
+    applyRetainedEvidenceDecision, atomicCompletionEnabled, applyProviderCompletion,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

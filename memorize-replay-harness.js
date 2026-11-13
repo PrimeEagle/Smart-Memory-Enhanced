@@ -320,14 +320,27 @@ export async function replayPartialSessionResume({
       tier: 'session', source_range: { start: 0, end: 19 } }, {
       current_state: 'parser_partial', parser_result: 'three accepted, two rejected',
       exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-      metrics: { parser_accepted_records: 3, parser_rejected_fragments: 2 }, at: 3,
+      metrics: { parser_accepted_records: 3, parser_rejected_fragments: 2 },
+      lifecycle: {
+        parser_accepted_candidate_ids: ['candidate:one', 'candidate:two', 'candidate:three'],
+        parser_rejected_fragment_ids: ['fragment:four', 'fragment:five'],
+        unresolved_fragment_ids: ['fragment:four', 'fragment:five'],
+      }, at: 3,
     });
     ['session:one', 'session:two', 'session:three'].forEach((id) => persisted.add(id));
     transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
       current_state: 'pending_recovery', downstream_validation_result: 'accepted_partial_records',
       persistence_result: 'partial_records_committed', coverage_result: 'pending',
       exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-      next_eligible_action: 'recover_unresolved_partial_output_fragments', at: 4,
+      next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      lifecycle: {
+        downstream_accepted_candidate_ids: ['candidate:one', 'candidate:two', 'candidate:three'],
+        durably_persisted_record_ids: ['session:one', 'session:two', 'session:three'],
+        durable_record_candidate_map: {
+          'session:one': 'candidate:one', 'session:two': 'candidate:two',
+          'session:three': 'candidate:three',
+        },
+      }, at: 4,
     });
     const pauseError = Object.assign(new Error('partial output pending'), {
       code: 'SME_DOWNSTREAM_VALIDATION_PENDING',
@@ -376,7 +389,8 @@ export async function replayPartialSessionResume({
     } else {
       transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
         current_state: 'durably_committed', downstream_validation_result: 'accepted_recovered_fragments',
-        persistence_result: 'committed_without_duplicate_partial_records', coverage_result: 'safely_committed', at: 7,
+        persistence_result: 'committed_without_duplicate_partial_records', coverage_result: 'safely_committed',
+        lifecycle: { recovered_fragment_ids: ['fragment:four', 'fragment:five'] }, at: 7,
       });
       resumeTransaction.state = 'committed';
       resumeTransaction.terminal_disposition = 'committed';

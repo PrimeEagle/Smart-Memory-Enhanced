@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   findReplayableProviderCompletion,
   inspectProviderCompletionConsistency,
-  migrateTerminalProviderCompletions,
   recordProviderCompletion,
   reconcileImpossibleLiveHealth,
   replayProviderCompletion,
@@ -42,6 +41,31 @@ test('completion journal replays missing transitions once and never duplicates p
   assert.deepEqual([persistCalls, manifestCalls, ledgerCalls, healthCalls], [1, 1, 1, 1]);
   assert.deepEqual(entry.persistence.durable_record_ids, ['record-1']);
   assert.ok(entry.completed_at);
+});
+
+test('provider completion journal rejects non-current persisted schemas', () => {
+  const metadata = { provider_completion_journal: {
+    schema_version: 4, entries: {}, order: [], reconciliation: null,
+  } };
+  assert.throws(() => recordProviderCompletion(metadata, attempt()), (error) => {
+    assert.equal(error.code, 'SME_MEMORIZE_SCHEMA_UNSUPPORTED');
+    assert.equal(error.sme_recovery_blocked, true);
+    assert.equal(error.sme_reason_code, 'fresh_start_required');
+    return true;
+  });
+  assert.equal(metadata.provider_completion_journal.schema_version, 4);
+});
+
+test('provider completion journal rejects incomplete current-schema containers', () => {
+  const metadata = { provider_completion_journal: {
+    schema_version: 5, entries: {}, reconciliation: null,
+  } };
+  assert.throws(() => recordProviderCompletion(metadata, attempt()), (error) => {
+    assert.equal(error.code, 'SME_MEMORIZE_SCHEMA_UNSUPPORTED');
+    assert.equal(error.sme_reason_code, 'fresh_start_required');
+    return true;
+  });
+  assert.equal(Object.hasOwn(metadata.provider_completion_journal, 'order'), false);
 });
 
 test('unverified records cannot complete the child', async () => {
@@ -107,17 +131,6 @@ test('terminal provider attempt plus unattempted child and provider_running ledg
     && item.attempt_id === 'provider-mvzlqkmi-342'));
   assert.ok(result.violations.some((item) => item.code === 'completed_attempt_has_unattempted_manifest_child'
     && item.source_range.start === 225));
-});
-
-test('legacy terminal migration preserves evidence but refuses to invent unavailable provider output', () => {
-  const metadata = {};
-  const migrated = migrateTerminalProviderCompletions(metadata, { recent_attempts: [attempt()] },
-    ['provider-mvzlqkmi-342']);
-  assert.equal(migrated.length, 1);
-  assert.equal(migrated[0].migration.provider_output_available, false);
-  assert.equal(findReplayableProviderCompletion(metadata, {
-    root_obligation_id: attempt().root_obligation_id, source_fingerprint: attempt().source_fingerprint,
-  }), null);
 });
 
 test('live health impossible running combination is closed to pending child coverage', () => {

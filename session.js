@@ -124,6 +124,8 @@ import {
   consumeMalformedRecoveryRequest,
   malformedChildCoverageComplete,
   partitionMalformedSourceWindow,
+  buildStructuredMemoryProviderRequest,
+  parseStructuredMemoryResponse,
   recoverMalformedTaggedOutput,
   selectRejectedTaggedFragments,
   summarizeMalformedRecoveryBudget,
@@ -140,8 +142,8 @@ export { verifyPersistedPartialSessionRecords } from './session-partial-persiste
 
 const MAX_CONTEXT_OVERFLOW_SPLIT_DEPTH = 8;
 const AUTOMATIC_SESSION_RECOVERY_LIMITS = Object.freeze({
-  maximum_controller_cycles: 3,
-  maximum_provider_requests: 4,
+  maximum_controller_cycles: 1,
+  maximum_provider_requests: 2,
   maximum_wall_time_ms: 45 * 60 * 1000,
 });
 
@@ -483,9 +485,26 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       characterName,
     );
     const prompt = renderPrompt(sourceMessages);
+    const providerCapabilities = getMemoryProviderCapabilities();
+    const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
+    const providerConfigSignature = providerConfigurationSignature({
+      connection_profile_id: settings.connection_profile_id ?? null,
+      model: settings.openai_compat_model ?? settings.ollama_model ?? null,
+      source: settings.source ?? null,
+      response_length: responseLength,
+      context_length: settings.context_length ?? null,
+    });
+    const runProviderProfile = providerMetadata?.catch_up_checkpoint?.run_manifest?.provider_profile;
+    const useSimpleJsonFallback = runProviderProfile?.signature === providerConfigSignature
+      && runProviderProfile?.selected_protocol === 'simple_json_records_v1';
+    const primaryProviderRequest = buildStructuredMemoryProviderRequest(prompt, {
+      tier: 'session', owner: null, capabilities: {
+        ...providerCapabilities, simple_json_records: useSimpleJsonFallback,
+      },
+    });
     const requestBudget = getMemoryRequestBudget(responseLength);
     const preflight = makeExtractionPreflight({
-      prompt,
+      prompt: primaryProviderRequest.prompt,
       estimateTokens,
       configuredContextLimit: requestBudget.configuredContextLimit,
       effectiveContextLimit: requestBudget.effectiveContextLimit,
@@ -504,21 +523,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const rangeId = execution.recovery.context_overflow_range_id
       ?? extractionRangeId('session', range, depth);
     const coverageLedger = options.extractionCoverage?.session;
-    const providerMetadata = getContext()?.chatMetadata?.[META_KEY];
-    const providerConfigSignature = providerConfigurationSignature({
-      connection_profile_id: settings.connection_profile_id ?? null,
-      model: settings.openai_compat_model ?? settings.ollama_model ?? null,
-      source: settings.source ?? null,
-      response_length: responseLength,
-      context_length: settings.context_length ?? null,
-    });
     const pipeline = createMemorizeTierPipeline({
       tier: 'session', tierLabel: 'Session', execution, metadata: providerMetadata,
       range, rangeId, parentRangeId: execution.recovery.context_overflow_parent_range_id,
       depth, coverageLedger, sourceFingerprint: sourceWindowFingerprint(sourceMessages),
       preflight, requestBudget, providerConfigSignature,
       chatId: getCurrentChatId() ?? getContext()?.chatId ?? getContext()?.groupId ?? null,
-      expectedOutputFormat: 'session_tagged_lines_v1', schemaVersion: 'session-tagged-v1',
+      expectedOutputFormat: primaryProviderRequest.protocol,
+      schemaVersion: primaryProviderRequest.protocol,
     });
     const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
     const recordCompletedCoverage = pipeline.recordCompletedCoverage;
@@ -557,7 +569,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         sourceMessages,
         renderPrompt,
         (candidatePrompt) => makeExtractionPreflight({
-          prompt: candidatePrompt,
+          prompt: buildStructuredMemoryProviderRequest(candidatePrompt, {
+            tier: 'session', owner: null, capabilities: providerCapabilities,
+          }).prompt,
           estimateTokens,
           configuredContextLimit: splitBudget.configuredContextLimit,
           effectiveContextLimit: splitBudget.effectiveContextLimit,
@@ -701,6 +715,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     };
     const malformedRecoveryDepth = execution.recovery.malformed_depth;
     const malformedRecoveryBudget = createMalformedRecoveryBudget(execution.recovery.malformed_budget);
+    if (!execution.recovery.malformed_budget) {
+      malformedRecoveryBudget.maximum_additional_provider_requests = 2;
+    }
     if (execution.provider.resumed_pending_obligation && !execution.recovery.malformed_budget) {
       malformedRecoveryBudget.maximum_additional_provider_requests
         = AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_provider_requests;
@@ -855,23 +872,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS
       ? retainedEvidence : null;
     const retainedWholeResponse = completionReplay ?? currentRunContinuation?.entry ?? null;
-    if (execution.provider.resumed_pending_obligation
+    const sourceBackedRecoveryRequired = execution.provider.resumed_pending_obligation
       && (Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
         || canonicalDurableRecordIds.length > 0)
       && ((resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
         || canonicalUnresolvedFragmentIds.length > 0)
-      && restoredFragments.length === 0 && !retainedWholeResponse) {
-      await emitLifecycleEvent('obligation_blocked', {
-        exact_reason_code: 'missing_private_unresolved_fragment_payload',
-        next_eligible_action: 'inspect_or_restore_unresolved_fragment_payload',
-        recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
-      });
-      const missingPayload = new Error('The durable rejected-fragment identities remain, but their private recovery payload is missing.');
-      missingPayload.code = 'SME_MISSING_FRAGMENT_RECOVERY_PAYLOAD';
-      missingPayload.sme_recovery_blocked = true;
-      missingPayload.sme_obligation_id = rootObligationId;
-      throw missingPayload;
-    }
+      && restoredFragments.length === 0 && !retainedWholeResponse;
     const resumeEligibility = resumeRecoveryState
       ? deriveRecoveryStageEligibility({
         ...resumeRecoveryState,
@@ -879,6 +885,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }) : null;
     const automaticFragmentRecovery = retainedWholeResponse ? null
       : execution.recovery.automatic_fragment_recovery
+      ?? (sourceBackedRecoveryRequired ? {
+        response: null,
+        fragment_ids: canonicalUnresolvedFragmentIds,
+        recovery_of_attempt_id: resumeRecoveryState?.producing_provider_attempt_id ?? null,
+        source_backed_regeneration: true,
+        source_range: { start: range.start, end: range.end, message_count: range.message_count },
+        source_fingerprint: coverageBase.source_fingerprint,
+        accepted_record_exclusions: canonicalDurableRecordIds,
+        focused_prompt: `${prompt}\n\nRECOVERY CONSTRAINT: regenerate from this verified source window. Do not repeat information represented by these durable record IDs: ${canonicalDurableRecordIds.join(', ') || 'none'}. Return only genuinely unresolved information.`,
+      } : null)
       ?? (execution.provider.resumed_pending_obligation && restoredFragments.length ? {
         response: restoredFragments.map((item) => item.raw).join('\n'),
         fragment_ids: restoredFragments.map((item) => item.fragment_id),
@@ -888,6 +904,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const retainedApplicationFragmentIds = automaticFragmentRecovery?.fragment_ids?.length
       ? automaticFragmentRecovery.fragment_ids : canonicalUnresolvedFragmentIds;
     if (!retainedWholeResponse && execution.provider.resumed_pending_obligation && automaticFragmentRecovery
+      && !automaticFragmentRecovery.source_backed_regeneration
       && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
@@ -1060,7 +1077,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         providerResponseReceived = true;
       } else if (!recoveryOnlyMode) {
         providerRequestSent = true;
-        response = await generateMemoryExtract(prompt, { responseLength });
+        response = await generateMemoryExtract(primaryProviderRequest.prompt, {
+          responseLength,
+          systemPrompt: primaryProviderRequest.systemPrompt,
+          providerConstraints: primaryProviderRequest.providerConstraints,
+        });
         providerResponseReceived = true;
         const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
           attempt: providerAttempt,
@@ -1093,10 +1114,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         failure_classification: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
           : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure',
       });
-      await emitLifecycleEvent('provider_transport_failed', {
+      const failureReason = Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
+        : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure';
+      if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+        attempt_id: providerAttempt?.attempt_id,
+        transport_status: 'failed', terminal: false,
+        reason_code: failureReason,
+        next_action: 'dispatch_bounded_recovery_attempt',
+        raw_response_reference: null,
+      });
+      else await emitLifecycleEvent('provider_transport_failed', {
         provider_attempt_id: providerAttempt?.attempt_id ?? null,
-        exact_reason_code: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
-          : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure',
+        exact_reason_code: failureReason,
         next_eligible_action: 'dispatch_bounded_recovery_attempt',
         recovery_intent: 'recover_provider_transport_failure',
       });
@@ -1127,7 +1156,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         } : {}),
       });
     }
-    if (!recoveryOnlyMode && String(response ?? '').trim().toUpperCase() === 'NONE') {
+    const primaryStructuredResult = !recoveryOnlyMode
+      && primaryProviderRequest.protocol === 'structured_json_schema_v1'
+      ? parseStructuredMemoryResponse(response, { tier: 'session', parse: parseSessionOutput })
+      : null;
+    if (!recoveryOnlyMode && (String(response ?? '').trim().toUpperCase() === 'NONE'
+      || primaryStructuredResult?.explicit_none === true)) {
       finishProviderAttempt(providerMetadata, providerAttempt, { terminal_outcome: 'completed_no_candidates' });
       updateCompletionJournal(providerAttempt, {
         parser_result: { status: 'explicit_none', records: [], accepted_count: 0 },
@@ -1138,15 +1172,25 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         live_health_transition: { status: 'pending_reconciliation', requested_disposition: 'completed' },
       });
       markProviderDownstreamOutcome(providerMetadata, rootObligationId, { explicit_no_update: true });
-      await emitLifecycleEvent('parser_accepted', {
-        provider_attempt_id: providerAttempt?.attempt_id ?? null,
-        parser_result: 'explicit_none',
+      if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+        attempt_id: providerAttempt?.attempt_id,
+        raw_response_reference: { retained: true, journal_attempt_id: providerAttempt?.attempt_id },
+        parser_outcome: { status: 'explicit_none', accepted_candidate_ids: [] },
+        validation_outcome: { status: 'validated_no_update', accepted_candidate_ids: [] },
+        persistence_outcome: { status: 'not_required', durable_record_ids: [],
+          durable_record_candidate_map: {}, source_provenance: {} },
       });
-      await emitLifecycleEvent('explicit_no_update_accepted', {
-        provider_attempt_id: providerAttempt?.attempt_id ?? null,
-        parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
-        persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
-      });
+      else {
+        await emitLifecycleEvent('parser_accepted', {
+          provider_attempt_id: providerAttempt?.attempt_id ?? null,
+          parser_result: 'explicit_none',
+        });
+        await emitLifecycleEvent('explicit_no_update_accepted', {
+          provider_attempt_id: providerAttempt?.attempt_id ?? null,
+          parser_result: 'explicit_none', downstream_validation_result: 'validated_no_update',
+          persistence_result: 'not_required_validated_no_update', coverage_result: 'safely_committed',
+        });
+      }
       recordCompletedCoverage('completed_no_candidates');
       if (sessionDiagnostics) sessionDiagnostics.providerReturnedNone = (sessionDiagnostics.providerReturnedNone ?? 0) + 1;
       healthFinish({ provider_outcome: 'completed_no_candidates', response_received: true, parser_outcome: 'explicit_none', terminal_health: 'completed', persistence: 'not_needed', candidates: { emitted: 0 } });
@@ -1189,6 +1233,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // scheduler below creates and registers each exact recovery attempt before
     // its provider call instead of fabricating a null-attempt response.
     let parsedCandidates = recoveryOnlyMode ? [] : parseSessionOutput(response);
+    if (!recoveryOnlyMode && primaryStructuredResult?.accepted) {
+      parsedCandidates = primaryStructuredResult.records;
+    }
     if (!parsedCandidates.length) {
       if (sessionDiagnostics) sessionDiagnostics.malformedOutput = (sessionDiagnostics.malformedOutput ?? 0) + 1;
       let recovery;
@@ -1205,7 +1252,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         budget: malformedRecoveryBudget,
         splitDepth: malformedRecoveryDepth,
         resumeState: resumeRecoveryState,
-        providerCapabilities: getMemoryProviderCapabilities(),
+        providerCapabilities: { ...providerCapabilities, adaptive_protocol: true },
         unresolvedFragments: automaticFragmentRecovery
           ? restoredFragments.length ? restoredFragments : rejectedPartialFragments : [],
         onAttemptRegistered: async (attempt, detail = {}) => {
@@ -1224,7 +1271,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         onAttemptSettled: async (attempt, detail = {}) => {
           if (!attempt?.attempt_id) return;
           if (detail.terminal_outcome === 'provider_failure') {
-            await emitLifecycleEvent('provider_transport_failed', {
+            if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+              attempt_id: attempt.attempt_id,
+              transport_status: 'failed', terminal: false,
+              reason_code: attempt.failure_classification ?? 'provider_transport_failure',
+              next_action: 'dispatch_bounded_recovery_attempt',
+              raw_response_reference: null,
+              recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
+            });
+            else await emitLifecycleEvent('provider_transport_failed', {
               provider_attempt_id: attempt.attempt_id,
               exact_reason_code: attempt.failure_classification
                 ?? 'provider_transport_failure',
@@ -1233,18 +1288,35 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             return;
           }
           if (detail.terminal_outcome === 'provider_response_malformed') {
-            const settled = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
-              evidence: attempt,
-              reason_code: detail.malformed_reason ?? attempt.malformed_reason,
+            if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+              attempt_id: attempt.attempt_id,
+              terminal: false,
+              reason_code: detail.malformed_reason ?? attempt.malformed_reason
+                ?? 'malformed_provider_output',
               next_action: 'dispatch_bounded_recovery_attempt',
+              raw_response_reference: { retained: false, digest: attempt.response_hash ?? null },
+              parser_outcome: { status: 'rejected', accepted_candidate_ids: [],
+                rejected_fragment_ids: [], reason_code: detail.malformed_reason
+                  ?? attempt.malformed_reason ?? 'malformed_provider_output' },
+              validation_outcome: { status: 'not_applicable', accepted_candidate_ids: [] },
+              persistence_outcome: { status: 'not_required', durable_record_ids: [],
+                durable_record_candidate_map: {}, source_provenance: {} },
               recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
             });
-            if (!['pending_reconciliation', 'operationally_paused',
-              'idempotent_duplicate_verified'].includes(settled.status)) {
-              throw Object.assign(new Error('Malformed recovery attempt settlement was rejected.'), {
-                code: 'SME_TERMINAL_MALFORMED_SETTLEMENT_REJECTED',
-                sme_recovery_blocked: true, sme_request_diagnostics: settled,
+            else {
+              const settled = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
+                evidence: attempt,
+                reason_code: detail.malformed_reason ?? attempt.malformed_reason,
+                next_action: 'dispatch_bounded_recovery_attempt',
+                recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
               });
+              if (!['pending_reconciliation', 'operationally_paused',
+                'idempotent_duplicate_verified'].includes(settled.status)) {
+                throw Object.assign(new Error('Malformed recovery attempt settlement was rejected.'), {
+                  code: 'SME_TERMINAL_MALFORMED_SETTLEMENT_REJECTED',
+                  sme_recovery_blocked: true, sme_request_diagnostics: settled,
+                });
+              }
             }
             return;
           }
@@ -1281,7 +1353,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           ?.provider_attempt_audit?.recent_attempts ?? [])].reverse().find((attempt) =>
           attempt.child_obligation_id === leafObligationId
           && attempt.terminal_outcome !== 'running');
-        if (terminalAttempt?.attempt_id) {
+        if (terminalAttempt?.attempt_id && !pipeline.atomicCompletionEnabled) {
           if (terminalAttempt.terminal_outcome === 'provider_failure') {
             await emitLifecycleEvent('provider_transport_failed', {
               provider_attempt_id: terminalAttempt.attempt_id,
@@ -1316,42 +1388,44 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       if (terminalRecoveryAttempt?.attempt_id
         && terminalRecoveryAttempt.attempt_id !== providerAttempt?.attempt_id) {
         lifecycleAttemptId = terminalRecoveryAttempt.attempt_id;
-        if (['completed', 'completed_no_candidates', 'completed_repartitioned']
-          .includes(terminalRecoveryAttempt.terminal_outcome)) {
-          const ingress = await pipeline.ingestProviderEvidence('record_new_response', {
-            attempt: terminalRecoveryAttempt,
-          });
-          if (!['applied', 'idempotent_duplicate_verified'].includes(ingress.status)) {
-            const error = new Error('Session recovery response lifecycle ingress was rejected.');
-            error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
-            error.sme_recovery_blocked = true;
-            error.sme_request_diagnostics = ingress;
-            throw error;
-          }
-        } else if (terminalRecoveryAttempt.terminal_outcome === 'provider_failure') {
-          await emitLifecycleEvent('provider_transport_failed', {
-            provider_attempt_id: terminalRecoveryAttempt.attempt_id,
-            exact_reason_code: terminalRecoveryAttempt.failure_classification
-              ?? 'provider_transport_failure',
-            next_eligible_action: 'dispatch_bounded_recovery_attempt',
-          });
-        } else {
-          const settlement = await pipeline.ingestProviderEvidence(
-            'settle_terminal_malformed_attempt', {
-              evidence: terminalRecoveryAttempt,
-              reason_code: terminalRecoveryAttempt.malformed_reason
-                ?? 'terminal_malformed_provider_output',
-              next_action: recovery?.terminal_error?.sme_request_diagnostics
-                ?.next_eligible_recovery_action ?? 'dispatch_bounded_recovery_attempt',
-              recovery_stage: terminalRecoveryAttempt.recovery_stage,
+        if (!pipeline.atomicCompletionEnabled) {
+          if (['completed', 'completed_no_candidates', 'completed_repartitioned']
+            .includes(terminalRecoveryAttempt.terminal_outcome)) {
+            const ingress = await pipeline.ingestProviderEvidence('record_new_response', {
+              attempt: terminalRecoveryAttempt,
             });
-          if (!['pending_reconciliation', 'operationally_paused',
-            'idempotent_duplicate_verified'].includes(settlement.status)) {
-            const error = new Error('Session malformed terminal attempt could not be settled.');
-            error.code = 'SME_TERMINAL_MALFORMED_SETTLEMENT_REJECTED';
-            error.sme_recovery_blocked = true;
-            error.sme_request_diagnostics = settlement;
-            throw error;
+            if (!['applied', 'idempotent_duplicate_verified'].includes(ingress.status)) {
+              const error = new Error('Session recovery response lifecycle ingress was rejected.');
+              error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
+              error.sme_recovery_blocked = true;
+              error.sme_request_diagnostics = ingress;
+              throw error;
+            }
+          } else if (terminalRecoveryAttempt.terminal_outcome === 'provider_failure') {
+            await emitLifecycleEvent('provider_transport_failed', {
+              provider_attempt_id: terminalRecoveryAttempt.attempt_id,
+              exact_reason_code: terminalRecoveryAttempt.failure_classification
+                ?? 'provider_transport_failure',
+              next_eligible_action: 'dispatch_bounded_recovery_attempt',
+            });
+          } else {
+            const settlement = await pipeline.ingestProviderEvidence(
+              'settle_terminal_malformed_attempt', {
+                evidence: terminalRecoveryAttempt,
+                reason_code: terminalRecoveryAttempt.malformed_reason
+                  ?? 'terminal_malformed_provider_output',
+                next_action: recovery?.terminal_error?.sme_request_diagnostics
+                  ?.next_eligible_recovery_action ?? 'dispatch_bounded_recovery_attempt',
+                recovery_stage: terminalRecoveryAttempt.recovery_stage,
+              });
+            if (!['pending_reconciliation', 'operationally_paused',
+              'idempotent_duplicate_verified'].includes(settlement.status)) {
+              const error = new Error('Session malformed terminal attempt could not be settled.');
+              error.code = 'SME_TERMINAL_MALFORMED_SETTLEMENT_REJECTED';
+              error.sme_recovery_blocked = true;
+              error.sme_request_diagnostics = settlement;
+              throw error;
+            }
           }
         }
       }
@@ -1383,31 +1457,41 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         markProviderDownstreamOutcome(providerMetadata, rootObligationId, durableRecoveredCount > 0
           ? { validation_accepted: true, persistence_committed: true, accepted_count: durableRecoveredCount }
           : { explicit_no_update: true });
-        await emitLifecycleEvent('parser_accepted', {
-          provider_attempt_id: lifecycleAttemptId,
-          parser_result: 'recovered_explicit_none',
-        });
-        if (durableRecoveredCount > 0) {
-          await emitLifecycleEvent('validation_accepted', {
-            provider_attempt_id: lifecycleAttemptId,
-            downstream_validation_result: 'accepted_staged_records',
+        if (pipeline.atomicCompletionEnabled && durableRecoveredCount === 0) {
+          await pipeline.applyProviderCompletion({
+            attempt_id: lifecycleAttemptId,
+            parser_outcome: { status: 'explicit_none', accepted_candidate_ids: [] },
+            validation_outcome: { status: 'validated_no_update', accepted_candidate_ids: [] },
+            persistence_outcome: { status: 'not_required', durable_record_ids: [],
+              durable_record_candidate_map: {}, source_provenance: {} },
           });
-          await emitLifecycleEvent('records_staged', {
-            provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
+        } else {
+          await emitLifecycleEvent('parser_accepted', {
+            provider_attempt_id: lifecycleAttemptId,
+            parser_result: 'recovered_explicit_none',
+          });
+          if (durableRecoveredCount > 0) {
+            await emitLifecycleEvent('validation_accepted', {
+              provider_attempt_id: lifecycleAttemptId,
+              downstream_validation_result: 'accepted_staged_records',
+            });
+            await emitLifecycleEvent('records_staged', {
+              provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
+            });
+          }
+          await emitLifecycleEvent(durableRecoveredCount > 0
+            ? 'records_durably_persisted' : 'explicit_no_update_accepted', {
+            provider_attempt_id: lifecycleAttemptId,
+            parser_result: 'recovered_explicit_none',
+            downstream_validation_result: durableRecoveredCount > 0 ? 'accepted_staged_records' : 'validated_no_update',
+            persistence_result: durableRecoveredCount > 0 ? 'committed' : 'not_required_validated_no_update',
+            coverage_result: 'safely_committed',
+            lifecycle: {
+              explicit_no_update_fragment_ids: recovery.no_update_fragment_ids
+                ?? automaticFragmentRecovery?.fragment_ids ?? [],
+            },
           });
         }
-        await emitLifecycleEvent(durableRecoveredCount > 0
-          ? 'records_durably_persisted' : 'explicit_no_update_accepted', {
-          provider_attempt_id: lifecycleAttemptId,
-          parser_result: 'recovered_explicit_none',
-          downstream_validation_result: durableRecoveredCount > 0 ? 'accepted_staged_records' : 'validated_no_update',
-          persistence_result: durableRecoveredCount > 0 ? 'committed' : 'not_required_validated_no_update',
-          coverage_result: 'safely_committed',
-          lifecycle: {
-            explicit_no_update_fragment_ids: recovery.no_update_fragment_ids
-              ?? automaticFragmentRecovery?.fragment_ids ?? [],
-          },
-        });
         healthFinish({ terminal_health: 'completed', persistence: 'not_needed',
           provider_outcome: durableRecoveredCount > 0
             ? 'completed_after_durable_partial_recovery' : 'completed_no_candidates_after_regeneration',
@@ -1425,7 +1509,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       }
       healthUpdate({ provider_outcome: `completed_after_${recovery.stage}`, parser_outcome: `parsed_after_${recovery.stage}` });
     } else {
-      const responseShape = analyzeMalformedResponse(response, { tier: 'session' });
+      const responseShape = primaryStructuredResult?.accepted ? {
+        parser_accepted_record_count: parsedCandidates.length,
+        structurally_rejected_record_count: primaryStructuredResult.rejected_count,
+        structural_candidate_count: primaryStructuredResult.candidate_count,
+        prose_before_structure: false, prose_after_structure: false,
+        modifier_locally_normalizable_count: 0,
+      } : analyzeMalformedResponse(response, { tier: 'session' });
       const parserCountConsistent = parsedCandidates.length === responseShape.parser_accepted_record_count;
       if (!parserCountConsistent) {
         finishProviderAttempt(providerMetadata, providerAttempt, {
@@ -1476,7 +1566,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         rejected_count: unresolvedPartialFragments,
       },
     });
-    await emitLifecycleEvent(unresolvedPartialFragments > 0
+    if (!pipeline.atomicCompletionEnabled) await emitLifecycleEvent(unresolvedPartialFragments > 0
       ? 'parser_partially_accepted' : 'parser_accepted', {
       provider_attempt_id: lifecycleAttemptId,
       parser_result: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
@@ -1502,7 +1592,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         + shapeRepair.repaired_count;
     }
     healthUpdate({ provider_outcome: 'completed', parser_outcome: 'parsed', candidates: { emitted: parsedCandidates.length } });
-    await emitLifecycleEvent('parser_evidence_enriched', {
+    if (!pipeline.atomicCompletionEnabled) await emitLifecycleEvent('parser_evidence_enriched', {
       provider_attempt_id: lifecycleAttemptId,
       lifecycle: { parser_accepted_candidate_ids: parserAcceptedCandidateIds },
     });
@@ -1911,7 +2001,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           manifest_transition: { status: 'pending_reconciliation', requested_disposition: 'explicit_no_update' },
           ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'explicit_no_update' },
         });
-        await emitLifecycleEvent('explicit_no_update_accepted', {
+        if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+          attempt_id: lifecycleAttemptId,
+          raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
+          parser_outcome: { status: 'accepted', accepted_candidate_ids: parserAcceptedCandidateIds },
+          validation_outcome: { status: 'validated_no_update', accepted_candidate_ids: [] },
+          persistence_outcome: { status: 'not_required', durable_record_ids: [],
+            durable_record_candidate_map: {}, source_provenance: {} },
+        });
+        else await emitLifecycleEvent('explicit_no_update_accepted', {
           provider_attempt_id: lifecycleAttemptId,
           parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
           downstream_validation_result: 'validated_duplicate_only_no_update',
@@ -1996,7 +2094,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       throw pendingError;
     }
 
-    await emitLifecycleEvent('validation_accepted', {
+    if (!pipeline.atomicCompletionEnabled) await emitLifecycleEvent('validation_accepted', {
       parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
       downstream_validation_result: 'accepted',
       exact_reason_code: 'persistence_pending',
@@ -2197,7 +2295,34 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         candidate_shape_repair_count: shapeRepair.repaired_count,
         next_eligible_action: 'recover_unresolved_partial_output_fragments',
       });
-      await emitLifecycleEvent('recovery_required', {
+      if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+        attempt_id: lifecycleAttemptId,
+        terminal: false,
+        reason_code: 'partial_valid_output_has_unresolved_fragments',
+        next_action: 'regenerate_unresolved_from_verified_source',
+        raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
+        parser_outcome: {
+          status: 'partial', accepted_candidate_ids: parserAcceptedCandidateIds,
+          rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+        },
+        validation_outcome: { status: 'partial',
+          accepted_candidate_ids: Object.values(durableRecordCandidateMap) },
+        persistence_outcome: {
+          status: addedRecordIds.length ? 'committed' : 'not_required',
+          durable_record_ids: addedRecordIds,
+          durable_record_candidate_map: durableRecordCandidateMap,
+          source_provenance: addedRecordIds.length ? { source_indices: sourceMessages
+            .map((message) => message.__sme_original_index).filter(Number.isInteger) } : {},
+        },
+        recovery_capsule: {
+          rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+          private_fragment_payload_available: rejectedPartialFragments.some((item) => item.raw),
+          source_backed_regeneration_available: true,
+          provider_profile_signature: providerConfigSignature,
+          protocol: 'session_tagged_lines_v1',
+        },
+      });
+      else await emitLifecycleEvent('recovery_required', {
         parser_result: 'partial', downstream_validation_result: 'accepted_partial_records',
         persistence_result: 'partial_records_committed', coverage_result: 'pending',
         exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
@@ -2284,7 +2409,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             const budgetAccounting = summarizeMalformedRecoveryBudget(automaticBudget, {
               eligible_changed_stages_remaining: [], pause_reason: 'recovery_stage_ladder_exhausted',
             });
-            automaticError.code = 'SME_RECOVERY_BUDGET_PAUSE';
+            automaticError.code = 'recovery_request_budget_reached_with_pending_children';
             automaticError.sme_operational_pause = true;
             automaticError.sme_reason_code = 'recovery_stage_ladder_exhausted';
             automaticError.sme_request_diagnostics = {
@@ -2333,21 +2458,39 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       validation_accepted: true, persistence_committed: true, accepted_count: added,
       candidate_shape_repair_count: shapeRepair.repaired_count,
     });
-    await emitLifecycleEvent('records_staged', {
-      provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
-    });
-    await emitLifecycleEvent('records_durably_persisted', {
-      provider_attempt_id: lifecycleAttemptId,
-      parser_result: 'accepted', downstream_validation_result: 'accepted',
-      persistence_result: 'committed', coverage_result: 'safely_committed',
-      metrics: { persisted_records: added, local_shape_repairs: shapeRepair.repaired_count },
-      lifecycle: {
-        durably_persisted_record_ids: addedRecordIds,
+    if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
+      attempt_id: lifecycleAttemptId,
+      raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
+      parser_outcome: { status: 'accepted', accepted_candidate_ids: parserAcceptedCandidateIds },
+      validation_outcome: { status: 'accepted',
+        accepted_candidate_ids: Object.values(durableRecordCandidateMap) },
+      persistence_outcome: {
+        status: 'committed', durable_record_ids: addedRecordIds,
         durable_record_candidate_map: durableRecordCandidateMap,
-        recovered_fragment_ids: recoveredRecordFragmentIds,
-        explicit_no_update_fragment_ids: recoveredNoUpdateFragmentIds,
+        source_provenance: { source_indices: sourceMessages
+          .map((message) => message.__sme_original_index).filter(Number.isInteger) },
       },
+      recovery_capsule: recoveredRecordFragmentIds.length || recoveredNoUpdateFragmentIds.length
+        ? { rejected_fragment_ids: [], private_fragment_payload_available: false,
+          source_backed_regeneration_available: true } : null,
     });
+    else {
+      await emitLifecycleEvent('records_staged', {
+        provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',
+      });
+      await emitLifecycleEvent('records_durably_persisted', {
+        provider_attempt_id: lifecycleAttemptId,
+        parser_result: 'accepted', downstream_validation_result: 'accepted',
+        persistence_result: 'committed', coverage_result: 'safely_committed',
+        metrics: { persisted_records: added, local_shape_repairs: shapeRepair.repaired_count },
+        lifecycle: {
+          durably_persisted_record_ids: addedRecordIds,
+          durable_record_candidate_map: durableRecordCandidateMap,
+          recovered_fragment_ids: recoveredRecordFragmentIds,
+          explicit_no_update_fragment_ids: recoveredNoUpdateFragmentIds,
+        },
+      });
+    }
     updateCompletionJournal(providerAttempt, {
       manifest_transition: { status: 'pending_reconciliation', requested_disposition: 'leaf_covered' },
       ledger_transition: { status: 'pending_reconciliation', requested_disposition: 'durably_committed' },

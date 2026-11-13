@@ -41,6 +41,26 @@ test('shared tier pipeline derives one root and exact recovery-leaf identity', (
   assert.equal(pipeline.isRecoveryLeaf, true);
 });
 
+test('controller-managed extraction fails closed without the execution-kernel hook', () => {
+  const execution = createMemorizeExecutionContext({
+    controller: { lifecycle_required: true },
+    provider: { root_obligation_id: 'session:0-1',
+      root_source_range: { start: 0, end: 1, message_count: 2 } },
+    hooks: { obligation_event: async () => ({ status: 'applied', current_state: 'unattempted' }) },
+  });
+  assert.throws(() => createMemorizeTierPipeline({
+    tier: 'session', tierLabel: 'Session', execution, metadata: {},
+    range: { start: 0, end: 1, message_count: 2, source_indices: [0, 1] },
+    rangeId: 'session:0-1', coverageLedger: { records: [] },
+    sourceFingerprint: 'leaf', preflight: {
+      configured_context_limit: 8192, effective_context_limit: 8192,
+      reserved_output_tokens: 1000, safety_margin_tokens: 128,
+      protocol_overhead_tokens: 256, estimated_input_tokens: 400,
+    }, requestBudget: {}, providerConfigSignature: 'provider', chatId: 'chat',
+    expectedOutputFormat: 'session-v1',
+  }), (error) => error.code === 'SME_MEMORIZE_EXECUTION_KERNEL_REQUIRED');
+});
+
 test('coverage projection merges repeated writes and becomes terminal only explicitly', () => {
   const { pipeline, coverageLedger } = makePipeline();
   pipeline.recordCoverage({ provider_outcome: 'provider_running' });

@@ -1,4 +1,4 @@
-import { completedMemorizeOutcome, isMemorizeOutcome, memorizeOutcomeFromLegacyError } from './memorize-outcome.js';
+import { completedMemorizeOutcome, isMemorizeOutcome, memorizeOutcomeFromException } from './memorize-outcome.js';
 
 /** One execution boundary shared by initial and resumed Memorize Chat runs. */
 export function createMemorizeRunEngine() {
@@ -7,7 +7,7 @@ export function createMemorizeRunEngine() {
     get active_invocation() { return activeInvocation; },
     async execute(invocation, operation, thisArg = null, args = []) {
       if (activeInvocation) {
-        return memorizeOutcomeFromLegacyError(Object.assign(new Error('Memorize Chat is already running.'), {
+        return memorizeOutcomeFromException(Object.assign(new Error('Memorize Chat is already running.'), {
           code: 'already_running',
         }), { kind: 'blocked', resumable: false });
       }
@@ -20,7 +20,7 @@ export function createMemorizeRunEngine() {
         const value = await operation.apply(thisArg, args);
         return isMemorizeOutcome(value) ? value : completedMemorizeOutcome(value);
       } catch (error) {
-        const outcome = memorizeOutcomeFromLegacyError(error);
+        const outcome = memorizeOutcomeFromException(error);
         if (outcome.kind === 'paused' || outcome.kind === 'blocked') return outcome;
         throw error;
       } finally {

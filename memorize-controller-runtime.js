@@ -1,4 +1,4 @@
-import { isMemorizeOutcome, memorizeOutcomeFromLegacyError } from './memorize-outcome.js';
+import { isMemorizeOutcome, memorizeOutcomeFromException } from './memorize-outcome.js';
 import { normalizeMemorizeReasonCode } from './memorize-reasons.js';
 
 /**
@@ -58,7 +58,7 @@ export function recordMemorizeOperationalPause(runtime, runResult, label, errorO
   }
   const outcome = isMemorizeOutcome(errorOrOutcome)
     ? errorOrOutcome
-    : memorizeOutcomeFromLegacyError(errorOrOutcome, { kind: 'paused' });
+    : memorizeOutcomeFromException(errorOrOutcome, { kind: 'paused' });
   const diagnostics = errorOrOutcome?.sme_request_diagnostics ?? outcome.evidence?.request_diagnostics ?? {};
   const pause = {
     ...diagnostics,

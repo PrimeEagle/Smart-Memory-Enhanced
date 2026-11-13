@@ -91,7 +91,6 @@ import {
 } from './catchup-recovery-utils.js';
 import {
   ensureMemorizeObligationLedger,
-  migrateLegacyMemorizeObligations,
   projectMemorizeObligationLedger,
   reconcileMemorizeRunningObligations,
   reconcileMemorizeProviderRuntime,
@@ -105,13 +104,8 @@ import {
   getAuthoritativeOwnerRangeStatus,
   getAuthoritativeTierRangeStatus,
   isAuthoritativeTierRangeSafelyCovered,
-  rebuildMemorizeCompatibilityProjection,
+  rebuildMemorizeManifestProjection,
 } from './memorize-authority-model.js';
-import { migrateAmbiguousRecoveryParents, migrateV0980SameRunEvidenceState,
-  migrateV0981RetainedEvidenceRaceState, migrateV0982ControllerLeaseRecoveryState,
-  migrateV0983RetainedEvidenceRecoveryState,
-  migrateV0984RetainedEvidenceEffectBoundaryState }
-  from './memorize-lifecycle-migration.js';
 import {
   beginCatchUpTransaction,
   commitCatchUpTransaction,
@@ -138,6 +132,14 @@ import {
 } from './memorize-controller-runtime.js';
 import { createMemorizeRunEngine, bindMemorizeRunEngine } from './memorize-run-engine.js';
 import { createMemorizeExecutionContext } from './memorize-execution-context.js';
+import { applyProviderCompletion as applyAtomicProviderCompletion,
+  ensureMemorizeExecutionAggregate }
+  from './memorize-execution-kernel.js';
+import { createMemorizeProviderProfile, recordMemorizeProviderOutcome }
+  from './memorize-provider-policy.js';
+import { commitMemorizeUnitOfWork, markMemorizeRecordsApplied,
+  prepareMemorizeUnitOfWork } from './memorize-unit-of-work.js';
+import { projectMemorizeKernelDiagnostics } from './memorize-diagnostic-observer.js';
 import { selectDiagnosticsProjection, selectRecoveryPresentation, selectRunOutcomePresentation } from './memorize-projections.js';
 import {
   updateMemorizeControllerHeartbeat,
@@ -148,7 +150,6 @@ import {
 import {
   inspectProviderCompletionConsistency,
   appendRetainedEvidenceDecision,
-  migrateTerminalProviderCompletions,
   reconcileImpossibleLiveHealth,
   exportProviderCompletionJournal,
   PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
@@ -255,7 +256,6 @@ import {
   markProviderObligationRecoveryInProgress,
   providerConfigurationSignature,
   reconcileProviderRecoveryWindowsFromLedger,
-  reconcileProviderAttemptIdentitiesFromJournal,
   settleOrphanedProviderAttempts,
   summarizeProviderAttemptAudit,
   PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
@@ -281,8 +281,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.85',
-  build_fingerprint: 'sme-v0.9.85-retained-evidence-effect-boundary-r1',
+  extension_version: '0.9.86',
+  build_fingerprint: 'sme-v0.9.86-execution-kernel-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2324,17 +2324,6 @@ export function bindSettingsUI(ctrl) {
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
     const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
     const liveMetadata = getContext().chatMetadata?.[META_KEY];
-    if (rawCheckpoint?.run_manifest?.obligation_ledger && liveMetadata) {
-      const effectBoundaryRepair = migrateV0984RetainedEvidenceEffectBoundaryState({
-        checkpoint: rawCheckpoint, metadata: liveMetadata,
-      });
-      if (effectBoundaryRepair.migrated) {
-        rawCheckpoint.retained_evidence_effect_boundary_migration
-          = effectBoundaryRepair.detail;
-        saveChatMetadata(getContext()).catch((error) => console.warn(
-          `[${MODULE_NAME}] Could not persist retained-evidence effect-boundary repair:`, error));
-      }
-    }
     if (rawCheckpoint?.status === 'in_progress' && !ctrl.extractionRunning && !ctrl.compactionRunning
       && !getActiveCatchUpTransactionSnapshot()) {
       const audit = liveMetadata?.live_memory_health?.provider_attempt_audit;
@@ -2348,8 +2337,6 @@ export function bindSettingsUI(ctrl) {
         const repaired = reconcileMemorizeRunningObligations(
           rawCheckpoint.run_manifest.obligation_ledger, audit);
         rawCheckpoint.run_manifest.obligation_ledger = repaired.ledger;
-        migrateTerminalProviderCompletions(liveMetadata, audit,
-          repaired.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
         const staleCoverage = liveMetadata?.catch_up_diagnostics?.extractionCoverage ?? {};
         const staleJournalReconciliation = reconcileMemorizeLifecycleFromJournal(
           rawCheckpoint.run_manifest.obligation_ledger, {
@@ -2364,15 +2351,6 @@ export function bindSettingsUI(ctrl) {
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         rawCheckpoint.run_manifest.obligation_ledger = staleJournalReconciliation.ledger;
-        const leaseRepair = migrateV0982ControllerLeaseRecoveryState({
-          checkpoint: rawCheckpoint, metadata: liveMetadata,
-        });
-        const retainedRecoveryRepair = migrateV0983RetainedEvidenceRecoveryState({
-          checkpoint: rawCheckpoint, metadata: liveMetadata,
-        });
-        if (retainedRecoveryRepair.migrated) {
-          rawCheckpoint.retained_evidence_recovery_migration = retainedRecoveryRepair.detail;
-        }
         const healthRepairs = reconcileImpossibleLiveHealth(liveMetadata, audit);
         const transactionId = rawCheckpoint.transaction_lifecycle?.transaction_id ?? null;
         if (rawCheckpoint.transaction_lifecycle?.state === 'active') {
@@ -5718,99 +5696,16 @@ export function bindSettingsUI(ctrl) {
         })),
       };
       checkpoint.run_manifest = ensureCatchUpRunManifest(checkpoint, sourceWindow);
-      checkpoint.run_manifest.obligation_ledger = migrateLegacyMemorizeObligations(
+      checkpoint.run_manifest.obligation_ledger = ensureMemorizeExecutionAggregate(
         checkpoint.run_manifest.obligation_ledger,
-        {
-          logical_run_id: checkpoint.run_manifest.logical_run_id,
-          tier_obligations: checkpoint.run_manifest.tier_obligations,
-          owner_obligations: checkpoint.run_manifest.owner_obligations,
-          provider_obligations: catchUpContext.chatMetadata?.[META_KEY]
-            ?.live_memory_health?.provider_attempt_audit?.obligations,
-          session_diagnostics: catchUpContext.chatMetadata?.[META_KEY]
-            ?.catch_up_diagnostics?.sessionExtraction,
-        },
+        checkpoint.run_manifest.logical_run_id,
       );
       const providerAudit = catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit;
-      const providerIdentityMigration = reconcileProviderAttemptIdentitiesFromJournal(
-        catchUpContext.chatMetadata?.[META_KEY],
-        catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal);
-      const lifecycleMigration = migrateAmbiguousRecoveryParents({
-        ledger: checkpoint.run_manifest.obligation_ledger,
-        metadata: catchUpContext.chatMetadata?.[META_KEY],
-        provider_audit: providerAudit,
-      });
-      checkpoint.run_manifest.obligation_ledger = lifecycleMigration.ledger;
-      if (lifecycleMigration.migrated) checkpoint.lifecycle_migration = lifecycleMigration.detail;
-      const sameRunEvidenceMigration = migrateV0980SameRunEvidenceState({
-        ledger: checkpoint.run_manifest.obligation_ledger,
-        journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
-        logical_run_id: checkpoint.run_manifest.logical_run_id,
-        provider_attempts: providerAudit,
-      });
-      checkpoint.run_manifest.obligation_ledger = sameRunEvidenceMigration.ledger;
-      if (sameRunEvidenceMigration.migrated) {
-        checkpoint.same_run_evidence_migration = sameRunEvidenceMigration.detail;
-        checkpoint.run_manifest.terminal_reason_code = 'partial_result_continuation_pending';
-        const latestExit = checkpoint.run_manifest.obligation_ledger.controller_exits?.at(-1);
-        if (latestExit) {
-          latestExit.reason_code = 'partial_result_continuation_pending';
-          latestExit.classification = 'post_response_lifecycle_failure_repaired';
-          latestExit.resumable = true;
-          latestExit.next_eligible_action = 'recover_exact_unresolved_fragments';
-        }
-      }
-      const retainedEvidenceRaceMigration = migrateV0981RetainedEvidenceRaceState({
-        ledger: checkpoint.run_manifest.obligation_ledger,
-        journal: catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
-        logical_run_id: checkpoint.run_manifest.logical_run_id,
-      });
-      checkpoint.run_manifest.obligation_ledger = retainedEvidenceRaceMigration.ledger;
-      if (retainedEvidenceRaceMigration.migrated) {
-        checkpoint.retained_evidence_race_migration = retainedEvidenceRaceMigration.detail;
-        checkpoint.run_manifest.terminal_reason_code = 'recovery_child_not_attempted';
-      }
-      const controllerLeaseMigration = migrateV0982ControllerLeaseRecoveryState({
-        checkpoint,
-        metadata: catchUpContext.chatMetadata?.[META_KEY],
-      });
-      if (controllerLeaseMigration.migrated) {
-        checkpoint.controller_lease_recovery_migration = controllerLeaseMigration.detail;
-        checkpoint.run_manifest.terminal_reason_code = controllerLeaseMigration.detail
-          .exact_recovery_stage ?? 'interrupted_completion_unknown';
-      }
-      const retainedEvidenceRecoveryMigration = migrateV0983RetainedEvidenceRecoveryState({
-        checkpoint,
-        metadata: catchUpContext.chatMetadata?.[META_KEY],
-      });
-      if (retainedEvidenceRecoveryMigration.migrated) {
-        checkpoint.retained_evidence_recovery_migration
-          = retainedEvidenceRecoveryMigration.detail;
-        checkpoint.run_manifest.terminal_reason_code
-          = retainedEvidenceRecoveryMigration.detail.planned_obligations?.[0]
-            ?.exact_next_action ?? checkpoint.run_manifest.terminal_reason_code;
-      }
-      const retainedEvidenceEffectBoundaryMigration
-        = migrateV0984RetainedEvidenceEffectBoundaryState({
-          checkpoint, metadata: catchUpContext.chatMetadata?.[META_KEY],
-        });
-      if (retainedEvidenceEffectBoundaryMigration.migrated) {
-        checkpoint.retained_evidence_effect_boundary_migration
-          = retainedEvidenceEffectBoundaryMigration.detail;
-        checkpoint.run_manifest.terminal_reason_code
-          = retainedEvidenceEffectBoundaryMigration.detail.repaired_obligations?.[0]
-            ?.exact_next_action ?? checkpoint.run_manifest.terminal_reason_code;
-      }
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
         providerAudit,
       );
       checkpoint.run_manifest.obligation_ledger = runningReconciliation.ledger;
-      // Normalize legacy provider terminals before interpreting the completion
-      // journal. The journal can then prove downstream parser, validation, and
-      // persistence transitions without manufacturing a second provider call.
-      const migratedCompletions = migrateTerminalProviderCompletions(
-        catchUpContext.chatMetadata?.[META_KEY], providerAudit,
-        runningReconciliation.repairs.map((item) => item.terminal_attempt_id).filter(Boolean));
       const persistedCoverage = catchUpContext.chatMetadata?.[META_KEY]
         ?.catch_up_diagnostics?.extractionCoverage ?? {};
       const lifecycleJournalRepair = reconcileMemorizeLifecycleFromJournal(
@@ -5827,7 +5722,7 @@ export function bindSettingsUI(ctrl) {
       checkpoint.run_manifest.obligation_ledger = lifecycleJournalRepair.ledger;
       const providerWindowRepair = reconcileProviderRecoveryWindowsFromLedger(
         catchUpContext.chatMetadata?.[META_KEY], checkpoint.run_manifest.obligation_ledger);
-      const authorityProjection = rebuildMemorizeCompatibilityProjection(
+      const authorityProjection = rebuildMemorizeManifestProjection(
         checkpoint.run_manifest, {
           source_message_count: total,
           chunk_size: CATCH_UP_CHUNK_SIZE,
@@ -5850,7 +5745,6 @@ export function bindSettingsUI(ctrl) {
         provider_audit_mutations: providerWindowRepair.mutations,
         safe_resume_offset: authoritativeOffset,
         selection: authorityProjection.selection,
-        provider_identity_migrations: providerIdentityMigration.mutations,
         provider_calls: 0,
         persistence_calls: 0,
         reconciled_at: Date.now(),
@@ -5879,16 +5773,14 @@ export function bindSettingsUI(ctrl) {
           persistence_running: false, save_running: false, background_operation_running: false,
           controller_executing: false, transaction_inspectable: true,
         });
-      if (migratedCompletions.length || liveHealthRepairs.length) {
+      if (liveHealthRepairs.length) {
         checkpoint.runtime_lifecycle_repairs = {
-          migrated_terminal_completion_count: migratedCompletions.length,
           live_health_repairs: liveHealthRepairs,
           reconciled_at: Date.now(),
         };
       }
-      if (runningReconciliation.repairs.length || sameRunEvidenceMigration.migrated
-        || lifecycleJournalRepair.mutations
-        || migratedCompletions.length || providerWindowRepair.mutations
+      if (runningReconciliation.repairs.length || lifecycleJournalRepair.mutations
+        || providerWindowRepair.mutations
         || authorityProjection.mutations) {
         checkpoint.runtime_obligation_repairs = [
           ...(checkpoint.runtime_obligation_repairs ?? []), ...runningReconciliation.repairs,
@@ -6408,6 +6300,93 @@ export function bindSettingsUI(ctrl) {
           }, { obligation_id: entry?.child_obligation_id ?? entry?.root_obligation_id,
             provider_attempt_id: entry?.attempt_id });
         };
+        const commitAtomicProviderCompletion = async (command) => {
+          let completionResult = null;
+          const leaseResult = await runLeasedPersistence('provider_completion_command', () => {
+            checkpoint.run_manifest.obligation_ledger = ensureMemorizeObligationLedger(
+              checkpoint.run_manifest.obligation_ledger, checkpoint.run_manifest.logical_run_id);
+            const priorKernel = checkpoint.run_manifest.obligation_ledger.execution_kernel;
+            const newLogicalObligation = !Object.values(priorKernel?.attempts ?? {}).some((attempt) =>
+              attempt.root_obligation_id === command.root_obligation_id);
+            let unitOfWork = prepareMemorizeUnitOfWork({
+              aggregate: checkpoint.run_manifest.obligation_ledger,
+              checkpoint: {
+                starting_source_offset: checkpoint.starting_source_offset ?? 0,
+                next_source_offset: checkpoint.next_source_offset ?? 0,
+              },
+              unit_of_work_journal:
+                checkpoint.run_manifest.execution_unit_of_work_journal ?? [],
+            }, command);
+            if (unitOfWork.status === 'idempotent_duplicate') {
+              completionResult = applyAtomicProviderCompletion(
+                checkpoint.run_manifest.obligation_ledger, command);
+            } else {
+              unitOfWork = markMemorizeRecordsApplied(unitOfWork.state,
+                command.command_id ?? command.commandId, {
+                  persistence_status: command.persistence_outcome?.status ?? 'not_required',
+                  durable_record_ids: command.persistence_outcome?.durable_record_ids ?? [],
+                });
+              const committed = commitMemorizeUnitOfWork(unitOfWork.state,
+                command.command_id ?? command.commandId);
+              completionResult = {
+                status: committed.status,
+                mutated: ['applied', 'late_callback_ignored'].includes(committed.status),
+                aggregate: committed.state?.aggregate
+                  ?? checkpoint.run_manifest.obligation_ledger,
+                receipt: committed.receipt ?? null,
+                reason_code: committed.reason_code ?? null,
+              };
+              checkpoint.run_manifest.execution_unit_of_work_journal
+                = committed.state?.unit_of_work_journal
+                  ?? unitOfWork.state.unit_of_work_journal;
+            }
+            if (completionResult.mutated === true) {
+              checkpoint.run_manifest.obligation_ledger = completionResult.aggregate;
+              checkpoint.run_manifest.execution_kernel_revision
+                = completionResult.receipt.aggregate_revision;
+              if (completionResult.status === 'applied') {
+                const profileSignature = command.provider_profile_signature
+                  ?? 'unknown-provider-profile';
+                const existingProfile = checkpoint.run_manifest.provider_profile;
+                const profile = existingProfile?.signature === profileSignature
+                  ? existingProfile : createMemorizeProviderProfile({
+                    signature: profileSignature,
+                    native_json_schema_observed:
+                      command.provider_protocol === 'structured_json_schema_v1',
+                  });
+                const parserStatus = command.parser_outcome?.status;
+                const validationStatus = command.validation_outcome?.status;
+                const classification = command.transport_status === 'failed'
+                  ? 'transport_failure'
+                  : ['rejected', 'partial'].includes(parserStatus)
+                    ? 'structural_failure'
+                    : validationStatus === 'rejected'
+                      ? 'validation_failure' : 'accepted';
+                checkpoint.run_manifest.provider_profile = recordMemorizeProviderOutcome(profile, {
+                  new_logical_obligation: newLogicalObligation,
+                  classification,
+                  recovery_stage: command.recovery_capsule?.recovery_stage
+                    ?? command.recovery_stage ?? null,
+                  succeeded: ['durably_committed', 'explicit_no_update']
+                    .includes(completionResult.receipt.resulting_state),
+                });
+              }
+              updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
+                await_point: 'atomic_provider_completion', progress: true,
+                root_obligation_id: command.root_obligation_id,
+                source_range: command.source_range,
+                last_durable_transition: completionResult.receipt.resulting_state,
+              });
+              checkpoint.updated_at = Date.now();
+            }
+            return completionResult;
+          }, { obligation_id: command.obligation_leaf_id,
+            provider_attempt_id: command.attempt_id });
+          if (!leaseResult.allowed) return {
+            status: 'rejected', reason_code: leaseResult.reason_code,
+          };
+          return completionResult;
+        };
         const commitRetainedEvidenceDecision = async (attemptId, decision,
           heartbeatPatch = {}) => runLeasedPersistence(
           'retained_evidence_decision_recorded', () => {
@@ -6606,6 +6585,7 @@ export function bindSettingsUI(ctrl) {
                   context_overflow_child_committed: commitOverflowChild,
                   recovery_child_manifest_updated: commitRecoveryChildManifest,
                   provider_completion_journal_updated: commitProviderCompletionJournal,
+                  provider_completion_command: commitAtomicProviderCompletion,
                   retained_evidence_decision_recorded: commitRetainedEvidenceDecision,
                   provider_await_point: commitProviderAwaitPoint,
                   obligation_event: applyAuthoritativeLifecycleEvent,
@@ -6613,7 +6593,7 @@ export function bindSettingsUI(ctrl) {
                 },
               }),
             }).catch((err) => {
-              if (err?.code === 'SME_RECOVERY_BUDGET_PAUSE') {
+              if (err?.code === 'recovery_request_budget_reached_with_pending_children') {
                 err.sme_request_diagnostics ??= {};
                 err.sme_request_diagnostics.parent_chunk_range = { ...currentRange };
                 recordCatchUpOperationalPause('Long-Term recovery budget pause', err, 'long-term');
@@ -6684,6 +6664,7 @@ export function bindSettingsUI(ctrl) {
                 context_overflow_child_committed: commitOverflowChild,
                 recovery_child_manifest_updated: commitRecoveryChildManifest,
                 obligation_event: applyAuthoritativeLifecycleEvent,
+                provider_completion_command: commitAtomicProviderCompletion,
                 get_canonical_obligation: getCanonicalObligation,
                 recovery_epoch_initialized: async (epoch) => {
                   return runLeasedPersistence('recovery_epoch_initialized', () => {
@@ -6867,7 +6848,7 @@ export function bindSettingsUI(ctrl) {
             preserved_durable_record_ids: lifecycleReconciliation.preserved_durable_record_ids,
             provider_calls: 0, persistence_calls: 0, reconciled_at: Date.now(),
           };
-          const projection = rebuildMemorizeCompatibilityProjection(
+          const projection = rebuildMemorizeManifestProjection(
             checkpointForCommit.run_manifest, {
               source_message_count: total,
               chunk_size: CATCH_UP_CHUNK_SIZE,
@@ -6876,7 +6857,6 @@ export function bindSettingsUI(ctrl) {
                 ...(longtermEnabledForRun ? ['longterm'] : []),
                 ...(sessionEnabledForRun ? ['session'] : []),
               ],
-              coordinate_ranges: [currentRange],
             });
           checkpointForCommit.run_manifest = projection.manifest;
           const activeAttempt = checkpointForCommit.run_manifest.attempts?.at(-1);
@@ -7205,6 +7185,7 @@ export function bindSettingsUI(ctrl) {
                     context_overflow_child_committed: commitSweepChild,
                     recovery_child_manifest_updated: commitRecoveryChildManifest,
                     provider_completion_journal_updated: commitProviderCompletionJournal,
+                    provider_completion_command: commitAtomicProviderCompletion,
                     retained_evidence_decision_recorded: commitRetainedEvidenceDecision,
                     provider_await_point: commitProviderAwaitPoint,
                     obligation_event: applyAuthoritativeLifecycleEvent,
@@ -10263,6 +10244,8 @@ export function bindSettingsUI(ctrl) {
           diagnostics.logical_run = summarizeCatchUpRunManifest(terminalCheckpoint.run_manifest);
           diagnostics.authoritative_obligation_ledger = projectMemorizeObligationLedger(
             terminalCheckpoint.run_manifest.obligation_ledger);
+          diagnostics.memorize_execution_kernel = projectMemorizeKernelDiagnostics(
+            terminalCheckpoint.run_manifest.obligation_ledger);
           diagnostics.recovery_summary = {
             scope: 'cumulative_logical_run_across_attempts',
             attempt_count: diagnostics.logical_run.attempt_count,
@@ -10296,6 +10279,8 @@ export function bindSettingsUI(ctrl) {
         });
         diagnostics.logical_run = summarizeCatchUpRunManifest(terminalCheckpoint.run_manifest);
         diagnostics.authoritative_obligation_ledger = projectMemorizeObligationLedger(
+          terminalCheckpoint.run_manifest.obligation_ledger);
+        diagnostics.memorize_execution_kernel = projectMemorizeKernelDiagnostics(
           terminalCheckpoint.run_manifest.obligation_ledger);
         const coverageAttention = !diagnostics.logical_run.all_original_source_messages_covered
           || Object.values(diagnostics.logical_run.cumulative_tier_coverage ?? {}).some((tier) => tier.enabled === true && tier.coverage_complete !== true);
@@ -10512,10 +10497,6 @@ export function bindSettingsUI(ctrl) {
             ...failedRunningReconciliation.repairs,
           ].slice(-16);
         }
-        migrateTerminalProviderCompletions(
-          catchUpContext.chatMetadata?.[META_KEY], failedProviderAudit,
-          failedRunningReconciliation.repairs
-            .map((item) => item.terminal_attempt_id).filter(Boolean));
         const failedCoverage = catchUpContext.chatMetadata?.[META_KEY]
           ?.catch_up_diagnostics?.extractionCoverage ?? {};
         const failedJournalReconciliation = reconcileMemorizeLifecycleFromJournal(
@@ -10530,30 +10511,6 @@ export function bindSettingsUI(ctrl) {
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         failedCheckpoint.run_manifest.obligation_ledger = failedJournalReconciliation.ledger;
-        const controllerLeaseRepair = migrateV0982ControllerLeaseRecoveryState({
-          checkpoint: failedCheckpoint,
-          metadata: catchUpContext.chatMetadata?.[META_KEY],
-        });
-        if (controllerLeaseRepair.migrated) {
-          failedCheckpoint.controller_lease_recovery_migration = controllerLeaseRepair.detail;
-        }
-        const retainedEvidenceRecoveryRepair = migrateV0983RetainedEvidenceRecoveryState({
-          checkpoint: failedCheckpoint,
-          metadata: catchUpContext.chatMetadata?.[META_KEY],
-        });
-        if (retainedEvidenceRecoveryRepair.migrated) {
-          failedCheckpoint.retained_evidence_recovery_migration
-            = retainedEvidenceRecoveryRepair.detail;
-        }
-        const retainedEvidenceEffectBoundaryRepair
-          = migrateV0984RetainedEvidenceEffectBoundaryState({
-            checkpoint: failedCheckpoint,
-            metadata: catchUpContext.chatMetadata?.[META_KEY],
-          });
-        if (retainedEvidenceEffectBoundaryRepair.migrated) {
-          failedCheckpoint.retained_evidence_effect_boundary_migration
-            = retainedEvidenceEffectBoundaryRepair.detail;
-        }
         failedCheckpoint.controller_failure = {
           schema_version: 1,
           phase: controllerRuntime.phase,

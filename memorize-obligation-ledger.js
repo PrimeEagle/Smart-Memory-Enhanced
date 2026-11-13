@@ -52,6 +52,7 @@ export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
   retry_provider_with_backoff: Object.freeze({ provider_call_required: true, persistence_required: false }),
   recover_exact_unresolved_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
   recover_unresolved_partial_output_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  regenerate_unresolved_from_verified_source: Object.freeze({ provider_call_required: true, persistence_required: false }),
   resume_changed_dimension_or_single_source_recovery: Object.freeze({ provider_call_required: true, persistence_required: false }),
   fragment_decision_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
   resume_exact_obligation: Object.freeze({ provider_call_required: true, persistence_required: false }),
@@ -80,6 +81,9 @@ export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
   inspect_or_restore_committed_partial_record: Object.freeze({ provider_call_required: false, persistence_required: false }),
   inspect_or_restore_partial_fragment_recovery_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
   change_provider_configuration_or_install_updated_build: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  restore_source_or_private_recovery_payload: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  restore_source_window: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  restore_matching_source_window: Object.freeze({ provider_call_required: false, persistence_required: false }),
 });
 
 export function getMemorizeActionContract(action) {
@@ -115,7 +119,7 @@ export function memorizeObligationStateFingerprint(obligation = null) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-// This table is intentionally exported: tests, migrations, and diagnostics use
+// This table is intentionally exported: tests and diagnostics use
 // the same lifecycle contract instead of maintaining parallel interpretations.
 export const MEMORIZE_OBLIGATION_TRANSITIONS = Object.freeze({
   unattempted: ['provider_running', 'provider_response_received', 'parser_accepted', 'parser_partial',
@@ -142,36 +146,14 @@ const normalizeIds = (values = []) => [...new Set((Array.isArray(values) ? value
   .filter((value) => value !== null && value !== undefined && String(value).trim())
   .map((value) => String(value)))];
 
-function legacyIds(prefix, count) {
-  return Array.from({ length: Math.max(0, Number(count) || 0) }, (_, index) => `${prefix}:${index + 1}`);
-}
-
 export function normalizeMemorizeLifecycleIdentity(raw = {}) {
-  const metrics = raw.metrics ?? {};
-  const verificationIds = metrics.partial_record_verification?.record_ids ?? [];
   const lifecycle = { schema_version: 1, ...(raw.lifecycle ?? {}) };
-  const fallbacks = {
-    parser_accepted_candidate_ids: legacyIds('legacy-parser-accepted', metrics.parser_accepted_records),
-    parser_rejected_fragment_ids: metrics.unresolved_fragment_ids
-      ?? legacyIds('legacy-parser-rejected', metrics.parser_rejected_fragments),
-    downstream_accepted_candidate_ids: legacyIds('legacy-downstream-accepted', metrics.downstream_valid_records),
-    downstream_rejected_candidate_ids: legacyIds('legacy-downstream-rejected', metrics.downstream_rejected_records),
-    durably_persisted_record_ids: verificationIds.length ? verificationIds
-      : legacyIds('legacy-durable-record', metrics.persisted_records),
-    duplicate_candidate_ids: legacyIds('legacy-duplicate', metrics.rejected_duplicates),
-    unresolved_fragment_ids: metrics.unresolved_fragment_ids
-      ?? legacyIds('legacy-unresolved-fragment', metrics.unresolved_parser_fragments),
-    recovered_fragment_ids: [],
-    explicit_no_update_fragment_ids: [],
-  };
   for (const field of MEMORIZE_LIFECYCLE_IDENTITY_FIELDS) {
-    lifecycle[field] = normalizeIds(lifecycle[field]?.length ? lifecycle[field] : fallbacks[field]);
+    lifecycle[field] = normalizeIds(lifecycle[field]);
   }
   lifecycle.durable_record_candidate_map = { ...(lifecycle.durable_record_candidate_map ?? {}) };
   lifecycle.counts = Object.fromEntries(MEMORIZE_LIFECYCLE_IDENTITY_FIELDS
     .map((field) => [field.replace(/_ids$/, '_count'), lifecycle[field].length]));
-  lifecycle.migrated_from_ambiguous_counts = lifecycle.migrated_from_ambiguous_counts === true
-    || (raw.lifecycle == null && Object.values(metrics).some(Number.isFinite));
   return lifecycle;
 }
 
@@ -190,8 +172,6 @@ function mergeLifecycleIdentity(priorValue, patch = {}) {
     ...(prior.durable_record_candidate_map ?? {}),
     ...(patch.durable_record_candidate_map ?? {}),
   };
-  next.migrated_from_ambiguous_counts = prior.migrated_from_ambiguous_counts === true
-    || patch.migrated_from_ambiguous_counts === true;
   next.counts = Object.fromEntries(MEMORIZE_LIFECYCLE_IDENTITY_FIELDS
     .map((field) => [field.replace(/_ids$/, '_count'), next[field].length]));
   return next;
@@ -210,23 +190,20 @@ function lifecycleViolations(lifecycle) {
   const downstreamAccepted = new Set(lifecycle.downstream_accepted_candidate_ids);
   const downstreamRejected = new Set(lifecycle.downstream_rejected_candidate_ids);
   const parserRejected = new Set(lifecycle.parser_rejected_fragment_ids);
-  const migrated = lifecycle.migrated_from_ambiguous_counts === true;
-  if (!migrated) {
-    for (const id of downstreamAccepted) if (!parserAccepted.has(id)) {
-      violations.push({ code: 'downstream_acceptance_without_parser_acceptance', candidate_id: id });
-    }
-    for (const id of downstreamRejected) if (!parserAccepted.has(id)) {
-      violations.push({ code: 'downstream_rejection_without_parser_acceptance', candidate_id: id });
-    }
-    for (const [recordId, candidateId] of Object.entries(lifecycle.durable_record_candidate_map ?? {})) {
-      if (!durable.has(recordId)) violations.push({ code: 'durable_mapping_without_record', record_id: recordId });
-      if (!downstreamAccepted.has(candidateId)) violations.push({
-        code: 'durable_record_without_downstream_acceptance', record_id: recordId, candidate_id: candidateId,
-      });
-    }
-    for (const recordId of durable) if (!lifecycle.durable_record_candidate_map?.[recordId]) {
-      violations.push({ code: 'durable_record_missing_candidate_mapping', record_id: recordId });
-    }
+  for (const id of downstreamAccepted) if (!parserAccepted.has(id)) {
+    violations.push({ code: 'downstream_acceptance_without_parser_acceptance', candidate_id: id });
+  }
+  for (const id of downstreamRejected) if (!parserAccepted.has(id)) {
+    violations.push({ code: 'downstream_rejection_without_parser_acceptance', candidate_id: id });
+  }
+  for (const [recordId, candidateId] of Object.entries(lifecycle.durable_record_candidate_map ?? {})) {
+    if (!durable.has(recordId)) violations.push({ code: 'durable_mapping_without_record', record_id: recordId });
+    if (!downstreamAccepted.has(candidateId)) violations.push({
+      code: 'durable_record_without_downstream_acceptance', record_id: recordId, candidate_id: candidateId,
+    });
+  }
+  for (const recordId of durable) if (!lifecycle.durable_record_candidate_map?.[recordId]) {
+    violations.push({ code: 'durable_record_missing_candidate_mapping', record_id: recordId });
   }
   for (const id of lifecycle.duplicate_candidate_ids) if (!downstreamRejected.has(id)) {
     violations.push({ code: 'duplicate_without_downstream_rejection', candidate_id: id });
@@ -292,130 +269,20 @@ export function createMemorizeObligationLedger(logicalRunId = null, now = Date.n
 }
 
 export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
-  const ledger = value && typeof value === 'object'
-    ? value : createMemorizeObligationLedger(logicalRunId);
-  if (ledger.schema_version === MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION
+  if (value == null) return createMemorizeObligationLedger(logicalRunId);
+  const ledger = value;
+  const current = ledger && typeof ledger === 'object'
+    && ledger.schema_version === MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION
     && ledger.implementation_version === MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION
     && ledger.normalization_complete === true
-    && ledger.obligations && typeof ledger.obligations === 'object') {
-    ledger.logical_run_id ??= logicalRunId;
-    return ledger;
+    && ledger.obligations && typeof ledger.obligations === 'object';
+  if (!current || (logicalRunId != null && ledger.logical_run_id !== logicalRunId)) {
+    const error = new Error('Memorize Chat checkpoint does not use the current execution schema.');
+    error.code = 'SME_MEMORIZE_SCHEMA_UNSUPPORTED';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = 'fresh_start_required';
+    throw error;
   }
-  ledger.schema_version = MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION;
-  ledger.implementation_version = MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION;
-  ledger.logical_run_id ??= logicalRunId;
-  ledger.obligations ??= {};
-  ledger.recovery_backlog = Array.isArray(ledger.recovery_backlog) ? ledger.recovery_backlog : [];
-  // Older builds recorded an illegal transition and then applied it. Preserve
-  // that evidence, but do not let normalized history masquerade as a new
-  // runtime invariant failure forever.
-  ledger.historical_transition_observations = [
-    ...(Array.isArray(ledger.historical_transition_observations)
-      ? ledger.historical_transition_observations : []),
-    ...(Array.isArray(ledger.transition_violations) ? ledger.transition_violations.map((item) => ({
-      ...item, classification: 'historical_normalized',
-    })) : []),
-  ].slice(-64);
-  ledger.transition_violations = [];
-  ledger.controller_exits = Array.isArray(ledger.controller_exits) ? ledger.controller_exits.slice(-32) : [];
-  for (const [key, raw] of Object.entries(ledger.obligations)) {
-    const id = stableId({ ...raw, obligation_id: raw?.obligation_id ?? key });
-    const lifecycle = normalizeMemorizeLifecycleIdentity(raw);
-    const verification = raw?.metrics?.partial_record_verification;
-    const falseNegativeV0972 = raw?.exact_reason_code === 'committed_partial_record_verification_failed'
-      && lifecycle.durably_persisted_record_ids.length > 0
-      && Number(verification?.verified_count ?? 0) === lifecycle.durably_persisted_record_ids.length
-      && lifecycle.unresolved_fragment_ids.length > 0;
-    if (falseNegativeV0972) {
-      lifecycle.downstream_accepted_candidate_ids = legacyIds(
-        `migrated-downstream-accepted:${id}`, lifecycle.durably_persisted_record_ids.length);
-      lifecycle.counts.downstream_accepted_candidate_count = lifecycle.downstream_accepted_candidate_ids.length;
-    }
-    const state = falseNegativeV0972 ? 'pending_recovery'
-      : MEMORIZE_OBLIGATION_STATES.includes(raw?.current_state) ? raw.current_state : 'unattempted';
-    ledger.obligations[id] = {
-      obligation_id: id,
-      logical_run_id: raw?.logical_run_id ?? ledger.logical_run_id,
-      tier: raw?.tier ?? 'unknown', owner: raw?.owner ?? null,
-      source_range: normalizeRange(raw?.source_range ?? raw) ?? null,
-      source_fingerprint: raw?.source_fingerprint ?? null,
-      parent_obligation_id: raw?.parent_obligation_id ?? null,
-      expected_child_obligation_ids: [...new Set(raw?.expected_child_obligation_ids ?? [])],
-      provider_attempt_lineage: [...new Set(raw?.provider_attempt_lineage ?? [])].slice(-64),
-      parser_result: raw?.parser_result ?? null,
-      downstream_validation_result: raw?.downstream_validation_result ?? null,
-      persistence_result: raw?.persistence_result ?? null,
-      partial_record_persistence: raw?.partial_record_persistence ?? (Number(raw?.metrics?.persisted_records ?? 0) > 0 ? {
-        status: 'committed', persisted_record_count: Number(raw.metrics.persisted_records),
-        producing_provider_attempt_id: raw.metrics?.producing_provider_attempt_id ?? null,
-      } : null),
-      recovery_attempt_persistence_result: raw?.recovery_attempt_persistence_result ?? null,
-      coverage_result: raw?.coverage_result ?? null,
-      checkpoint_eligible: SAFE_STATES.has(state),
-      current_state: state,
-      exact_reason_code: falseNegativeV0972
-        ? 'partial_valid_output_has_unresolved_fragments' : raw?.exact_reason_code ?? null,
-      next_eligible_action: falseNegativeV0972
-        ? 'recover_unresolved_partial_output_fragments'
-        : raw?.next_eligible_action ?? defaultNextAction(state, raw?.exact_reason_code),
-      recovery_intent: falseNegativeV0972
-        ? 'recover_unresolved_partial_output_fragments'
-        : raw?.recovery_intent ?? raw?.next_eligible_action
-          ?? defaultNextAction(state, raw?.exact_reason_code),
-      recovery_stage: falseNegativeV0972 ? 'fragment_decision_regeneration'
-        : raw?.recovery_stage ?? null,
-      timestamps: { ...(raw?.timestamps ?? {}) },
-      transition_history: Array.isArray(raw?.transition_history) ? raw.transition_history.slice(-64) : [],
-      semantic_event_ids: normalizeIds(raw?.semantic_event_ids).slice(-256),
-      semantic_event_history: Array.isArray(raw?.semantic_event_history)
-        ? raw.semantic_event_history.slice(-128) : [],
-      evidence_adoptions: Array.isArray(raw?.evidence_adoptions)
-        ? raw.evidence_adoptions.filter((item) => item?.origin_attempt_id)
-          .slice(-64) : [],
-      implementation_version: MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION,
-      schema_version: MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION,
-      revision: Number(raw?.revision ?? 0),
-      metrics: { ...(raw?.metrics ?? {}) },
-      lifecycle,
-      recovery_epochs: falseNegativeV0972 ? [...(raw?.recovery_epochs ?? []), {
-        schema_version: 1,
-        reason_code: 'v0.9.72_parser_count_persistence_count_migration',
-        status: 'pending',
-        unresolved_fragment_ids: [...lifecycle.unresolved_fragment_ids],
-        durably_persisted_record_ids: [...lifecycle.durably_persisted_record_ids],
-        migrated_at: Date.now(),
-      }].slice(-16) : [...(raw?.recovery_epochs ?? [])],
-    };
-    const normalized = ledger.obligations[id];
-    normalized.metrics.parser_accepted_records = lifecycle.counts.parser_accepted_candidate_count;
-    normalized.metrics.parser_rejected_fragments = lifecycle.counts.parser_rejected_fragment_count;
-    normalized.metrics.downstream_valid_records = lifecycle.counts.downstream_accepted_candidate_count;
-    normalized.metrics.downstream_rejected_records = lifecycle.counts.downstream_rejected_candidate_count;
-    normalized.metrics.persisted_records = lifecycle.counts.durably_persisted_record_count;
-    normalized.metrics.unresolved_parser_fragments = lifecycle.counts.unresolved_fragment_count;
-    normalized.metrics.unresolved_fragment_ids = [...lifecycle.unresolved_fragment_ids];
-    if (falseNegativeV0972) normalized.metrics.partial_record_verification = {
-      ...(verification ?? {}),
-      verified: true,
-      expected_count: lifecycle.durably_persisted_record_ids.length,
-      verified_count: lifecycle.durably_persisted_record_ids.length,
-      record_ids: [...lifecycle.durably_persisted_record_ids],
-      reconstruction: 'durable_record_ids_migrated_from_v0.9.72',
-    };
-    if (falseNegativeV0972) {
-      ledger.recovery_backlog.push({
-        obligation_id: id, tier: raw?.tier ?? 'unknown', owner: raw?.owner ?? null,
-        source_range: normalizeRange(raw?.source_range ?? raw),
-        source_fingerprint: raw?.source_fingerprint ?? null,
-        unresolved_fragment_ids: [...lifecycle.unresolved_fragment_ids],
-        next_eligible_action: 'recover_unresolved_partial_output_fragments',
-      });
-    }
-    if (id !== key) delete ledger.obligations[key];
-  }
-  ledger.recovery_backlog = [...new Map(ledger.recovery_backlog
-    .map((item) => [item.obligation_id, item])).values()];
-  ledger.normalization_complete = true;
   return ledger;
 }
 
@@ -466,24 +333,6 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
     && (!requestedPersistence || requestedPersistence === 'not_committed')
     ? 'partial_records_committed' : requestedPersistence;
   const lifecyclePatch = { ...(transition.lifecycle ?? {}) };
-  const transitionPersistedCount = Number(transition.metrics?.persisted_records ?? 0);
-  if (transitionPersistedCount > 0 && !(lifecyclePatch.durably_persisted_record_ids?.length)) {
-    lifecyclePatch.durably_persisted_record_ids = legacyIds(`legacy-durable-record:${id}`, transitionPersistedCount);
-    lifecyclePatch.migrated_from_ambiguous_counts = true;
-  }
-  if (Number(transition.metrics?.parser_accepted_records ?? 0) > 0
-    && !(lifecyclePatch.parser_accepted_candidate_ids?.length)) {
-    lifecyclePatch.parser_accepted_candidate_ids = legacyIds(`legacy-parser-accepted:${id}`,
-      transition.metrics.parser_accepted_records);
-    lifecyclePatch.migrated_from_ambiguous_counts = true;
-  }
-  if (Number(transition.metrics?.parser_rejected_fragments ?? 0) > 0
-    && !(lifecyclePatch.parser_rejected_fragment_ids?.length)) {
-    lifecyclePatch.parser_rejected_fragment_ids = transition.metrics.unresolved_fragment_ids
-      ?? legacyIds(`legacy-parser-rejected:${id}`, transition.metrics.parser_rejected_fragments);
-    lifecyclePatch.unresolved_fragment_ids ??= [...lifecyclePatch.parser_rejected_fragment_ids];
-    lifecyclePatch.migrated_from_ambiguous_counts = true;
-  }
   const next = {
     ...prior,
     obligation_id: id,
@@ -880,10 +729,9 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           ?? existing?.source_fingerprint);
       const ownerApplicability = event.owner_applicability
         ?? evidence.owner_applicability ?? {
-          eligible: exactIdentity,
-          classification: exactIdentity ? 'legacy_exact_owner_scope'
-            : 'owner_scope_mismatch',
-          proof_source: 'legacy_exact_lifecycle_identity',
+          eligible: false,
+          classification: 'owner_applicability_proof_missing',
+          proof_source: null,
         };
       const terminalSuccess = ['completed', 'completed_no_candidates', 'completed_repartitioned']
         .includes(evidence.terminal_outcome);
@@ -1225,7 +1073,8 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         },
         metrics: {
           ...(event.metrics ?? {}),
-          candidate_mapping_migration: event.migration ?? 'provider_completion_journal_v2',
+          candidate_mapping_reconciliation: event.reconciliation
+            ?? 'provider_completion_journal',
         },
       });
       break;
@@ -1405,15 +1254,8 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
       ?? ledger.obligations[entry.root_obligation_id];
     if (!obligation) continue;
     const exactAttempt = exactAttemptForEntry(entry, attempts);
-    const legacyExactEvidence = !entry.logical_run_id && Boolean(exactAttempt)
-      && exactAttempt.attempt_id === entry.attempt_id
-      && exactAttempt.source_fingerprint === entry.source_fingerprint
-      && (exactAttempt.child_obligation_id === entry.child_obligation_id
-        || exactAttempt.root_obligation_id === entry.root_obligation_id
-        || exactAttempt.logical_obligation_id === entry.root_obligation_id);
     const sameLogicalRun = !input.logical_run_id
-      || entry.logical_run_id === input.logical_run_id
-      || legacyExactEvidence;
+      || entry.logical_run_id === input.logical_run_id;
     const exactCurrentLineage = obligation.provider_attempt_lineage
       ?.includes(entry.attempt_id) === true;
     if (!sameLogicalRun && !exactCurrentLineage) {
@@ -1979,73 +1821,5 @@ export function reconcileMemorizeProviderRuntime(ledgerValue, providerAudit = nu
     consistent: violations.length === 0,
     violations,
   };
-}
-
-/** Reconstructs exact pending work from v0.9.68 range/provider diagnostics. */
-export function migrateLegacyMemorizeObligations(ledgerValue, input = {}) {
-  const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
-  const tierObligations = input.tier_obligations ?? [];
-  const providerObligations = Object.values(input.provider_obligations ?? {});
-  for (const legacy of tierObligations) {
-    const range = normalizeRange(legacy);
-    if (!range || !legacy.tier) continue;
-    const matchingProvider = providerObligations.find((provider) => provider.tier === legacy.tier
-      && Number(provider.root_source_range?.start) === Number(legacy.source_start_index ?? range.start)
-      && Number(provider.root_source_range?.end) === Number(legacy.source_end_index ?? range.end));
-    const existingCanonical = Object.values(ledger.obligations ?? {}).find((item) =>
-      item.tier === legacy.tier && item.parent_obligation_id == null
-        && Number(item.source_range?.start) === Number(range.start)
-        && Number(item.source_range?.end) === Number(range.end)
-        && item.source_fingerprint);
-    // The canonical fingerprinted obligation supersedes compatibility range
-    // records. Replaying the legacy projection must never create a parallel
-    // `:legacy` authority path or overwrite the canonical action contract.
-    if (existingCanonical && !matchingProvider) continue;
-    const id = matchingProvider?.logical_obligation_id
-      ?? `${legacy.tier}:chat:${range.start}-${range.end}:${matchingProvider?.root_source_fingerprint ?? 'legacy'}`;
-    const safe = legacy.safely_committed === true;
-    const sessionRejected = legacy.tier === 'session' && !safe
-      && Number(input.session_diagnostics?.session_citation_pipeline?.final_malformed ?? 0) > 0;
-    const partial = Number(matchingProvider?.last_response_contract?.rejected_candidate_count
-      ?? matchingProvider?.rejected_fragment_count ?? 0) > 0
-      || matchingProvider?.last_notice_reason === 'partial_valid_output';
-    transitionMemorizeObligation(ledger, {
-      obligation_id: id, logical_run_id: input.logical_run_id, tier: legacy.tier,
-      owner: matchingProvider?.owner ?? null, source_range: range,
-      source_fingerprint: matchingProvider?.root_source_fingerprint ?? null,
-    }, safe ? {
-      current_state: 'durably_committed', persistence_result: 'legacy_safely_committed',
-      coverage_result: 'safely_committed',
-    } : {
-      current_state: 'pending_recovery',
-      exact_reason_code: sessionRejected ? 'invalid_candidate_shape'
-        : partial ? 'partial_valid_output_has_unresolved_fragments'
-          : legacy.reason_code ?? 'legacy_tier_range_not_safely_committed',
-      next_eligible_action: sessionRejected ? 'session_validation_repair_or_bounded_regeneration'
-        : 'resume_exact_obligation',
-      parser_result: partial ? 'partial' : matchingProvider?.terminal_outcome ?? null,
-      downstream_validation_result: sessionRejected ? 'rejected_invalid_candidate_shape' : null,
-      persistence_result: 'not_committed', coverage_result: 'pending',
-      provider_attempt_lineage: matchingProvider?.last_attempt_id ? [matchingProvider.last_attempt_id] : [],
-    });
-  }
-  for (const legacy of input.owner_obligations ?? []) {
-    const range = normalizeRange(legacy);
-    if (!range || !String(legacy.owner ?? '').trim()) continue;
-    const id = `longterm:${String(legacy.owner).trim().toLowerCase()}:${range.start}-${range.end}:${legacy.source_fingerprint ?? 'legacy'}`;
-    transitionMemorizeObligation(ledger, {
-      obligation_id: id, logical_run_id: input.logical_run_id,
-      tier: 'longterm', owner: legacy.owner, source_range: range,
-      source_fingerprint: legacy.source_fingerprint ?? null,
-    }, legacy.safely_committed === true ? {
-      current_state: 'durably_committed', downstream_validation_result: 'accepted',
-      persistence_result: 'legacy_safely_committed', coverage_result: 'safely_committed',
-    } : {
-      current_state: 'pending_recovery',
-      exact_reason_code: legacy.reason_code ?? 'legacy_owner_not_safely_committed',
-      next_eligible_action: 'resume_exact_obligation', coverage_result: 'pending',
-    });
-  }
-  return ledger;
 }
 

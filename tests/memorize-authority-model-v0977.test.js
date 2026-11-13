@@ -15,7 +15,7 @@ import {
   getFirstActionableObligation,
   getNextSourceTraversalRange,
   isAuthoritativeTierRangeSafelyCovered,
-  rebuildMemorizeCompatibilityProjection,
+  rebuildMemorizeManifestProjection,
 } from '../memorize-authority-model.js';
 import {
   readProviderRecoveryWindowState,
@@ -74,7 +74,7 @@ function staleManifest(ledger = canonicalLedger()) {
 }
 
 function rebuilt() {
-  return rebuildMemorizeCompatibilityProjection(staleManifest(), {
+  return rebuildMemorizeManifestProjection(staleManifest(), {
     source_message_count: fixture.source_message_count,
     chunk_size: fixture.chunk_size,
     enabled_tiers: ['longterm', 'session'],
@@ -198,7 +198,7 @@ test('26 projection rebuild makes no provider calls', () => assert.equal(rebuilt
 test('27 projection rebuild makes no persistence calls', () => assert.equal(rebuilt().persistence_calls, 0));
 test('28 projection rebuild preserves attempt history', () => assert.equal(rebuilt().manifest.total_attempt_count, 3));
 test('29 second projection pass is mutation-free', () => {
-  const first = rebuilt(); const second = rebuildMemorizeCompatibilityProjection(first.manifest, {
+  const first = rebuilt(); const second = rebuildMemorizeManifestProjection(first.manifest, {
     source_message_count: fixture.source_message_count, chunk_size: 20, enabled_tiers: ['longterm', 'session'],
   }); assert.equal(second.mutations, 0);
 });
@@ -267,12 +267,10 @@ test('38 source-index gaps project onto contiguous processing offsets without re
   const ledger = createMemorizeObligationLedger('coordinate-gap-run');
   complete(ledger, { ...identity('session', null, 2, 21), logical_run_id: 'coordinate-gap-run' });
   complete(ledger, { ...identity('longterm', 'Taylor', 2, 21), logical_run_id: 'coordinate-gap-run' });
-  const result = rebuildMemorizeCompatibilityProjection({
+  const result = rebuildMemorizeManifestProjection({
     logical_run_id: 'coordinate-gap-run', obligation_ledger: ledger,
   }, {
     source_message_count: 100, chunk_size: 20, enabled_tiers: ['longterm', 'session'],
-    coordinate_ranges: [{ start_offset: 40, end_offset: 59,
-      source_start_index: 2, source_end_index: 21 }],
   });
   assert.deepEqual(result.manifest.committed_ranges.map((range) => [
     range.start_offset, range.end_offset, range.source_start_index, range.source_end_index,
@@ -286,7 +284,7 @@ test('39 a fully covered source-index-gap run advances to finalization', () => {
   const ledger = createMemorizeObligationLedger('coordinate-gap-complete');
   complete(ledger, { ...identity('session', null, 2, 21), logical_run_id: 'coordinate-gap-complete' });
   complete(ledger, { ...identity('longterm', 'Taylor', 2, 21), logical_run_id: 'coordinate-gap-complete' });
-  const result = rebuildMemorizeCompatibilityProjection({
+  const result = rebuildMemorizeManifestProjection({
     logical_run_id: 'coordinate-gap-complete', obligation_ledger: ledger,
     committed_ranges: [{ start_offset: 40, end_offset: 59,
       source_start_index: 2, source_end_index: 21 }],
@@ -300,10 +298,10 @@ for (const staleSession of [false, true]) for (const repeat of [false, true]) {
   test(`property projection is monotonic (stale=${staleSession}, repeat=${repeat})`, () => {
     const manifest = staleManifest();
     if (!staleSession) manifest.tier_coverage.session.committed_ranges = [{ start_offset: 0, end_offset: 59 }];
-    const first = rebuildMemorizeCompatibilityProjection(manifest, {
+    const first = rebuildMemorizeManifestProjection(manifest, {
       source_message_count: 9434, chunk_size: 20, enabled_tiers: ['longterm', 'session'],
     });
-    const result = repeat ? rebuildMemorizeCompatibilityProjection(first.manifest, {
+    const result = repeat ? rebuildMemorizeManifestProjection(first.manifest, {
       source_message_count: 9434, chunk_size: 20, enabled_tiers: ['longterm', 'session'],
     }) : first;
     assert.equal(result.safe_resume_offset, 60);

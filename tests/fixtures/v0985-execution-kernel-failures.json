@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "build": "sme-v0.9.85-retained-evidence-effect-boundary-r1",
+  "logical_run_id": "b1fa5cd9-e351-449f-a4f9-d29674671b4c",
+  "source_message_count": 9434,
+  "safely_committed_message_count": 100,
+  "provider": {
+    "logical_obligations": 53,
+    "physical_attempts": 271,
+    "malformed_responses": 168,
+    "transport_failures": 0,
+    "request_amplification": 5.113207547169812,
+    "native_json_schema_observed": true
+  },
+  "errors": [
+    { "tier": "session", "code": "SME_MISSING_FRAGMENT_RECOVERY_PAYLOAD", "range": [40, 59] },
+    { "tier": "longterm", "code": "SME_PROVIDER_EVIDENCE_INGRESS_REJECTED", "stage": "parser_accepted" },
+    { "tier": "session", "code": "SME_MISSING_FRAGMENT_RECOVERY_PAYLOAD", "range": [80, 99] },
+    { "tier": "session", "code": "SME_PROVIDER_EVIDENCE_INGRESS_REJECTED", "stage": "validation_accepted" },
+    { "tier": "longterm", "code": "SME_PROVIDER_EVIDENCE_INGRESS_REJECTED", "stage": "parser_accepted" }
+  ],
+  "identity_regressions": [
+    { "owner": "Lisette Dumont", "ranges": [[80, 99], [80, 89], [85, 89]], "violation": "parser_disposition_without_provider_response" },
+    { "owner": "Nyx Watson", "ranges": [[160, 179], [170, 179], [175, 179]], "violation": "parser_disposition_without_provider_response" }
+  ]
+}

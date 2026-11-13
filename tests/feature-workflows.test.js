@@ -1672,7 +1672,7 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /checkpointForCommit\.source_traversal_offset = processed/);
   assert.match(settings, /earliestPendingOffset/);
   assert.match(obligationLedger, /completion_gate_satisfied/);
-  assert.match(settings, /rebuildMemorizeCompatibilityProjection/);
+  assert.match(settings, /rebuildMemorizeManifestProjection/);
   assert.match(settings, /getAuthoritativeTierRangeStatus/);
   assert.match(settings, /tier_coverage_incomplete/);
   assert.match(settings, /exactPendingObligation/);

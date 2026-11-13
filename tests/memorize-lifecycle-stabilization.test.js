@@ -19,49 +19,6 @@ import { parseSessionOutput } from '../parsers.js';
 const fixture = JSON.parse(fs.readFileSync(new URL(
   './fixtures/v0972-session-40-59-lifecycle.json', import.meta.url), 'utf8'));
 
-test('v0.9.72 four/one/one/five state migrates to exact actionable identity sets', () => {
-  const raw = {
-    schema_version: 1, implementation_version: 3, normalization_complete: true,
-    logical_run_id: fixture.logical_run_id, controller_exits: [], obligations: {
-      [fixture.obligation_id]: {
-        obligation_id: fixture.obligation_id, logical_run_id: fixture.logical_run_id,
-        tier: 'session', source_range: fixture.source_range,
-        source_fingerprint: fixture.source_fingerprint, current_state: 'blocked',
-        exact_reason_code: 'committed_partial_record_verification_failed',
-        next_eligible_action: 'inspect_or_restore_committed_partial_record',
-        metrics: {
-          parser_accepted_records: fixture.parser_accepted_count,
-          parser_rejected_fragments: fixture.unresolved_fragment_ids.length,
-          downstream_valid_records: 3,
-          persisted_records: 1,
-          unresolved_parser_fragments: fixture.unresolved_fragment_ids.length,
-          unresolved_fragment_ids: fixture.unresolved_fragment_ids,
-          producing_provider_attempt_id: fixture.producing_provider_attempt_id,
-          partial_record_verification: {
-            verified: false, expected_count: 4, verified_count: 1,
-            record_ids: fixture.durably_persisted_record_ids,
-          },
-        },
-      },
-    },
-  };
-  const ledger = ensureMemorizeObligationLedger(raw, fixture.logical_run_id);
-  const obligation = ledger.obligations[fixture.obligation_id];
-  assert.equal(obligation.current_state, 'pending_recovery');
-  assert.equal(obligation.next_eligible_action, 'recover_unresolved_partial_output_fragments');
-  assert.equal(obligation.lifecycle.counts.parser_accepted_candidate_count, 4);
-  assert.equal(obligation.lifecycle.counts.downstream_accepted_candidate_count, 1);
-  assert.equal(obligation.lifecycle.counts.durably_persisted_record_count, 1);
-  assert.equal(obligation.metrics.downstream_valid_records, 1);
-  assert.equal(obligation.metrics.partial_record_verification.verified, true);
-  assert.equal(obligation.metrics.partial_record_verification.expected_count, 1);
-  assert.deepEqual(obligation.lifecycle.durably_persisted_record_ids, fixture.durably_persisted_record_ids);
-  assert.deepEqual(obligation.lifecycle.unresolved_fragment_ids, fixture.unresolved_fragment_ids);
-  assert.equal(ledger.recovery_backlog.length, 1);
-  assert.deepEqual(ledger.recovery_backlog[0].unresolved_fragment_ids, fixture.unresolved_fragment_ids);
-  assert.equal(obligation.recovery_epochs.at(-1).status, 'pending');
-});
-
 test('Resume verifies the one durable ID instead of four parser candidates', () => {
   const stored = [{ id: fixture.durably_persisted_record_ids[0], source_message_indices: [43] }];
   const result = verifyPersistedPartialSessionRecords(stored, {

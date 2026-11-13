@@ -53,37 +53,36 @@ The run manifest retains attempts, elapsed/controller history, source-window
 identity, and bounded progress summaries. It does not independently decide
 whether a tier or owner obligation is complete.
 
-## Derived compatibility state
+## Derived manifest state
 
 `tier_obligations`, `tier_coverage`, `owner_obligations`, committed ranges,
 committed chunks, Resume presentation, chunk presentation, and diagnostic
-summaries are projections. `rebuildMemorizeCompatibilityProjection` rebuilds
+summaries are projections. `rebuildMemorizeManifestProjection` rebuilds
 coverage fields from the obligation ledger. It is pure with respect to provider
 and memory persistence, preserves attempt history, and is idempotent.
 
 Processing offsets are reconstructed from canonical root ranges in source order
-and their durable message counts. Persisted compatibility ranges are not read
-back as a coordinate authority; an explicit coordinate map is accepted only at
-the legacy migration boundary when canonical range identity is unavailable.
+and their durable message counts. Persisted derived ranges are not read back as
+a coordinate authority.
 
-Compatibility fields exist for old checkpoints, export stability, and UI
-display. Their permitted writers are migration followed by the projection
-rebuild. They are not valid inputs to provider dispatch, persistence,
-checkpoint advancement, controller-exit classification, or finalization gates.
+Derived fields exist for export and UI display. Their only writer is the
+projection rebuild. They are not valid inputs to provider dispatch,
+persistence, checkpoint advancement, controller-exit classification, or
+finalization gates.
 
 ## Resume reconciliation order
 
 Before selecting work, Resume performs this order:
 
 1. Load the checkpoint and manifest.
-2. Normalize and migrate schemas.
-3. Restore exact leaf IDs from matching journal evidence.
+2. Require the current execution-kernel schema.
+3. Restore exact leaf IDs from matching current-run journal evidence.
 4. Reconcile interrupted physical attempts.
-5. Migrate terminal provider completions.
+5. Reconcile terminal provider completions.
 6. Reconcile complete terminal evidence directly to the exact leaf.
 7. Aggregate terminal child obligations.
 8. Retire recovery windows whose canonical roots are terminal.
-9. Rebuild compatibility projections from the ledger.
+9. Rebuild manifest projections from the ledger.
 10. Derive the contiguous safe offset and select exactly one of:
    actionable recovery, normal source traversal, blocked work, or finalization.
 11. Only then open a transaction or dispatch a provider request.
@@ -97,7 +96,7 @@ Before selecting work, Resume performs this order:
 3. **Downstream:** parser/validation disposition, staged candidates,
    persistence result, durable IDs, and candidate mappings.
 4. **Coverage:** verified terminal leaf receipt, derived parent aggregation,
-   compatibility projection, and checkpoint.
+   manifest projection, and checkpoint.
 
 A later boundary cannot acknowledge an earlier one on a caller's assertion.
 Journal ledger/manifest acknowledgements are written only from a verified
@@ -110,7 +109,7 @@ If no obligation is pending and source messages remain, the action is always
 ## Invariants
 
 - Canonical terminal state is monotonic.
-- A compatibility projection cannot downgrade committed work or promote
+- A manifest projection cannot downgrade committed work or promote
   uncommitted work.
 - Every enabled tier must be terminal before a source range is generally
   committed.
@@ -121,7 +120,7 @@ If no obligation is pending and source messages remain, the action is always
 - Explicit no-update requires parser or validation evidence.
 - A retry requires a typed prior disposition and recovery action.
 - Durable records retain exact candidate mappings or an explicit alias or
-  migration limitation.
+  explicit current-schema proof.
 - A terminal root retires active recovery intent without deleting historical
   attempt or durable-record evidence.
 - Reconciliation and projection repair make zero provider calls and zero memory
@@ -129,11 +128,10 @@ If no obligation is pending and source messages remain, the action is always
 - Terminal evidence reconciliation never manufactures candidate mappings and
   never regresses an already terminal obligation.
 
-## Migration behavior
+## Clean-start behavior
 
-Schema migrations may use old compatibility fields only to bootstrap missing
-canonical identities. Once a ledger exists, journal and ledger evidence wins.
-Journal-backed candidate mappings are restored only when both the durable record
-ID and candidate ID are explicitly present. Proven historical transition gaps
-move to reconciled historical observations; unproven current-runtime violations
-remain active and fail integrity checks.
+There is no old-schema bootstrap. A run starts with the current execution
+kernel and exact canonical identities. Journal-backed candidate mappings are
+restored only when both the durable record ID and candidate ID are explicitly
+present. Current-run transition gaps remain active and fail integrity checks;
+an incompatible saved run must be cleared instead of translated in place.

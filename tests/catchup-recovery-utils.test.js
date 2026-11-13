@@ -17,10 +17,10 @@ import {
   deriveFinalizationAvailability,
   invalidatePrematureFinalization,
 } from '../catchup-recovery-utils.js';
-import { createMemorizeObligationLedger } from '../memorize-obligation-ledger.js';
+import { createMemorizeExecutionAggregate } from '../memorize-execution-kernel.js';
 
 test('Resume presentation cannot claim resumable when pending work has no safe action', () => {
-  const ledger = createMemorizeObligationLedger('run');
+  const ledger = createMemorizeExecutionAggregate('run');
   ledger.obligations['session:chat:100-119:test'] = {
     obligation_id: 'session:chat:100-119:test', logical_run_id: 'run', tier: 'session', owner: null,
     source_range: { start: 100, end: 119, message_count: 20 }, provider_attempt_lineage: [],
@@ -83,6 +83,8 @@ test('provider recovery-budget pause is resumable without becoming an unresolved
 
 test('incomplete tier coverage invalidates premature finalization before resume', () => {
   let manifest = ensureCatchUpRunManifest({ run_id: 'run-incomplete', source_message_count: 9434 });
+  assert.equal(manifest.obligation_ledger.logical_run_id, 'run-incomplete');
+  assert.equal(manifest.obligation_ledger.execution_kernel.schema_version, 1);
   manifest = recordCatchUpOwnerRange(manifest, 'Alex Mercer', {
     start_offset: 0, end_offset: 19, source_start_index: 0, source_end_index: 19,
   }, { safelyCommitted: true, terminalOutcome: 'completed' });

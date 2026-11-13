@@ -4,6 +4,7 @@ import { getMemorizeActionContract, projectMemorizeObligationLedger }
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import { resumeNoProgressBlockIsCurrent, snapshotMemorizeResumeProgress }
   from './memorize-resume-progress.js';
+import { projectMemorizeKernelStatus } from './memorize-execution-kernel.js';
 
 const terminalTransactionStates = new Set([
   'committed', 'rolled_back', 'commit_failed_with_exact_state',
@@ -14,8 +15,15 @@ const terminalTransactionStates = new Set([
 export function deriveMemorizeRecoveryAuthority(input = {}) {
   const checkpoint = input.checkpoint ?? null;
   const ledger = input.ledger ?? null;
+  const kernelRequired = checkpoint != null || input.require_execution_kernel === true;
+  const kernelPresent = Boolean(ledger?.execution_kernel);
   const projection = input.projection ?? projectMemorizeObligationLedger(ledger);
-  const pending = projection.next_eligible_obligation ?? null;
+  const kernelStatus = kernelPresent
+    ? projectMemorizeKernelStatus(ledger, {
+      controller_active: input.controller_heartbeat?.terminal === false,
+    }) : null;
+  const pending = kernelStatus?.exact_pending_obligation
+    ?? projection.next_eligible_obligation ?? null;
   const providerAudit = input.provider_audit ?? null;
   const heartbeat = input.controller_heartbeat ?? null;
   const transaction = input.transaction_lifecycle ?? null;
@@ -40,10 +48,10 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
   const finalizationPending = !pending && !sourceTraversalPending
     && checkpoint != null && !['completed', 'terminal_failure'].includes(
       input.checkpoint_status ?? checkpoint.status);
-  const preliminaryAction = stageEligibility?.blocked === false
+  const preliminaryAction = kernelStatus?.next_action ?? (stageEligibility?.blocked === false
     ? stageEligibility.eligible_action : pending?.next_eligible_action
       ?? (sourceTraversalPending ? 'continue_source_traversal'
-        : finalizationPending ? 'continue_finalization' : null);
+        : finalizationPending ? 'continue_finalization' : null));
   const transactionContradiction = transaction?.state === 'active' && !liveController
     || terminalTransactionStates.has(transaction?.state) && input.checkpoint_status === 'in_progress';
   const activeTransaction = transaction?.state === 'active' ? transaction : null;
@@ -55,8 +63,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
   // The retained-evidence planner owns the action whenever it found an exact,
   // executable plan. Recovery-window projections may describe the same work,
   // but cannot override that canonical decision with a stale adoption action.
-  const exactAction = pending && base.eligible === true
-    ? base.next_eligible_action : preliminaryAction;
+  const exactAction = kernelStatus || !pending ? preliminaryAction : null;
   const blockers = [];
   const currentProgressSnapshot = snapshotMemorizeResumeProgress({
     checkpoint, ledger, provider_audit: providerAudit,
@@ -66,6 +73,10 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     currentProgressSnapshot)) blockers.push({
     reason_code: 'resume_no_progress_same_action',
     evidence: checkpoint.resume_progress,
+  });
+  if (kernelRequired && !kernelPresent) blockers.push({
+    reason_code: 'execution_kernel_required',
+    evidence: null,
   });
   if (transactionContradiction) blockers.push({
     reason_code: 'transaction_checkpoint_lifecycle_requires_repair',
@@ -82,16 +93,16 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     evidence: { attempted_stages: stageEligibility.attempted_stages,
       exhausted_stages: stageEligibility.exhausted_stages },
   });
-  if (!blockers.length && pending && base.eligible !== true) blockers.push({
-    reason_code: base.reason_code ?? 'no_executable_recovery_action', evidence: null,
+  if (!blockers.length && pending && kernelStatus && kernelStatus.action_executable !== true) blockers.push({
+    reason_code: kernelStatus.exact_blocker ?? 'no_executable_canonical_action', evidence: null,
   });
   const actionContract = getMemorizeActionContract(exactAction);
   const eligible = blockers.length === 0 && Boolean(exactAction)
-    && (sourceTraversalPending || finalizationPending || base.eligible === true
+    && (sourceTraversalPending || finalizationPending || kernelStatus?.action_executable === true
       || actionContract != null);
   const providerCallPermitted = eligible && (sourceTraversalPending || finalizationPending
-    || actionContract?.provider_call_required === true
-    || base.provider_call_required === true);
+    || kernelStatus?.provider_call_required === true
+    || actionContract?.provider_call_required === true);
   const terminalFailure = ['terminal_failure', 'failed'].includes(
     input.checkpoint_status ?? checkpoint?.status);
   const state = liveController ? 'actively_running'
@@ -116,6 +127,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     orphaned_provider_attempt_ids: orphanedRunning.map((item) => item.attempt_id),
     provider_attempt_owned_by_live_controller: ownedRunning.length > 0,
     base_resume_eligibility: base,
+    canonical_kernel_status: kernelStatus,
     invariants: {
       closed_controller_owns_no_running_attempt: !orphanedRunning.length,
       rolled_back_transaction_has_no_in_progress_checkpoint: !(

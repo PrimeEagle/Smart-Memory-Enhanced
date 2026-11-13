@@ -119,7 +119,7 @@ export function assessRetainedEvidenceOwnerApplicability(entry = {}, input = {})
           : exactOwner ? 'owner_applicability_unverified' : 'owner_scope_mismatch',
     proof_source: semantic.available ? 'parsed_record_target_entities'
       : explicit ? 'persisted_applicability_decision'
-        : exactOwner ? 'legacy_exact_request_identity' : 'missing_owner_identity',
+        : exactOwner ? 'request_owner_identity_only' : 'missing_owner_identity',
     explicit_classification: explicitClassification,
     semantic_record_evidence: semantic,
     reason_codes: explicitlyInapplicable

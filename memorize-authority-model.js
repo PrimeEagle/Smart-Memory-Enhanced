@@ -343,10 +343,10 @@ function projectionFields(manifest = {}) {
 }
 
 /**
- * Rebuilds every mutable compatibility coverage field from the canonical ledger.
+ * Rebuilds every derived manifest coverage field from the canonical ledger.
  * This function has no provider or persistence dependency and is idempotent.
  */
-export function rebuildMemorizeCompatibilityProjection(manifestValue = {}, options = {}) {
+export function rebuildMemorizeManifestProjection(manifestValue = {}, options = {}) {
   const manifest = clone(manifestValue ?? {});
   const ledger = ensureMemorizeObligationLedger(
     manifest.obligation_ledger, manifest.logical_run_id);
@@ -376,23 +376,11 @@ export function rebuildMemorizeCompatibilityProjection(manifestValue = {}, optio
       canonicalOffset = mapped.end_offset + 1;
       return mapped;
     });
-  // Explicit coordinate ranges are accepted only as a migration fallback for
-  // a root whose canonical message-count identity is unavailable. Persisted
-  // compatibility projections are deliberately not read here.
-  const migrationCoordinateRanges = (options.coordinate_ranges ?? []).map((item) => ({
-    start_offset: Number(item.start_offset ?? item.start),
-    end_offset: Number(item.end_offset ?? item.end),
-    source_start_index: Number(item.source_start_index ?? item.start),
-    source_end_index: Number(item.source_end_index ?? item.end),
-  })).filter((item) => Object.values(item).every(Number.isInteger));
   const projectCoordinates = (sourceRange) => {
     if (!sourceRange) return null;
     const matched = canonicalCoordinateRanges.find((item) =>
       item.source_start_index === sourceRange.source_start_index
-      && item.source_end_index === sourceRange.source_end_index)
-      ?? migrationCoordinateRanges.find((item) =>
-        item.source_start_index === sourceRange.source_start_index
-        && item.source_end_index === sourceRange.source_end_index);
+      && item.source_end_index === sourceRange.source_end_index);
     return matched ? rangeOf(matched) : sourceRange;
   };
   const tierGroups = Object.fromEntries(TIERS.map((tier) => [tier,
@@ -453,8 +441,7 @@ export function rebuildMemorizeCompatibilityProjection(manifestValue = {}, optio
     const currentRanges = generalRanges.filter((range) => range.end_offset >= resumeOffset)
       .map((range) => {
         const startOffset = Math.max(range.start_offset, resumeOffset);
-        const coordinate = canonicalCoordinateRanges.find((item) => item.start_offset === startOffset)
-          ?? migrationCoordinateRanges.find((item) => item.start_offset === startOffset);
+        const coordinate = canonicalCoordinateRanges.find((item) => item.start_offset === startOffset);
         return { ...range, start_offset: startOffset,
           source_start_index: coordinate?.source_start_index
             ?? (startOffset === range.start_offset ? range.source_start_index : startOffset),

@@ -1,8 +1,8 @@
 /**
  * Canonical reason vocabulary for Memorize Chat lifecycle outcomes.
  *
- * Durable state stores the stable `code`; UI copy and legacy exception names
- * are projections. New recovery paths must register a reason here instead of
+ * Durable state stores the stable `code`; UI copy is a projection. New
+ * recovery paths must register a reason here instead of
  * inventing another flag on an Error object.
  */
 
@@ -42,19 +42,9 @@ export const MEMORIZE_REASONS = Object.freeze(Object.fromEntries(
   DEFINITIONS.map((definition) => [definition.code, definition]),
 ));
 
-const LEGACY_CODE_ALIASES = Object.freeze({
-  SME_RECOVERY_BUDGET_PAUSE: 'recovery_request_budget_reached_with_pending_children',
-  SME_MALFORMED_PROVIDER_OUTPUT: 'malformed_provider_output',
-  SME_RECOVERY_PATH_EXHAUSTED: 'recovery_path_exhausted',
-  SME_DOWNSTREAM_VALIDATION_PENDING: 'downstream_validation_pending',
-  SME_CATCHUP_TRANSACTION_COMMIT_FAILED: 'catchup_transaction_commit_failed',
-  SME_CATCHUP_TRANSACTION_ROLLBACK_FAILED: 'catchup_transaction_rollback_failed',
-});
-
 export function normalizeMemorizeReasonCode(value, fallback = 'internal_exception') {
   const raw = String(value ?? '').trim();
   if (!raw) return fallback;
-  if (LEGACY_CODE_ALIASES[raw]) return LEGACY_CODE_ALIASES[raw];
   return raw.toLowerCase().replace(/^sme_/, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || fallback;
 }
 

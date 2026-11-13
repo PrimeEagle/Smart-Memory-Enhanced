@@ -27,8 +27,8 @@ export function isMemorizeOutcome(value) {
     && typeof value?.reason_code === 'string';
 }
 
-/** Compatibility adapter while tier internals are migrated away from throws. */
-export function memorizeOutcomeFromLegacyError(error, overrides = {}) {
+/** Converts one current execution exception into the canonical run outcome. */
+export function memorizeOutcomeFromException(error, overrides = {}) {
   if (isMemorizeOutcome(error)) return error;
   const diagnostics = error?.sme_request_diagnostics ?? {};
   const reasonCode = normalizeMemorizeReasonCode(
@@ -36,7 +36,7 @@ export function memorizeOutcomeFromLegacyError(error, overrides = {}) {
       ?? error?.sme_reason_code ?? error?.code,
     'internal_exception',
   );
-  const expectedPause = error?.sme_operational_pause === true || error?.code === 'SME_RECOVERY_BUDGET_PAUSE';
+  const expectedPause = error?.sme_operational_pause === true;
   const expectedBlock = error?.sme_recovery_blocked === true;
   const kind = overrides.kind ?? (expectedPause ? 'paused' : expectedBlock ? 'blocked' : 'failed');
   return createMemorizeOutcome({

@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.86] - 2026-11-13
+
+### Added
+
+- Added a canonical Memorize Chat execution kernel around the existing
+  obligation aggregate. One idempotent provider-completion command now owns the
+  exact run, frontier leaf, physical attempt, response, parser outcome,
+  validation outcome, durable candidate mappings, recovery capsule, and
+  terminal disposition.
+- Added a journaled unit-of-work boundary for record persistence, aggregate
+  revision, command receipt, and checkpoint advancement. Replayed commands are
+  no-ops, and checkpoint updates that cross a nonterminal frontier leaf fail
+  closed.
+- Added durable, privacy-preserving recovery capsules. They retain exact source
+  range/fingerprint, accepted fingerprints, durable record mappings, rejected
+  fragment identities, provider profile, payload-availability flags, and a
+  deterministic source-regeneration recipe without exporting private provider
+  text.
+- Added one canonical kernel status projection used by recovery authority,
+  Resume, UI, and diagnostics, plus a non-throwing post-commit diagnostic
+  observer and compact normalized diagnostic tables/events.
+- Added an adaptive provider policy with native structured JSON as the primary
+  Session/Long-Term protocol where supported, a three-transmission leaf limit,
+  a run amplification guard, measured recovery-stage results, and conservative
+  source-repartition eligibility.
+- Added a redacted five-error regression fixture and deterministic tests for exact
+  leaf/attempt identity, missing private payload recovery, duplicate/late
+  completion, crash replay, checkpoint safety, parent/child frontier rules,
+  clean-start initialization, observer isolation, native JSON, a 200-message run,
+  and a synthetic 9,434-message run.
+- Documented the characterized failure call graph, competing writers, target
+  component boundaries, canonical model, commands, invariants, transaction
+  boundary, crash/replay behavior, clean-start policy, and status derivation in
+  `docs/memorize-chat-execution-kernel.md`.
+
+### Changed
+
+- Session and Long-Term successful completion paths now enter through the same
+  atomic kernel hook instead of independently emitting parser, validation,
+  staging, and persistence transitions.
+- Every new Memorize Chat run creates its execution kernel at manifest creation.
+  Controller-managed extraction fails closed if the kernel completion hook is
+  absent; there is no legacy controller authority fallback.
+- Providers with native schema support now receive a simple JSON-record
+  contract on the initial request rather than first traversing the dense tagged
+  modifier grammar. Compatibility providers retain the tagged parser and its
+  conservative deterministic normalizers.
+- Production malformed-output recovery is bounded to two additional
+  transmissions after the original request, switches representation for
+  structural failures, and no longer repartitions a source range merely
+  because tags or modifiers were malformed. Context, source complexity, or
+  output-size evidence is required.
+- Compatibility providers without native schema enforcement now switch from a
+  failed tagged contract to a plain, simple JSON-record contract within the
+  same bounded recovery epoch. They no longer spend the second recovery call
+  repeating the source prompt in another tagged representation.
+- Resume authority now lets the committed kernel projection outrank retained
+  planner snapshots and recovery-window guesses. “Resume available” requires
+  the selected action to be executable from durable inputs.
+- Diagnostic exports now include a compact kernel projection with normalized
+  obligation, attempt, and recovery-capsule tables; bounded semantic events;
+  invariant results; and explicit private/source-backed recovery availability.
+- The live exception-to-outcome boundary now uses canonical current reason
+  codes directly. The former legacy-named adapter and recovery-budget alias
+  were removed, so controller, UI, and diagnostic status no longer depend on
+  compatibility terminology.
+
+### Fixed
+
+- Fixed Session 40–59 and 80–99 becoming permanently blocked when accepted
+  records and rejected-fragment IDs survived but private rejected text did not.
+  Resume now reloads and fingerprint-verifies the exact source window,
+  regenerates only that range, excludes already durable candidates/records,
+  and deduplicates the replacement result.
+- Fixed parser or validation evidence being attached to a root or sibling leaf
+  while the physical response belonged to a recovery child. Atomic completion
+  verifies one exact attempt/leaf pair and locally supplies any missing earlier
+  projection stages in legal order.
+- Fixed fully rejected or partially accepted validation outcomes inheriting the
+  entire parser-accepted candidate set as downstream-accepted. The kernel now
+  preserves the validator's explicit accepted subset and cannot assign one
+  candidate conflicting accepted/rejected terminal dispositions.
+- Fixed a late provider completion being correctly rejected by the kernel but
+  then promoted to an application exception by the tier adapter. The first late
+  callback is now recorded as a bounded diagnostic observation without
+  reopening the terminal leaf; replaying that command is a no-op.
+- Fixed contradictory blocked/resumable/controller/UI states. Durable blockers
+  now outrank inferred plans, expected malformed output is a typed recovery
+  outcome, and only unexpected invariant or persistence failures remain current
+  application errors.
+- Removed versioned Memorize Chat checkpoint migrations, legacy obligation
+  reconstruction, legacy recovery authority fallback, and their version-pinned
+  migration fixtures and validators. This project now supports only the current
+  execution-kernel schema; incompatible saved runs must be discarded with
+  Fresh Start rather than repaired in place.
+- Provider-completion journals now reject both non-current schema versions and
+  incomplete current-schema containers without rewriting either input. The
+  resulting blocker explicitly requires Fresh Start.
+
+### Recovery policy
+
+- Crash recovery remains supported for runs created by the current schema.
+  Provider completion replay, stale-controller settlement, exact source-backed
+  regeneration, and idempotent record persistence operate only through the
+  current execution kernel.
+- Private response bodies remain local and optional. Source-backed recovery is
+  blocked only when neither the private payload nor a fingerprint-matching
+  source window is available.
+
 ## [0.9.85] - 2026-11-08
 
 ### Added

@@ -5,7 +5,7 @@ import {
   completedMemorizeOutcome,
   createMemorizeOutcome,
   isMemorizeOutcome,
-  memorizeOutcomeFromLegacyError,
+  memorizeOutcomeFromException,
 } from '../memorize-outcome.js';
 import { getMemorizeReason, normalizeMemorizeReasonCode } from '../memorize-reasons.js';
 
@@ -22,16 +22,16 @@ test('canonical outcomes carry one stable reason and next action', () => {
   assert.equal(Object.isFrozen(outcome), true);
 });
 
-test('legacy operational-pause errors normalize at the compatibility boundary', () => {
+test('operational-pause exceptions normalize at the execution boundary', () => {
   const error = Object.assign(new Error('bounded recovery pause'), {
-    code: 'SME_RECOVERY_BUDGET_PAUSE',
+    code: 'recovery_request_budget_reached_with_pending_children',
     sme_operational_pause: true,
     sme_request_diagnostics: {
       root_obligation_id: 'longterm:a:1-20',
       next_eligible_recovery_action: 'split_range',
     },
   });
-  const outcome = memorizeOutcomeFromLegacyError(error);
+  const outcome = memorizeOutcomeFromException(error);
   assert.equal(outcome.kind, 'paused');
   assert.equal(outcome.reason_code, 'recovery_request_budget_reached_with_pending_children');
   assert.equal(outcome.next_action, 'split_range');

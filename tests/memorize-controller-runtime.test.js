@@ -10,7 +10,8 @@ import {
   registerMemorizeCleanup,
   trackMemorizeTransaction,
 } from '../memorize-controller-runtime.js';
-import { projectMemorizeObligationLedger, recordMemorizeControllerExit } from '../memorize-obligation-ledger.js';
+import { createMemorizeObligationLedger, projectMemorizeObligationLedger,
+  recordMemorizeControllerExit } from '../memorize-obligation-ledger.js';
 import {
   replayAutomaticPartialSessionRecovery,
   replayPartialSessionResume,
@@ -111,8 +112,7 @@ test('rollback failure is explicit, later cleanup still runs, and no active lock
 
 test('controller exits deduplicate by invocation and cannot leave an exited attempt unaccounted', () => {
   const runtime = createMemorizeControllerRuntime({ invocation_id: 'same', logical_run_id: 'run', attempt_number: 2 });
-  const ledger = { schema_version: 1, implementation_version: 1, normalization_complete: true,
-    logical_run_id: 'run', obligations: {}, controller_exits: [], created_at: 1, updated_at: 1 };
+  const ledger = createMemorizeObligationLedger('run', 1);
   const exit = buildMemorizeControllerExit(runtime, { reason_code: 'manual_cancel', classification: 'manually_cancelled' });
   recordMemorizeControllerExit(ledger, exit);
   recordMemorizeControllerExit(ledger, exit);
@@ -122,8 +122,7 @@ test('controller exits deduplicate by invocation and cannot leave an exited atte
 
 test('a later internal exception atomically supersedes a provisional pause exit', () => {
   const runtime = createMemorizeControllerRuntime({ invocation_id: 'priority', logical_run_id: 'run' });
-  const ledger = { schema_version: 1, implementation_version: 3, normalization_complete: true,
-    logical_run_id: 'run', obligations: {}, controller_exits: [], created_at: 1, updated_at: 1 };
+  const ledger = createMemorizeObligationLedger('run', 1);
   const provisional = buildMemorizeControllerExit(runtime, {
     classification: 'downstream_validation_pending', reason_code: 'recovery_stage_ladder_exhausted',
     resumable: true, next_eligible_action: 'fragment_decision_regeneration',

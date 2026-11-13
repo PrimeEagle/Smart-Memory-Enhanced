@@ -227,7 +227,7 @@ test('24 closed semantic success has no provider-running obligation', () => {
 });
 test('25 terminal journal evidence closes live health', () => {
   const entry = { ...fixture.journal[0], live_health_event_id: 'health-1', completed_at: 10 };
-  const metadata = { provider_completion_journal: { schema_version: 2,
+  const metadata = { provider_completion_journal: { schema_version: 5,
     entries: { [entry.attempt_id]: entry }, order: [entry.attempt_id] },
     live_memory_health: { recent_extraction_events: [{ event_id: 'health-1', tier: 'session', owner: null,
       terminal_health: 'running', response_received: true, persistence: 'not_attempted' }] } };
@@ -236,7 +236,7 @@ test('25 terminal journal evidence closes live health', () => {
 });
 test('26 no running live health remains after journal repair', () => {
   const entry = { ...fixture.journal[1], live_health_event_id: 'health-2' };
-  const metadata = { provider_completion_journal: { schema_version: 2,
+  const metadata = { provider_completion_journal: { schema_version: 5,
     entries: { [entry.attempt_id]: entry }, order: [entry.attempt_id] },
     live_memory_health: { recent_extraction_events: [{ event_id: 'health-2', tier: 'session', owner: null,
       terminal_health: 'running' }] } };
@@ -301,7 +301,7 @@ for (const [index, parser, validation] of [
   ['partial', 'parser_partially_accepted', 'validation_partially_accepted'],
   ['rejected', 'parser_rejected', null],
 ]) test(`property lifecycle combination ${index} remains canonical`, () => {
-  const ledger = createMemorizeObligationLedger('property'); const id = identity(`property:${index}`);
+  const ledger = createMemorizeObligationLedger('run'); const id = identity(`property:${index}`);
   applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: `a:${index}` });
   applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_response_received', provider_attempt_id: `a:${index}` });
   assert.equal(applyMemorizeLifecycleEvent(ledger, id, { type: parser }).applied, true);

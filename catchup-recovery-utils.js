@@ -1,7 +1,5 @@
-import {
-  ensureMemorizeObligationLedger,
-  projectMemorizeObligationLedger,
-} from './memorize-obligation-ledger.js';
+import { projectMemorizeObligationLedger } from './memorize-obligation-ledger.js';
+import { ensureMemorizeExecutionAggregate } from './memorize-execution-kernel.js';
 
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
 export function normalizeCatchUpCheckpoint(checkpoint) {
@@ -308,7 +306,7 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
     terminal_status: prior.terminal_status ?? 'in_progress',
     terminal_reason_code: prior.terminal_reason_code ?? null,
   };
-  manifest.obligation_ledger = ensureMemorizeObligationLedger(
+  manifest.obligation_ledger = ensureMemorizeExecutionAggregate(
     prior.obligation_ledger, manifest.logical_run_id);
   return manifest;
 }
@@ -609,7 +607,6 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
     secondary_finalization_failures: (checkpoint.secondary_finalization_failures ?? []).slice(-16),
     stale_lease_callbacks: (checkpoint.stale_lease_callbacks ?? []).slice(-32),
     authoritative_recovery: authoritativeRecovery,
-    controller_lease_recovery_migration: checkpoint.controller_lease_recovery_migration ?? null,
     cleanup_warnings: (checkpoint.cleanup_warnings ?? []).slice(-16),
     authoritative_obligation_ledger: obligationProjection,
     exact_pending_obligation: exactPending ?? null,

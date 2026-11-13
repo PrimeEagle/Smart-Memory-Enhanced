@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   createMemorizeObligationLedger,
-  migrateLegacyMemorizeObligations,
+  ensureMemorizeObligationLedger,
   projectMemorizeObligationLedger,
   reconcileMemorizeProviderRuntime,
   reconcileMemorizeRunningObligations,
@@ -32,15 +32,22 @@ import {
 const sessionId = 'session:chat:640-659:fnv1a-4ee9852e';
 const sessionInput = { obligation_id: sessionId, logical_run_id: 'run', tier: 'session', source_range: { start: 640, end: 659 }, source_fingerprint: 'fnv1a-4ee9852e' };
 
-test('v0.9.71 stale provider-running state repairs to exact pending work and preserves partial persistence', () => {
+test('current-schema interrupted provider state repairs to exact pending work', () => {
   const ledger = createMemorizeObligationLedger('run');
-  ledger.implementation_version = 2;
   ledger.obligations[sessionId] = {
     ...sessionInput, current_state: 'provider_running', checkpoint_eligible: false,
     exact_reason_code: 'provider_request_in_progress', next_eligible_action: null,
     persistence_result: 'not_committed', provider_attempt_lineage: ['provider-188', 'provider-192'],
     metrics: { persisted_records: 1, unresolved_parser_fragments: 2,
       producing_provider_attempt_id: 'provider-188' }, timestamps: {},
+    lifecycle: {
+      parser_accepted_candidate_ids: ['candidate-1'],
+      parser_rejected_fragment_ids: ['fragment-1', 'fragment-2'],
+      downstream_accepted_candidate_ids: ['candidate-1'],
+      durably_persisted_record_ids: ['record-1'],
+      durable_record_candidate_map: { 'record-1': 'candidate-1' },
+      unresolved_fragment_ids: ['fragment-1', 'fragment-2'],
+    },
   };
   const repaired = reconcileMemorizeRunningObligations(ledger, { recent_attempts: [
     { attempt_id: 'provider-192', logical_obligation_id: sessionId, terminal_outcome: 'provider_response_malformed' },
@@ -54,12 +61,26 @@ test('v0.9.71 stale provider-running state repairs to exact pending work and pre
   assert.equal(projectMemorizeObligationLedger(repaired.ledger).invariants.valid, true);
 });
 
+test('old obligation-ledger schemas fail closed and require Fresh Start', () => {
+  assert.throws(() => ensureMemorizeObligationLedger({
+    schema_version: 1, implementation_version: 2, normalization_complete: true,
+    logical_run_id: 'old-run', obligations: {},
+  }, 'old-run'), (error) => error.code === 'SME_MEMORIZE_SCHEMA_UNSUPPORTED'
+    && error.sme_reason_code === 'fresh_start_required');
+});
+
 test('provider-running requires a registered physical attempt and partial persistence never downgrades', () => {
   const ledger = createMemorizeObligationLedger('run');
   transitionMemorizeObligation(ledger, sessionInput, {
     current_state: 'pending_recovery', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
     next_eligible_action: 'recover_unresolved_partial_output_fragments',
     persistence_result: 'partial_records_committed', metrics: { persisted_records: 1 },
+    lifecycle: {
+      parser_accepted_candidate_ids: ['candidate-1'],
+      downstream_accepted_candidate_ids: ['candidate-1'],
+      durably_persisted_record_ids: ['record-1'],
+      durable_record_candidate_map: { 'record-1': 'candidate-1' },
+    },
   });
   const refused = transitionMemorizeObligation(ledger, sessionInput, {
     current_state: 'provider_running', persistence_result: 'not_committed',
@@ -198,31 +219,6 @@ test('automatic recovery in progress accounts for the failed obligation without 
   assert.equal(summary.coverage.terminal_failed_obligations, 0);
 });
 
-test('v0.9.68 contradiction migrates to the exact Session obligation only', () => {
-  const ledger = migrateLegacyMemorizeObligations(null, {
-    logical_run_id: 'run',
-    tier_obligations: [
-      { tier: 'longterm', start_offset: 640, end_offset: 659, source_start_index: 640, source_end_index: 659, safely_committed: true },
-      { tier: 'session', start_offset: 640, end_offset: 659, source_start_index: 640, source_end_index: 659, safely_committed: false, reason_code: 'session_range_not_safely_committed' },
-    ],
-    owner_obligations: [
-      { tier: 'longterm', owner: 'Aster Graves', start_offset: 640, end_offset: 659, source_start_index: 640, source_end_index: 659, source_fingerprint: 'fnv1a-4ee9852e', safely_committed: true },
-    ],
-    provider_obligations: {
-      [sessionId]: { logical_obligation_id: sessionId, tier: 'session', root_source_range: { start: 640, end: 659 }, root_source_fingerprint: 'fnv1a-4ee9852e', terminal_outcome: 'completed', last_notice_reason: 'partial_valid_output', last_attempt_id: 'provider-815' },
-    },
-    session_diagnostics: { session_citation_pipeline: { final_malformed: 1 } },
-  });
-  const result = projectMemorizeObligationLedger(ledger);
-  assert.equal(result.pending_obligation_count, 1);
-  assert.equal(result.pending_obligations[0].tier, 'session');
-  assert.equal(result.pending_obligations[0].exact_reason_code, 'invalid_candidate_shape');
-  assert.equal(result.pending_obligations[0].provider_attempt_lineage[0], 'provider-815');
-  assert.equal(result.tier_coverage.longterm.coverage_complete, true);
-  assert.equal(result.pending_obligations.some((item) => item.owner === 'Aster Graves'), false);
-  assert.equal(result.next_eligible_obligation.tier, 'session');
-});
-
 test('representation-only candidate repair requires no provider call', () => {
   const first = 'A'.repeat(120) + '.';
   const second = 'B'.repeat(120) + '.';
@@ -316,7 +312,7 @@ test('9,434-message replay automatically recovers frequent partial Session outpu
   assert.equal(script.providerMetrics.fragment_recovery_success_rate, 1);
 });
 
-test('v0.9.71 exhaustion reload resumes only exact fragments and continues 100 to 120-139', () => {
+test('current-schema exhaustion reload resumes only exact fragments and continues 100 to 120-139', () => {
   const fixture = JSON.parse(fs.readFileSync(new URL(
     './fixtures/memorize-exhausted-session-100-119.json', import.meta.url), 'utf8'));
   const result = replayExhaustedSessionRecoveryResume();

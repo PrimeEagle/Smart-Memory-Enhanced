@@ -1449,37 +1449,6 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
   return result;
 }
 
-/** Restores exact leaf identity only from the matching durable completion journal entry. */
-export function reconcileProviderAttemptIdentitiesFromJournal(metadata, journalValue, at = Date.now()) {
-  if (!metadata) return { mutations: 0, repaired_attempt_ids: [] };
-  const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
-  const entries = Array.isArray(journalValue) ? journalValue
-    : Array.isArray(journalValue?.entries) ? journalValue.entries
-      : (journalValue?.order ?? []).map((id) => journalValue?.entries?.[id]).filter(Boolean);
-  const byAttempt = new Map(entries.filter((entry) => entry?.attempt_id)
-    .map((entry) => [entry.attempt_id, entry]));
-  const repaired = [];
-  for (const attempt of audit.recent_attempts ?? []) {
-    const entry = byAttempt.get(attempt.attempt_id);
-    if (!entry?.child_obligation_id || !entry.root_obligation_id) continue;
-    const rangeMatches = Number(entry.source_range?.start) === Number(attempt.source_range?.start)
-      && Number(entry.source_range?.end) === Number(attempt.source_range?.end);
-    const identityMatches = entry.root_obligation_id === (attempt.root_obligation_id
-      ?? attempt.logical_obligation_id)
-      && entry.source_fingerprint === attempt.source_fingerprint && rangeMatches;
-    if (!identityMatches) continue;
-    const leaf = String(entry.child_obligation_id);
-    if (attempt.child_obligation_id === leaf && attempt.leaf_obligation_id === leaf) continue;
-    attempt.child_obligation_id = leaf;
-    attempt.leaf_obligation_id = leaf;
-    attempt.identity_reconciliation = {
-      schema_version: 1, source: 'provider_completion_journal', reconciled_at: at,
-    };
-    repaired.push(attempt.attempt_id);
-  }
-  return { mutations: repaired.length, repaired_attempt_ids: repaired };
-}
-
 /**
  * Retires stale provider-recovery windows only when the canonical obligation
  * ledger proves the same root terminal. Historical attempts and record IDs are

@@ -24,7 +24,7 @@ function mergeUnverifiedCallerTransition(priorValue, patchValue) {
     ...prior,
     status: 'pending_reconciliation',
     requested_disposition: prior.disposition ?? prior.requested_disposition ?? null,
-    legacy_caller_assertion: 'applied',
+    caller_assertion_rejected: 'applied',
   } : prior;
   if (verifiedTransition(prior)) return prior;
   const patch = clone(patchValue);
@@ -32,29 +32,34 @@ function mergeUnverifiedCallerTransition(priorValue, patchValue) {
     ...prior,
     status: 'pending_reconciliation',
     requested_disposition: patch.disposition ?? prior.requested_disposition ?? null,
-    legacy_caller_assertion: 'applied',
+    caller_assertion_rejected: 'applied',
   };
   return { ...prior, ...patch };
 }
 
 function container(metadata) {
   if (!metadata) return null;
-  const created = !metadata.provider_completion_journal;
-  const priorSchema = Number(metadata.provider_completion_journal?.schema_version ?? 0);
-  metadata.provider_completion_journal ??= {
-    schema_version: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
-    entries: {}, order: [], reconciliation: null, runtime_epoch_started_at: Date.now(),
-    historical_cutoff_enabled: false,
-  };
-  if (created || priorSchema < PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION) {
-    metadata.provider_completion_journal.runtime_epoch_started_at ??= Date.now();
-    if (!created && priorSchema < PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION) {
-      metadata.provider_completion_journal.historical_cutoff_enabled = true;
-    }
+  if (!metadata.provider_completion_journal) {
+    metadata.provider_completion_journal = {
+      schema_version: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
+      entries: {}, order: [], reconciliation: null,
+    };
+  } else if (metadata.provider_completion_journal.schema_version
+    !== PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION) {
+    const error = new Error('Provider completion journal does not use the current schema.');
+    error.code = 'SME_MEMORIZE_SCHEMA_UNSUPPORTED';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = 'fresh_start_required';
+    throw error;
   }
-  metadata.provider_completion_journal.schema_version = PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION;
-  metadata.provider_completion_journal.entries ??= {};
-  metadata.provider_completion_journal.order ??= [];
+  if (!metadata.provider_completion_journal.entries
+    || !Array.isArray(metadata.provider_completion_journal.order)) {
+    const error = new Error('Provider completion journal is incomplete.');
+    error.code = 'SME_MEMORIZE_SCHEMA_UNSUPPORTED';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = 'fresh_start_required';
+    throw error;
+  }
   return metadata.provider_completion_journal;
 }
 
@@ -111,8 +116,6 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
       prior.live_health_transition, patch.live_health_transition),
     started_at: prior.started_at ?? attempt.at ?? now(patch.at),
     updated_at: now(patch.at),
-    // Compatibility `completed_at` now means physical attempt completion.
-    // Logical completion is independently represented below.
     completed_at: patch.completed_at ?? prior.completed_at
       ?? (attempt.terminal_outcome && attempt.terminal_outcome !== 'running'
         ? Number(attempt.at ?? now(patch.at)) + Number(attempt.duration_ms ?? 0) : null),
@@ -120,7 +123,6 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     downstream_cursor: patch.downstream_cursor ?? prior.downstream_cursor ?? null,
     logical_disposition: patch.logical_disposition ?? prior.logical_disposition ?? null,
     replay_count: Number(prior.replay_count ?? 0),
-    migration: clone(patch.migration ?? prior.migration ?? null),
     adopted_from_logical_run_id: patch.adopted_from_logical_run_id
       ?? prior.adopted_from_logical_run_id ?? null,
     adopted_from_attempt_id: patch.adopted_from_attempt_id
@@ -322,28 +324,6 @@ export function revalidateRetainedProviderEvidenceSelection(selection, input = {
   };
 }
 
-export function migrateTerminalProviderCompletions(metadata, providerAudit, eligibleAttemptIds = null) {
-  if (!metadata) return [];
-  const journal = container(metadata);
-  const migrated = [];
-  const eligible = eligibleAttemptIds ? new Set(eligibleAttemptIds) : null;
-  for (const attempt of providerAudit?.recent_attempts ?? []) {
-    if (!terminalSuccess.has(attempt?.terminal_outcome) || journal.entries[attempt.attempt_id]
-      || (eligible && !eligible.has(attempt.attempt_id))) continue;
-    const entry = recordProviderCompletion(metadata, attempt, {
-      child_key: null,
-      persistence: { status: 'unverified', durable_record_ids: [] },
-      migration: {
-        source: 'legacy_terminal_provider_attempt',
-        provider_output_available: false,
-        exact_reason_code: 'legacy_terminal_output_not_durably_retained',
-      },
-    });
-    migrated.push(entry);
-  }
-  return migrated;
-}
-
 export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date.now()) {
   const health = metadata?.live_memory_health;
   if (!health) return [];
@@ -405,7 +385,6 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
   const runningAttemptIds = new Set(attempts.filter((item) => item?.terminal_outcome === 'running')
     .map((item) => item.attempt_id));
   const violations = [];
-  const historicalObservations = [];
   if (controllerHeartbeat?.terminal === true && runningAttemptIds.size > 0) {
     violations.push({
       code: 'closed_controller_retains_running_provider_attempt',
@@ -416,12 +395,9 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
     });
   }
   const recordViolation = (violation, attempt = null) => {
-    const historical = journal.historical_cutoff_enabled === true
-      && attempt && Number(attempt.at ?? 0) > 0
-      && Number(attempt.at) < Number(journal.runtime_epoch_started_at ?? 0);
-    (historical ? historicalObservations : violations).push({
+    violations.push({
       ...violation,
-      classification: historical ? 'historical_normalized' : 'current_runtime',
+      classification: 'current_runtime',
     });
   };
   for (const obligation of Object.values(obligations)) {
@@ -482,12 +458,7 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
     consistent: violations.length === 0,
     violations,
     current_runtime_violations: violations,
-    unresolved_migration_violations: [],
-    historical_observations: historicalObservations,
-    informational_compatibility_notices: historicalObservations.length ? [{
-      code: 'legacy_completion_journal_observations_normalized',
-      count: historicalObservations.length,
-    }] : [],
+    historical_observations: [],
     checked_at: Date.now(),
   };
   if (metadata) journal.reconciliation = result;
@@ -566,7 +537,6 @@ export function exportProviderCompletionJournal(metadata) {
       downstream_cursor: entry.downstream_cursor
         ?? deriveProviderDownstreamCursor(entry),
       logical_disposition: entry.logical_disposition ?? null,
-      migration: clone(entry.migration),
       adopted_from_logical_run_id: entry.adopted_from_logical_run_id ?? null,
       adopted_from_attempt_id: entry.adopted_from_attempt_id ?? null,
       evidence_adoption_reason: entry.evidence_adoption_reason ?? null,
