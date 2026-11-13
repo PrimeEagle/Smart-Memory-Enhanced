@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.87] - 2026-11-13
+
+### Added
+
+- Added a closed Memorize Chat action dispatcher and durable action receipts
+  for selection, execution start, attempt registration, provider request and
+  response, atomic command commit, and checkpoint advancement. Resume progress
+  now reports an action as executed only when a matching receipt exists.
+- Added exact current-run completion lookup keyed by logical run, frontier
+  leaf, physical attempt, command, source fingerprint, and controller
+  generation, plus privacy-safe runtime rejection context.
+- Added a strict multi-owner Long-Term response contract and pure partitioner
+  that validate allowed owners, source provenance, explicit no-update owners,
+  and cross-owner duplicate assignments before any record is accepted.
+
+### Changed
+
+- Session and Long-Term now execute network dispatch and journal replay through
+  the closed kernel action dispatcher and no longer consult retained evidence
+  before registering a provider attempt.
+- Session and Long-Term can replay a journaled response only for the current
+  logical run's exact frontier leaf and physical attempt. That replay performs
+  no network request and remains idempotent through the atomic command ID.
+- Provider completion journals and execution kernels use new clean schemas.
+  Incompatible incomplete test runs are intentionally unsupported and require
+  Fresh Start; no legacy migration or compatibility adapter is provided.
+- Fresh Start now deletes the active provider completion journal along with
+  the checkpoint, execution aggregate, controller state, and recovery state.
+- Resume no-progress comparison now includes the action-handler revision,
+  durable action receipts, exact attempt count, checkpoint, coverage, and
+  pending-obligation count.
+
+### Removed
+
+- Removed cross-logical-run provider-response adoption, retained-evidence
+  ranking/revalidation, retained-evidence lifecycle events, and the independent
+  `retained-evidence-plan.js` execution authority.
+
+### Fixed
+
+- Fixed a new Session obligation being blocked before provider dispatch when a
+  historical run contained an identical source range and fingerprint.
+- Fixed local lifecycle/action failures being categorized as provider transport
+  failures merely because their error codes contained the word `provider`.
+- Fixed runtime rejection diagnostics omitting the bounded error message,
+  subsystem, phase, obligation, attempt, selected action, controller invocation,
+  page instance, progress impact, recovery state, and repeat timing.
+- Fixed provider-journal inspection and export creating or mutating active
+  state. They are now pure, non-throwing projections for absent or incompatible
+  journals.
+
 ## [0.9.86] - 2026-11-13
 
 ### Added

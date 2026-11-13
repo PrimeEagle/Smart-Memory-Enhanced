@@ -4,6 +4,8 @@ import { assessMemorizeProviderDispatch, createMemorizeProviderProfile }
 import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
   coordinateProviderEvidenceIngress, requireAppliedLifecycleResult }
   from './memorize-lifecycle-coordinator.js';
+import { assertMemorizeActionSelected, canonicalizeMemorizeAction, dispatchMemorizeAction }
+  from './memorize-action-dispatcher.js';
 
 const EXPECTED_EVENT_STATES = Object.freeze({
   obligation_registered: [],
@@ -23,8 +25,6 @@ const EXPECTED_EVENT_STATES = Object.freeze({
   recovery_required: ['pending_recovery'],
   recovery_budget_exhausted: ['operationally_paused'],
   obligation_blocked: ['blocked'],
-  terminal_provider_evidence_adopted: ['provider_response_received'],
-  retained_provider_evidence_reopened: ['provider_response_received'],
   terminal_malformed_attempt_settled: ['pending_recovery', 'operationally_paused'],
 });
 
@@ -254,42 +254,52 @@ export function createMemorizeTierPipeline(input) {
   });
   const getCanonicalObligation = () => execution.hooks.get_canonical_obligation(
     leafObligationId, lifecycleIdentity.logical_run_id);
-  const applyRetainedEvidenceDecision = async (selection, details = {}) => {
-    const result = await coordinateProviderEvidenceIngress({
-      operation: 'apply_retained_evidence_decision', identity: lifecycleIdentity,
-      prior_state: execution.provider.root_obligation_state,
-      emit_lifecycle_event: applyLifecycleEvent,
-      get_canonical_obligation: execution.hooks.get_canonical_obligation,
-      selection,
-      ...details,
+  const recordActionReceipt = async (phase, detail = {}) => {
+    const result = await execution.hooks.action_receipt({
+      logical_run_id: lifecycleIdentity.logical_run_id,
+      obligation_id: leafObligationId,
+      action: detail.action ?? execution.provider.selected_recovery_action
+        ?? 'dispatch_provider_request',
+      phase,
+      attempt_id: detail.attempt_id ?? null,
+      controller_instance_id: execution.controller.instance_id,
+      controller_generation: execution.controller.transaction_generation,
+      ...detail,
     });
-    if (selection?.entry) {
-      const decisionAudit = {
-        selected_at: selection.selected_at ?? null,
-        applied_at: Date.now(),
-        selected_classification: selection.classification ?? null,
-        applied_classification: result.evidence_classification ?? null,
-        changed_since_selection: result.decision_revalidation?.changed_since_selection === true,
-        selected_obligation_revision:
-          result.decision_revalidation?.selected_obligation_revision ?? null,
-        applied_obligation_revision:
-          result.decision_revalidation?.applied_obligation_revision ?? null,
-        selected_state_fingerprint:
-          result.decision_revalidation?.selected_state_fingerprint ?? null,
-        applied_state_fingerprint:
-          result.decision_revalidation?.applied_state_fingerprint ?? null,
-        disposition: result.reason_code ?? result.status,
-        provider_call_required: result.provider_call_required === true,
-        persistence_required: result.persistence_required === true,
-        owner_applicability: result.decision_revalidation?.owner_applicability
-          ?? selection.retained_evidence_plan?.owner_applicability ?? null,
-      };
-      await execution.hooks.retained_evidence_decision_recorded(
-        selection.entry.attempt_id, decisionAudit, {
-        await_point: 'retained_evidence_decision', progress: true,
-      });
+    if (execution.controller.lifecycle_required
+      && !['applied', 'idempotent_duplicate'].includes(result?.status)) {
+      const error = new Error(`Memorize action receipt ${phase} was not durably recorded.`);
+      error.code = 'SME_MEMORIZE_ACTION_RECEIPT_REJECTED';
+      error.sme_recovery_blocked = true;
+      error.sme_reason_code = result?.reason_code ?? 'action_receipt_not_persisted';
+      error.sme_obligation_id = leafObligationId;
+      throw error;
     }
     return result;
+  };
+  const requireSelectedAction = (requestedAction) => assertMemorizeActionSelected({
+    selected_action: execution.provider.selected_recovery_action ?? requestedAction,
+    requested_action: requestedAction,
+  });
+  const executeSelectedAction = async (requestedAction, handler, detail = {}) => {
+    const selectedAction = execution.provider.selected_recovery_action ?? requestedAction;
+    const result = await dispatchMemorizeAction({
+      logical_run_id: lifecycleIdentity.logical_run_id,
+      obligation_id: leafObligationId,
+      selected_action: selectedAction,
+      requested_action: requestedAction,
+      handlers: { [requestedAction]: handler },
+      detail,
+    });
+    if (result.status !== 'executed') {
+      const error = new Error(`Memorize action dispatcher rejected ${requestedAction}.`);
+      error.code = 'SME_MEMORIZE_ACTION_DISPATCH_REJECTED';
+      error.sme_recovery_blocked = true;
+      error.sme_reason_code = result.reason_code;
+      error.sme_obligation_id = leafObligationId;
+      throw error;
+    }
+    return result.value;
   };
   const atomicCompletionEnabled = typeof execution.hooks.provider_completion_command === 'function';
   if (execution.controller.lifecycle_required && !atomicCompletionEnabled) {
@@ -304,6 +314,12 @@ export function createMemorizeTierPipeline(input) {
     if (!atomicCompletionEnabled) return null;
     const attemptId = details.attempt_id ?? details.provider_attempt_id;
     const commandId = details.command_id ?? `provider-completion:${attemptId}:${leafObligationId}`;
+    const journalEntry = completionJournalEntry(metadata, attemptId);
+    if (journalEntry) {
+      journalEntry.command_id = commandId;
+      journalEntry.obligation_leaf_id = leafObligationId;
+      journalEntry.updated_at = Date.now();
+    }
     const result = await execution.hooks.provider_completion_command({
       command_id: commandId,
       logical_run_id: lifecycleIdentity.logical_run_id,
@@ -315,6 +331,8 @@ export function createMemorizeTierPipeline(input) {
       source_fingerprint: sourceFingerprint,
       provider_profile_signature: providerConfigSignature,
       provider_protocol: expectedOutputFormat,
+      action: canonicalizeMemorizeAction(execution.provider.selected_recovery_action)
+        ?? 'dispatch_provider_request',
       ...details,
     });
     if (!['applied', 'idempotent_duplicate', 'late_callback_ignored'].includes(result?.status)) {
@@ -371,7 +389,8 @@ export function createMemorizeTierPipeline(input) {
     lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
     beginRegisteredAttempt, ingestProviderEvidence, getCanonicalObligation,
-    applyRetainedEvidenceDecision, atomicCompletionEnabled, applyProviderCompletion,
+    requireSelectedAction, executeSelectedAction, recordActionReceipt,
+    atomicCompletionEnabled, applyProviderCompletion,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

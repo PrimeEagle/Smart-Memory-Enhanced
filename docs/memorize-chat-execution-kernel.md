@@ -1,6 +1,46 @@
 # Memorize Chat execution kernel
 
-## Characterized v0.9.85 production flow
+## Current production ownership
+
+The active design has one semantic authority: the current logical run's
+execution aggregate. Historical provider records remain bounded diagnostics
+and are never inputs to an executable selector.
+
+| Concern | Sole writer or decision-maker | Read-only consumers |
+|---|---|---|
+| Exact next action | execution-kernel/obligation projection | controller, Resume, UI, diagnostics |
+| Action execution | `memorize-action-dispatcher.js` | action-receipt projection |
+| Provider attempt lifecycle | current-run tier pipeline through lifecycle coordinator | provider audit, diagnostics |
+| Provider completion | atomic completion command and unit-of-work commit | current-run completion lookup |
+| Obligation state | execution aggregate reducer | all status projections |
+| Recovery action/capsule | execution kernel | dispatcher and status projection |
+| Checkpoint advancement | leased transaction after terminal frontier coverage | Resume/UI/diagnostics |
+| Controller exit | controller finalizer into the execution aggregate | canonical status projection |
+| Run/UI/diagnostic status | canonical pure projections | presentation only |
+
+Session and Long-Term are provider/parser adapters. They may execute only the
+canonical action selected for their exact leaf and must record durable action
+receipts at selection, start, attempt registration, network start, response,
+command commit, and checkpoint advancement. They cannot scan or adopt a prior
+logical run's response.
+
+## Current-run recovery boundary
+
+`provider-completion-journal.js` is an active-run completion store, not a
+retained-evidence planner. Replay lookup requires an exact logical-run ID,
+leaf ID, physical attempt ID, command ID, source fingerprint, and controller
+generation. A response from another run, leaf, attempt, or generation is inert.
+Duplicate committed commands are no-ops; late callbacks are bounded diagnostic
+observations. If a registered request has no durable response after controller
+replacement, it is settled as interrupted and recovery creates a new bounded
+attempt. It is never treated as a completed request.
+
+Fresh Start deletes the active checkpoint, execution aggregate, controller
+ownership, recovery state, action receipts, and provider completion journal.
+There is no migration of an incompatible active schema; the user must perform
+Fresh Start.
+
+## Historical v0.9.85 production flow
 
 The production path before this refactor distributed one logical completion
 across several independently persisted mutations:
@@ -50,7 +90,7 @@ The v0.9.85 failures are consequences of these split boundaries:
 - a fixed recovery ladder repeatedly rediscovered that the active provider
   profile could not reliably satisfy the tagged-line grammar.
 
-## Target component boundaries
+## Component boundaries
 
 ### Run orchestrator
 
@@ -121,10 +161,20 @@ The run manifest owns one obligation ledger containing:
 - checkpoint and finalization eligibility derived from terminal frontier
   coverage.
 
-The provider-completion journal, attempt audit, coverage summaries,
-diagnostics, and UI are one-way projections. Production completion writes enter
-through the kernel, and all displayed state is rebuilt from the committed
-aggregate.
+The provider-completion journal is a current-run response store used only for
+exact-attempt replay. Attempt audit, coverage summaries, diagnostics, and UI
+are one-way projections. Production completion writes enter through the
+kernel, and all displayed state is rebuilt from the committed aggregate.
+
+## Long-Term batching status
+
+`multi-owner-longterm.js` defines the shared structured-response contract and
+performs local owner/provenance partitioning without persistence side effects.
+The production controller still dispatches one Long-Term obligation per owner;
+moving that controller path to one shared provider request remains separate
+work because the shared request must first become a first-class ledger leaf
+with atomic per-owner persistence. The current implementation does not claim
+the two-calls-per-chunk performance gate.
 
 ## Commands
 

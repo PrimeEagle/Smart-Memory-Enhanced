@@ -76,6 +76,7 @@ import {
 import {
   readPageRunMarker, writePageRunMarker, clearPageRunMarker,
   reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, captureBrowserStartupEvidence,
+  markRuntimeLifecycleErrorsRecovered,
 } from './page-run-lifecycle.js';
 import {
   normalizeCatchUpCheckpoint,
@@ -133,7 +134,7 @@ import {
 import { createMemorizeRunEngine, bindMemorizeRunEngine } from './memorize-run-engine.js';
 import { createMemorizeExecutionContext } from './memorize-execution-context.js';
 import { applyProviderCompletion as applyAtomicProviderCompletion,
-  ensureMemorizeExecutionAggregate }
+  ensureMemorizeExecutionAggregate, recordMemorizeActionReceipt }
   from './memorize-execution-kernel.js';
 import { createMemorizeProviderProfile, recordMemorizeProviderOutcome }
   from './memorize-provider-policy.js';
@@ -149,7 +150,6 @@ import {
 } from './memorize-controller-heartbeat.js';
 import {
   inspectProviderCompletionConsistency,
-  appendRetainedEvidenceDecision,
   reconcileImpossibleLiveHealth,
   exportProviderCompletionJournal,
   PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
@@ -281,8 +281,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.86',
-  build_fingerprint: 'sme-v0.9.86-execution-kernel-r1',
+  extension_version: '0.9.87',
+  build_fingerprint: 'sme-v0.9.87-current-run-dispatch-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2162,10 +2162,32 @@ export function bindSettingsUI(ctrl) {
   listenLifecycle(document, 'resume', () => recordRuntimeEvidence('document_resumed', { subsystem: 'document', request_state: 'resume_from_freeze', event_origin: 'native_document_event' }));
   listenLifecycle(globalThis, 'online', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'online' }));
   listenLifecycle(globalThis, 'offline', () => recordRuntimeEvidence('service_connection_restarted', { subsystem: 'browser_connection', request_state: 'offline' }));
-  const safeErrorEvidence = (classification, value) => recordRuntimeEvidence(classification, {
-    subsystem: 'javascript_runtime', normalized_error_type: value?.name ?? typeof value,
-    stack_fingerprint: diagnosticFingerprint(String(value?.stack ?? value?.message ?? value ?? 'unknown').replace(/https?:\/\/\S+/g, '<url>')),
-  });
+  const safeErrorEvidence = (classification, value) => {
+    try {
+      const metadata = getContext()?.chatMetadata?.[META_KEY];
+      const checkpoint = metadata?.catch_up_checkpoint;
+      const ledger = checkpoint?.run_manifest?.obligation_ledger;
+      const pending = ledger ? projectMemorizeObligationLedger(ledger)
+        .next_eligible_obligation : null;
+      const receipt = ledger?.execution_kernel?.action_receipts?.at(-1) ?? null;
+      const raw = String(value?.message ?? value ?? 'unknown');
+      recordRuntimeEvidence(classification, {
+        subsystem: 'javascript_runtime', normalized_error_type: value?.name ?? typeof value,
+        message: raw,
+        obligation_id: pending?.obligation_id ?? receipt?.obligation_id ?? null,
+        attempt_id: receipt?.attempt_id ?? null,
+        active_action: pending?.next_eligible_action ?? receipt?.action ?? null,
+        controller_invocation_id: checkpoint?.controller_heartbeat
+          ?.controller_invocation_id ?? null,
+        affected_controller_progress: checkpoint?.status === 'in_progress',
+        later_handled_or_recovered: false,
+        stack_fingerprint: diagnosticFingerprint(String(value?.stack ?? raw)
+          .replace(/https?:\/\/\S+/g, '<url>')),
+      });
+    } catch (observerError) {
+      console.warn(`[${MODULE_NAME}] Runtime error observer failed safely:`, observerError);
+    }
+  };
   listenLifecycle(globalThis, 'error', (event) => safeErrorEvidence('unhandled_exception', event?.error ?? event));
   listenLifecycle(globalThis, 'unhandledrejection', (event) => safeErrorEvidence('unhandled_rejection', event?.reason));
   globalThis.__smeRuntimeLifecycleCleanup = () => {
@@ -2630,6 +2652,7 @@ export function bindSettingsUI(ctrl) {
       'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
       'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
       'active_catchup_run_id', 'catch_up_checkpoint', 'catch_up_run_manifests', 'parser_debris_cleanup',
+      'provider_completion_journal',
       'fresh_start_postcondition_audit', 'live_memory_health',
       'page_run_lifecycle',
       'shortterm_compaction_checkpoint',
@@ -5420,14 +5443,14 @@ export function bindSettingsUI(ctrl) {
       currentChunkFailed = true;
       if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
       if (isSave) runResult.saveFailures++;
-      const localEffectBoundaryFailure = /retained_evidence_decisions|object is not extensible|frozen.*snapshot/i
-        .test(`${err?.message ?? ''} ${err?.code ?? ''}`);
+      const localEffectBoundaryFailure = /^(SME_(?:MEMORIZE|ATOMIC|PROVIDER_EVIDENCE|LIFECYCLE|RESUME))/.test(
+        String(err?.code ?? ''));
       runResult.errors.push({
         label,
         tier,
         persistence: isSave,
-        code: err?.code ?? (localEffectBoundaryFailure
-          ? 'SME_RETAINED_EVIDENCE_EFFECT_BOUNDARY_FROZEN_SNAPSHOT' : null),
+        code: err?.code ?? null,
+        category: localEffectBoundaryFailure ? 'internal_invariant_failure' : undefined,
         provider_fault_attribution: localEffectBoundaryFailure ? false : undefined,
         message: String(err?.message ?? err ?? 'Unknown error').replace(/\s+/g, ' ').slice(0, 300),
       });
@@ -5446,13 +5469,11 @@ export function bindSettingsUI(ctrl) {
           ...requestDiagnostics,
         });
       } else if (requestDiagnostics || localEffectBoundaryFailure
-        || /provider-evidence|lifecycle|retained provider evidence/i
+        || /provider-evidence|lifecycle/i
         .test(`${err?.message ?? ''} ${err?.code ?? ''}`)) {
         const localFailure = {
           label, tier,
-          code: err?.code ?? (localEffectBoundaryFailure
-            ? 'SME_RETAINED_EVIDENCE_EFFECT_BOUNDARY_FROZEN_SNAPSHOT'
-            : 'SME_LOCAL_LIFECYCLE_FAILURE'),
+          code: err?.code ?? 'SME_LOCAL_LIFECYCLE_FAILURE',
           reason_code: err?.sme_reason_code ?? requestDiagnostics?.reason_code ?? null,
           obligation_id: err?.sme_obligation_id
             ?? requestDiagnostics?.obligation_id ?? requestDiagnostics?.selected_obligation_id ?? null,
@@ -5829,8 +5850,6 @@ export function bindSettingsUI(ctrl) {
           checkpoint,
           ledger: checkpoint.run_manifest.obligation_ledger,
           provider_audit: providerAudit,
-          retained_evidence_plan: checkpoint.authoritative_recovery
-            ?.base_resume_eligibility?.retained_evidence_plan,
         });
         checkpoint.resume_progress_in_flight = {
           schema_version: 1,
@@ -6300,6 +6319,26 @@ export function bindSettingsUI(ctrl) {
           }, { obligation_id: entry?.child_obligation_id ?? entry?.root_obligation_id,
             provider_attempt_id: entry?.attempt_id });
         };
+        const commitActionReceipt = async (detail) => {
+          let receiptResult = null;
+          const leaseResult = await runLeasedPersistence('memorize_action_receipt', () => {
+            receiptResult = recordMemorizeActionReceipt(
+              checkpoint.run_manifest.obligation_ledger, {
+                ...detail,
+                checkpoint: checkpoint.next_source_offset ?? 0,
+              });
+            if (receiptResult.mutated === true) {
+              checkpoint.run_manifest.obligation_ledger = receiptResult.aggregate;
+              checkpoint.run_manifest.execution_kernel_revision
+                = receiptResult.aggregate.execution_kernel.revision;
+              checkpoint.updated_at = Date.now();
+            }
+            return receiptResult;
+          }, { obligation_id: detail.obligation_id, provider_attempt_id: detail.attempt_id });
+          return leaseResult.allowed ? receiptResult : {
+            status: 'rejected', reason_code: leaseResult.reason_code,
+          };
+        };
         const commitAtomicProviderCompletion = async (command) => {
           let completionResult = null;
           const leaseResult = await runLeasedPersistence('provider_completion_command', () => {
@@ -6342,8 +6381,21 @@ export function bindSettingsUI(ctrl) {
             }
             if (completionResult.mutated === true) {
               checkpoint.run_manifest.obligation_ledger = completionResult.aggregate;
+              const actionReceipt = recordMemorizeActionReceipt(
+                checkpoint.run_manifest.obligation_ledger, {
+                  logical_run_id: command.logical_run_id,
+                  obligation_id: command.obligation_leaf_id,
+                  action: command.action ?? 'dispatch_provider_request',
+                  phase: 'command_committed', attempt_id: command.attempt_id,
+                  controller_instance_id: controllerRuntime.invocation_id,
+                  controller_generation: command.transaction_generation ?? null,
+                  checkpoint: checkpoint.next_source_offset ?? 0,
+                });
+              if (actionReceipt.mutated === true) {
+                checkpoint.run_manifest.obligation_ledger = actionReceipt.aggregate;
+              }
               checkpoint.run_manifest.execution_kernel_revision
-                = completionResult.receipt.aggregate_revision;
+                = checkpoint.run_manifest.obligation_ledger.execution_kernel.revision;
               if (completionResult.status === 'applied') {
                 const profileSignature = command.provider_profile_signature
                   ?? 'unknown-provider-profile';
@@ -6387,28 +6439,6 @@ export function bindSettingsUI(ctrl) {
           };
           return completionResult;
         };
-        const commitRetainedEvidenceDecision = async (attemptId, decision,
-          heartbeatPatch = {}) => runLeasedPersistence(
-          'retained_evidence_decision_recorded', () => {
-            const entry = appendRetainedEvidenceDecision(
-              catchUpContext.chatMetadata?.[META_KEY], attemptId, decision);
-            if (!entry) {
-              const error = new Error('Retained-evidence decision has no authoritative journal entry.');
-              error.code = 'SME_RETAINED_EVIDENCE_JOURNAL_ENTRY_MISSING';
-              error.sme_reason_code = 'retained_evidence_journal_entry_missing';
-              error.sme_obligation_id = decision?.canonical_obligation_id ?? null;
-              error.sme_request_diagnostics = {
-                reason_code: error.sme_reason_code,
-                provider_attempt_id: attemptId ?? null,
-                provider_call_required: false,
-                effect_boundary: 'provider_completion_journal',
-              };
-              throw error;
-            }
-            updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
-            checkpoint.updated_at = Date.now();
-            return entry;
-          }, { provider_attempt_id: attemptId });
         const commitProviderAwaitPoint = async (heartbeatPatch = {}) => {
           return runLeasedPersistence('provider_await_point', () => {
             updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, heartbeatPatch);
@@ -6586,7 +6616,7 @@ export function bindSettingsUI(ctrl) {
                   recovery_child_manifest_updated: commitRecoveryChildManifest,
                   provider_completion_journal_updated: commitProviderCompletionJournal,
                   provider_completion_command: commitAtomicProviderCompletion,
-                  retained_evidence_decision_recorded: commitRetainedEvidenceDecision,
+                  action_receipt: commitActionReceipt,
                   provider_await_point: commitProviderAwaitPoint,
                   obligation_event: applyAuthoritativeLifecycleEvent,
                   get_canonical_obligation: getCanonicalObligation,
@@ -6665,6 +6695,7 @@ export function bindSettingsUI(ctrl) {
                 recovery_child_manifest_updated: commitRecoveryChildManifest,
                 obligation_event: applyAuthoritativeLifecycleEvent,
                 provider_completion_command: commitAtomicProviderCompletion,
+                action_receipt: commitActionReceipt,
                 get_canonical_obligation: getCanonicalObligation,
                 recovery_epoch_initialized: async (epoch) => {
                   return runLeasedPersistence('recovery_epoch_initialized', () => {
@@ -6859,6 +6890,28 @@ export function bindSettingsUI(ctrl) {
               ],
             });
           checkpointForCommit.run_manifest = projection.manifest;
+          const checkpointedRoots = Object.values(
+            checkpointForCommit.run_manifest.obligation_ledger?.obligations ?? {})
+            .filter((obligation) => !obligation.parent_obligation_id
+              && obligation.checkpoint_eligible === true
+              && Number(obligation.source_range?.start) === Number(currentRange.source_start_index)
+              && Number(obligation.source_range?.end) === Number(currentRange.source_end_index));
+          for (const obligation of checkpointedRoots) {
+            const receipt = recordMemorizeActionReceipt(
+              checkpointForCommit.run_manifest.obligation_ledger, {
+                logical_run_id: checkpointForCommit.run_manifest.logical_run_id,
+                obligation_id: obligation.obligation_id,
+                action: 'dispatch_provider_request',
+                phase: 'checkpoint_advanced',
+                controller_instance_id: controllerRuntime.invocation_id,
+                controller_generation: chunkTransaction.generation,
+                checkpoint: projection.safe_resume_offset,
+                receipt_id: `checkpoint:${checkpointForCommit.run_manifest.logical_run_id}:${obligation.obligation_id}:${projection.safe_resume_offset}`,
+              });
+            if (receipt.mutated === true) {
+              checkpointForCommit.run_manifest.obligation_ledger = receipt.aggregate;
+            }
+          }
           const activeAttempt = checkpointForCommit.run_manifest.attempts?.at(-1);
           if (activeAttempt) activeAttempt.request_counters = {
             retry_count: runResult.retriedRequests,
@@ -7186,7 +7239,6 @@ export function bindSettingsUI(ctrl) {
                     recovery_child_manifest_updated: commitRecoveryChildManifest,
                     provider_completion_journal_updated: commitProviderCompletionJournal,
                     provider_completion_command: commitAtomicProviderCompletion,
-                    retained_evidence_decision_recorded: commitRetainedEvidenceDecision,
                     provider_await_point: commitProviderAwaitPoint,
                     obligation_event: applyAuthoritativeLifecycleEvent,
                   },
@@ -10305,6 +10357,8 @@ export function bindSettingsUI(ctrl) {
           ...manifests.filter((entry) => entry?.logical_run_id !== diagnostics.logical_run.logical_run_id),
           diagnostics.logical_run,
         ].slice(-3);
+        markRuntimeLifecycleErrorsRecovered(catchUpContext.chatMetadata[META_KEY],
+          terminalCheckpoint.run_id, { reason: 'run_completed_after_runtime_observation' });
         delete catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
         // The sidecar exists only to bridge a crash while the checkpoint is
         // active. Do not let a completed run later override a new run's
@@ -10582,16 +10636,12 @@ export function bindSettingsUI(ctrl) {
           checkpoint: terminalCheckpoint,
           ledger: terminalCheckpoint.run_manifest?.obligation_ledger,
           provider_audit: terminalMetadata?.live_memory_health?.provider_attempt_audit,
-          retained_evidence_plan: terminalCheckpoint.authoritative_recovery
-            ?.base_resume_eligibility?.retained_evidence_plan,
         });
         terminalCheckpoint.resume_progress = deriveMemorizeResumeProgress(
           resumeProgressBefore, resumeProgressAfter, {
             invocation_id: controllerRuntime.invocation_id,
             planned_exact_action: terminalCheckpoint.resume_progress_in_flight
               ?.planned_exact_action,
-            action_actually_executed: controllerRuntime.obligation_id
-              ? terminalCheckpoint.resume_progress_in_flight?.planned_exact_action : null,
             exact_blocker: firstLocalLifecycleError?.sme_reason_code
               ?? firstLocalLifecycleError?.code ?? null,
           });

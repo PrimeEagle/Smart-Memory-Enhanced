@@ -133,8 +133,7 @@ import {
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
 import { markRecoveryChildState } from './recovery-child-coverage.js';
 import {
-  PROVIDER_EVIDENCE_PROVENANCE,
-  selectRetainedProviderEvidence,
+  findCurrentRunProviderCompletion,
   recordProviderCompletion,
 } from './provider-completion-journal.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
@@ -1264,45 +1263,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       ? storedRecoveryState : null;
     const resumeEligibility = resumeRecoveryState
       ? deriveRecoveryStageEligibility(resumeRecoveryState) : null;
-    const canonicalObligationAtSelection = pipeline.getCanonicalObligation();
-    const retainedEvidence = execution.controller.lifecycle_required
-      ? selectRetainedProviderEvidence(providerMetadata, {
-      root_obligation_id: rootObligationId,
-      child_obligation_id: leafObligationId,
-      tier: 'longterm', owner: characterName,
-      source_range: { start: range.start, end: range.end },
-      source_fingerprint: coverageBase.source_fingerprint,
-      current_logical_run_id: providerMetadata?.active_catchup_run_id ?? null,
-      obligation: canonicalObligationAtSelection,
-      }) : null;
-    const completionReplay = retainedEvidence?.classification
-      === PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE
-      ? retainedEvidence.entry : null;
-    const currentRunContinuation = retainedEvidence?.classification
-      === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM
-      ? retainedEvidence.entry : null;
-    const retainedWholeResponse = completionReplay ?? currentRunContinuation;
-    const terminalWithoutRetainedOutput = !retainedWholeResponse
-      ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
-        .reverse().find((attempt) => attempt.logical_obligation_id === rootObligationId
-          && attempt.source_fingerprint === coverageBase.source_fingerprint
-          && ['completed', 'completed_no_candidates', 'completed_repartitioned'].includes(attempt.terminal_outcome))
-      : null;
-    if (terminalWithoutRetainedOutput) {
-      const error = new Error('A terminal provider response requires downstream reconciliation, but its private output is unavailable. The completed provider request will not be repeated.');
-      error.code = 'SME_TERMINAL_PROVIDER_OUTPUT_UNAVAILABLE';
-      error.sme_obligation_id = rootObligationId;
-      error.sme_request_diagnostics = {
-        root_obligation_id: rootObligationId,
-        attempt_id: terminalWithoutRetainedOutput.attempt_id,
-        reason_code: 'terminal_output_not_durably_retained',
-        recovery_intent: 'restore_private_terminal_output_or_change_recovery_disposition',
-        recovery_stage: 'terminal_provider_downstream_reconciliation',
-        provider_request_must_not_repeat: true,
-      };
-      throw error;
-    }
-    if (!retainedWholeResponse && resumeEligibility?.blocked === true) {
+    if (resumeEligibility?.blocked === true) {
       const error = new Error('Long-Term recovery has no eligible changed recovery stage.');
       error.code = 'SME_RECOVERY_CHANGE_REQUIRED';
       error.sme_recovery_blocked = true;
@@ -1316,33 +1277,40 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       };
       throw error;
     }
-    const recoveryOnlyMode = !retainedWholeResponse
-      && resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
-    let replayIngress = null;
-    if (retainedWholeResponse) {
-      replayIngress = await pipeline.applyRetainedEvidenceDecision(retainedEvidence, {
-        evidence_adoption_reason: 'longterm_completion_journal_replay',
+    const canonicalBeforeDispatch = execution.controller.lifecycle_required
+      ? await pipeline.getCanonicalObligation() : null;
+    const replayAttemptId = canonicalBeforeDispatch?.provider_attempt_lineage?.at(-1) ?? null;
+    const journaledCurrentCompletion = replayAttemptId
+      ? findCurrentRunProviderCompletion(providerMetadata, {
+        logical_run_id: pipeline.lifecycleIdentity.logical_run_id,
+        attempt_id: replayAttemptId,
+        obligation_leaf_id: leafObligationId,
+        source_fingerprint: coverageBase.source_fingerprint,
+      }) : null;
+    const journalReplayMode = Boolean(journaledCurrentCompletion?.response_text != null
+      && ['continue_pending_downstream_processing',
+        'replay_terminal_provider_downstream_lifecycle',
+        'reconcile_terminal_attempt_evidence']
+        .includes(execution.provider.selected_recovery_action));
+    const recoveryOnlyMode = resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
+    if (journalReplayMode) {
+      pipeline.requireSelectedAction('apply_journaled_provider_completion');
+      await pipeline.recordActionReceipt('action_selected', {
+        action: 'apply_journaled_provider_completion', attempt_id: replayAttemptId,
       });
-      if (replayIngress.checkpoint_eligible === true
-        && replayIngress.evidence_classification
-          === PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL) {
-        recordCompletedCoverage('retained_terminal_coverage');
-        healthFinish({ terminal_health: 'completed', persistence: 'verified_existing',
-          provider_outcome: 'retained_terminal_coverage' });
-        return 0;
-      }
-      if (replayIngress.status !== 'pending_downstream_processing') {
-        const error = new Error('Long-Term retained provider evidence could not be adopted safely.');
-        error.code = replayIngress.status === 'blocked'
-          ? 'SME_TERMINAL_PROVIDER_OUTPUT_UNAVAILABLE' : 'SME_PROVIDER_EVIDENCE_ADOPTION_REJECTED';
-        error.sme_recovery_blocked = true;
-        error.sme_obligation_id = rootObligationId;
-        error.sme_reason_code = replayIngress.reason_code;
-        error.sme_request_diagnostics = replayIngress;
-        throw error;
-      }
+      await pipeline.recordActionReceipt('action_started', {
+        action: 'apply_journaled_provider_completion', attempt_id: replayAttemptId,
+      });
+    } else if (!recoveryOnlyMode) {
+      pipeline.requireSelectedAction('dispatch_provider_request');
+      await pipeline.recordActionReceipt('action_selected', {
+        action: 'dispatch_provider_request',
+      });
+      await pipeline.recordActionReceipt('action_started', {
+        action: 'dispatch_provider_request',
+      });
     }
-    const registeredIngress = !retainedWholeResponse && !recoveryOnlyMode
+    const registeredIngress = !recoveryOnlyMode && !journalReplayMode
       ? await pipeline.ingestProviderEvidence('register_new_attempt') : null;
     if (registeredIngress && registeredIngress.status !== 'applied') {
       const error = new Error('Long-Term provider attempt could not be registered.');
@@ -1352,36 +1320,58 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       error.sme_request_diagnostics = registeredIngress;
       throw error;
     }
-    const providerAttempt = retainedWholeResponse ? {
-      attempt_id: retainedWholeResponse.attempt_id,
-      logical_obligation_id: rootObligationId,
-      root_obligation_id: rootObligationId,
-      logical_run_id: retainedWholeResponse.logical_run_id,
-      tier: 'longterm', owner: characterName,
-      source_range: retainedWholeResponse.source_range,
-      source_fingerprint: retainedWholeResponse.source_fingerprint,
-      terminal_outcome: retainedWholeResponse.terminal_outcome,
-      recovery_stage: execution.provider.request_kind ?? 'completion_journal_replay',
-      _adopted_terminal_evidence: true,
-    } : recoveryOnlyMode ? null : registeredIngress.attempt;
+    const providerAttempt = journalReplayMode
+      ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+        .reverse().find((attempt) => attempt.attempt_id === replayAttemptId)
+        ?? { ...journaledCurrentCompletion, logical_obligation_id: rootObligationId,
+          child_obligation_id: leafObligationId }
+      : recoveryOnlyMode ? null : registeredIngress.attempt;
+    if (providerAttempt?.attempt_id && !recoveryOnlyMode && !journalReplayMode) {
+      await pipeline.recordActionReceipt('provider_attempt_registered', {
+        action: 'dispatch_provider_request', attempt_id: providerAttempt.attempt_id,
+      });
+    }
     try {
-      if (retainedWholeResponse) {
-        response = replayIngress.response_text;
-      } else if (!recoveryOnlyMode) {
-        await execution.hooks.provider_await_point({
+      if (!recoveryOnlyMode) {
+        if (journalReplayMode) {
+          response = await pipeline.executeSelectedAction(
+            'apply_journaled_provider_completion',
+            async () => journaledCurrentCompletion.response_text,
+            { attempt_id: replayAttemptId },
+          );
+          await pipeline.recordActionReceipt('provider_response_received', {
+            action: 'apply_journaled_provider_completion', attempt_id: replayAttemptId,
+          });
+        } else {
+          await execution.hooks.provider_await_point({
           await_point: 'provider_request', progress: true,
           active_provider_attempt_id: providerAttempt?.attempt_id ?? null,
           root_obligation_id: rootObligationId,
           child_obligation_id: extractionRecoveryChildKey('longterm', characterName, sourceMessages),
           source_range: { start: range.start, end: range.end, message_count: range.message_count },
-        });
-        response = await generateMemoryExtract(primaryProviderRequest.prompt, {
-          responseLength,
-          systemPrompt: primaryProviderRequest.systemPrompt,
-          providerConstraints: primaryProviderRequest.providerConstraints,
-        });
+          });
+          await pipeline.recordActionReceipt('provider_request_started', {
+            action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
+          });
+          response = await pipeline.executeSelectedAction('dispatch_provider_request',
+            async () => generateMemoryExtract(primaryProviderRequest.prompt, {
+              responseLength,
+              systemPrompt: primaryProviderRequest.systemPrompt,
+              providerConstraints: primaryProviderRequest.providerConstraints,
+            }), { attempt_id: providerAttempt?.attempt_id });
+          await pipeline.recordActionReceipt('provider_response_received', {
+            action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
+          });
+        }
       }
     } catch (err) {
+      if (!recoveryOnlyMode) {
+        await pipeline.recordActionReceipt('action_failed', {
+          action: journalReplayMode ? 'apply_journaled_provider_completion'
+            : 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
+          reason_code: err?.code ?? err?.name ?? 'provider_dispatch_failed',
+        }).catch(() => undefined);
+      }
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
         finishProviderAttempt(providerMetadata, providerAttempt, {
@@ -1426,7 +1416,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     }
 
     const completionChildKey = extractionRecoveryChildKey('longterm', characterName, sourceMessages);
-    let completionJournalEntry = retainedWholeResponse;
+    let completionJournalEntry = null;
     if (!recoveryOnlyMode) {
       smLog(`[Smart Memory Enhanced] Raw extraction response for "${characterName}":`, response);
       healthUpdate({ response_received: true, parser_outcome: 'not_started' });
@@ -1441,27 +1431,20 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         child_key: completionChildKey,
         response_text: response,
         live_health_event_id: options.liveHealth?.event_id ?? null,
-        ...(completionReplay ? {
-          adopted_from_logical_run_id: completionReplay.logical_run_id,
-          adopted_from_attempt_id: completionReplay.attempt_id,
-          evidence_adoption_reason: 'longterm_completion_journal_replay',
-        } : {}),
       });
       await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
         await_point: 'response_parse', progress: true,
       });
-      if (!retainedWholeResponse) {
-        const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
-          attempt: providerAttempt,
-        });
-        if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
-          const error = new Error('Long-Term provider response could not enter the lifecycle.');
-          error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
-          error.sme_recovery_blocked = true;
-          error.sme_obligation_id = rootObligationId;
-          error.sme_request_diagnostics = responseIngress;
-          throw error;
-        }
+      const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
+        attempt: providerAttempt,
+      });
+      if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
+        const error = new Error('Long-Term provider response could not enter the lifecycle.');
+        error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
+        error.sme_recovery_blocked = true;
+        error.sme_obligation_id = rootObligationId;
+        error.sme_request_diagnostics = responseIngress;
+        throw error;
       }
     }
     const primaryStructuredResult = !recoveryOnlyMode

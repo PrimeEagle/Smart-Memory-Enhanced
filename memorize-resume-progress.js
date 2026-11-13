@@ -1,4 +1,9 @@
 import { projectMemorizeObligationLedger } from './memorize-obligation-ledger.js';
+import {
+  latestMemorizeActionReceipt,
+  canonicalizeMemorizeKernelAction,
+  MEMORIZE_ACTION_HANDLER_REVISION,
+} from './memorize-execution-kernel.js';
 
 const freeze = (value) => {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -7,21 +12,28 @@ const freeze = (value) => {
 };
 
 export function snapshotMemorizeResumeProgress({ checkpoint = null, ledger = null,
-  provider_audit: providerAudit = null, retained_evidence_plan: retainedPlan = null,
+  provider_audit: providerAudit = null,
   at = Date.now() } = {}) {
   const canonicalLedger = ledger ?? checkpoint?.run_manifest?.obligation_ledger ?? null;
   const projection = projectMemorizeObligationLedger(canonicalLedger);
   const pending = projection.next_eligible_obligation
     ?? projection.pending_obligations?.[0] ?? null;
+  const receipts = canonicalLedger?.execution_kernel?.action_receipts ?? [];
+  const latestReceipt = canonicalLedger
+    ? latestMemorizeActionReceipt(canonicalLedger, pending?.obligation_id ?? null) : null;
   const snapshot = {
     canonical_obligation_id: pending?.obligation_id ?? null,
     canonical_revision: Number(pending?.revision ?? 0),
     current_state: pending?.current_state ?? null,
-    exact_action: retainedPlan?.exact_next_action
-      ?? pending?.next_eligible_action ?? null,
-    downstream_cursor: retainedPlan?.downstream_cursor ?? null,
-    provider_attempt_count: Number(providerAudit?.attempted
-      ?? providerAudit?.recent_attempts?.length ?? 0),
+    exact_action: canonicalizeMemorizeKernelAction(pending?.next_eligible_action) ?? null,
+    raw_obligation_action: pending?.next_eligible_action ?? null,
+    action_handler_revision: MEMORIZE_ACTION_HANDLER_REVISION,
+    action_receipt_count: receipts.length,
+    latest_action_receipt_id: latestReceipt?.receipt_id ?? null,
+    latest_action_receipt_phase: latestReceipt?.phase ?? null,
+    latest_action_receipt_action: latestReceipt?.action ?? null,
+    provider_attempt_count: Object.keys(canonicalLedger?.execution_kernel?.attempts ?? {}).length
+      || Number(providerAudit?.attempted ?? providerAudit?.recent_attempts?.length ?? 0),
     next_source_offset: Number(checkpoint?.next_source_offset ?? 0),
     committed_chunk_count: Number(checkpoint?.committed_chunks ?? 0),
     pending_obligation_count: Number(projection.pending_obligation_count ?? 0),
@@ -35,7 +47,10 @@ function sameCanonicalState(left, right) {
     && Number(left?.canonical_revision ?? 0) === Number(right?.canonical_revision ?? 0)
     && left?.current_state === right?.current_state
     && left?.exact_action === right?.exact_action
-    && (left?.downstream_cursor ?? null) === (right?.downstream_cursor ?? null)
+    && Number(left?.action_handler_revision ?? 0)
+      === Number(right?.action_handler_revision ?? 0)
+    && Number(left?.action_receipt_count ?? 0) === Number(right?.action_receipt_count ?? 0)
+    && left?.latest_action_receipt_id === right?.latest_action_receipt_id
     && Number(left?.provider_attempt_count ?? 0) === Number(right?.provider_attempt_count ?? 0)
     && Number(left?.next_source_offset ?? 0) === Number(right?.next_source_offset ?? 0)
     && Number(left?.committed_chunk_count ?? 0) === Number(right?.committed_chunk_count ?? 0)
@@ -52,7 +67,11 @@ export function deriveMemorizeResumeProgress(before, after, input = {}) {
     reasons.push('canonical_obligation_revision_advanced');
   }
   if (before?.exact_action !== after?.exact_action) reasons.push('exact_recovery_action_changed');
-  if (before?.downstream_cursor !== after?.downstream_cursor) reasons.push('downstream_cursor_advanced');
+  if (Number(after?.action_handler_revision ?? 0)
+    !== Number(before?.action_handler_revision ?? 0)) reasons.push('action_handler_revision_changed');
+  if (Number(after?.action_receipt_count ?? 0) > Number(before?.action_receipt_count ?? 0)) {
+    reasons.push('action_receipt_durably_recorded');
+  }
   if (Number(after?.provider_attempt_count ?? 0) > Number(before?.provider_attempt_count ?? 0)) {
     reasons.push('provider_attempt_durably_registered');
   }
@@ -65,14 +84,19 @@ export function deriveMemorizeResumeProgress(before, after, input = {}) {
   if (Number(after?.pending_obligation_count ?? 0)
     < Number(before?.pending_obligation_count ?? 0)) reasons.push('pending_obligation_count_decreased');
   const progress = reasons.length > 0;
+  const actionExecuted = Number(after?.action_receipt_count ?? 0)
+    > Number(before?.action_receipt_count ?? 0)
+    ? after?.latest_action_receipt_action ?? null : null;
   return freeze({
-    schema_version: 1,
+    schema_version: 2,
     invocation_id: input.invocation_id ?? null,
     before,
     planned_exact_action: input.planned_exact_action ?? before?.exact_action ?? null,
-    action_actually_executed: input.action_actually_executed ?? null,
-    provider_request_started: Number(after?.provider_attempt_count ?? 0)
-      > Number(before?.provider_attempt_count ?? 0),
+    action_actually_executed: actionExecuted,
+    provider_request_started: actionExecuted != null
+      && ['provider_request_started', 'provider_response_received', 'command_committed',
+        'checkpoint_advanced'].includes(after?.latest_action_receipt_phase)
+      || Number(after?.provider_attempt_count ?? 0) > Number(before?.provider_attempt_count ?? 0),
     after,
     progress,
     progress_reasons: reasons,

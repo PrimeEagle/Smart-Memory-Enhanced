@@ -13,9 +13,7 @@ export function deriveRunErrorAccounting(report = {}) {
   const allCurrentDetails = array(report.error_details);
   const currentDetails = allCurrentDetails.filter((entry) => entry?.resolved !== true);
   const resolvedLocalDetails = allCurrentDetails.filter((entry) => entry?.resolved === true
-    && (entry?.provider_fault_attribution === false
-      || /retained_evidence|object is not extensible|lifecycle/i
-        .test(`${entry?.resolution_code ?? ''} ${entry?.message ?? ''}`)));
+    && entry?.provider_fault_attribution === false);
   const notices = array(report.quality?.notices ?? report.quality_notices);
   const providerNoticeCategories = Object.values(provider.notice_reason_counts ?? {})
     .filter((value) => number(value) > 0).length;
@@ -69,23 +67,37 @@ export function deriveRunErrorAccounting(report = {}) {
     || provider.obligation_history_truncated !== true;
   const classifyDisplayedError = (entry = {}) => {
     const text = `${entry.label ?? ''} ${entry.message ?? ''}`.toLowerCase();
-    if (/retained_evidence_decisions|object is not extensible|frozen.*snapshot/.test(text)) {
-      return 'local_effect_boundary_failure';
+    const code = String(entry.code ?? '').toUpperCase();
+    if (entry.category && ['provider_transport_failure', 'provider_output_failure',
+      'validation_failure', 'persistence_failure', 'internal_invariant_failure',
+      'stale_callback_notice', 'cancellation', 'operational_pause',
+      'blocked_external_condition', 'diagnostic_observer_failure'].includes(entry.category)) {
+      return entry.category;
     }
+    if (entry.provider_fault_attribution === false
+      || /^SME_(?:MEMORIZE|ATOMIC|PROVIDER_EVIDENCE|LIFECYCLE|RESUME)/.test(code)) {
+      return 'internal_invariant_failure';
+    }
+    if (/diagnostic observer/.test(text)) return 'diagnostic_observer_failure';
+    if (/stale|late callback/.test(text)) return 'stale_callback_notice';
+    if (/cancel/.test(text)) return 'cancellation';
+    if (/operational pause|budget.*pause/.test(text)) return 'operational_pause';
+    if (/blocked|configuration required/.test(text)) return 'blocked_external_condition';
     if (/lifecycle transition|lifecycle.*rejected|provider-evidence ingress.*reject|evidence ingress.*reject/.test(text)) {
-      return 'lifecycle_transition_rejection';
+      return 'internal_invariant_failure';
     }
-    if (/reconcil/.test(text)) return 'reconciliation_failure';
+    if (/reconcil/.test(text)) return 'internal_invariant_failure';
     if (entry.persistence === true || /persist|durable save/.test(text)) return 'persistence_failure';
-    if (/validation|candidate.*reject/.test(text)) return 'downstream_validation_failure';
-    if (/malformed|parser|invalid output/.test(text)) return 'malformed_or_parser_failure';
+    if (/validation|candidate.*reject/.test(text)) return 'validation_failure';
+    if (/malformed|parser|invalid output/.test(text)) return 'provider_output_failure';
     if (/provider|transport|api request|http /.test(text)) return 'provider_transport_failure';
-    return 'other_run_error';
+    return 'internal_invariant_failure';
   };
   const displayedErrorCategoryCounts = Object.fromEntries([
-    'lifecycle_transition_rejection', 'reconciliation_failure', 'persistence_failure',
-    'downstream_validation_failure', 'malformed_or_parser_failure',
-    'provider_transport_failure', 'local_effect_boundary_failure', 'other_run_error',
+    'provider_transport_failure', 'provider_output_failure', 'validation_failure',
+    'persistence_failure', 'internal_invariant_failure', 'stale_callback_notice',
+    'cancellation', 'operational_pause', 'blocked_external_condition',
+    'diagnostic_observer_failure',
   ].map((category) => [category, 0]));
   for (const entry of currentDetails) displayedErrorCategoryCounts[classifyDisplayedError(entry)]++;
   const currentViolations = array(report.authoritative_obligation_ledger?.invariants?.violations
@@ -119,7 +131,8 @@ export function deriveRunErrorAccounting(report = {}) {
       category_detail_truncated: displayedCategoryTotal < displayedErrorCount,
     },
     lifecycle_transition_rejections: {
-      count: displayedErrorCategoryCounts.lifecycle_transition_rejection,
+      count: currentDetails.filter((entry) => /lifecycle|provider.evidence/i
+        .test(`${entry?.code ?? ''} ${entry?.message ?? ''}`)).length,
       unit: 'retained_error_records', scope: 'current_attempt', authoritative: true,
       provider_fault_attribution: false,
     },
@@ -233,7 +246,8 @@ export function deriveRunErrorAccounting(report = {}) {
         Math.max(0, cumulativeFailureObservations - unresolved),
       event_and_logical_error_units_intentionally_distinct: true,
       lifecycle_rejections_not_counted_as_provider_transport_failures:
-        displayedErrorCategoryCounts.lifecycle_transition_rejection === 0
+        currentDetails.every((entry) => !/lifecycle|provider.evidence/i
+          .test(`${entry?.code ?? ''} ${entry?.message ?? ''}`))
         || displayedErrorCategoryCounts.provider_transport_failure === 0
         || observedTransportFailures > 0,
       terminal_unresolved_subset_of_failed: providerUnresolved <= uniqueFailed,

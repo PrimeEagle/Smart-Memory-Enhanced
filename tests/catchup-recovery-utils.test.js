@@ -84,7 +84,7 @@ test('provider recovery-budget pause is resumable without becoming an unresolved
 test('incomplete tier coverage invalidates premature finalization before resume', () => {
   let manifest = ensureCatchUpRunManifest({ run_id: 'run-incomplete', source_message_count: 9434 });
   assert.equal(manifest.obligation_ledger.logical_run_id, 'run-incomplete');
-  assert.equal(manifest.obligation_ledger.execution_kernel.schema_version, 1);
+  assert.equal(manifest.obligation_ledger.execution_kernel.schema_version, 2);
   manifest = recordCatchUpOwnerRange(manifest, 'Alex Mercer', {
     start_offset: 0, end_offset: 19, source_start_index: 0, source_end_index: 19,
   }, { safelyCommitted: true, terminalOutcome: 'completed' });

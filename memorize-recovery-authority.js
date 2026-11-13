@@ -57,17 +57,12 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
   const activeTransaction = transaction?.state === 'active' ? transaction : null;
   const base = deriveMemorizeResumeEligibility({
     ledger, projection, provider_audit: providerAudit,
-    provider_completion_journal: input.provider_completion_journal,
     active_transaction: activeTransaction,
   });
-  // The retained-evidence planner owns the action whenever it found an exact,
-  // executable plan. Recovery-window projections may describe the same work,
-  // but cannot override that canonical decision with a stale adoption action.
   const exactAction = kernelStatus || !pending ? preliminaryAction : null;
   const blockers = [];
   const currentProgressSnapshot = snapshotMemorizeResumeProgress({
     checkpoint, ledger, provider_audit: providerAudit,
-    retained_evidence_plan: base.retained_evidence_plan,
   });
   if (resumeNoProgressBlockIsCurrent(checkpoint?.resume_progress,
     currentProgressSnapshot)) blockers.push({

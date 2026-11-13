@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readPageRunMarker, writePageRunMarker, clearPageRunMarker, reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, captureBrowserStartupEvidence, PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS } from '../page-run-lifecycle.js';
+import { readPageRunMarker, writePageRunMarker, clearPageRunMarker, reconcilePageRunInstance, summarizePageRunLifecycle, recordRuntimeLifecycleEvent, markRuntimeLifecycleErrorsRecovered, captureBrowserStartupEvidence, PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS } from '../page-run-lifecycle.js';
 
 const storage = () => {
   const items = new Map();
@@ -162,6 +162,25 @@ test('same-page runtime resets and safe exception fingerprints remain distinct f
   assert.equal(summary.runtime_events[1].classification, 'ui_remounted');
   assert.equal(summary.runtime_events[2].classification, 'unhandled_rejection');
   assert.equal(summary.runtime_events[2].stack_fingerprint, 'fnv1a-test');
+});
+
+test('unhandled rejection diagnostics are bounded, contextual, and recoverable', () => {
+  const metadata = {};
+  const event = recordRuntimeLifecycleEvent(metadata, 'run-a', {
+    classification: 'unhandled_rejection', page_instance_id: 'page-1',
+    normalized_error_type: 'TypeError', message: `failure ${'x'.repeat(400)}`,
+    subsystem: 'javascript_runtime', phase: 'source_extraction',
+    obligation_id: 'session:160-179', attempt_id: 'attempt-1',
+    active_action: 'dispatch_provider_request', controller_invocation_id: 'controller-1',
+    affected_controller_progress: true, stack_fingerprint: 'fnv1a-test',
+  });
+  assert.equal(event.message.length, 240);
+  assert.equal(event.obligation_id, 'session:160-179');
+  assert.equal(event.affected_controller_progress, true);
+  assert.equal(event.later_handled_or_recovered, false);
+  assert.equal(markRuntimeLifecycleErrorsRecovered(metadata, 'run-a', { at: 2000 }), 1);
+  assert.equal(event.later_handled_or_recovered, true);
+  assert.equal(event.recovered_at, 2000);
 });
 
 test('freeze/resume lifecycle is neutral, coalesced, and does not create page interruptions', () => {

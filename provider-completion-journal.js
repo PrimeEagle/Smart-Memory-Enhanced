@@ -1,21 +1,22 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
 
-import { memorizeObligationStateFingerprint } from './memorize-obligation-ledger.js';
-import {
-  PROVIDER_EVIDENCE_PROVENANCE,
-  assessRetainedEvidenceOwnerApplicability,
-  deriveRetainedEvidenceDownstreamCursor,
-  exactRetainedEvidenceIdentity,
-  planRetainedProviderEvidence,
-} from './retained-evidence-plan.js';
-
-export { PROVIDER_EVIDENCE_PROVENANCE } from './retained-evidence-plan.js';
-
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 5;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 6;
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
 const now = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now();
+function deriveCurrentCompletionCursor(entry = {}) {
+  if (entry.logical_completed_at != null) return 'fully_terminal';
+  if (verifiedTransition(entry.ledger_transition)
+    && verifiedTransition(entry.manifest_transition)) return 'canonical_state_applied';
+  if (['committed', 'verified_existing', 'not_needed', 'not_applicable']
+    .includes(entry.persistence?.status)) return 'persistence_committed';
+  if (['accepted', 'partial', 'rejected', 'validated_no_update']
+    .includes(entry.validation?.status)) return 'validation_recorded';
+  if (entry.parser_result?.status) return 'parser_recorded';
+  if (entry.response_text != null) return 'response_journaled';
+  return entry.terminal_outcome === 'running' ? 'attempt_registered' : 'attempt_settled';
+}
 const verifiedTransition = (value) => ['applied_verified', 'idempotent_duplicate_verified',
   'not_applicable'].includes(value?.status);
 function mergeUnverifiedCallerTransition(priorValue, patchValue) {
@@ -63,6 +64,14 @@ function container(metadata) {
   return metadata.provider_completion_journal;
 }
 
+function currentContainerForRead(metadata) {
+  const journal = metadata?.provider_completion_journal;
+  if (!journal) return null;
+  if (journal.schema_version !== PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION
+    || !journal.entries || !Array.isArray(journal.order)) return null;
+  return journal;
+}
+
 export function recordProviderCompletion(metadata, attempt, patch = {}) {
   if (!metadata || !attempt?.attempt_id) return null;
   const journal = container(metadata);
@@ -70,6 +79,7 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
   const entry = journal.entries[attempt.attempt_id] = {
     schema_version: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
     attempt_id: attempt.attempt_id,
+    command_id: patch.command_id ?? prior.command_id ?? null,
     logical_run_id: attempt.logical_run_id ?? attempt.run_id ?? prior.logical_run_id ?? null,
     controller_instance_id: attempt.controller_instance_id
       ?? prior.controller_instance_id ?? null,
@@ -83,6 +93,9 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     child_key: patch.child_key ?? prior.child_key ?? null,
     child_obligation_id: patch.child_obligation_id ?? prior.child_obligation_id
       ?? attempt.child_obligation_id ?? attempt.source_unit_key ?? null,
+    obligation_leaf_id: patch.obligation_leaf_id ?? prior.obligation_leaf_id
+      ?? attempt.child_obligation_id ?? attempt.source_unit_key
+      ?? attempt.logical_obligation_id ?? null,
     tier: attempt.tier ?? prior.tier ?? null,
     owner: attempt.owner ?? prior.owner ?? null,
     source_range: clone(attempt.source_range ?? prior.source_range ?? null),
@@ -123,205 +136,47 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     downstream_cursor: patch.downstream_cursor ?? prior.downstream_cursor ?? null,
     logical_disposition: patch.logical_disposition ?? prior.logical_disposition ?? null,
     replay_count: Number(prior.replay_count ?? 0),
-    adopted_from_logical_run_id: patch.adopted_from_logical_run_id
-      ?? prior.adopted_from_logical_run_id ?? null,
-    adopted_from_attempt_id: patch.adopted_from_attempt_id
-      ?? prior.adopted_from_attempt_id ?? null,
-    evidence_adoption_reason: patch.evidence_adoption_reason
-      ?? prior.evidence_adoption_reason ?? null,
-    owner_applicability: clone(patch.owner_applicability
-      ?? attempt.owner_applicability ?? attempt.applicability_decision
-      ?? prior.owner_applicability ?? null),
-    retained_evidence_decisions: clone(prior.retained_evidence_decisions ?? []),
   };
-  entry.owner_applicability = clone(assessRetainedEvidenceOwnerApplicability(entry, {
-    tier: entry.tier, owner: entry.owner,
-  }));
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
     && verifiedTransition(entry.manifest_transition)
     && verifiedTransition(entry.ledger_transition)) {
     entry.completed_at ??= entry.physical_completed_at ?? entry.updated_at;
     entry.logical_completed_at ??= entry.updated_at;
   }
-  entry.downstream_cursor = deriveProviderDownstreamCursor(entry);
+  entry.downstream_cursor = deriveCurrentCompletionCursor(entry);
   entry.logical_disposition ??= entry.downstream_cursor;
   journal.order = [...journal.order.filter((id) => id !== attempt.attempt_id), attempt.attempt_id].slice(-256);
   return entry;
 }
 
-/**
- * Journal-owned effect boundary for retained-evidence decision audits.
- * Planner selections are immutable snapshots and are never mutated here.
- */
-export function appendRetainedEvidenceDecision(metadata, attemptId, decision = {}, at = Date.now()) {
-  const journal = container(metadata);
-  const prior = journal?.entries?.[attemptId] ?? null;
-  if (!prior) return null;
-  const normalized = {
-    selected_at: decision.selected_at ?? null,
-    applied_at: Number.isFinite(Number(decision.applied_at))
-      ? Number(decision.applied_at) : at,
-    selected_classification: decision.selected_classification ?? null,
-    applied_classification: decision.applied_classification ?? null,
-    changed_since_selection: decision.changed_since_selection === true,
-    selected_obligation_revision: decision.selected_obligation_revision ?? null,
-    applied_obligation_revision: decision.applied_obligation_revision ?? null,
-    selected_state_fingerprint: decision.selected_state_fingerprint ?? null,
-    applied_state_fingerprint: decision.applied_state_fingerprint ?? null,
-    disposition: decision.disposition ?? null,
-    provider_call_required: decision.provider_call_required === true,
-    persistence_required: decision.persistence_required === true,
-    owner_applicability: clone(decision.owner_applicability ?? null),
-    effect_owner: 'provider_completion_journal',
-  };
-  const signature = JSON.stringify(normalized);
-  const retained = (prior.retained_evidence_decisions ?? [])
-    .filter((item) => JSON.stringify(item) !== signature);
-  const next = {
-    ...prior,
-    owner_applicability: clone(decision.owner_applicability
-      ?? prior.owner_applicability ?? null),
-    retained_evidence_decisions: [...retained, normalized].slice(-16),
-    updated_at: Math.max(Number(prior.updated_at ?? 0), normalized.applied_at),
-  };
-  journal.entries[attemptId] = next;
-  return next;
-}
-
-export function findReplayableProviderCompletion(metadata, input = {}) {
-  const journal = container(metadata);
+/** Exact current-run lookup. This never ranks, adopts, or scans prior-run evidence. */
+export function findCurrentRunProviderCompletion(metadata, input = {}) {
+  if (!input.logical_run_id || !input.attempt_id || !input.obligation_leaf_id) return null;
+  const journal = currentContainerForRead(metadata);
   if (!journal) return null;
   const entries = journal.order.map((id) => journal.entries[id]).filter(Boolean).reverse();
-  return entries.find((entry) => terminalSuccess.has(entry.terminal_outcome)
-    && (!input.current_logical_run_id
-      || entry.logical_run_id !== input.current_logical_run_id)
-    && entry.root_obligation_id === input.root_obligation_id
-    && (!input.child_obligation_id || (entry.child_obligation_id ?? entry.root_obligation_id)
-      === input.child_obligation_id)
-    && (!input.tier || entry.tier === input.tier)
-    && (input.owner === undefined || String(entry.owner ?? '').trim().toLowerCase()
-      === String(input.owner ?? '').trim().toLowerCase())
-    && (!input.source_range || (Number(entry.source_range?.start) === Number(input.source_range.start)
-      && Number(entry.source_range?.end) === Number(input.source_range.end)))
-    && entry.source_fingerprint === input.source_fingerprint
-    && entry.response_text != null
-    && entry.logical_completed_at == null
-    && (entry.completed_at == null || entry.physical_completed_at != null)) ?? null;
+  return entries.find((entry) => entry.logical_run_id === input.logical_run_id
+    && entry.attempt_id === input.attempt_id
+    && (entry.obligation_leaf_id ?? entry.child_obligation_id ?? entry.root_obligation_id)
+      === input.obligation_leaf_id
+    && (!input.command_id || entry.command_id === input.command_id)
+    && (!input.controller_generation
+      || Number(entry.transaction_generation) === Number(input.controller_generation))
+    && (!input.source_fingerprint || entry.source_fingerprint === input.source_fingerprint)) ?? null;
 }
 
-function exactCompletionIdentity(entry, input = {}) {
-  return exactRetainedEvidenceIdentity(entry, input);
-}
-
-/** Furthest verified local stage; physical completion is intentionally separate. */
-export function deriveProviderDownstreamCursor(entry = {}, obligation = null) {
-  return deriveRetainedEvidenceDownstreamCursor(entry, obligation);
-}
-
-/**
- * Pure retained-evidence selector. Same-run continuation can never be routed
- * through prior-run adoption, and persisted partial work selects only its
- * unresolved fragments.
- */
-export function classifyRetainedProviderEvidence(entry, input = {}) {
-  if (!entry || !exactCompletionIdentity(entry, input)) return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
-    downstream_cursor: null, next_action: null,
-  };
-  const plan = planRetainedProviderEvidence({
-    ...input,
-    candidates: [...(input.later_attempts ?? []), entry],
+export function assessCurrentRunCompletionReplay(metadata, input = {}) {
+  const entry = findCurrentRunProviderCompletion(metadata, input);
+  if (!entry) return Object.freeze({ replayable: false, reason_code: 'exact_completion_not_found' });
+  if (entry.response_text == null) return Object.freeze({
+    replayable: false, reason_code: 'provider_response_not_journaled', entry: clone(entry),
   });
-  if (plan.evidence_origin_attempt_id !== entry.attempt_id) return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
-    downstream_cursor: deriveProviderDownstreamCursor(entry, input.obligation ?? null),
-    next_action: null,
-    provider_call_required: false,
-    persistence_required: false,
-    owner_applicability: plan.owner_applicability,
-    retained_evidence_plan: plan,
-  };
-  return {
-    classification: plan.evidence_classification,
-    downstream_cursor: plan.downstream_cursor,
-    next_action: plan.exact_next_action,
-    lifecycle_operation: plan.lifecycle_operation,
-    provider_call_required: plan.provider_call_required,
-    persistence_required: plan.persistence_required,
-    blockers: plan.exact_blockers,
-    owner_applicability: plan.owner_applicability,
-    retained_evidence_plan: plan,
-  };
-}
-
-export function selectRetainedProviderEvidence(metadata, input = {}) {
-  const journal = container(metadata);
-  if (!journal) return null;
-  const attempts = journal.order.map((id) => journal.entries[id]).filter(Boolean);
-  const plan = planRetainedProviderEvidence({ ...input, candidates: attempts });
-  if (!plan.selected_entry || [PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
-    PROVIDER_EVIDENCE_PROVENANCE.SUPERSEDED,
-    PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL].includes(plan.evidence_classification)) return null;
-  return {
-    entry: plan.selected_entry,
-    classification: plan.evidence_classification,
-    downstream_cursor: plan.downstream_cursor,
-    next_action: plan.exact_next_action,
-    lifecycle_operation: plan.lifecycle_operation,
-    provider_call_required: plan.provider_call_required,
-    persistence_required: plan.persistence_required,
-    blockers: plan.exact_blockers,
-    owner_applicability: plan.owner_applicability,
-    retained_evidence_plan: plan,
-    selected_obligation_id: input.child_obligation_id ?? input.root_obligation_id ?? null,
-    selected_obligation_revision: Number(input.obligation?.revision ?? 0),
-    selected_obligation_state_fingerprint:
-      memorizeObligationStateFingerprint(input.obligation ?? null),
-    selected_at: Date.now(),
-  };
-}
-
-/**
- * Revalidate a retained-evidence decision against the exact canonical leaf at
- * the instant it is applied. A changed leaf is reclassified; terminal coverage
- * is an idempotent success and can never be regressed to response processing.
- */
-export function revalidateRetainedProviderEvidenceSelection(selection, input = {}) {
-  if (!selection?.entry) return {
-    classification: PROVIDER_EVIDENCE_PROVENANCE.IDENTITY_MISMATCH,
-    reason_code: 'retained_evidence_selection_missing', changed_since_selection: false,
-  };
-  const obligation = input.obligation ?? null;
-  const currentFingerprint = memorizeObligationStateFingerprint(obligation);
-  const changed = Number(selection.selected_obligation_revision ?? 0)
-      !== Number(obligation?.revision ?? 0)
-    || (selection.selected_obligation_state_fingerprint ?? null) !== currentFingerprint;
-  if (obligation?.checkpoint_eligible === true
-    || ['durably_committed', 'explicit_no_update'].includes(obligation?.current_state)) {
-    return {
-      classification: PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL,
-      downstream_cursor: 'fully_terminal', next_action: null,
-      provider_call_required: false, persistence_required: false,
-      changed_since_selection: changed,
-      selected_obligation_revision: selection.selected_obligation_revision ?? 0,
-      applied_obligation_revision: obligation?.revision ?? 0,
-      selected_state_fingerprint: selection.selected_obligation_state_fingerprint ?? null,
-      applied_state_fingerprint: currentFingerprint,
-    };
+  if (entry.logical_completed_at != null || verifiedTransition(entry.ledger_transition)) {
+    return Object.freeze({ replayable: false, reason_code: 'completion_command_already_applied',
+      already_applied: true, entry: clone(entry) });
   }
-  const revalidated = classifyRetainedProviderEvidence(selection.entry, {
-    ...input, obligation,
-    later_attempts: input.later_attempts?.length
-      ? input.later_attempts : [selection.entry],
-  });
-  return {
-    ...revalidated,
-    changed_since_selection: changed,
-    selected_obligation_revision: selection.selected_obligation_revision ?? 0,
-    applied_obligation_revision: obligation?.revision ?? 0,
-    selected_state_fingerprint: selection.selected_obligation_state_fingerprint ?? null,
-    applied_state_fingerprint: currentFingerprint,
-  };
+  return Object.freeze({ replayable: true, reason_code: 'exact_current_run_completion_available',
+    already_applied: false, entry: clone(entry) });
 }
 
 export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date.now()) {
@@ -372,19 +227,27 @@ export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date
 }
 
 function journalEntriesForHealth(metadata) {
-  const journal = container(metadata);
+  const journal = currentContainerForRead(metadata);
   return (journal?.order ?? []).map((id) => journal.entries?.[id]).filter(Boolean);
 }
 
 export function inspectProviderCompletionConsistency({ metadata, provider_audit, ledger,
   child_manifests, live_health, controller_heartbeat: controllerHeartbeat } = {}) {
-  const journal = container(metadata) ?? { entries: {}, order: [] };
+  const journal = currentContainerForRead(metadata) ?? { entries: {}, order: [] };
   const attempts = provider_audit?.recent_attempts ?? [];
   const obligations = ledger?.obligations ?? {};
   const manifests = child_manifests?.roots ?? child_manifests ?? {};
   const runningAttemptIds = new Set(attempts.filter((item) => item?.terminal_outcome === 'running')
     .map((item) => item.attempt_id));
   const violations = [];
+  if (metadata?.provider_completion_journal && !currentContainerForRead(metadata)) {
+    violations.push({
+      code: 'active_provider_completion_journal_schema_unsupported',
+      next_action: 'fresh_start_required',
+      provider_call_required: false,
+      classification: 'current_runtime',
+    });
+  }
   if (controllerHeartbeat?.terminal === true && runningAttemptIds.size > 0) {
     violations.push({
       code: 'closed_controller_retains_running_provider_attempt',
@@ -461,7 +324,6 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
     historical_observations: [],
     checked_at: Date.now(),
   };
-  if (metadata) journal.reconciliation = result;
   return result;
 }
 
@@ -501,7 +363,7 @@ export async function replayProviderCompletion(entry, handlers = {}) {
 }
 
 export function exportProviderCompletionJournal(metadata) {
-  const journal = container(metadata);
+  const journal = currentContainerForRead(metadata);
   if (!journal) return null;
   return {
     schema_version: journal.schema_version,
@@ -535,13 +397,8 @@ export function exportProviderCompletionJournal(metadata) {
       completed_at: entry.completed_at, replay_count: entry.replay_count,
       logical_completed_at: entry.logical_completed_at ?? null,
       downstream_cursor: entry.downstream_cursor
-        ?? deriveProviderDownstreamCursor(entry),
+        ?? deriveCurrentCompletionCursor(entry),
       logical_disposition: entry.logical_disposition ?? null,
-      adopted_from_logical_run_id: entry.adopted_from_logical_run_id ?? null,
-      adopted_from_attempt_id: entry.adopted_from_attempt_id ?? null,
-      evidence_adoption_reason: entry.evidence_adoption_reason ?? null,
-      owner_applicability: clone(entry.owner_applicability ?? null),
-      retained_evidence_decisions: clone(entry.retained_evidence_decisions ?? []),
     })),
   };
 }

@@ -48,8 +48,7 @@ export function createMemorizeExecutionContext(input = {}) {
       provider_await_point: input.hooks?.provider_await_point ?? noopAsync,
       provider_completion_journal_updated: input.hooks?.provider_completion_journal_updated ?? noopAsync,
       provider_completion_command: input.hooks?.provider_completion_command ?? null,
-      retained_evidence_decision_recorded:
-        input.hooks?.retained_evidence_decision_recorded ?? noopAsync,
+      action_receipt: input.hooks?.action_receipt ?? noopAsync,
       recovery_child_manifest_updated: input.hooks?.recovery_child_manifest_updated ?? noopAsync,
       context_overflow_child_committed: input.hooks?.context_overflow_child_committed ?? noopAsync,
       recovery_epoch_initialized: input.hooks?.recovery_epoch_initialized ?? noopAsync,

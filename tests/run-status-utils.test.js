@@ -142,6 +142,18 @@ test('recovered failures canonically supply a missing historical observation cou
   assert.equal(corrected.reconciliation.consistent, true);
 });
 
+test('local provider-evidence rejection is an internal failure, not transport', () => {
+  const accounting = deriveRunErrorAccounting(completed({
+    errors: 1,
+    error_details: [{ code: 'SME_PROVIDER_EVIDENCE_INGRESS_REJECTED',
+      message: 'Provider-evidence ingress rejected parser_accepted.',
+      provider_fault_attribution: false }],
+  }));
+  assert.equal(accounting.displayed_error_records.categories.internal_invariant_failure, 1);
+  assert.equal(accounting.displayed_error_records.categories.provider_transport_failure, 0);
+  assert.equal(accounting.provider_transport_failures.count, 0);
+});
+
 test('supplied 3304-obligation fixture preserves physical and logical scopes', () => {
   const report = completed({ provider_attempt_audit: {
     schema_version: 5,

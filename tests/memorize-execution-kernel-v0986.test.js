@@ -6,8 +6,10 @@ import {
   applyProviderCompletion,
   createMemorizeExecutionAggregate,
   ensureMemorizeExecutionAggregate,
+  latestMemorizeActionReceipt,
   observeMemorizeKernelCommit,
   projectMemorizeKernelStatus,
+  recordMemorizeActionReceipt,
   validateMemorizeExecutionAggregate,
 } from '../memorize-execution-kernel.js';
 import { applyMemorizeLifecycleEvent } from '../memorize-obligation-ledger.js';
@@ -80,6 +82,26 @@ function completeCommand({ id, attempt = `attempt:${id}`, start, end, command = 
     terminal,
   };
 }
+
+test('durable action receipts enforce run and leaf identity and replay idempotently', () => {
+  const aggregate = register(createMemorizeExecutionAggregate(RUN), {
+    id: 'session:0-19', start: 0, end: 19,
+  });
+  const input = { logical_run_id: RUN, obligation_id: 'session:0-19',
+    action: 'dispatch_provider_request', phase: 'provider_request_started',
+    attempt_id: 'attempt:1', controller_generation: 3 };
+  const first = recordMemorizeActionReceipt(aggregate, input, 100);
+  assert.equal(first.status, 'applied');
+  assert.equal(latestMemorizeActionReceipt(first.aggregate, 'session:0-19').phase,
+    'provider_request_started');
+  const duplicate = recordMemorizeActionReceipt(first.aggregate, input, 101);
+  assert.equal(duplicate.status, 'idempotent_duplicate');
+  assert.equal(duplicate.mutated, false);
+  assert.equal(recordMemorizeActionReceipt(first.aggregate, { ...input,
+    logical_run_id: 'prior-run' }).reason_code, 'logical_run_identity_mismatch');
+  assert.equal(recordMemorizeActionReceipt(first.aggregate, { ...input,
+    obligation_id: 'missing' }).reason_code, 'unknown_obligation_leaf');
+});
 
 test('redacted v0.9.85 fixture characterizes all five failures and both leaf identity violations', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/v0985-execution-kernel-failures.json', import.meta.url)));
@@ -187,7 +209,8 @@ test('canonical status offers Resume only when the exact action is executable', 
   aggregate = applyProviderCompletion(aggregate, partial).aggregate;
   const ready = projectMemorizeKernelStatus(aggregate);
   assert.equal(ready.resume_enabled, true);
-  assert.equal(ready.next_action, 'regenerate_unresolved_from_verified_source');
+  assert.equal(ready.next_action, 'dispatch_provider_request');
+  assert.equal(ready.raw_obligation_action, 'regenerate_unresolved_from_verified_source');
 
   const blockedAggregate = structuredClone(aggregate);
   blockedAggregate.execution_kernel.recovery_capsules['session:40-59'] = {
@@ -385,6 +408,63 @@ test('production tier pipeline routes final completion through the atomic kernel
   assert.equal(aggregate.obligations[pipeline.leafObligationId].current_state, 'durably_committed');
 });
 
+test('historical identical Session evidence cannot intercept current-run dispatch', async () => {
+  const currentRun = RUN;
+  const metadata = {
+    active_catchup_run_id: currentRun,
+    provider_completion_journal: { schema_version: 6, entries: {
+      historical: {
+        schema_version: 6, attempt_id: 'historical', logical_run_id: 'prior-run',
+        obligation_leaf_id: 'session:chat:160-179:fnv1a-5654f879',
+        root_obligation_id: 'session:chat:160-179:fnv1a-5654f879',
+        tier: 'session', source_range: { start: 160, end: 179, message_count: 20 },
+        source_fingerprint: 'fnv1a-5654f879', response_text: '{"records":[]}',
+        parser_result: { status: 'accepted' }, terminal_outcome: 'completed',
+      },
+    }, order: ['historical'], reconciliation: null },
+  };
+  let aggregate = createMemorizeExecutionAggregate(currentRun);
+  let providerStarted = 0;
+  const execution = createMemorizeExecutionContext({
+    controller: { lifecycle_required: true, instance_id: 'controller:new-run' },
+    provider: { selected_recovery_action: 'dispatch_provider_request' },
+    hooks: {
+      obligation_event: async (event) => {
+        const applied = applyMemorizeLifecycleEvent(aggregate, {
+          obligation_id: event.obligation_id, root_obligation_id: event.root_obligation_id,
+          leaf_obligation_id: event.leaf_obligation_id, logical_run_id: currentRun,
+          tier: event.tier, owner: event.owner, source_range: event.source_range,
+          source_fingerprint: event.source_fingerprint,
+        }, { ...event, event_id: event.event_id ?? `event:${event.type}:${Date.now()}` });
+        aggregate = applied.ledger;
+        if (event.type === 'provider_attempt_started') providerStarted++;
+        return applied;
+      },
+      get_canonical_obligation: (id) => aggregate.obligations[id] ?? null,
+      action_receipt: async () => ({ status: 'applied' }),
+      provider_completion_command: async () => ({ status: 'applied' }),
+    },
+  });
+  const pipeline = createMemorizeTierPipeline({
+    tier: 'session', tierLabel: 'Session', execution, metadata,
+    range: { start: 160, end: 179, message_count: 20 }, rangeId: 'range:160-179',
+    sourceFingerprint: 'fnv1a-5654f879', preflight: {}, requestBudget: {},
+    providerConfigSignature: 'fake', expectedOutputFormat: 'structured_json_schema_v1',
+  });
+  await pipeline.emitLifecycleEvent('obligation_registered', {
+    next_eligible_action: 'dispatch_provider_request',
+  });
+  pipeline.requireSelectedAction('dispatch_provider_request');
+  const ingress = await pipeline.ingestProviderEvidence('register_new_attempt');
+  assert.equal(ingress.status, 'applied');
+  assert.equal(providerStarted, 1);
+  assert.notEqual(ingress.attempt.attempt_id, 'historical');
+  assert.equal(ingress.attempt.logical_run_id, currentRun);
+  assert.equal(metadata.provider_completion_journal.order.length, 2);
+  assert.equal(metadata.provider_completion_journal.entries.historical.logical_run_id,
+    'prior-run', 'historical evidence remains inert diagnostic data');
+});
+
 function createScriptedControllerHarness(suffix) {
   const id = `session:controller-${suffix}:0-19`;
   let aggregate = register(createMemorizeExecutionAggregate(RUN), {
@@ -530,7 +610,11 @@ test('production controller path tolerates duplicate, late, and reordered callba
   assert.equal(projectMemorizeKernelStatus(reorderedHarness.aggregate()).finalization_eligible, true);
 });
 
-for (const [label, messageCount] of [['200-message', 200], ['9,434-message synthetic', 9434]]) {
+for (const [label, messageCount] of [
+  ['200-message', 200],
+  ['1,000-message synthetic', 1000],
+  ['9,434-message synthetic', 9434],
+]) {
   test(`${label} canonical run completes with one physical request per logical obligation`, () => {
     let aggregate = createMemorizeExecutionAggregate(RUN);
     let logical = 0;

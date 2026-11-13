@@ -4,8 +4,6 @@ import {
   getMemorizeActionContract,
   projectMemorizeObligationLedger,
 } from './memorize-obligation-ledger.js';
-import { PROVIDER_EVIDENCE_PROVENANCE, planRetainedProviderEvidence }
-  from './retained-evidence-plan.js';
 
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
@@ -149,43 +147,18 @@ export function getFirstActionableObligation(ledgerValue) {
 }
 
 /**
- * Derives Resume eligibility from current authoritative state. Historical
- * transition observations may remain for diagnostics, but they can authorize
- * only a local reconciliation step; they can never authorize another provider
- * transmission. This keeps recovery fail-closed without making exact retained
- * terminal evidence impossible to finish.
+ * Derives Resume eligibility exclusively from current-run authoritative state.
+ * Historical journal and diagnostic records are not executable inputs.
  */
 export function deriveMemorizeResumeEligibility({
   ledger = null,
   projection: suppliedProjection = null,
   provider_audit: providerAudit = null,
-  provider_completion_journal: providerCompletionJournal = null,
   active_transaction = null,
 } = {}) {
   const projection = suppliedProjection ?? projectMemorizeObligationLedger(ledger);
   const pending = projection.next_eligible_obligation ?? null;
   const action = pending?.next_eligible_action ?? null;
-  const journalEntries = Array.isArray(providerCompletionJournal?.entries)
-    ? providerCompletionJournal.entries
-    : Object.values(providerCompletionJournal?.entries ?? {});
-  const retainedPlan = pending ? planRetainedProviderEvidence({
-    current_logical_run_id: projection.logical_run_id ?? ledger?.logical_run_id ?? null,
-    root_obligation_id: pending.parent_obligation_id ?? pending.obligation_id,
-    child_obligation_id: pending.obligation_id,
-    tier: pending.tier, owner: pending.owner,
-    source_range: pending.source_range,
-    source_fingerprint: pending.source_fingerprint,
-    obligation: pending,
-    candidates: journalEntries,
-  }) : null;
-  const exactRetainedCompletion = retainedPlan?.selected_entry ?? null;
-  const retainedClassification = retainedPlan?.evidence_classification ? {
-    classification: retainedPlan.evidence_classification,
-    downstream_cursor: retainedPlan.downstream_cursor,
-    next_action: retainedPlan.exact_next_action,
-    provider_call_required: retainedPlan.provider_call_required,
-    persistence_required: retainedPlan.persistence_required,
-  } : null;
   const physicalRunning = (providerAudit?.recent_attempts ?? [])
     .filter((attempt) => attempt?.terminal_outcome === 'running');
   const currentRunningCount = Math.max(
@@ -204,59 +177,6 @@ export function deriveMemorizeResumeEligibility({
     eligible: false, mode: 'blocked', reason_code: projection.pending_obligation_count > 0
       ? 'pending_obligation_has_no_exact_action' : 'no_pending_resume_obligation',
     next_eligible_action: null, obligation_id: null, provider_call_required: false,
-  };
-  if (retainedClassification?.classification
-    === PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE) return {
-    eligible: true, mode: 'local_reconciliation_only',
-    reason_code: 'exact_retained_terminal_evidence_available',
-    next_eligible_action: 'adopt_exact_prior_run_evidence',
-    obligation_id: pending.obligation_id,
-    physical_attempt_id: exactRetainedCompletion.attempt_id,
-    provider_call_required: false,
-    retained_evidence_plan: retainedPlan,
-  };
-  if (retainedClassification?.classification
-    === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM) return {
-    eligible: true, mode: 'local_reconciliation_only',
-    reason_code: 'current_run_downstream_continuation_available',
-    next_eligible_action: retainedClassification.next_action,
-    obligation_id: pending.obligation_id,
-    physical_attempt_id: exactRetainedCompletion.attempt_id,
-    provider_call_required: false,
-    retained_evidence_plan: retainedPlan,
-  };
-  if (retainedClassification?.classification
-    === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS) return {
-    eligible: true, mode: 'provider_resume',
-    reason_code: 'exact_unresolved_fragment_recovery_available',
-    next_eligible_action: retainedPlan.exact_next_action,
-    obligation_id: pending.obligation_id,
-    physical_attempt_id: exactRetainedCompletion.attempt_id,
-    provider_call_required: true,
-    retained_evidence_plan: retainedPlan,
-  };
-  if (retainedClassification?.classification
-    === PROVIDER_EVIDENCE_PROVENANCE.MISSING_PRIVATE_EVIDENCE) return {
-    eligible: false, mode: 'blocked',
-    reason_code: 'required_private_evidence_unavailable',
-    next_eligible_action: retainedClassification.next_action,
-    obligation_id: pending.obligation_id,
-    physical_attempt_id: exactRetainedCompletion.attempt_id,
-    provider_call_required: false,
-    retained_evidence_plan: retainedPlan,
-  };
-  if (retainedClassification?.classification
-    === PROVIDER_EVIDENCE_PROVENANCE.INCOMPLETE_RECONCILIATION
-    && ['completed', 'completed_no_candidates', 'completed_repartitioned']
-      .includes(exactRetainedCompletion?.terminal_outcome)) return {
-    eligible: false, mode: 'blocked',
-    reason_code: retainedPlan.exact_blockers?.[0]
-      ?? 'retained_evidence_reconciliation_incomplete',
-    next_eligible_action: retainedPlan.exact_next_action,
-    obligation_id: pending.obligation_id,
-    physical_attempt_id: exactRetainedCompletion?.attempt_id ?? null,
-    provider_call_required: false,
-    retained_evidence_plan: retainedPlan,
   };
   if (LOCAL_RECONCILIATION_ACTIONS.has(action)) return {
     eligible: true, mode: 'local_reconciliation_only',

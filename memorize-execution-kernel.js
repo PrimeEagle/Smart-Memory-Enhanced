@@ -9,7 +9,41 @@ import {
   createMemorizeRecoveryCapsule,
 } from './memorize-recovery-capsule.js';
 
-export const MEMORIZE_EXECUTION_KERNEL_VERSION = 1;
+export const MEMORIZE_EXECUTION_KERNEL_VERSION = 2;
+export const MEMORIZE_ACTION_HANDLER_REVISION = 1;
+export const MEMORIZE_ACTIONS = Object.freeze([
+  'dispatch_provider_request', 'apply_journaled_provider_completion',
+  'recover_from_source_window', 'continue_next_frontier_obligation',
+  'continue_source_traversal', 'continue_finalization', 'complete_run', 'stop_blocked',
+]);
+const PROVIDER_DISPATCH_ACTION_ALIASES = new Set([
+  'dispatch_registered_provider_attempt', 'dispatch_bounded_recovery_attempt',
+  'compact_response_repair', 'changed_dimension_regeneration',
+  'malformed_source_repartition', 'structured_json_regeneration',
+  'minimal_record_regeneration', 'single_source_unit_regeneration',
+  'retry_provider_with_backoff', 'recover_exact_unresolved_fragments',
+  'recover_unresolved_partial_output_fragments',
+  'regenerate_unresolved_from_verified_source',
+  'resume_changed_dimension_or_single_source_recovery',
+  'fragment_decision_regeneration', 'resume_exact_obligation',
+  'session_validation_repair_or_bounded_regeneration',
+  'citation_repair_or_bounded_regeneration', 'dispatch_after_prior_leaf_coverage', 'retry',
+]);
+export function canonicalizeMemorizeKernelAction(action) {
+  if (MEMORIZE_ACTIONS.includes(action)) return action;
+  if (PROVIDER_DISPATCH_ACTION_ALIASES.has(action)) return 'dispatch_provider_request';
+  if (['continue_pending_downstream_processing',
+    'replay_terminal_provider_downstream_lifecycle',
+    'reconcile_terminal_attempt_evidence'].includes(action)) {
+    return 'apply_journaled_provider_completion';
+  }
+  return null;
+}
+export const MEMORIZE_ACTION_RECEIPT_PHASES = Object.freeze([
+  'action_selected', 'action_started', 'provider_attempt_registered',
+  'provider_request_started', 'provider_response_received', 'command_committed',
+  'checkpoint_advanced', 'action_failed',
+]);
 const TERMINAL_STATES = new Set(['durably_committed', 'explicit_no_update']);
 const bounded = (items = [], maximum = 512) => items.slice(-maximum);
 const unique = (items = []) => [...new Set((Array.isArray(items) ? items : [])
@@ -20,12 +54,21 @@ function clone(value) {
 }
 
 function ensureKernelState(ledger, now = Date.now()) {
+  if (ledger.execution_kernel
+    && ledger.execution_kernel.schema_version !== MEMORIZE_EXECUTION_KERNEL_VERSION) {
+    const error = new Error('Memorize Chat execution kernel does not use the current schema.');
+    error.code = 'SME_MEMORIZE_SCHEMA_UNSUPPORTED';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = 'fresh_start_required';
+    throw error;
+  }
   ledger.execution_kernel ??= {
     schema_version: MEMORIZE_EXECUTION_KERNEL_VERSION,
     revision: 0,
     applied_commands: {},
     attempts: {},
     recovery_capsules: {},
+    action_receipts: [],
     semantic_events: [],
     stale_callbacks: [],
     created_at: now,
@@ -37,6 +80,7 @@ function ensureKernelState(ledger, now = Date.now()) {
   kernel.applied_commands ??= {};
   kernel.attempts ??= {};
   kernel.recovery_capsules ??= {};
+  kernel.action_receipts ??= [];
   kernel.semantic_events ??= [];
   kernel.stale_callbacks ??= [];
   return kernel;
@@ -60,6 +104,54 @@ export function ensureMemorizeExecutionAggregate(value, logicalRunId = null) {
   }
   ensureKernelState(ledger);
   return ledger;
+}
+
+export function recordMemorizeActionReceipt(aggregateValue, input = {}, at = Date.now()) {
+  const aggregate = clone(ensureMemorizeExecutionAggregate(aggregateValue));
+  const kernel = ensureKernelState(aggregate, at);
+  const logicalRunId = String(input.logical_run_id ?? '').trim();
+  const obligationId = String(input.obligation_id ?? '').trim();
+  const action = String(input.action ?? '').trim();
+  const phase = String(input.phase ?? '').trim();
+  if (!logicalRunId || logicalRunId !== aggregate.logical_run_id) return Object.freeze({
+    status: 'rejected', mutated: false, reason_code: 'logical_run_identity_mismatch',
+    aggregate: aggregateValue,
+  });
+  if (!obligationId || !aggregate.obligations?.[obligationId]) return Object.freeze({
+    status: 'rejected', mutated: false, reason_code: 'unknown_obligation_leaf',
+    aggregate: aggregateValue,
+  });
+  if (!MEMORIZE_ACTIONS.includes(action) || !MEMORIZE_ACTION_RECEIPT_PHASES.includes(phase)) {
+    return Object.freeze({ status: 'rejected', mutated: false,
+      reason_code: 'unknown_action_or_receipt_phase', aggregate: aggregateValue });
+  }
+  const receiptId = String(input.receipt_id
+    ?? `${logicalRunId}:${obligationId}:${action}:${phase}:${input.attempt_id ?? 'none'}:${input.controller_instance_id ?? 'none'}:${input.controller_generation ?? 'none'}`);
+  const existing = kernel.action_receipts.find((item) => item.receipt_id === receiptId);
+  if (existing) return Object.freeze({ status: 'idempotent_duplicate', mutated: false,
+    aggregate: aggregateValue, receipt: clone(existing) });
+  const receipt = {
+    receipt_id: receiptId, logical_run_id: logicalRunId, obligation_id: obligationId,
+    action, action_handler_revision: MEMORIZE_ACTION_HANDLER_REVISION, phase,
+    attempt_id: input.attempt_id ?? null,
+    controller_instance_id: input.controller_instance_id ?? null,
+    controller_generation: input.controller_generation ?? null,
+    reason_code: input.reason_code ?? null,
+    checkpoint: Number(input.checkpoint ?? 0), at,
+  };
+  kernel.revision += 1;
+  kernel.updated_at = at;
+  kernel.action_receipts = bounded([...kernel.action_receipts, receipt], 512);
+  semanticEvent(kernel, receiptId, 'action_receipt_recorded', receipt);
+  aggregate.updated_at = at;
+  return Object.freeze({ status: 'applied', mutated: true, aggregate, receipt: clone(receipt) });
+}
+
+export function latestMemorizeActionReceipt(aggregateValue, obligationId = null) {
+  const aggregate = ensureMemorizeExecutionAggregate(aggregateValue);
+  const receipts = aggregate.execution_kernel?.action_receipts ?? [];
+  return clone([...receipts].reverse().find((item) => !obligationId
+    || item.obligation_id === obligationId) ?? null);
 }
 
 function commandIdentity(command = {}) {
@@ -421,8 +513,9 @@ export function projectMemorizeKernelStatus(aggregateValue, input = {}) {
   const capsule = pending ? kernel.recovery_capsules[pending.obligation_id] ?? null : null;
   const capsuleAssessment = capsule ? assessMemorizeRecoveryCapsule(capsule) : null;
   const durableBlocker = projection.pending_obligations.find((item) => item.current_state === 'blocked');
-  const nextAction = durableBlocker?.next_eligible_action
+  const rawNextAction = durableBlocker?.next_eligible_action
     ?? capsuleAssessment?.next_action ?? pending?.next_eligible_action ?? null;
+  const nextAction = canonicalizeMemorizeKernelAction(rawNextAction);
   const executable = !durableBlocker && Boolean(pending)
     && (capsuleAssessment?.executable ?? pending?.actionability_reason === 'canonical_exact_action_available');
   const complete = projection.completion_gate_satisfied;
@@ -440,6 +533,7 @@ export function projectMemorizeKernelStatus(aggregateValue, input = {}) {
       ?? (!complete && !executable ? capsuleAssessment?.reason_code
         ?? 'no_executable_canonical_action' : null),
     next_action: nextAction,
+    raw_obligation_action: rawNextAction,
     action_executable: executable,
     provider_call_required: executable && (capsuleAssessment?.provider_call_required
       ?? pending?.provider_call_required === true),

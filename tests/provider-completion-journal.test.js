@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  findReplayableProviderCompletion,
+  assessCurrentRunCompletionReplay,
+  exportProviderCompletionJournal,
+  findCurrentRunProviderCompletion,
   inspectProviderCompletionConsistency,
   recordProviderCompletion,
   reconcileImpossibleLiveHealth,
@@ -58,7 +60,7 @@ test('provider completion journal rejects non-current persisted schemas', () => 
 
 test('provider completion journal rejects incomplete current-schema containers', () => {
   const metadata = { provider_completion_journal: {
-    schema_version: 5, entries: {}, reconciliation: null,
+    schema_version: 6, entries: {}, reconciliation: null,
   } };
   assert.throws(() => recordProviderCompletion(metadata, attempt()), (error) => {
     assert.equal(error.code, 'SME_MEMORIZE_SCHEMA_UNSUPPORTED');
@@ -66,6 +68,26 @@ test('provider completion journal rejects incomplete current-schema containers',
     return true;
   });
   assert.equal(Object.hasOwn(metadata.provider_completion_journal, 'order'), false);
+});
+
+test('journal inspection and export are pure projections', () => {
+  const metadata = {};
+  const before = structuredClone(metadata);
+  assert.equal(exportProviderCompletionJournal(metadata), null);
+  const consistency = inspectProviderCompletionConsistency({ metadata });
+  assert.equal(consistency.consistent, true);
+  assert.deepEqual(metadata, before);
+
+  const incompatible = { provider_completion_journal: {
+    schema_version: 5, entries: {}, order: [], reconciliation: null,
+  } };
+  const incompatibleBefore = structuredClone(incompatible);
+  const result = inspectProviderCompletionConsistency({ metadata: incompatible });
+  assert.equal(result.consistent, false);
+  assert.equal(result.violations[0].code,
+    'active_provider_completion_journal_schema_unsupported');
+  assert.equal(exportProviderCompletionJournal(incompatible), null);
+  assert.deepEqual(incompatible, incompatibleBefore);
 });
 
 test('unverified records cannot complete the child', async () => {
@@ -78,22 +100,32 @@ test('unverified records cannot complete the child', async () => {
   assert.equal(entry.manifest_transition.status, 'pending');
 });
 
-test('completion journal persists semantic owner applicability, not request labels alone', () => {
-  const valid = recordProviderCompletion({}, attempt(), {
-    response_text: '[fact] retained', parser_result: { status: 'accepted', records: [{
-      id: 'candidate-valid', _raw_entity_names: ['Lisette Dumont/character'],
-    }] },
+test('current-run completion lookup requires exact run, attempt, and leaf identity', () => {
+  const metadata = {};
+  recordProviderCompletion(metadata, attempt({ transaction_generation: 4 }), {
+    response_text: '[fact] retained', command_id: 'command-1',
   });
-  assert.equal(valid.owner_applicability.eligible, true);
-  assert.equal(valid.owner_applicability.proof_source, 'parsed_record_target_entities');
-  const mismatch = recordProviderCompletion({}, attempt({ attempt_id: 'provider-wrong-owner' }), {
-    response_text: '[fact] retained', parser_result: { status: 'accepted', records: [{
-      id: 'candidate-wrong', _raw_entity_names: ['Aster Graves/character'],
-    }] },
-  });
-  assert.equal(mismatch.owner_applicability.eligible, false);
-  assert.equal(mismatch.owner_applicability.classification,
-    'parsed_record_owner_scope_mismatch');
+  const identity = {
+    logical_run_id: 'run-1', attempt_id: 'provider-mvzlqkmi-342',
+    obligation_leaf_id: 'longterm:lisette:220-239:root',
+    source_fingerprint: 'fnv1a-629e21dd',
+    command_id: 'command-1', controller_generation: 4,
+  };
+  assert.equal(findCurrentRunProviderCompletion(metadata, identity)?.attempt_id,
+    'provider-mvzlqkmi-342');
+  assert.equal(findCurrentRunProviderCompletion(metadata, {
+    ...identity, logical_run_id: 'historical-run',
+  }), null);
+  assert.equal(findCurrentRunProviderCompletion(metadata, {
+    ...identity, attempt_id: 'historical-attempt',
+  }), null);
+  assert.equal(findCurrentRunProviderCompletion(metadata, {
+    ...identity, obligation_leaf_id: 'longterm:other:220-239:root',
+  }), null);
+  assert.equal(findCurrentRunProviderCompletion(metadata, {
+    ...identity, controller_generation: 5,
+  }), null);
+  assert.equal(assessCurrentRunCompletionReplay(metadata, identity).replayable, true);
 });
 
 test('journal replay cannot self-verify live-health closure', async () => {

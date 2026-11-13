@@ -53,12 +53,27 @@ export function projectMemorizeKernelDiagnostics(aggregateValue, input = {}) {
     private_fragment_payload_available: capsule.private_fragment_payload_available === true,
     source_backed_regeneration_available: capsule.source_backed_regeneration_available === true,
   }));
+  const actionReceipts = (kernel.action_receipts ?? []).slice(-256).map((receipt) => ({
+    receipt_id: receipt.receipt_id,
+    logical_run_id: receipt.logical_run_id,
+    obligation_id: receipt.obligation_id,
+    action: receipt.action,
+    action_handler_revision: receipt.action_handler_revision,
+    phase: receipt.phase,
+    attempt_id: receipt.attempt_id,
+    controller_instance_id: receipt.controller_instance_id,
+    controller_generation: receipt.controller_generation,
+    reason_code: receipt.reason_code,
+    checkpoint: receipt.checkpoint,
+    at: receipt.at,
+  }));
   return Object.freeze({
     schema_version: 1,
     logical_run_id: aggregate.logical_run_id,
     aggregate_revision: kernel.revision,
     current: status,
-    tables: { obligations, attempts, recovery_capsules: capsules },
+    tables: { obligations, attempts, recovery_capsules: capsules,
+      action_receipts: actionReceipts },
     semantic_events: structuredClone((kernel.semantic_events ?? []).slice(-256)),
     stale_callbacks: structuredClone((kernel.stale_callbacks ?? []).slice(-64)),
     invariants: { valid: validation.valid, violations: validation.violations },

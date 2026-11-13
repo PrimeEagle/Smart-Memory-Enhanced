@@ -1,5 +1,5 @@
 /** Bounded, content-free evidence about Memorize Chat page lifetimes. */
-export const PAGE_RUN_LIFECYCLE_SCHEMA_VERSION = 2;
+export const PAGE_RUN_LIFECYCLE_SCHEMA_VERSION = 3;
 export const PAGE_RUN_LIFECYCLE_MAX_TRANSITIONS = 24;
 export const RUNTIME_LIFECYCLE_MAX_EVENTS = 48;
 export const PAGE_INSTANCE_LINEAGE_LIMIT = 24;
@@ -75,15 +75,8 @@ export function clearPageRunMarker(storage, scope, runId) {
 
 export function ensurePageRunLifecycle(metadata, runId) {
   const prior = metadata?.page_run_lifecycle;
-  if (prior?.run_id === runId) {
-    prior.schema_version = PAGE_RUN_LIFECYCLE_SCHEMA_VERSION;
-    prior.runtime_events ??= [];
-    prior.runtime_event_count ??= prior.runtime_events.length;
-    prior.page_instance_lineage ??= [];
-    prior.controller_mount_count ??= 0;
-    prior.controller_unmount_count ??= 0;
-    return prior;
-  }
+  if (prior?.run_id === runId
+    && prior.schema_version === PAGE_RUN_LIFECYCLE_SCHEMA_VERSION) return prior;
   const ledger = {
     schema_version: PAGE_RUN_LIFECYCLE_SCHEMA_VERSION,
     run_id: runId,
@@ -124,7 +117,15 @@ export function recordRuntimeLifecycleEvent(metadata, runId, input = {}) {
     phase: input.phase ?? null,
     request_state: input.request_state ?? null,
     normalized_error_type: input.normalized_error_type ?? null,
+    message: String(input.message ?? '').replace(/https?:\/\/\S+/gi, '<url>')
+      .replace(/\s+/g, ' ').trim().slice(0, 240) || null,
     stack_fingerprint: input.stack_fingerprint ?? null,
+    obligation_id: input.obligation_id ?? null,
+    attempt_id: input.attempt_id ?? null,
+    active_action: input.active_action ?? null,
+    controller_invocation_id: input.controller_invocation_id ?? null,
+    affected_controller_progress: input.affected_controller_progress === true,
+    later_handled_or_recovered: input.later_handled_or_recovered === true,
     visibility_state: input.visibility_state ?? null,
     last_durable_phase_transition: input.last_durable_phase_transition ?? null,
     event_origin: input.event_origin ?? 'extension_observer',
@@ -146,6 +147,21 @@ export function recordRuntimeLifecycleEvent(metadata, runId, input = {}) {
     ledger.runtime_events = [...ledger.runtime_events, event].slice(-RUNTIME_LIFECYCLE_MAX_EVENTS);
   }
   return event;
+}
+
+export function markRuntimeLifecycleErrorsRecovered(metadata, runId, input = {}) {
+  const ledger = metadata?.page_run_lifecycle;
+  if (!ledger || ledger.run_id !== runId) return 0;
+  let changed = 0;
+  for (const event of ledger.runtime_events ?? []) {
+    if (!['unhandled_exception', 'unhandled_rejection'].includes(event.classification)
+      || event.later_handled_or_recovered === true) continue;
+    event.later_handled_or_recovered = true;
+    event.recovered_at = Number(input.at ?? Date.now());
+    event.recovery_reason = input.reason ?? 'controller_completed_after_observation';
+    changed++;
+  }
+  return changed;
 }
 
 /** A new page is observable; its browser-level cause is not. Never guess one. */

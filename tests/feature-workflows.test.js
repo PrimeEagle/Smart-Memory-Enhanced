@@ -1359,6 +1359,7 @@ test('chat-local cleanup: Forget This Chat and Fresh Start remove every chat-loc
   }
   assert.match(settings, /clearChatLocalCharacterData\(context\);/);
   assert.match(settings, /for \(const memberName of freshStartCharacterNames\)/);
+  assert.match(settings, /'provider_completion_journal'/);
   assert.match(canon, /metadata\?\.\[META_KEY\]\?\.card_local_canon/);
   assert.match(canon, /metadata\?\.\[MODULE_NAME\]\?\.card_local_canon/);
 });

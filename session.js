@@ -114,8 +114,7 @@ import {
   stageProviderRejectedFragments,
 } from './provider-attempt-audit.js';
 import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js';
-import { PROVIDER_EVIDENCE_PROVENANCE, selectRetainedProviderEvidence,
-  recordProviderCompletion }
+import { findCurrentRunProviderCompletion, recordProviderCompletion }
   from './provider-completion-journal.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
 import {
@@ -834,57 +833,23 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const resumeRecoveryState = storedRecoveryState?.configuration_signature === providerConfigSignature
       ? storedRecoveryState : null;
     const restoredFragments = resumeRecoveryState?.unresolved_fragments ?? [];
-    // Exact retained provider evidence outranks fragment-level recovery.  A
-    // completed response may have been accepted just before a controller/page
-    // interruption, so selecting it must happen before treating a missing
-    // fragment payload as a blocker or dispatching another provider request.
     const canonicalObligationAtSelection = pipeline.getCanonicalObligation();
     const canonicalDurableRecordIds = canonicalObligationAtSelection?.lifecycle
       ?.durably_persisted_record_ids ?? [];
     const canonicalUnresolvedFragmentIds = canonicalObligationAtSelection?.lifecycle
       ?.unresolved_fragment_ids ?? [];
-    const retainedApplicationDurableIds = (resumeRecoveryState?.durably_persisted_record_ids
-      ?? []).length ? resumeRecoveryState.durably_persisted_record_ids
-      : canonicalDurableRecordIds;
-    const retainedEvidence = execution.controller.lifecycle_required
-      ? selectRetainedProviderEvidence(providerMetadata, {
-      root_obligation_id: rootObligationId,
-      child_obligation_id: leafObligationId,
-      tier: 'session', owner: null,
-      source_range: { start: range.start, end: range.end },
-      source_fingerprint: coverageBase.source_fingerprint,
-      current_logical_run_id: providerMetadata?.active_catchup_run_id ?? null,
-      obligation: canonicalObligationAtSelection ?? {
-        current_state: execution.provider.root_obligation_state,
-        lifecycle: {
-          durably_persisted_record_ids: resumeRecoveryState?.durably_persisted_record_ids ?? [],
-          unresolved_fragment_ids: resumeRecoveryState?.unresolved_semantic_units ?? [],
-        },
-      },
-      }) : null;
-    const completionReplay = retainedEvidence?.classification
-      === PROVIDER_EVIDENCE_PROVENANCE.PRIOR_RUN_ADOPTABLE
-      ? retainedEvidence.entry : null;
-    const currentRunContinuation = retainedEvidence?.classification
-      === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_CONTINUE_DOWNSTREAM
-      ? retainedEvidence : null;
-    const currentRunFragmentRecovery = retainedEvidence?.classification
-      === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS
-      ? retainedEvidence : null;
-    const retainedWholeResponse = completionReplay ?? currentRunContinuation?.entry ?? null;
     const sourceBackedRecoveryRequired = execution.provider.resumed_pending_obligation
       && (Number(resumeRecoveryState?.durable_partial_record_count ?? 0) > 0
         || canonicalDurableRecordIds.length > 0)
       && ((resumeRecoveryState?.unresolved_semantic_units ?? []).length > 0
         || canonicalUnresolvedFragmentIds.length > 0)
-      && restoredFragments.length === 0 && !retainedWholeResponse;
+      && restoredFragments.length === 0;
     const resumeEligibility = resumeRecoveryState
       ? deriveRecoveryStageEligibility({
         ...resumeRecoveryState,
         has_unresolved_fragments: restoredFragments.length > 0,
       }) : null;
-    const automaticFragmentRecovery = retainedWholeResponse ? null
-      : execution.recovery.automatic_fragment_recovery
+    const automaticFragmentRecovery = execution.recovery.automatic_fragment_recovery
       ?? (sourceBackedRecoveryRequired ? {
         response: null,
         fragment_ids: canonicalUnresolvedFragmentIds,
@@ -901,9 +866,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         recovery_of_attempt_id: restoredFragments[0]?.producing_attempt_id ?? null,
         focused_prompt: buildFocusedSessionFragmentRecoveryPrompt(chatHistory, restoredFragments),
       } : null);
-    const retainedApplicationFragmentIds = automaticFragmentRecovery?.fragment_ids?.length
-      ? automaticFragmentRecovery.fragment_ids : canonicalUnresolvedFragmentIds;
-    if (!retainedWholeResponse && execution.provider.resumed_pending_obligation && automaticFragmentRecovery
+    if (execution.provider.resumed_pending_obligation && automaticFragmentRecovery
       && !automaticFragmentRecovery.source_backed_regeneration
       && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
@@ -989,7 +952,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       };
       await execution.hooks.recovery_epoch_initialized(restoredResumeEpoch);
     }
-    if (!retainedWholeResponse && !automaticFragmentRecovery && resumeEligibility?.blocked === true) {
+    if (!automaticFragmentRecovery && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code
           ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
@@ -1002,44 +965,42 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       blocked.sme_obligation_id = rootObligationId;
       throw blocked;
     }
-    const recoveryOnlyMode = !retainedWholeResponse && !automaticFragmentRecovery
+    const canonicalBeforeDispatch = execution.controller.lifecycle_required
+      ? await pipeline.getCanonicalObligation() : null;
+    const replayAttemptId = canonicalBeforeDispatch?.provider_attempt_lineage?.at(-1) ?? null;
+    const journaledCurrentCompletion = replayAttemptId
+      ? findCurrentRunProviderCompletion(providerMetadata, {
+        logical_run_id: pipeline.lifecycleIdentity.logical_run_id,
+        attempt_id: replayAttemptId,
+        obligation_leaf_id: leafObligationId,
+        source_fingerprint: coverageBase.source_fingerprint,
+      }) : null;
+    const journalReplayMode = Boolean(journaledCurrentCompletion?.response_text != null
+      && ['continue_pending_downstream_processing',
+        'replay_terminal_provider_downstream_lifecycle',
+        'reconcile_terminal_attempt_evidence']
+        .includes(execution.provider.selected_recovery_action));
+    const recoveryOnlyMode = !automaticFragmentRecovery
       && (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState)
         || resumeEligibility?.eligible_action === 'single_source_unit_regeneration');
-    let replayIngress = null;
-    if (retainedEvidence) {
-      replayIngress = await pipeline.applyRetainedEvidenceDecision(retainedEvidence, {
-        evidence_adoption_reason: 'session_pending_downstream_completion_replay',
-        durable_record_ids: retainedApplicationDurableIds,
-        unresolved_fragment_ids: retainedApplicationFragmentIds,
-        recovery_stage_history: resumeRecoveryState?.recovery_stages_attempted ?? [],
-        next_eligible_recovery_stage: resumeEligibility?.eligible_action ?? null,
+    if (journalReplayMode) {
+      pipeline.requireSelectedAction('apply_journaled_provider_completion');
+      await pipeline.recordActionReceipt('action_selected', {
+        action: 'apply_journaled_provider_completion', attempt_id: replayAttemptId,
       });
-      if (replayIngress.checkpoint_eligible === true
-        && replayIngress.evidence_classification
-          === PROVIDER_EVIDENCE_PROVENANCE.ALREADY_TERMINAL) {
-        recordCompletedCoverage('retained_terminal_coverage');
-        healthFinish({ terminal_health: 'completed', persistence: 'verified_existing',
-          provider_outcome: 'retained_terminal_coverage' });
-        return 0;
-      }
-      const fragmentDecision = replayIngress.evidence_classification
-        === PROVIDER_EVIDENCE_PROVENANCE.CURRENT_RUN_RECOVER_FRAGMENTS;
-      const accepted = fragmentDecision
-        ? replayIngress.status === 'pending_reconciliation'
-        : replayIngress.status === 'pending_downstream_processing';
-      if (!accepted) {
-        const error = new Error('Session retained provider evidence could not be applied safely.');
-        error.code = replayIngress.status === 'blocked'
-          ? 'SME_ACCEPTED_OUTPUT_PRIVATE_EVIDENCE_UNAVAILABLE'
-          : 'SME_PROVIDER_EVIDENCE_DECISION_REJECTED';
-        error.sme_recovery_blocked = true;
-        error.sme_obligation_id = leafObligationId;
-        error.sme_reason_code = replayIngress.reason_code;
-        error.sme_request_diagnostics = replayIngress;
-        throw error;
-      }
+      await pipeline.recordActionReceipt('action_started', {
+        action: 'apply_journaled_provider_completion', attempt_id: replayAttemptId,
+      });
+    } else if (!automaticFragmentRecovery && !recoveryOnlyMode) {
+      pipeline.requireSelectedAction('dispatch_provider_request');
+      await pipeline.recordActionReceipt('action_selected', {
+        action: 'dispatch_provider_request',
+      });
+      await pipeline.recordActionReceipt('action_started', {
+        action: 'dispatch_provider_request',
+      });
     }
-    const registeredIngress = !retainedWholeResponse && !automaticFragmentRecovery && !recoveryOnlyMode
+    const registeredIngress = !automaticFragmentRecovery && !recoveryOnlyMode && !journalReplayMode
       ? await pipeline.ingestProviderEvidence('register_new_attempt') : null;
     if (registeredIngress && registeredIngress.status !== 'applied') {
       const error = new Error('Session provider attempt could not be registered.');
@@ -1049,40 +1010,54 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       error.sme_request_diagnostics = registeredIngress;
       throw error;
     }
-    const providerAttempt = retainedWholeResponse ? {
-      attempt_id: retainedWholeResponse.attempt_id,
-      logical_obligation_id: rootObligationId,
-      root_obligation_id: rootObligationId,
-      child_obligation_id: leafObligationId,
-      logical_run_id: retainedWholeResponse.logical_run_id,
-      tier: 'session', owner: null,
-      source_range: retainedWholeResponse.source_range,
-      source_fingerprint: retainedWholeResponse.source_fingerprint,
-      terminal_outcome: retainedWholeResponse.terminal_outcome,
-      recovery_stage: retainedWholeResponse.recovery_stage ?? 'completion_journal_replay',
-      _adopted_terminal_evidence: Boolean(completionReplay),
-    } : automaticFragmentRecovery ? {
+    const providerAttempt = journalReplayMode
+      ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+        .reverse().find((attempt) => attempt.attempt_id === replayAttemptId)
+        ?? { ...journaledCurrentCompletion, logical_obligation_id: rootObligationId,
+          child_obligation_id: leafObligationId }
+      : automaticFragmentRecovery ? {
       attempt_id: automaticFragmentRecovery.recovery_of_attempt_id ?? null,
       logical_obligation_id: rootObligationId,
       resumed_pending_obligation: true,
       prior_window_recovery_state: resumeRecoveryState,
       _already_finished: true,
     } : recoveryOnlyMode ? null : registeredIngress.attempt;
+    if (providerAttempt?.attempt_id && !automaticFragmentRecovery
+      && !recoveryOnlyMode && !journalReplayMode) {
+      await pipeline.recordActionReceipt('provider_attempt_registered', {
+        action: 'dispatch_provider_request', attempt_id: providerAttempt.attempt_id,
+      });
+    }
     try {
-      if (retainedWholeResponse) {
-        response = replayIngress.response_text;
+      if (journalReplayMode) {
+        response = await pipeline.executeSelectedAction(
+          'apply_journaled_provider_completion',
+          async () => journaledCurrentCompletion.response_text,
+          { attempt_id: replayAttemptId },
+        );
         providerResponseReceived = true;
+        await pipeline.recordActionReceipt('provider_response_received', {
+          action: 'apply_journaled_provider_completion', attempt_id: replayAttemptId,
+        });
       } else if (automaticFragmentRecovery) {
         response = automaticFragmentRecovery.response;
         providerResponseReceived = true;
       } else if (!recoveryOnlyMode) {
         providerRequestSent = true;
-        response = await generateMemoryExtract(primaryProviderRequest.prompt, {
-          responseLength,
-          systemPrompt: primaryProviderRequest.systemPrompt,
-          providerConstraints: primaryProviderRequest.providerConstraints,
+        await pipeline.recordActionReceipt('provider_request_started', {
+          action: journalReplayMode ? 'apply_journaled_provider_completion'
+            : 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
         });
+        response = await pipeline.executeSelectedAction('dispatch_provider_request',
+          async () => generateMemoryExtract(primaryProviderRequest.prompt, {
+            responseLength,
+            systemPrompt: primaryProviderRequest.systemPrompt,
+            providerConstraints: primaryProviderRequest.providerConstraints,
+          }), { attempt_id: providerAttempt?.attempt_id });
         providerResponseReceived = true;
+        await pipeline.recordActionReceipt('provider_response_received', {
+          action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
+        });
         const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
           attempt: providerAttempt,
         });
@@ -1096,6 +1071,12 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         }
       }
     } catch (err) {
+      if (!automaticFragmentRecovery && !recoveryOnlyMode) {
+        await pipeline.recordActionReceipt('action_failed', {
+          action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
+          reason_code: err?.code ?? err?.name ?? 'provider_dispatch_failed',
+        }).catch(() => undefined);
+      }
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
         finishProviderAttempt(providerMetadata, providerAttempt, {
@@ -1149,11 +1130,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       healthUpdate({ response_received: true, parser_outcome: 'not_started' });
       updateCompletionJournal(providerAttempt, {
         provider_disposition: 'response_received', response_text: response,
-        ...(completionReplay ? {
-          adopted_from_logical_run_id: completionReplay.logical_run_id,
-          adopted_from_attempt_id: completionReplay.attempt_id,
-          evidence_adoption_reason: 'session_pending_downstream_completion_replay',
-        } : {}),
       });
     }
     const primaryStructuredResult = !recoveryOnlyMode

@@ -1,22 +1,11 @@
 /** Pure read models for UI and diagnostics. These functions never persist or mutate input. */
 
-const cloneProjectionValue = (value, retainedEvidenceScope = false) => {
-  if (Array.isArray(value)) return value.map((item) =>
-    cloneProjectionValue(item, retainedEvidenceScope));
+const cloneProjectionValue = (value) => {
+  if (Array.isArray(value)) return value.map((item) => cloneProjectionValue(item));
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).flatMap(([key, nested]) => {
-    const retained = retainedEvidenceScope || key === 'retained_evidence_plan';
-    if (retained && key === 'response_text') return [];
-    if (retained && key === 'parser_result' && nested && typeof nested === 'object') {
-      const records = Array.isArray(nested.records) ? nested.records : [];
-      return [[key, {
-        status: nested.status ?? null,
-        accepted_count: Number(nested.accepted_count ?? records.length),
-        record_count: records.length,
-        private_records_retained: records.length > 0,
-      }]];
-    }
-    return [[key, cloneProjectionValue(nested, retained)]];
+    if (key === 'response_text' || key === 'response_body') return [];
+    return [[key, cloneProjectionValue(nested)]];
   }));
 };
 
