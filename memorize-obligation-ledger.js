@@ -41,6 +41,7 @@ const nowValue = (value) => Number.isFinite(Number(value)) ? Number(value) : Dat
 // the obligation state by each consumer.
 export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
   dispatch_provider_request: Object.freeze({ provider_call_required: true, persistence_required: false }),
+  recover_missing_owner_coverage: Object.freeze({ provider_call_required: true, persistence_required: false }),
   dispatch_registered_provider_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
   dispatch_bounded_recovery_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
   compact_response_repair: Object.freeze({ provider_call_required: true, persistence_required: false }),

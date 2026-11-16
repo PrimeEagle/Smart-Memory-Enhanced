@@ -5,7 +5,8 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
   from './generate.js';
 import { applyDirectProvenance } from './grounding.js';
 import { parseExtractionOutput } from './parsers.js';
-import { buildMultiOwnerLongtermPrompt, dispatchMultiOwnerLongtermBatch }
+import { buildMultiOwnerLongtermPrompt, dispatchMultiOwnerLongtermBatch,
+  persistMultiOwnerLongtermPartitions }
   from './multi-owner-longterm.js';
 import { buildStructuredMemoryProviderRequest, parseStructuredMemoryResponse }
   from './malformed-output-recovery.js';
@@ -21,6 +22,7 @@ import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.j
 import { attachMemorizeOperationContext, createMemorizeOperationContext }
   from './memorize-operation-context.js';
 import { persistLongtermOwnerPartition } from './longterm.js';
+import { projectMultiOwnerCoverage } from './multi-owner-coverage.js';
 
 const OWNER_SCOPE = '@multi-owner';
 
@@ -50,6 +52,7 @@ export async function extractAndStoreMultiOwnerMemories(
   ownersValue, recentMessages, statusFn = null, options = {},
 ) {
   const owners = boundedOwnerList(ownersValue);
+  const requiredOwners = boundedOwnerList(options.requiredOwners ?? owners);
   const sourceMessages = recentMessages.filter((message) => message?.mes && !message.is_system);
   if (!owners.length || !sourceMessages.length) return Object.freeze({
     status: 'not_applicable', added: 0, owners: {}, physical_provider_requests: 0,
@@ -123,7 +126,9 @@ export async function extractAndStoreMultiOwnerMemories(
     recovery_intent: 'complete_multi_owner_source_extraction',
     recovery_stage: 'initial_dispatch', owner_scope: owners,
   });
-  const dispatchAction = 'dispatch_provider_request';
+  const dispatchAction = execution.provider.selected_recovery_action
+    === 'recover_missing_owner_coverage'
+    ? 'recover_missing_owner_coverage' : 'dispatch_provider_request';
   pipeline.requireSelectedAction(dispatchAction);
   await pipeline.recordActionReceipt('action_selected', { action: dispatchAction });
   await pipeline.recordActionReceipt('action_started', { action: dispatchAction });
@@ -339,31 +344,44 @@ export async function extractAndStoreMultiOwnerMemories(
   }
   const originalIndices = sourceMessages.map((message, index) =>
     Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : index);
-  const ownerResults = {};
+  let ownerResults = {};
   const allDurableIds = [];
   const allCandidateMap = {};
   const allCandidateIds = [];
   let added = 0;
-  for (const owner of owners) {
-    const records = partition.partitions[owner] ?? [];
-    const structured = parseStructuredMemoryResponse(JSON.stringify({ records }), {
-      tier: 'longterm', parse: parseExtractionOutput,
-    });
-    const parsed = structured.accepted ? structured.records : [];
-    applyDirectProvenance(parsed, sourceMessages, 0, originalIndices);
-    parsed.forEach((memory, index) => {
-      memory._memorize_candidate_id ??=
-        `multi-owner:${pipeline.leafObligationId}:${owner}:${index}`;
-    });
-    allCandidateIds.push(...parsed.map((memory) => memory._memorize_candidate_id));
-    const result = await (options.persistPartition ?? persistLongtermOwnerPartition)(
-      owner, parsed, sourceMessages, { targeted_replay: execution.recovery.targeted_replay });
-    ownerResults[owner] = result;
+  ownerResults = await persistMultiOwnerLongtermPartitions({ owners, partition,
+    prepare_records: async (owner, records) => {
+      const structured = parseStructuredMemoryResponse(JSON.stringify({ records }), {
+        tier: 'longterm', parse: parseExtractionOutput,
+      });
+      const parsed = structured.accepted ? structured.records : [];
+      applyDirectProvenance(parsed, sourceMessages, 0, originalIndices);
+      parsed.forEach((memory, index) => {
+        memory._memorize_candidate_id ??=
+          `multi-owner:${pipeline.leafObligationId}:${owner}:${index}`;
+      });
+      const candidateIdsForOwner = parsed.map((memory) => memory._memorize_candidate_id);
+      allCandidateIds.push(...candidateIdsForOwner);
+      return { records: parsed, candidate_ids: candidateIdsForOwner };
+    },
+    persist_partition: (owner, parsed) =>
+      (options.persistPartition ?? persistLongtermOwnerPartition)(
+        owner, parsed, sourceMessages, { targeted_replay: execution.recovery.targeted_replay }),
+  });
+  for (const result of Object.values(ownerResults)) {
     added += Number(result.added ?? 0);
     allDurableIds.push(...(result.durable_record_ids ?? []));
     Object.assign(allCandidateMap, result.durable_record_candidate_map ?? {});
   }
-  const needsRecovery = partition.targeted_recovery_owners.length > 0 || partition.rejected.length > 0;
+  const ownerCoverage = projectMultiOwnerCoverage({
+    required_owners: requiredOwners,
+    partitions: partition.partitions,
+    no_update_owners: partition.no_update_owners,
+    rejected: partition.rejected,
+    owner_results: ownerResults,
+    prior: options.priorOwnerCoverage,
+  });
+  const needsRecovery = !ownerCoverage.complete;
   const candidateIds = [...new Set(allCandidateIds)];
   const explicitNoUpdate = partition.accepted_record_count === 0
     && partition.no_update_owners.length === owners.length && !needsRecovery;
@@ -404,28 +422,31 @@ export async function extractAndStoreMultiOwnerMemories(
     ...(needsRecovery ? { recovery_capsule: {
       private_fragment_payload_available: false,
       source_backed_regeneration_available: true,
-      recovery_stage: 'multi_owner_subset_regeneration', protocol: request.protocol,
+      recovery_stage: 'missing_owner_coverage_recovery', protocol: request.protocol,
+      owner_coverage: ownerCoverage,
       rejected_fragment_ids: partition.rejected.map((item) =>
         `owner-record:${item.record_index ?? 'unknown'}:${item.reason_code}`),
       durable_record_ids: allDurableIds,
       durable_record_candidate_map: allCandidateMap,
-    }, reason_code: 'multi_owner_subset_recovery_required',
-    next_action: 'dispatch_bounded_recovery_attempt' } : {}),
+    }, reason_code: 'missing_owner_coverage_recovery',
+    next_action: 'recover_missing_owner_coverage' } : {}),
   });
   if (needsRecovery) {
-    const error = new Error('Some multi-owner Long-Term subsets require bounded recovery.');
-    error.code = 'SME_MULTI_OWNER_SUBSET_RECOVERY_REQUIRED';
+    const error = new Error('Some required Long-Term owners still need an accepted record or explicit no-update result.');
+    error.code = 'SME_MISSING_OWNER_COVERAGE_RECOVERY';
     error.sme_origin = 'validation';
     error.sme_operational_pause = true;
-    error.sme_reason_code = 'multi_owner_subset_recovery_required';
+    error.sme_reason_code = 'missing_owner_coverage_recovery';
     error.sme_obligation_id = pipeline.leafObligationId;
     error.sme_request_diagnostics = { targeted_recovery_owners:
-      partition.targeted_recovery_owners, rejected_reason_codes:
+      ownerCoverage.owners_requiring_recovery, owner_coverage: ownerCoverage,
+      next_eligible_recovery_action: 'recover_missing_owner_coverage',
+      recovery_stage: 'missing_owner_coverage_recovery', rejected_reason_codes:
       [...new Set(partition.rejected.map((item) => item.reason_code))] };
     healthFinish({ terminal_health: 'paused_resumable',
       provider_outcome: 'partial_multi_owner_contract',
       parser_outcome: 'partial', persistence: 'partial_valid_records_saved',
-      attention_reason_codes: ['multi_owner_subset_recovery_required'] });
+      attention_reason_codes: ['missing_owner_coverage_recovery'] });
     throw fail(error);
   }
   pipeline.recordCompletedCoverage('completed_multi_owner');
@@ -436,5 +457,6 @@ export async function extractAndStoreMultiOwnerMemories(
       rejected: partition.rejected.length } });
   return Object.freeze({ status: 'completed', added, owners: ownerResults,
     physical_provider_requests: 1, explicit_no_update_owners: partition.no_update_owners,
+    owner_coverage: ownerCoverage,
     root_obligation_id: pipeline.rootObligationId });
 }

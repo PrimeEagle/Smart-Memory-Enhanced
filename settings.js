@@ -255,6 +255,7 @@ import { classifyMemorizeErrorRecord } from './memorize-error-origin.js';
 import { smLog } from './logging.js';
 import { captureMemorizeDiagnosticSnapshot, validateMemorizeDiagnosticSnapshot }
   from './memorize-diagnostic-snapshot.js';
+import { observeMemorizeDiagnostics } from './memorize-diagnostic-boundary.js';
 import { settleMemorizeTransactionCheckpoint }
   from './memorize-transaction-settlement.js';
 import {
@@ -287,8 +288,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.88',
-  build_fingerprint: 'sme-v0.9.88-multi-owner-runtime-r1',
+  extension_version: '0.9.89',
+  build_fingerprint: 'sme-v0.9.89-diagnostic-owner-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -6583,6 +6584,13 @@ export function bindSettingsUI(ctrl) {
         const authoritativeLedger = checkpoint.run_manifest.obligation_ledger;
         const priorLongtermObligation = getAuthoritativeTierRangeStatus(
           authoritativeLedger, 'longterm', canonicalSourceRange);
+        const priorLongtermCapsule = priorLongtermObligation?.obligation_id
+          ? authoritativeLedger.execution_kernel?.recovery_capsules?.[
+            priorLongtermObligation.obligation_id] ?? null : null;
+        const longtermOwnersForRequest = priorLongtermCapsule?.owner_coverage
+          ?.owners_requiring_recovery?.length
+          ? [...priorLongtermCapsule.owner_coverage.owners_requiring_recovery]
+          : catchUpCharacterNames;
         const priorSessionObligation = getAuthoritativeTierRangeStatus(
           authoritativeLedger, 'session', canonicalSourceRange);
         // A resumed incomplete range may have committed one tier before a
@@ -6599,10 +6607,12 @@ export function bindSettingsUI(ctrl) {
             catchUpContext, 'longterm', chunk, 'memorize_chat_catch_up');
           longtermLiveHealth?.setOwner('@multi-owner');
           setStatusMessage(
-            `Catching up... (${i}/${total} messages - extracting Long-Term for ${catchUpCharacterNames.length} characters)`,
+            `Catching up... (${i}/${total} messages - extracting Long-Term for ${longtermOwnersForRequest.length} characters)`,
           );
           await extractAndStoreMultiOwnerMemories(
-            catchUpCharacterNames, chunk, setStatusMessage, {
+            longtermOwnersForRequest, chunk, setStatusMessage, {
+              requiredOwners: catchUpCharacterNames,
+              priorOwnerCoverage: priorLongtermCapsule?.owner_coverage ?? null,
               extractionCoverage: runResult.extractionCoverage,
               liveHealth: longtermLiveHealth,
               executionContext: createMemorizeExecutionContext({
@@ -10179,6 +10189,7 @@ export function bindSettingsUI(ctrl) {
       }
       // Re-project every semantic section from one frozen post-settlement read.
       // Earlier phase-local diagnostics remain observations, never authorities.
+      const diagnosticObservation = observeMemorizeDiagnostics(() => {
       const diagnosticSnapshot = captureMemorizeDiagnosticSnapshot({
         metadata: catchUpContext.chatMetadata[META_KEY],
         checkpoint: terminalCheckpoint,
@@ -10221,6 +10232,16 @@ export function bindSettingsUI(ctrl) {
         }].slice(-50);
       }
       Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
+      return diagnostics;
+      });
+      if (!diagnosticObservation.ok) {
+        diagnostics.diagnostics_degraded = true;
+        diagnostics.diagnostic_failure_count
+          = Number(diagnostics.diagnostic_failure_count ?? 0) + 1;
+        diagnostics.diagnostic_observer_failure = diagnosticObservation.failure;
+        diagnostics.error_details = [...(diagnostics.error_details ?? []),
+          diagnosticObservation.failure].slice(-50);
+      }
       runResult.quality = diagnostics.quality ?? runResult.quality;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;

@@ -10,7 +10,6 @@ import {
   markProviderRecoveryBudgetPause,
   markProviderRecoveryChildCompleted,
   markProviderStagedRecoveryCompleted,
-  migrateProviderAttemptAuditReport,
   PROVIDER_OBLIGATION_LIMIT,
   readProviderRecoveryWindowState,
   registerProviderRecoveryChildPlan,
@@ -18,6 +17,16 @@ import {
   stageProviderRejectedFragments,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
+
+test('incompatible active provider-attempt state requires Fresh Start', () => {
+  const metadata = { active_catchup_run_id: 'old-run', live_memory_health: {
+    provider_attempt_audit: { schema_version: 12, run_id: 'old-run' },
+  } };
+  assert.throws(() => beginProviderAttempt(metadata, {
+    logical_obligation_id: 'session:0-19', tier: 'session',
+  }), (error) => error?.code === 'SME_MEMORIZE_SCHEMA_UNSUPPORTED'
+    && error?.sme_reason_code === 'fresh_start_required');
+});
 
 test('recovery epochs initialize before dispatch, prevent overlap, and count prior physical recovery', () => {
   const metadata = { active_catchup_run_id: 'epoch-run' };
@@ -51,26 +60,6 @@ test('recovery epochs initialize before dispatch, prevent overlap, and count pri
   markProviderRejectedFragmentsRecovered(metadata, id, 'fnv1a-window', ['fragment-a', 'fragment-b']);
   const state = readProviderRecoveryWindowState(metadata, id, 'fnv1a-window');
   assert.equal(state.unresolved_fragments.length, 0);
-});
-
-test('persisted schema-three summaries reclassify strict partial inflation without losing true failures', () => {
-  const migrated = migrateProviderAttemptAuditReport({
-    schema_version: 3, malformed_physical_responses: 1579,
-    malformed_reason_counts: { partial_valid_output: 1341, invalid_modifier_syntax: 140, repair_failure_sentinel: 98 },
-    unique_malformed_obligations: 1409, recovered_malformed_obligations: 1409,
-    terminally_unresolved_malformed_obligations: 0,
-    recoveries_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
-    malformed_recovery_performance: {
-      obligations_recovered_by_stage: { strict_partial_valid_preserved: 1239, changed_dimension_regeneration: 101 },
-      successful_physical_attempts_by_stage: { strict_partial_valid_preserved: 1341, changed_dimension_regeneration: 105 },
-    },
-  });
-  assert.equal(migrated.schema_version, 13);
-  assert.equal(migrated.malformed_physical_responses, 238);
-  assert.equal(migrated.unique_malformed_obligations, 170);
-  assert.equal(migrated.recovered_malformed_obligations, 170);
-  assert.equal(migrated.notice_reason_counts.partial_valid_output, 1341);
-  assert.equal(migrated.malformed_reason_counts.partial_valid_output, undefined);
 });
 
 test('malformed output is reason-coded and a changed format repair closes the same obligation', () => {
@@ -158,27 +147,6 @@ test('context repartition remains separate from malformed-output recovery', () =
   assert.equal(summary.unique_malformed_obligations, 0);
   assert.equal(summary.obligation_outcome_counts.context_repartition_obligations, 1);
   assert.equal(summary.outcome_taxonomy.context_repartition_requests, 1);
-});
-
-test('schema-three strict partial accounting migrates to notices once', () => {
-  const metadata = { active_catchup_run_id: 'legacy', live_memory_health: { provider_attempt_audit: {
-    schema_version: 3, run_id: 'legacy', sequence: 1, attempted: 1, running_count: 0,
-    terminal_counts: { completed: 1 }, malformed_reason_counts: { partial_valid_output: 1 },
-    request_kind_counts: { original: 1 }, repair_reason_counts: {}, changed_recovery_dimension_counts: {},
-    runtime_context_lookup_counts: {}, logical_obligation_count: 1, recent_attempts: [],
-    obligations: { legacy: { logical_obligation_id: 'legacy', malformed_count: 1,
-      last_malformed_reason: 'partial_valid_output', final_recovery_stage: 'strict_partial_valid_preserved',
-      terminal_outcome: 'completed', physical_attempt_count: 1 } },
-    archived_obligation_counts: { exact: true, total: 0, malformed: 0, recovered_malformed: 0,
-      safely_checkpointed: 0, valid_generation: 0, intentionally_accepted_no_update: 0,
-      terminal_failed: 0, recovered_by_stage: {} }, recoveries_by_stage: { strict_partial_valid_preserved: 1 },
-  } } };
-  const next = beginProviderAttempt(metadata, { tier: 'session', logical_obligation_id: 'new' });
-  finishProviderAttempt(metadata, next, { terminal_outcome: 'completed_no_candidates' });
-  const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.unique_malformed_obligations, 0);
-  assert.equal(summary.notice_reason_counts.partial_valid_output, 1);
-  assert.equal(summary.legacy_accounting_migration.partial_obligations_reclassified_as_notices, 1);
 });
 
 test('bounded malformed retries classify a pending-obligation replay explicitly', () => {
@@ -562,66 +530,6 @@ test('bounded provider-failure lineage never replaces its exact aggregate', () =
   assert.equal(summary.provider_failure_lineage.details_pruned_or_legacy, true);
   assert.equal(summary.failure_accounting.unique_failed_obligation_count, 1);
   assert.equal(summary.failure_accounting.recovered_failed_obligation_count, 1);
-});
-
-test('schema-eight migration reopens an exhausted v0.9.63 unit window exactly once', () => {
-  const metadata = { active_catchup_run_id: 'run-v063', live_memory_health: {
-    provider_attempt_audit: {
-      schema_version: 7, run_id: 'run-v063', sequence: 1, attempted: 1, running_count: 0,
-      logical_obligation_count: 1, terminal_counts: { provider_response_malformed: 1 },
-      malformed_reason_counts: { invalid_modifier_syntax: 1 }, request_kind_counts: {},
-      repair_reason_counts: {}, changed_recovery_dimension_counts: {}, runtime_context_lookup_counts: {},
-      obligations: { root: {
-        logical_obligation_id: 'root', tier: 'longterm', owner: 'Lillian Kraft',
-        terminal_outcome: 'provider_response_malformed', malformed_count: 1,
-        root_source_fingerprint: 'root-fingerprint', last_source_fingerprint: 'root-fingerprint',
-        recovery_windows: { 'root-fingerprint': {
-          source_fingerprint: 'root-fingerprint',
-          recovery_stages_attempted: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
-          exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
-          unresolved_semantic_units: ['80', '81', '82', '83', '84'], completed_source_units: [],
-          staged_partial_records: [], candidate_rejections: [],
-        } },
-      } }, recent_attempts: [],
-    },
-  } };
-  const restored = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
-  assert.equal(restored.implementation_version_changed, true);
-  let unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
-  assert.equal(unresolved.recovery_blocked, false);
-  assert.equal(unresolved.next_eligible_recovery_action, 'single_source_unit_regeneration');
-
-  const attempt = beginProviderAttempt(metadata, {
-    tier: 'longterm', logical_obligation_id: 'root', source_fingerprint: 'root-fingerprint',
-    request_kind: 'single_source_unit_regeneration', recovery_stage: 'single_source_unit_regeneration',
-    source_unit_key: '80', target_source_unit: '80', target_source_fingerprint: 'unit-80',
-    context_source_range: { start: 80, end: 84, message_count: 5 }, context_message_count: 5,
-    permitted_citation_indexes: [0], context_only_messages_eligible: false,
-  });
-  finishProviderAttempt(metadata, attempt, {
-    terminal_outcome: 'provider_response_malformed', malformed_reason: 'invalid_modifier_syntax',
-    recovery_stage: 'single_source_unit_regeneration', recovery_ladder_terminal: true,
-    total_candidate_count: 1, accepted_candidate_count: 0, rejected_candidate_count: 1,
-    cardinality_followed: true, citation_requirement_followed: true,
-    target_source_unit: '80', target_source_fingerprint: 'unit-80',
-    actual_citation_indexes: [0], accepted_record_cites_target: false,
-    unresolved_semantic_units: ['80', '81', '82', '83', '84'], source_unit_key: '80',
-  });
-  const window = readProviderRecoveryWindowState(metadata, 'root', 'root-fingerprint');
-  assert.equal(window.recovery_implementation_version, 5);
-  assert.equal(window.unit_obligations['80'].disposition, 'blocked_validation');
-  assert.equal(window.unit_obligations['80'].candidate_accounting_consistent, true);
-  unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
-  assert.equal(unresolved.recovery_blocked, false);
-  assert.deepEqual(unresolved.recovery_eligibility.unattempted_semantic_units, ['81', '82', '83', '84']);
-  const comparison = summarizeProviderAttemptAudit(metadata).malformed_output_amplification_comparison;
-  assert.deepEqual(comparison.pre_v2, {
-    physical_requests: 1, malformed_responses: 1, malformed_response_rate: 1,
-    extra_requests: 0,
-  });
-  assert.equal(comparison.v2_and_later.physical_requests, 1);
-  assert.equal(comparison.v2_and_later.malformed_responses, 1);
-  assert.equal(comparison.v2_and_later.malformed_response_rate, 1);
 });
 
 test('Aster budget pause cannot close root until every repartition leaf is complete', () => {

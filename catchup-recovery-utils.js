@@ -420,7 +420,7 @@ export function finalizeCatchUpRunManifest(manifest, { status, reasonCode = null
 
 /** Builds an export-safe, cumulative summary. Ranges use numeric source offsets only. */
 export function summarizeCatchUpRunManifest(manifest) {
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
+  const next = ensureCatchUpRunManifest({ run_manifest: structuredClone(manifest) });
   const total = next.source_window.message_count;
   const committed = mergeRanges(next.committed_ranges);
   const gaps = gapsForRanges(committed, total);

@@ -5,6 +5,12 @@ export const MEMORIZE_RECOVERY_CAPSULE_SCHEMA_VERSION = 1;
 const uniqueStrings = (values = []) => [...new Set((Array.isArray(values) ? values : [])
   .map((value) => String(value ?? '').trim()).filter(Boolean))];
 
+const deepFreeze = (value) => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
+};
+
 function normalizedRange(value = {}) {
   const start = Number(value.start ?? value.source_start_index);
   const end = Number(value.end ?? value.source_end_index);
@@ -35,6 +41,7 @@ export function createMemorizeRecoveryCapsule(input = {}) {
     durable_record_ids: Object.freeze(uniqueStrings(input.durable_record_ids)),
     durable_record_candidate_map: Object.freeze({ ...(input.durable_record_candidate_map ?? {}) }),
     rejected_fragment_ids: Object.freeze(uniqueStrings(input.rejected_fragment_ids)),
+    owner_coverage: input.owner_coverage ? deepFreeze(structuredClone(input.owner_coverage)) : null,
     recovery_stage: input.recovery_stage ?? 'source_backed_regeneration',
     protocol: input.protocol ?? null,
     producing_attempt_id: input.producing_attempt_id ?? null,
@@ -60,6 +67,13 @@ export function createMemorizeRecoveryCapsule(input = {}) {
 export function assessMemorizeRecoveryCapsule(capsule = null) {
   if (!capsule) return Object.freeze({ executable: false,
     reason_code: 'missing_recovery_capsule', next_action: null });
+  if (capsule.owner_coverage?.owners_requiring_recovery?.length) return Object.freeze({
+    executable: true,
+    reason_code: 'missing_owner_coverage_recovery',
+    next_action: 'recover_missing_owner_coverage',
+    provider_call_required: true,
+    owner_subset: Object.freeze([...capsule.owner_coverage.owners_requiring_recovery]),
+  });
   if (capsule.private_fragment_payload_available === true) return Object.freeze({
     executable: true,
     reason_code: 'private_fragment_payload_available',
@@ -114,6 +128,7 @@ export async function materializeSourceBackedRecovery(capsule, loadSourceWindow,
       durable_record_ids: capsule.durable_record_ids,
     }),
     rejected_fragment_ids: capsule.rejected_fragment_ids,
+    owner_subset: capsule.owner_coverage?.owners_requiring_recovery ?? [],
     producing_attempt_id: capsule.producing_attempt_id,
   });
 }

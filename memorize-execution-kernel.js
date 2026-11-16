@@ -13,6 +13,7 @@ export const MEMORIZE_EXECUTION_KERNEL_VERSION = 2;
 export const MEMORIZE_ACTION_HANDLER_REVISION = 1;
 export const MEMORIZE_ACTIONS = Object.freeze([
   'dispatch_provider_request', 'apply_journaled_provider_completion',
+  'recover_missing_owner_coverage',
   'recover_from_source_window', 'continue_next_frontier_obligation',
   'continue_source_traversal', 'continue_finalization', 'complete_run', 'stop_blocked',
 ]);
@@ -95,14 +96,16 @@ export function createMemorizeExecutionAggregate(logicalRunId, now = Date.now())
 export function ensureMemorizeExecutionAggregate(value, logicalRunId = null) {
   if (value == null) return createMemorizeExecutionAggregate(logicalRunId);
   const ledger = ensureMemorizeObligationLedger(value, logicalRunId);
-  if (!ledger.execution_kernel) {
+  const kernel = ledger.execution_kernel;
+  if (!kernel || kernel.schema_version !== MEMORIZE_EXECUTION_KERNEL_VERSION
+    || !kernel.attempts || !kernel.recovery_capsules || !Array.isArray(kernel.action_receipts)
+    || !Array.isArray(kernel.semantic_events) || !Array.isArray(kernel.stale_callbacks)) {
     const error = new Error('Memorize Chat checkpoint is missing the execution kernel.');
     error.code = 'SME_MEMORIZE_SCHEMA_UNSUPPORTED';
     error.sme_recovery_blocked = true;
     error.sme_reason_code = 'fresh_start_required';
     throw error;
   }
-  ensureKernelState(ledger);
   return ledger;
 }
 
@@ -446,6 +449,7 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
         ?? persistence.durable_record_candidate_map,
       rejected_fragment_ids: command.recovery_capsule.rejected_fragment_ids
         ?? parser.rejected_fragment_ids,
+      owner_coverage: command.recovery_capsule.owner_coverage ?? null,
       created_at: now,
     });
   }

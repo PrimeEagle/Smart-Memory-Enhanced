@@ -81,132 +81,6 @@ function emptyArchivedObligationCounts(exact = true) {
   };
 }
 
-function migrateLegacyAudit(audit) {
-  const sourceSchemaVersion = Number(audit?.schema_version ?? 1);
-  if (!audit || sourceSchemaVersion >= PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION) return audit;
-  const partialPhysical = sourceSchemaVersion < 4 ? count(audit.malformed_reason_counts?.partial_valid_output) : 0;
-  let partialObligations = 0;
-  for (const obligation of Object.values(audit.obligations ?? {})) {
-    obligation.provider_failure_count ??= 0;
-    obligation.validation_failure_count ??= 0;
-    obligation.provider_failure_lineage ??= [];
-    if (sourceSchemaVersion >= 4) continue;
-    if (obligation?.final_recovery_stage !== 'strict_partial_valid_preserved'
-      || obligation?.terminal_outcome !== 'completed') continue;
-    partialObligations++;
-    obligation.malformed_count = Math.max(0, count(obligation.malformed_count) - 1);
-    obligation.notice_count = count(obligation.notice_count) + 1;
-    obligation.last_notice_reason = 'partial_valid_output';
-    if (obligation.malformed_count === 0) obligation.last_malformed_reason = null;
-  }
-  if (sourceSchemaVersion < 4) {
-    audit.notice_reason_counts ??= {};
-    audit.notice_reason_counts.partial_valid_output
-      = count(audit.notice_reason_counts.partial_valid_output) + partialPhysical;
-    if (audit.malformed_reason_counts) delete audit.malformed_reason_counts.partial_valid_output;
-    if (audit.recoveries_by_stage) delete audit.recoveries_by_stage.strict_partial_valid_preserved;
-    audit.schema_v4_migration = {
-      source_schema_version: sourceSchemaVersion,
-      partial_physical_responses_reclassified_as_notices: partialPhysical,
-      partial_obligations_reclassified_as_notices: partialObligations,
-      archived_obligation_counts_reclassifiable: count(audit.archived_obligation_counts?.total) === 0,
-    };
-  }
-  audit.provider_failure_lineage ??= [];
-  audit.equivalent_request_count ??= count(audit.equivalent_retry_count);
-  audit.permitted_equivalent_request_count ??= 0;
-  audit.modifier_failure_subtype_stats ??= {};
-  audit.schema_v5_migration = { source_schema_version: sourceSchemaVersion,
-    provider_failure_lineage_available: sourceSchemaVersion >= 5,
-    limitation: count(audit.terminal_counts?.provider_failure) > 0
-      ? 'legacy provider-failure detail may have been pruned before schema v5' : null };
-  audit.schema_v6_migration = {
-    source_schema_version: sourceSchemaVersion,
-    recovery_terminal_signatures_available: false,
-    response_contract_diagnostics_available: false,
-  };
-  audit.schema_v7_migration = {
-    source_schema_version: sourceSchemaVersion,
-    recovery_windows_reconstructed_from_retained_attempts: true,
-    equivalent_replays_reclassified: 0,
-  };
-  audit.schema_v8_migration = {
-    source_schema_version: sourceSchemaVersion,
-    recovery_implementation_version_assumed: 1,
-    per_unit_obligations_available: false,
-    baseline_physical_attempts: count(audit.attempted),
-    baseline_malformed_physical_responses: Object.values(audit.malformed_reason_counts ?? {})
-      .reduce((sum, value) => sum + count(value), 0),
-    baseline_extra_requests: Math.max(0, count(audit.attempted) - count(audit.logical_obligation_count)),
-  };
-  audit.schema_v9_migration = {
-    source_schema_version: sourceSchemaVersion,
-    owner_applicability_evidence_available: false,
-    response_fragment_accounting_available: false,
-    single_source_success_scopes_reconstructed_from_durable_unit_obligations: true,
-  };
-  audit.schema_v10_migration = {
-    source_schema_version: sourceSchemaVersion,
-    child_coverage_manifests_reconstructed_on_next_resume: true,
-    optimistic_recovered_roots_reopened_when_child_coverage_is_incomplete: true,
-  };
-  for (const obligation of Object.values(audit.obligations ?? {})) {
-    obligation.recovery_implementation_version ??= 1;
-    for (const window of Object.values(obligation.recovery_windows ?? {})) {
-      window.recovery_implementation_version ??= 1;
-      window.unit_obligations ??= {};
-    }
-  }
-  const seenBySignature = new Map();
-  for (const event of audit.recent_attempts ?? []) {
-    const key = `${event.logical_obligation_id}|${event.request_signature}`;
-    const priorEvent = seenBySignature.get(key);
-    if (event.equivalent_prior_attempt && !event.equivalent_retry_reason && priorEvent
-      && !SUCCESSFUL_TERMINAL_OUTCOMES.has(priorEvent.terminal_outcome)) {
-      event.equivalent_retry_reason = 'checkpoint_pending_obligation_retry';
-      event.equivalent_retry_permitted = true;
-      audit.equivalent_retry_count = Math.max(0, count(audit.equivalent_retry_count) - 1);
-      audit.permitted_equivalent_request_count = count(audit.permitted_equivalent_request_count) + 1;
-      audit.equivalent_request_reason_counts ??= {};
-      audit.equivalent_request_reason_counts.unexplained_equivalent_request = Math.max(0,
-        count(audit.equivalent_request_reason_counts.unexplained_equivalent_request) - 1);
-      audit.equivalent_request_reason_counts.checkpoint_pending_obligation_retry = count(
-        audit.equivalent_request_reason_counts.checkpoint_pending_obligation_retry) + 1;
-      const obligation = audit.obligations?.[event.logical_obligation_id];
-      if (obligation) obligation.retry_replay_count = count(obligation.retry_replay_count) + 1;
-      audit.schema_v7_migration.equivalent_replays_reclassified++;
-    }
-    seenBySignature.set(key, event);
-  }
-  let reconstructedAttemptStateCount = 0;
-  for (const event of audit.recent_attempts ?? []) {
-    if (event.lifecycle_state) continue;
-    const terminal = event.terminal_outcome ?? 'running';
-    const state = terminal === 'running' ? 'awaiting_response'
-      : terminal === 'interrupted_completion_unknown' ? 'interrupted_completion_unknown'
-        : terminal === 'provider_response_malformed' ? 'malformed'
-          : SUCCESSFUL_TERMINAL_OUTCOMES.has(terminal) ? 'safely_committed'
-            : terminal === 'cancelled' ? 'cancelled'
-              : terminal === 'superseded' ? 'superseded' : 'failed';
-    event.lifecycle_state = state;
-    event.state_history = [{
-      state, at: Number(event.at ?? Date.now()),
-      reason_code: 'legacy_terminal_state_reconstructed',
-      controller_instance_id: event.controller_instance_id ?? null,
-      transaction_id: event.transaction_id ?? null,
-      transaction_revision: event.transaction_revision ?? null,
-    }];
-    reconstructedAttemptStateCount++;
-  }
-  audit.schema_v13_migration = {
-    source_schema_version: sourceSchemaVersion,
-    reconstructed_attempt_state_count: reconstructedAttemptStateCount,
-    ownership_fields_available_only_when_originally_recorded: true,
-  };
-  audit.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
-  return audit;
-}
-
 function ensureRecoveryWindows(audit) {
   for (const obligation of Object.values(audit?.obligations ?? {})) obligation.recovery_windows ??= {};
   for (const event of audit?.recent_attempts ?? []) {
@@ -292,124 +166,19 @@ export function providerConfigurationSignature(input = {}) {
   }));
 }
 
-/** Read-only migration for already-exported/persisted schema-v3 summaries. */
-export function migrateProviderAttemptAuditReport(report) {
-  if (!report || Number(report.schema_version) >= PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION) return report;
-  const migrated = typeof structuredClone === 'function'
-    ? structuredClone(report) : JSON.parse(JSON.stringify(report));
-  if (Number(report.schema_version) >= 4) {
-    const malformed = count(migrated.malformed_physical_responses);
-    const transport = count(migrated.terminal_counts?.provider_failure
-      ?? migrated.outcome_taxonomy?.provider_transport_failures);
-    const uniqueFailed = count(migrated.unique_malformed_obligations
-      ?? migrated.obligation_outcome_counts?.true_failed_obligations);
-    const recovered = count(migrated.recovered_malformed_obligations
-      ?? migrated.obligation_outcome_counts?.provider_recovered_obligations);
-    migrated.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
-    migrated.failure_accounting = {
-      physical_failure_observation_count: malformed + transport,
-      malformed_response_count: malformed,
-      provider_transport_failure_count: transport,
-      parser_structural_failure_count: malformed,
-      validation_failure_count: 0,
-      unique_failed_obligation_count: uniqueFailed,
-      recovered_failed_obligation_count: recovered,
-      terminal_unresolved_obligation_count: count(migrated.terminally_unresolved_malformed_obligations),
-      local_normalization_notice_count: count(migrated.notice_reason_counts?.local_normalization),
-      partial_valid_output_notice_count: count(migrated.notice_reason_counts?.partial_valid_output),
-      authoritative_scalars: true,
-    };
-    migrated.provider_failure_lineage = {
-      exact_count: transport,
-      retained: [],
-      retained_detail_limit: 64,
-      details_pruned_or_legacy: transport > 0,
-      limitation: transport > 0 ? 'schema-v4 export did not retain provider-failure lineage' : null,
-    };
-    const equivalent = count(migrated.equivalent_retries_without_changed_dimension
-      ?? migrated.reconciliation?.equivalent_requests_without_changed_recovery_dimension);
-    migrated.equivalent_request_accounting = {
-      total_equivalent_requests: equivalent,
-      permitted_equivalent_requests: 0,
-      unexplained_equivalent_requests: equivalent,
-      consistent: equivalent === 0,
-      limitation: equivalent > 0 ? 'schema-v4 did not retain equivalence disposition' : null,
-    };
-    migrated.schema_v5_migration = { source_schema_version: Number(report.schema_version),
-      provider_failure_lineage_available: false, equivalent_request_disposition_available: false };
-    return migrated;
-  }
-  const partialPhysical = count(migrated.malformed_reason_counts?.partial_valid_output);
-  const partialObligations = count(migrated.malformed_recovery_performance
-    ?.obligations_recovered_by_stage?.strict_partial_valid_preserved);
-  migrated.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
-  migrated.notice_reason_counts = {
-    ...(migrated.notice_reason_counts ?? {}),
-    partial_valid_output: count(migrated.notice_reason_counts?.partial_valid_output) + partialPhysical,
-  };
-  migrated.notice_physical_responses = count(migrated.notice_physical_responses) + partialPhysical;
-  if (migrated.malformed_reason_counts) delete migrated.malformed_reason_counts.partial_valid_output;
-  if (migrated.recoveries_by_stage) delete migrated.recoveries_by_stage.strict_partial_valid_preserved;
-  migrated.malformed_physical_responses = Math.max(0, count(migrated.malformed_physical_responses) - partialPhysical);
-  migrated.unique_malformed_obligations = Math.max(0, count(migrated.unique_malformed_obligations) - partialObligations);
-  migrated.recovered_malformed_obligations = Math.max(0, count(migrated.recovered_malformed_obligations) - partialObligations);
-  migrated.terminally_unresolved_malformed_obligations = Math.max(0,
-    count(migrated.unique_malformed_obligations) - count(migrated.recovered_malformed_obligations));
-  if (migrated.malformed_recovery_performance?.obligations_recovered_by_stage) {
-    delete migrated.malformed_recovery_performance.obligations_recovered_by_stage.strict_partial_valid_preserved;
-  }
-  if (migrated.malformed_recovery_performance?.successful_physical_attempts_by_stage) {
-    delete migrated.malformed_recovery_performance.successful_physical_attempts_by_stage.strict_partial_valid_preserved;
-  }
-  migrated.recovery_success_rate = migrated.unique_malformed_obligations
-    ? migrated.recovered_malformed_obligations / migrated.unique_malformed_obligations : 1;
-  migrated.legacy_accounting_migration = {
-    source_schema_version: Number(report.schema_version ?? 1),
-    partial_physical_responses_reclassified_as_notices: partialPhysical,
-    partial_obligations_reclassified_as_notices: partialObligations,
-    source: 'persisted_summary',
-  };
-  migrated.obligation_outcome_counts = {
-    ...(migrated.obligation_outcome_counts ?? {}),
-    strict_success_obligations: migrated.obligation_outcome_counts?.strict_success_obligations ?? null,
-    local_normalization_obligations: migrated.obligation_outcome_counts?.local_normalization_obligations ?? null,
-    partial_output_obligations: partialObligations,
-    partial_output_rejected_fragments: null,
-    partial_output_rejected_fragments_exact: false,
-    context_repartition_obligations: migrated.obligation_outcome_counts?.context_repartition_obligations ?? null,
-    true_failed_obligations: migrated.unique_malformed_obligations,
-    provider_recovery_attempted_obligations: migrated.obligation_outcome_counts?.provider_recovery_attempted_obligations ?? null,
-    provider_recovered_obligations: migrated.recovered_malformed_obligations,
-    terminal_unresolved_obligations: migrated.terminally_unresolved_malformed_obligations,
-    safe_notice_obligations: partialObligations,
-    counts_exact: false,
-  };
-  migrated.reconciliation = {
-    ...(migrated.reconciliation ?? {}),
-    malformed_obligations_reconcile: migrated.unique_malformed_obligations
-      === migrated.recovered_malformed_obligations + migrated.terminally_unresolved_malformed_obligations,
-  };
-  migrated.failure_accounting = {
-    physical_failure_observation_count: count(migrated.malformed_physical_responses)
-      + count(migrated.terminal_counts?.provider_failure),
-    malformed_response_count: count(migrated.malformed_physical_responses),
-    provider_transport_failure_count: count(migrated.terminal_counts?.provider_failure),
-    parser_structural_failure_count: count(migrated.malformed_physical_responses),
-    validation_failure_count: 0,
-    unique_failed_obligation_count: count(migrated.unique_malformed_obligations),
-    recovered_failed_obligation_count: count(migrated.recovered_malformed_obligations),
-    terminal_unresolved_obligation_count: count(migrated.terminally_unresolved_malformed_obligations),
-    local_normalization_notice_count: count(migrated.notice_reason_counts?.local_normalization),
-    partial_valid_output_notice_count: count(migrated.notice_reason_counts?.partial_valid_output),
-    authoritative_scalars: migrated.obligation_outcome_counts?.counts_exact === true,
-  };
-  return migrated;
-}
-
 function ensure(metadata, runId = null) {
   metadata.live_memory_health ??= {};
   const health = metadata.live_memory_health;
   const prior = health.provider_attempt_audit;
+  if (prior && (!runId || prior.run_id === runId)
+    && Number(prior.schema_version) !== PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION) {
+    const error = new Error('Provider-attempt state uses an unsupported execution schema. Fresh Start is required.');
+    error.code = 'SME_MEMORIZE_SCHEMA_UNSUPPORTED';
+    error.sme_origin = 'internal_invariant';
+    error.sme_recovery_blocked = true;
+    error.sme_reason_code = 'fresh_start_required';
+    throw error;
+  }
   if (!prior || (runId && prior.run_id !== runId)) {
     health.provider_attempt_audit = {
       schema_version: PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
@@ -456,10 +225,8 @@ function ensure(metadata, runId = null) {
     };
   }
   const audit = health.provider_attempt_audit;
-  const sourceSchemaVersion = Number(audit.schema_version ?? 1);
-  migrateLegacyAudit(audit);
-  const performanceTotalsCompatible = sourceSchemaVersion >= 2;
-  const recoveryStageTotalsCompatible = sourceSchemaVersion >= 3;
+  const performanceTotalsCompatible = true;
+  const recoveryStageTotalsCompatible = true;
   audit.schema_version = PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION;
   audit.performance_totals_exact ??= performanceTotalsCompatible;
   audit.provider_elapsed_ms ??= 0;
@@ -1762,11 +1529,13 @@ export function markProviderRecoveryBudgetPause(metadata, logicalObligationId, d
 
 export function summarizeProviderAttemptAudit(metadata) {
   const sourceAudit = metadata?.live_memory_health?.provider_attempt_audit;
-  const audit = sourceAudit && Number(sourceAudit.schema_version) < PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION
-    ? migrateLegacyAudit(typeof structuredClone === 'function'
-      ? structuredClone(sourceAudit) : JSON.parse(JSON.stringify(sourceAudit)))
-    : sourceAudit;
+  const audit = sourceAudit ? (typeof structuredClone === 'function'
+    ? structuredClone(sourceAudit) : JSON.parse(JSON.stringify(sourceAudit))) : null;
   if (!audit) return null;
+  if (Number(audit.schema_version) !== PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION) {
+    return Object.freeze({ schema_version: PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,
+      unavailable: true, reason_code: 'fresh_start_required_for_unsupported_provider_audit' });
+  }
   ensureRecoveryWindows(audit);
   const obligations = Object.values(audit.obligations ?? {});
   const recentAttempts = Array.isArray(audit.recent_attempts) ? audit.recent_attempts : [];
@@ -1911,7 +1680,6 @@ export function summarizeProviderAttemptAudit(metadata) {
     notice_physical_responses: Object.values(audit.notice_reason_counts ?? {}).reduce((sum, value) => sum + count(value), 0),
     notice_reason_counts: { ...audit.notice_reason_counts },
     avoided_repair_request_counts: { ...audit.avoided_repair_request_counts },
-    legacy_accounting_migration: audit.schema_v4_migration ?? null,
     failure_accounting: {
       physical_failure_observation_count: physicalFailureObservationCount,
       malformed_response_count: malformedPhysicalCount,
@@ -1937,7 +1705,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       retained_detail_limit: 64,
       details_pruned_or_legacy: providerTransportFailureCount > (audit.provider_failure_lineage ?? []).length,
       limitation: providerTransportFailureCount > (audit.provider_failure_lineage ?? []).length
-        ? audit.schema_v5_migration?.limitation ?? 'bounded lineage detail does not replace the exact scalar' : null,
+        ? 'bounded lineage detail does not replace the exact scalar' : null,
     },
     modifier_failure_subtype_statistics: Object.fromEntries(Object.entries(audit.modifier_failure_subtype_stats ?? {})
       .map(([subtype, stats]) => [subtype, {
@@ -1974,7 +1742,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       local_normalization_obligations: localNormalizationObligations,
       partial_output_obligations: partialOutputObligations,
       partial_output_rejected_fragments: count(audit.partial_output_rejected_fragment_count),
-      partial_output_rejected_fragments_exact: Number(audit.schema_v4_migration?.source_schema_version ?? 4) >= 4,
+      partial_output_rejected_fragments_exact: true,
       context_repartition_obligations: contextRepartitionObligations,
       true_failed_obligations: uniqueFailedObligations,
       provider_recovery_attempted_obligations: providerRecoveryAttemptedObligations,
@@ -2132,32 +1900,6 @@ export function summarizeProviderAttemptAudit(metadata) {
     overflow_despite_valid_learned_limit: count(audit.overflow_despite_valid_learned_limit_count),
     extra_requests_caused_by_recovery: Math.max(0, count(audit.attempted) - planned),
     request_amplification: planned ? count(audit.attempted) / planned : 0,
-    malformed_output_amplification_comparison: (() => {
-      const migrated = audit.schema_v8_migration ?? null;
-      const beforeRequests = count(migrated?.baseline_physical_attempts);
-      const beforeMalformed = count(migrated?.baseline_malformed_physical_responses);
-      const afterRequests = count(audit.request_counts_by_recovery_implementation?.[RECOVERY_IMPLEMENTATION_VERSION]);
-      const afterMalformed = count(audit.malformed_counts_by_recovery_implementation?.[RECOVERY_IMPLEMENTATION_VERSION]);
-      return {
-        comparison_basis: migrated
-          ? 'persisted_pre_v2_baseline_vs_current_recovery_implementation_requests'
-          : 'current_recovery_implementation_requests_only',
-        current_recovery_implementation_version: RECOVERY_IMPLEMENTATION_VERSION,
-        pre_v2: {
-          physical_requests: beforeRequests,
-          malformed_responses: beforeMalformed,
-          malformed_response_rate: beforeRequests ? beforeMalformed / beforeRequests : null,
-          extra_requests: migrated ? count(migrated.baseline_extra_requests) : null,
-        },
-        v2_and_later: {
-          physical_requests: afterRequests,
-          malformed_responses: afterMalformed,
-          malformed_response_rate: afterRequests ? afterMalformed / afterRequests : null,
-          single_source_requests: count(audit.recovery_stage_request_counts?.single_source_unit_regeneration),
-        },
-        limitations: 'rates are cumulative observed provider responses, not a controlled provider A/B test',
-      };
-    })(),
     performance: {
       schema_version: 1,
       scope: 'provider_transmissions_only',

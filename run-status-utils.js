@@ -1,4 +1,3 @@
-import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
 import { classifyMemorizeErrorRecord, MEMORIZE_ERROR_CATEGORIES }
   from './memorize-error-origin.js';
 
@@ -498,7 +497,8 @@ export function deriveRunPerformanceDiagnostics(report = {}) {
 
 /** Read-only compatibility normalization for persisted legacy reports. */
 export function normalizeRunStatusReport(report = {}) {
-  const providerAttemptAudit = migrateProviderAttemptAuditReport(report.provider_attempt_audit);
+  const providerAttemptAudit = report.provider_attempt_audit == null
+    ? null : structuredClone(report.provider_attempt_audit);
   const normalizedInput = { ...report, provider_attempt_audit: providerAttemptAudit };
   const errorAccounting = deriveRunErrorAccounting(normalizedInput);
   const runStatus = deriveRunStatus({ ...normalizedInput, error_accounting: errorAccounting });

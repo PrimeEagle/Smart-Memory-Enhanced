@@ -5,7 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.89] - 2026-11-16
+
+### Added
+
+- Added explicit multi-owner Long-Term coverage state for required, accepted,
+  explicit-no-update, rejected, missing, durably persisted, and recovery-owner
+  subsets. Resume now requests only the exact owners still missing coverage.
+- Added a non-fatal diagnostic observer boundary and frozen-graph contract
+  tests covering run manifests, provider audits, execution-kernel diagnostics,
+  recovery projections, and UI/status observer failures.
+- Added saga settlement evidence distinguishing rollback before any durable
+  boundary from rollback to a boundary that preserves idempotent sub-writes.
+
+### Changed
+
+- Execution aggregate validation is now read-only. Mutable kernel
+  initialization remains confined to aggregate creation and command-owned
+  clones, so immutable diagnostic snapshots never enter an `ensure` mutation
+  path.
+- Missing multi-owner coverage now uses the exact
+  `recover_missing_owner_coverage` command and reason instead of pretending
+  that zero unresolved fragments require fragment recovery.
+- Provider-attempt summaries project from private copies and current-schema
+  run-status normalization no longer invokes legacy audit migration.
+- Multi-owner persistence now calls the Long-Term store only for owners with
+  accepted records. Explicit no-update owners receive structural receipts;
+  omitted owners remain untouched until exact-owner recovery.
+
+### Removed
+
+- Removed the obsolete provider-attempt state and exported-summary migration
+  implementations. Incompatible active execution state now has one behavior:
+  reject it with a Fresh Start requirement.
+
+### Fixed
+
+- Fixed finalization passing a recursively frozen diagnostic snapshot through
+  `summarizeCatchUpRunManifest` → `ensureCatchUpRunManifest` →
+  `ensureMemorizeExecutionAggregate`, which reassigned
+  `execution_kernel.schema_version` and raised a read-only-property
+  `TypeError`.
+- Fixed diagnostic projection failures escaping into the controller, rolling
+  back finalization, and relabeling otherwise valid memory work as an internal
+  execution failure.
+- Fixed partial multi-owner responses persisting valid owners while losing the
+  owner-coverage reason needed to resume without regenerating those records.
+- Fixed omitted owners being passed through empty Long-Term persistence, which
+  could age existing memories even though that owner had no accepted output.
 
 ## [0.9.88] - 2026-11-15
 

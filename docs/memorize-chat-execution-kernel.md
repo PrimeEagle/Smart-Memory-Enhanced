@@ -184,6 +184,13 @@ exact-attempt replay. Attempt audit, coverage summaries, diagnostics, and UI
 are one-way projections. Production completion writes enter through the
 kernel, and all displayed state is rebuilt from the committed aggregate.
 
+Mutable execution state, immutable snapshots, and presentation DTOs are
+separate types in practice as well as intent. Command handlers may initialize
+or update a private mutable clone. Snapshot and status functions accept a
+deeply frozen current-schema graph and may only clone/project it. A diagnostic
+observer catches projection defects, emits bounded content-free failure
+evidence, and preserves the already-settled execution result.
+
 ## Long-Term batching
 
 `multi-owner-longterm-runtime.js` is the production Long-Term tier adapter for
@@ -203,6 +210,14 @@ idempotent. The aggregate provider-completion command closes the shared leaf
 only after every owner partition is terminal. A malformed or partially invalid
 batch remains the same pending leaf with a bounded source-backed recovery
 action; it does not restore the old per-owner normal request loop.
+
+Owner coverage is explicit structural state: required owners, accepted-record
+owners, explicit-no-update owners, rejected owners, durable owners, and the
+exact missing subset. Only accepted partitions enter persistence. An explicit
+no-update produces a terminal coverage receipt without touching the owner's
+memory store. Missing owners produce no store call and Resume dispatches
+`recover_missing_owner_coverage` for only that subset, merging the new receipt
+with prior durable coverage.
 
 The normal source-chunk plan is therefore one base Long-Term request and one
 base Session request. Trigger generation, relationship extraction, and
@@ -250,6 +265,12 @@ idempotent completion command and deduplicates by durable record ID/candidate
 mapping. A crash after aggregate commit sees the command receipt and performs
 no mutation. Cancellation stops new dispatch but commits any already completed
 atomic command before releasing controller ownership.
+
+Transaction settlement also records whether rollback occurred before any
+durable boundary or returned to the last durable boundary. The latter is a
+saga disposition: idempotent sub-writes remain valid and Resume continues from
+their canonical receipts rather than describing the whole operation as if no
+durable work occurred.
 
 ## Clean-start policy
 

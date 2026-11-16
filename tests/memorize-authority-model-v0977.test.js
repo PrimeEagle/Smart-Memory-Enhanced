@@ -158,7 +158,7 @@ test('20 unrelated range evidence never substitutes for an expected durable ID',
 
 function staleRecoveryMetadata() {
   return { active_catchup_run_id: fixture.logical_run_id, live_memory_health: { provider_attempt_audit: {
-    schema_version: 11, run_id: fixture.logical_run_id, attempted: 1, running_count: 0,
+    schema_version: 13, run_id: fixture.logical_run_id, attempted: 1, running_count: 0,
     terminal_counts: { provider_failure: 1 }, recent_attempts: [],
     obligations: { 'session:chat:40-59:fixture': {
       logical_obligation_id: 'session:chat:40-59:fixture', tier: 'session', malformed_count: 1,

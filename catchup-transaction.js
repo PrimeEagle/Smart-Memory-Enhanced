@@ -40,6 +40,13 @@ function terminalSnapshot(transaction) {
     exact_reason_code: transaction.exact_reason_code ?? null,
     revision: transaction.revision ?? null,
     generation: transaction.generation ?? null,
+    durable_checkpoint_count: Number(transaction.durableCheckpointCount ?? 0),
+    saga_disposition: transaction.state === 'rolled_back'
+      ? Number(transaction.durableCheckpointCount ?? 0) > 0
+        ? 'rolled_back_to_last_durable_boundary' : 'rolled_back_before_durable_boundary'
+      : transaction.terminal_disposition ?? transaction.state,
+    durable_subwrites_preserved: transaction.state === 'rolled_back'
+      && Number(transaction.durableCheckpointCount ?? 0) > 0,
   };
 }
 
@@ -64,6 +71,7 @@ export function beginCatchUpTransaction(context, ownership = {}) {
     metadataBefore: structuredClone(context.chatMetadata?.[META_KEY] ?? {}),
     settingsBefore: structuredClone(extension_settings[MODULE_NAME] ?? {}),
     metadataDirty: false,
+    durableCheckpointCount: 0,
   };
   return activeTransaction;
 }
@@ -247,6 +255,7 @@ export async function checkpointCatchUpTransaction(transaction) {
     transaction.metadataBefore = structuredClone(transaction.context.chatMetadata?.[META_KEY] ?? {});
     transaction.settingsBefore = structuredClone(extension_settings[MODULE_NAME] ?? {});
     transaction.metadataDirty = false;
+    transaction.durableCheckpointCount++;
   } catch (error) {
     rollbackCatchUpTransaction(transaction);
     error.sme_context_overflow_checkpoint_failure = true;

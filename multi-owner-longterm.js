@@ -100,3 +100,28 @@ export async function dispatchMultiOwnerLongtermBatch({
     physical_request_count: 1,
   });
 }
+
+/** Production local-persistence boundary; provider dispatch is deliberately absent. */
+export async function persistMultiOwnerLongtermPartitions({ owners = [], partition,
+  prepare_records: prepareRecords, persist_partition: persistPartition } = {}) {
+  if (typeof prepareRecords !== 'function' || typeof persistPartition !== 'function') {
+    throw new TypeError('Multi-owner persistence requires record preparation and persistence adapters.');
+  }
+  const results = {};
+  const noUpdateOwners = new Set(partition?.no_update_owners ?? []);
+  for (const owner of owners) {
+    const sourceRecords = partition?.partitions?.[owner] ?? [];
+    if (sourceRecords.length === 0) {
+      results[owner] = Object.freeze({ owner,
+        status: noUpdateOwners.has(owner) ? 'verified_no_update' : 'missing_owner_output',
+        added: 0, durable_record_ids: Object.freeze([]),
+        durable_record_candidate_map: Object.freeze({}), candidate_ids: Object.freeze([]) });
+      continue;
+    }
+    const prepared = await prepareRecords(owner, sourceRecords);
+    const persistence = await persistPartition(owner, prepared?.records ?? []);
+    results[owner] = Object.freeze({ ...persistence,
+      candidate_ids: Object.freeze([...(prepared?.candidate_ids ?? [])]) });
+  }
+  return Object.freeze(results);
+}

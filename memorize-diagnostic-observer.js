@@ -50,6 +50,7 @@ export function projectMemorizeKernelDiagnostics(aggregateValue, input = {}) {
     protocol: capsule.protocol,
     rejected_fragment_count: capsule.rejected_fragment_ids?.length ?? 0,
     durable_record_count: capsule.durable_record_ids?.length ?? 0,
+    owner_coverage: capsule.owner_coverage ? structuredClone(capsule.owner_coverage) : null,
     private_fragment_payload_available: capsule.private_fragment_payload_available === true,
     source_backed_regeneration_available: capsule.source_backed_regeneration_available === true,
   }));

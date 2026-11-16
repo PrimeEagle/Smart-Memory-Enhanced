@@ -27,6 +27,10 @@ export function settleMemorizeTransactionCheckpoint(checkpointValue, transaction
     settled_at: transaction.settled_at ?? at,
     updated_at: at,
     exact_reason_code: transaction.exact_reason_code ?? reasonCode,
+    durable_checkpoint_count: Number(transaction.durable_checkpoint_count ?? 0),
+    saga_disposition: transaction.saga_disposition
+      ?? transaction.terminal_disposition ?? transaction.state,
+    durable_subwrites_preserved: transaction.durable_subwrites_preserved === true,
   };
   checkpoint.status = transaction.state === 'rolled_back'
     ? 'awaiting_manual_resume'
