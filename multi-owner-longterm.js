@@ -85,3 +85,18 @@ export function partitionMultiOwnerLongtermResponse(response, {
     accepted_record_count: Object.values(partitions).reduce((sum, records) => sum + records.length, 0),
   });
 }
+
+/** Production batch boundary: exactly one dispatch, followed by pure local partitioning. */
+export async function dispatchMultiOwnerLongtermBatch({
+  request, owners = [], source_indices: sourceIndices = [], dispatch,
+} = {}) {
+  if (typeof dispatch !== 'function') throw new TypeError('A multi-owner dispatch function is required.');
+  const response = await dispatch(request);
+  return Object.freeze({
+    response,
+    partition: partitionMultiOwnerLongtermResponse(response, {
+      allowed_owners: owners, source_indices: sourceIndices,
+    }),
+    physical_request_count: 1,
+  });
+}

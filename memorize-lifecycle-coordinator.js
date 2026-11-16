@@ -243,6 +243,15 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     try {
       attempt = await input.begin_registered_attempt(...(input.begin_args ?? []));
     } catch (error) {
+      if (error?.sme_operational_pause === true) {
+        return ingressResult('operationally_paused', { ...input, identity }, {
+          reason_code: error.sme_reason_code ?? error.code ?? 'provider_policy_pause',
+          next_action: error.sme_request_diagnostics?.next_eligible_action
+            ?? 'resume_exact_obligation',
+          provider_call_required: false,
+          policy_outcome: error.sme_request_diagnostics ?? null,
+        });
+      }
       return rejectedIngress(input, error?.sme_reason_code ?? error?.code
         ?? 'provider_attempt_registration_failed', {
         next_action: 'reconcile_provider_attempt_registration', provider_call_required: false,

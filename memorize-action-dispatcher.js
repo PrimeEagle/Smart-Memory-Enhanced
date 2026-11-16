@@ -1,9 +1,7 @@
 import {
   canonicalizeMemorizeKernelAction,
-  MEMORIZE_ACTIONS,
 } from './memorize-execution-kernel.js';
 
-const ACTION_SET = new Set(MEMORIZE_ACTIONS);
 export function canonicalizeMemorizeAction(action) {
   return canonicalizeMemorizeKernelAction(action);
 }

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildMultiOwnerLongtermPrompt,
+  dispatchMultiOwnerLongtermBatch,
   partitionMultiOwnerLongtermResponse,
 } from '../multi-owner-longterm.js';
 
@@ -18,6 +19,38 @@ test('six-owner response partitions locally with explicit no-update owners', () 
   assert.equal(result.partitions.A.length, 1);
   assert.equal(result.partitions.B.length, 1);
   assert.deepEqual(result.targeted_recovery_owners, []);
+});
+
+test('production batch boundary dispatches once and partitions every owner locally', async () => {
+  let requests = 0;
+  const owners = ['Alex Mercer', 'Aster Graves', 'Lillian Kraft',
+    'Lisette Dumont', 'Nyx Watson', 'Valerie Erikssen'];
+  const result = await dispatchMultiOwnerLongtermBatch({
+    request: { prompt: 'bounded request' }, owners, source_indices: [0, 1],
+    dispatch: async () => {
+      requests++;
+      return JSON.stringify({ records: owners.map((owner, index) => ({
+        owner, type: 'fact', content: `${owner} has a supported durable detail.`,
+        source_indices: [index % 2], importance: 2, permanence: 'permanent',
+      })), no_update_owners: [] });
+    },
+  });
+  assert.equal(requests, 1);
+  assert.equal(result.physical_request_count, 1);
+  assert.equal(result.partition.accepted_record_count, 6);
+  assert.deepEqual(Object.keys(result.partition.partitions), owners);
+});
+
+test('production batch boundary preserves a malformed result for bounded recovery', async () => {
+  let requests = 0;
+  const result = await dispatchMultiOwnerLongtermBatch({
+    request: {}, owners: ['Alex Mercer', 'Aster Graves'], source_indices: [0],
+    dispatch: async () => { requests++; return '{"records":['; },
+  });
+  assert.equal(requests, 1);
+  assert.equal(result.partition.status, 'malformed');
+  assert.deepEqual(result.partition.targeted_recovery_owners,
+    ['Alex Mercer', 'Aster Graves']);
 });
 
 test('unknown, ungrounded, and mixed-owner duplicates are quarantined', () => {

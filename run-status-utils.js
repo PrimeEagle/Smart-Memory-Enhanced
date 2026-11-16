@@ -1,4 +1,6 @@
 import { migrateProviderAttemptAuditReport } from './provider-attempt-audit.js';
+import { classifyMemorizeErrorRecord, MEMORIZE_ERROR_CATEGORIES }
+  from './memorize-error-origin.js';
 
 export const RUN_STATUS_CLASSIFIER_VERSION = 6;
 
@@ -65,41 +67,11 @@ export function deriveRunErrorAccounting(report = {}) {
   const detailTruncated = unresolvedLimit !== null && unresolved > retainedUnresolvedCount;
   const providerAggregateCountsExact = provider.obligation_aggregate_counts_exact === true
     || provider.obligation_history_truncated !== true;
-  const classifyDisplayedError = (entry = {}) => {
-    const text = `${entry.label ?? ''} ${entry.message ?? ''}`.toLowerCase();
-    const code = String(entry.code ?? '').toUpperCase();
-    if (entry.category && ['provider_transport_failure', 'provider_output_failure',
-      'validation_failure', 'persistence_failure', 'internal_invariant_failure',
-      'stale_callback_notice', 'cancellation', 'operational_pause',
-      'blocked_external_condition', 'diagnostic_observer_failure'].includes(entry.category)) {
-      return entry.category;
-    }
-    if (entry.provider_fault_attribution === false
-      || /^SME_(?:MEMORIZE|ATOMIC|PROVIDER_EVIDENCE|LIFECYCLE|RESUME)/.test(code)) {
-      return 'internal_invariant_failure';
-    }
-    if (/diagnostic observer/.test(text)) return 'diagnostic_observer_failure';
-    if (/stale|late callback/.test(text)) return 'stale_callback_notice';
-    if (/cancel/.test(text)) return 'cancellation';
-    if (/operational pause|budget.*pause/.test(text)) return 'operational_pause';
-    if (/blocked|configuration required/.test(text)) return 'blocked_external_condition';
-    if (/lifecycle transition|lifecycle.*rejected|provider-evidence ingress.*reject|evidence ingress.*reject/.test(text)) {
-      return 'internal_invariant_failure';
-    }
-    if (/reconcil/.test(text)) return 'internal_invariant_failure';
-    if (entry.persistence === true || /persist|durable save/.test(text)) return 'persistence_failure';
-    if (/validation|candidate.*reject/.test(text)) return 'validation_failure';
-    if (/malformed|parser|invalid output/.test(text)) return 'provider_output_failure';
-    if (/provider|transport|api request|http /.test(text)) return 'provider_transport_failure';
-    return 'internal_invariant_failure';
-  };
-  const displayedErrorCategoryCounts = Object.fromEntries([
-    'provider_transport_failure', 'provider_output_failure', 'validation_failure',
-    'persistence_failure', 'internal_invariant_failure', 'stale_callback_notice',
-    'cancellation', 'operational_pause', 'blocked_external_condition',
-    'diagnostic_observer_failure',
-  ].map((category) => [category, 0]));
-  for (const entry of currentDetails) displayedErrorCategoryCounts[classifyDisplayedError(entry)]++;
+  const displayedErrorCategoryCounts = Object.fromEntries(
+    MEMORIZE_ERROR_CATEGORIES.map((category) => [category, 0]));
+  for (const entry of currentDetails) {
+    displayedErrorCategoryCounts[classifyMemorizeErrorRecord(entry)]++;
+  }
   const currentViolations = array(report.authoritative_obligation_ledger?.invariants?.violations
     ?? report.catch_up_recovery?.authoritative_obligation_ledger?.invariants?.violations);
   const journalEntries = array(report.provider_completion_journal?.entries);

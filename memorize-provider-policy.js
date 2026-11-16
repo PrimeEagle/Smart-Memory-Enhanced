@@ -52,6 +52,8 @@ export function recordMemorizeProviderOutcome(profileValue, outcome = {}) {
   return profile;
 }
 
+export const MEMORIZE_PROVIDER_POLICY_REVISION = 2;
+
 export function assessMemorizeProviderDispatch(profileValue, input = {}) {
   const profile = createMemorizeProviderProfile(profileValue);
   const leafAttemptCount = Number(input.leaf_attempt_count) || 0;
@@ -59,16 +61,39 @@ export function assessMemorizeProviderDispatch(profileValue, input = {}) {
     || DEFAULT_MAX_PROVIDER_TRANSMISSIONS_PER_OBLIGATION;
   const amplification = profile.logical_obligation_count > 0
     ? profile.physical_attempt_count / profile.logical_obligation_count : 0;
+  const projectedPhysical = profile.physical_attempt_count
+    + Math.max(0, Number(input.projected_request_count) || 1);
+  const projectedLogical = profile.logical_obligation_count
+    + Math.max(0, Number(input.projected_logical_obligation_count) || 0);
+  const projectedAmplification = projectedLogical > 0
+    ? projectedPhysical / projectedLogical : 0;
   if (leafAttemptCount >= maximum) return Object.freeze({ allowed: false,
+    outcome_type: 'policy_pause', policy_revision: MEMORIZE_PROVIDER_POLICY_REVISION,
     reason_code: 'logical_obligation_attempt_budget_exhausted', maximum_transmissions: maximum,
-    amplification });
-  if (profile.logical_obligation_count >= 2
-    && amplification >= Number(input.maximum_amplification ?? DEFAULT_MAX_REQUEST_AMPLIFICATION)) {
-    return Object.freeze({ allowed: false, reason_code: 'run_request_amplification_guard',
-      maximum_transmissions: maximum, amplification });
+    amplification, projected_amplification: projectedAmplification });
+  const minimumSample = Math.max(2, Number(input.minimum_global_sample_size) || 8);
+  const globalGuardEligible = input.safe_boundary === true
+    && input.active_recovery_tree !== true
+    && projectedLogical >= minimumSample;
+  if (globalGuardEligible
+    && projectedAmplification > Number(input.maximum_amplification
+      ?? DEFAULT_MAX_REQUEST_AMPLIFICATION)) {
+    return Object.freeze({ allowed: false, outcome_type: 'policy_pause',
+      policy_revision: MEMORIZE_PROVIDER_POLICY_REVISION,
+      reason_code: 'safe_boundary_request_amplification_guard',
+      maximum_transmissions: maximum, amplification,
+      projected_amplification: projectedAmplification,
+      minimum_global_sample_size: minimumSample });
   }
-  return Object.freeze({ allowed: true, reason_code: 'bounded_dispatch_allowed',
+  return Object.freeze({ allowed: true, outcome_type: 'dispatch_allowed',
+    policy_revision: MEMORIZE_PROVIDER_POLICY_REVISION,
+    reason_code: input.active_recovery_tree === true
+      ? 'active_recovery_frontier_dispatch_allowed'
+      : globalGuardEligible ? 'safe_boundary_dispatch_allowed'
+        : 'bootstrap_or_nonboundary_dispatch_allowed',
     maximum_transmissions: maximum, amplification,
+    projected_amplification: projectedAmplification,
+    minimum_global_sample_size: minimumSample,
     protocol: selectMemorizeProviderProtocol(profile, input).protocol });
 }
 

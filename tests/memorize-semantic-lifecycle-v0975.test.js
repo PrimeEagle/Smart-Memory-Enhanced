@@ -57,6 +57,24 @@ function staleFixtureLedger() {
       });
     }
   }
+  const asChild = (item) => ({
+    obligation_id: item.obligation_id,
+    logical_run_id: fixture.logical_run_id,
+    tier: 'session',
+    source_range: { start: item.range[0], end: item.range[1] },
+    source_fingerprint: item.fingerprint,
+  });
+  const root = fixture.obligations[0];
+  const firstLevel = fixture.obligations.slice(1, 3);
+  const secondLevel = fixture.obligations.slice(3, 5);
+  applyMemorizeLifecycleEvent(ledger, asChild(root), {
+    type: 'recovery_children_declared', children: firstLevel.map(asChild),
+    event_id: 'fixture:declare-root-partition',
+  });
+  applyMemorizeLifecycleEvent(ledger, asChild(firstLevel[1]), {
+    type: 'recovery_children_declared', children: secondLevel.map(asChild),
+    event_id: 'fixture:declare-nested-partition',
+  });
   return ledger;
 }
 
@@ -113,11 +131,14 @@ test('6 physical retries remain in attempt lineage', () => {
     { type: 'provider_attempt_started', provider_attempt_id: 'a2' }]) applyMemorizeLifecycleEvent(ledger, id, event);
   assert.deepEqual(ledger.obligations[id.obligation_id].provider_attempt_lineage, ['a1', 'a2']);
 });
-test('7 recovery children register durably', () => {
+test('7 journal reconciliation preserves the canonical recovery tree', () => {
   const ledger = staleFixtureLedger();
   const result = reconcileMemorizeLifecycleFromJournal(ledger, { journal: [],
     coverage_records: fixture.coverage_records, checkpoint_before: 40 });
   assert.equal(result.ledger.obligations[fixture.root_obligation_id].expected_child_obligation_ids.length, 2);
+  assert.equal(Object.values(result.ledger.obligations)
+    .flatMap((obligation) => obligation.semantic_event_history ?? [])
+    .some((event) => String(event.event_id).startsWith('coverage-tree:')), false);
 });
 test('8 parent expected-child identities are exact', () => {
   const result = reconcileMemorizeLifecycleFromJournal(staleFixtureLedger(), {

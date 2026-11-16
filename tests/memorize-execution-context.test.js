@@ -44,10 +44,12 @@ test('child execution contexts override provider identity without losing hooks',
     hooks: { obligation_event: async (event) => events.push(event) },
   });
   const child = extendMemorizeExecutionContext(root, {
-    provider: { parent_attempt_id: 'attempt-1', request_kind: 'repartition_child' },
+    provider: { parent_obligation_id: 'parent-leaf', parent_attempt_id: 'attempt-1',
+      request_kind: 'repartition_child' },
   });
   assert.equal(child.provider.root_obligation_id, 'root');
   assert.equal(child.provider.parent_attempt_id, 'attempt-1');
+  assert.equal(child.provider.parent_obligation_id, 'parent-leaf');
   assert.equal(child.provider.request_kind, 'repartition_child');
   await child.hooks.obligation_event('child-running');
   assert.deepEqual(events, ['child-running']);

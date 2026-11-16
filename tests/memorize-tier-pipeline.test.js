@@ -7,13 +7,15 @@ import {
   recordTierCoverage,
 } from '../memorize-tier-pipeline.js';
 
-const makePipeline = ({ range = { start: 10, end: 19, message_count: 10, source_indices: [10, 11] }, rootRange = null } = {}) => {
+const makePipeline = ({ range = { start: 10, end: 19, message_count: 10, source_indices: [10, 11] }, rootRange = null,
+  parentObligationId = null } = {}) => {
   const transitions = [];
   const execution = createMemorizeExecutionContext({
     provider: {
       root_obligation_id: 'session:chat:0-19:root',
       root_source_range: rootRange ?? range,
       root_source_fingerprint: 'root-fingerprint',
+      parent_obligation_id: parentObligationId,
     },
     hooks: { obligation_event: async (transition) => transitions.push(transition) },
   });
@@ -39,6 +41,19 @@ test('shared tier pipeline derives one root and exact recovery-leaf identity', (
   assert.equal(pipeline.rootObligationId, 'session:chat:0-19:root');
   assert.equal(pipeline.leafObligationId, 'session:chat:0-19:root:leaf:10-14:leaf-fingerprint');
   assert.equal(pipeline.isRecoveryLeaf, true);
+});
+
+test('nested recovery leaf retains its actual immediate parent', async () => {
+  const { pipeline, transitions } = makePipeline({
+    range: { start: 0, end: 4, message_count: 5, source_indices: [0, 1, 2, 3, 4] },
+    rootRange: { start: 0, end: 19, message_count: 20 },
+    parentObligationId: 'session:chat:0-19:root:leaf:0-9:parent-fingerprint',
+  });
+  await pipeline.emitLifecycleEvent('obligation_registered');
+  assert.equal(transitions[0].parent_obligation_id,
+    'session:chat:0-19:root:leaf:0-9:parent-fingerprint');
+  assert.equal(pipeline.lifecycleIdentity.parent_obligation_id,
+    'session:chat:0-19:root:leaf:0-9:parent-fingerprint');
 });
 
 test('controller-managed extraction fails closed without the execution-kernel hook', () => {

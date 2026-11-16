@@ -371,6 +371,18 @@ test('native structured output is the primary protocol and converts through the 
   assert.match(compatibilityFallback.prompt, /FINAL OUTPUT CONTRACT/);
 });
 
+test('multi-owner native schema constrains owners and requires explicit no-update coverage', () => {
+  const owners = ['Alex Mercer', 'Aster Graves'];
+  const request = buildStructuredMemoryProviderRequest('SOURCE', {
+    tier: 'longterm', allowedOwners: owners,
+    capabilities: { native_json_schema: true },
+  });
+  const schema = request.providerConstraints.jsonSchema;
+  assert.deepEqual(schema.required, ['records', 'no_update_owners']);
+  assert.deepEqual(schema.properties.records.items.properties.owner.enum, owners);
+  assert.deepEqual(schema.properties.no_update_owners.items.enum, owners);
+});
+
 test('production tier pipeline routes final completion through the atomic kernel hook', async () => {
   const pipelineLeafId = 'session:chat:0-19:fp:0-19';
   let aggregate = register(createMemorizeExecutionAggregate(RUN), {

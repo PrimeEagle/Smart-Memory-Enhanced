@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.88] - 2026-11-15
+
+### Added
+
+- Added an immutable Memorize Chat operation context carried by Long-Term
+  failures, including run, controller, transaction, obligation, owner, source,
+  action-handler, and provider-policy identity.
+- Added a production ESLint `no-undef` gate and focused regression coverage for
+  early-run provider policy, typed error origin, atomic rollback settlement,
+  immutable operation context, and frozen diagnostic snapshots.
+- Added one frozen post-settlement diagnostic snapshot identity with explicit
+  logical-run, aggregate, transaction, and checkpoint revisions plus
+  consistency validation.
+- Added a production multi-owner Long-Term adapter. One structured provider
+  response is locally validated and partitioned into isolated per-character
+  persistence operations with exact source provenance and explicit no-update
+  coverage.
+
+### Changed
+
+- Provider amplification is now evaluated at safe source boundaries after a
+  bootstrap sample. An active recovery frontier retains its bounded per-leaf
+  budget and cannot be stranded by an unstable early-run ratio.
+- Coverage records are read-only terminal evidence during journal
+  reconciliation; they can no longer create or reorder recovery children.
+- Memorize Chat errors use explicit typed origins for internal, programming,
+  transport, provider-output, validation, persistence, policy-pause,
+  cancellation, stale-callback, external-blocker, and diagnostic failures.
+- Policy refusal is returned as an operational pause rather than being wrapped
+  as provider-attempt registration or transport failure.
+- Memorize Chat now dispatches one base Long-Term request for the complete
+  applicable owner set and one base Session request per source chunk. The
+  combined Long-Term output allowance scales from the configured per-owner
+  allowance while remaining capped by the generation budget.
+
+### Removed
+
+- Removed the legacy end-of-source malformed-output sweep and its diagnostic
+  compatibility projection. Provider-audit projections can no longer select
+  or dispatch recovery work.
+- Removed the production loop that sent the complete source chunk separately
+  for every character and consolidated each owner after every chunk.
+
+### Fixed
+
+- Fixed Long-Term's outer failure boundary referencing `rootObligationId` and
+  `range` before those block-local values existed.
+- Fixed the controller failure path referencing the block-local `total` value
+  after an early exception.
+- Fixed rollback and checkpoint settlement being persisted independently,
+  which could leave a rolled-back transaction paired with an in-progress
+  checkpoint.
+- Fixed stale-controller and developer-idempotence UI paths referencing
+  undefined production identifiers.
+- Fixed diagnostics combining post-Resume sections from different semantic
+  revisions and misattributing local lifecycle failures to provider transport.
+
+### Known limitations
+
+- The new production multi-owner path is covered by deterministic provider,
+  partition, lifecycle, and controller-wiring tests but has not yet completed a
+  live SillyTavern long-chat replay.
+
 ## [0.9.87] - 2026-11-13
 
 ### Added

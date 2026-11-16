@@ -1036,16 +1036,6 @@ function coverageRange(record) {
   return normalizeRange(record?.effective_range ?? record?.original_range ?? record?.source_range ?? record);
 }
 
-function findObligationForCoverage(ledger, record, rootId = null) {
-  const range = coverageRange(record);
-  const candidates = Object.values(ledger.obligations).filter((item) => item.tier === record.tier
-    && (item.owner ?? null) === (record.owner ?? null)
-    && item.source_range?.start === range?.start && item.source_range?.end === range?.end
-    && (!record.source_fingerprint || item.source_fingerprint === record.source_fingerprint)
-    && (!rootId || item.obligation_id === rootId || item.obligation_id.startsWith(`${rootId}:leaf:`)));
-  return candidates[0] ?? null;
-}
-
 export function deriveMemorizeSafeResumeOffset(ledgerValue, startingOffset = 0) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue);
   let offset = Math.max(0, Number(startingOffset) || 0);
@@ -1062,8 +1052,9 @@ export function deriveMemorizeSafeResumeOffset(ledgerValue, startingOffset = 0) 
 }
 
 /**
- * Repairs false-negative ledger projections from durable coverage and provider
- * completion evidence. It never invokes a provider or persistence callback.
+ * Verifies journaled terminal evidence against the canonical obligation tree.
+ * Coverage records are projections only: they can support terminal-evidence
+ * verification but can never create, reorder, or repair recovery children.
  */
 export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
@@ -1071,45 +1062,6 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
   const coverage = (input.coverage_records ?? []).filter((item) => item?.tier);
   const entries = journalEntries(input.journal).filter((entry) => !input.logical_run_id
     || entry.logical_run_id === input.logical_run_id);
-  const byRangeId = new Map(coverage.filter((item) => item.range_id)
-    .map((item) => [item.range_id, item]));
-  const rootIds = new Set(entries.map((entry) => entry.root_obligation_id).filter(Boolean));
-  for (const obligation of Object.values(ledger.obligations)) {
-    if (!obligation.parent_obligation_id && coverage.some((record) =>
-      findObligationForCoverage(ledger, record)?.obligation_id === obligation.obligation_id)) {
-      rootIds.add(obligation.obligation_id);
-    }
-  }
-  for (const rootId of rootIds) {
-    const scoped = coverage.filter((record) => {
-      const obligation = findObligationForCoverage(ledger, record, rootId);
-      return Boolean(obligation);
-    });
-    const childrenByParent = new Map();
-    for (const record of scoped) {
-      if (!record.parent_range_id) continue;
-      const parentRecord = byRangeId.get(record.parent_range_id);
-      const parent = parentRecord ? findObligationForCoverage(ledger, parentRecord, rootId) : null;
-      const child = findObligationForCoverage(ledger, record, rootId);
-      if (!parent || !child || parent.obligation_id === child.obligation_id) continue;
-      const list = childrenByParent.get(parent.obligation_id) ?? [];
-      list.push(child);
-      childrenByParent.set(parent.obligation_id, list);
-    }
-    for (const [parentId, children] of childrenByParent) {
-      const priorParentState = ledger.obligations[parentId]?.current_state;
-      const childResult = applyMemorizeLifecycleEvent(ledger, ledger.obligations[parentId], {
-        type: 'recovery_children_declared', children,
-        event_id: `coverage-tree:${parentId}:${children.map((child) => child.obligation_id).sort().join(',')}`,
-        at: input.at,
-      });
-      requireAppliedLifecycleResult(childResult,
-        [SAFE_STATES.has(priorParentState) ? priorParentState : 'pending_recovery'], {
-          stage: 'recovery_child_registration', obligation_id: parentId,
-          event_type: 'recovery_children_declared',
-        });
-    }
-  }
   const reusedAttemptIds = [];
   const preservedRecordIds = [];
   const attempts = input.provider_attempts?.recent_attempts ?? input.provider_attempts ?? [];

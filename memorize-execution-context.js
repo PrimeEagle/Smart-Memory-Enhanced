@@ -22,6 +22,7 @@ export function createMemorizeExecutionContext(input = {}) {
       root_obligation_id: input.provider?.root_obligation_id ?? null,
       root_source_range: input.provider?.root_source_range ?? null,
       root_source_fingerprint: input.provider?.root_source_fingerprint ?? null,
+      parent_obligation_id: input.provider?.parent_obligation_id ?? null,
       parent_attempt_id: input.provider?.parent_attempt_id ?? null,
       request_kind: input.provider?.request_kind ?? null,
       resumed_pending_obligation: input.provider?.resumed_pending_obligation === true,

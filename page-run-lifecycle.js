@@ -124,7 +124,8 @@ export function recordRuntimeLifecycleEvent(metadata, runId, input = {}) {
     attempt_id: input.attempt_id ?? null,
     active_action: input.active_action ?? null,
     controller_invocation_id: input.controller_invocation_id ?? null,
-    affected_controller_progress: input.affected_controller_progress === true,
+    affected_controller_progress: input.affected_controller_progress === true ? true
+      : input.affected_controller_progress === false ? false : 'unknown',
     later_handled_or_recovered: input.later_handled_or_recovered === true,
     visibility_state: input.visibility_state ?? null,
     last_durable_phase_transition: input.last_durable_phase_transition ?? null,

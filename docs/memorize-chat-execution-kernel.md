@@ -18,6 +18,24 @@ and are never inputs to an executable selector.
 | Controller exit | controller finalizer into the execution aggregate | canonical status projection |
 | Run/UI/diagnostic status | canonical pure projections | presentation only |
 
+Failure construction does not close over tier-local variables. Each extraction
+creates an immutable operation context before entering its failure boundary;
+the context carries the run, controller, transaction, chunk, root/leaf,
+owner, source, selected-action, and policy revisions used by typed errors.
+
+Transaction rollback and checkpoint disposition are derived together by one
+pure settlement operation. A rollback produces an awaiting-resume checkpoint,
+never an in-progress checkpoint. Diagnostic export reads the settled metadata
+and checkpoint once, clones and freezes that semantic snapshot, and projects
+all sections from its shared revision identity. A revision disagreement is an
+explicit diagnostic-observer failure rather than a silently mixed export.
+
+Provider policy has two separate scopes: a strict transmission cap for each
+leaf and a run-level efficiency guard evaluated only at a safe source boundary
+after a minimum sample. The global guard cannot interrupt an already-open
+recovery frontier; policy refusal is a typed operational pause and is neither
+attempt-registration failure nor provider-transport failure.
+
 Session and Long-Term are provider/parser adapters. They may execute only the
 canonical action selected for their exact leaf and must record durable action
 receipts at selection, start, attempt registration, network start, response,
@@ -166,15 +184,29 @@ exact-attempt replay. Attempt audit, coverage summaries, diagnostics, and UI
 are one-way projections. Production completion writes enter through the
 kernel, and all displayed state is rebuilt from the committed aggregate.
 
-## Long-Term batching status
+## Long-Term batching
 
-`multi-owner-longterm.js` defines the shared structured-response contract and
-performs local owner/provenance partitioning without persistence side effects.
-The production controller still dispatches one Long-Term obligation per owner;
-moving that controller path to one shared provider request remains separate
-work because the shared request must first become a first-class ledger leaf
-with atomic per-owner persistence. The current implementation does not claim
-the two-calls-per-chunk performance gate.
+`multi-owner-longterm-runtime.js` is the production Long-Term tier adapter for
+Memorize Chat. The controller creates one `@multi-owner` ledger leaf for the
+source chunk and dispatches one structured request containing the complete
+allowed-owner set. The native schema constrains both record owners and explicit
+no-update owners to that set. `multi-owner-longterm.js` performs the single
+dispatch boundary and pure local partitioning; unknown, ambiguous,
+out-of-window, and cross-owner duplicate assignments are rejected with exact
+reason codes.
+
+Each accepted partition is persisted independently through
+`persistLongtermOwnerPartition`. Chat-local and full-card policies retain their
+normal storage isolation, read-only/disabled owners remain non-applicable, and
+candidate-to-durable mappings include existing duplicate records so replay is
+idempotent. The aggregate provider-completion command closes the shared leaf
+only after every owner partition is terminal. A malformed or partially invalid
+batch remains the same pending leaf with a bounded source-backed recovery
+action; it does not restore the old per-owner normal request loop.
+
+The normal source-chunk plan is therefore one base Long-Term request and one
+base Session request. Trigger generation, relationship extraction, and
+consolidation are not nested inside the per-chunk multi-owner action.
 
 ## Commands
 

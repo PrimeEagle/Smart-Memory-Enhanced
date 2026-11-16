@@ -138,6 +138,8 @@ import {
 } from './provider-completion-journal.js';
 import { classifyRelationshipPairIdentity } from './relationship-quality-utils.js';
 import { buildRecoverySourceUnits } from './owner-applicability.js';
+import { attachMemorizeOperationContext, createMemorizeOperationContext }
+  from './memorize-operation-context.js';
 import {
   analyzeMalformedResponse,
   createMalformedRecoveryBudget,
@@ -803,6 +805,112 @@ function mergeMemories(existing, incoming, maxTotal) {
 }
 
 /**
+ * Persist an already parsed and provenance-mapped Long-Term partition for one
+ * owner. This operation performs no provider request and owns no traversal or
+ * lifecycle state; the multi-owner adapter commits its aggregate result.
+ */
+export async function persistLongtermOwnerPartition(
+  characterName, candidates, recentMessages, { targeted_replay: targetedReplay = false } = {},
+) {
+  const settings = extension_settings[MODULE_NAME];
+  const policy = getCharacterMemoryPolicy(characterName);
+  if (!characterName || [CHARACTER_MEMORY_POLICIES.DISABLED,
+    CHARACTER_MEMORY_POLICIES.READ_ONLY].includes(policy)) {
+    return { owner: characterName, status: 'not_applicable', added: 0,
+      durable_record_ids: [], durable_record_candidate_map: {} };
+  }
+  const existing = loadCharacterMemories(characterName);
+  const active = existing.filter((memory) => !memory.superseded_by);
+  const retired = existing.filter((memory) => memory.superseded_by);
+  const verifiedExisting = candidates.map((candidate) => ({
+    candidate,
+    durable: active.find((memory) => (candidate.id && memory.id === candidate.id)
+      || (memory.type === candidate.type
+        && String(memory.content ?? '').trim() === String(candidate.content ?? '').trim())),
+  })).filter((entry) => entry.durable?.id);
+  const { verified, superseded, confirmed } = await verifyLongtermCandidates(candidates, active);
+  const context = getContext();
+  const messageIndex = Math.max(0, (context.chat?.length ?? 1) - 1);
+  const sourceChatId = getCurrentChatId() ?? null;
+  const witnessedBy = getSceneParticipants(recentMessages);
+  for (const memory of verified) {
+    memory.source_chat_id = sourceChatId;
+    memory.witnessed_by = witnessedBy;
+    validateGeneratedMemoryRecord(memory, active);
+  }
+  const merged = mergeMemories(active, verified, settings.longterm_max_memories || 25);
+  const newlyRetiredIds = new Set();
+  for (const [candidateText, oldId] of superseded) {
+    const replacement = merged.find((memory) => String(memory.content ?? '').trim().toLowerCase() === candidateText);
+    const prior = active.find((memory) => memory.id === oldId);
+    if (!replacement || !prior || prior.superseded_by || replacement.id === prior.id) continue;
+    replacement.supersedes = [...new Set([...(replacement.supersedes ?? []), oldId])];
+    replacement.valid_from ??= messageIndex;
+    prior.superseded_by = replacement.id;
+    prior.valid_to = messageIndex;
+    newlyRetiredIds.add(oldId);
+  }
+  const finalActive = merged.filter((memory) => !newlyRetiredIds.has(memory.id));
+  const now = Date.now();
+  for (const memory of finalActive) {
+    if (confirmed.has(memory.id)) {
+      memory.last_confirmed_ts = now;
+      memory.confidence = Math.min(1, (memory.confidence ?? 1) + 0.05);
+      memory.unconfirmed_since = 0;
+    } else if (!targetedReplay) {
+      memory.unconfirmed_since = (memory.unconfirmed_since ?? 0) + 1;
+      if (memory.unconfirmed_since >= 10) {
+        memory.confidence = Math.max(0.3, (memory.confidence ?? 1) - 0.02);
+      }
+    }
+  }
+  const narrativeRoster = buildCanonicalCharacterRoster(context);
+  const entityRegistry = loadCharacterEntityRegistry(characterName);
+  for (const memory of finalActive) {
+    const narrative = canonicalizeNarrativeNames(memory.content, narrativeRoster);
+    memory.content = narrative.text;
+    if (narrative.replacements.length) memory.identity_replacements = narrative.replacements;
+    if (isGrounded(memory) && Array.isArray(memory._raw_entity_names)) {
+      memory.entity_link_stage ??= 'multi_owner_longterm_extraction';
+      memory.entity_link_store ??= 'longterm';
+      memory.entity_creation_method ??= 'structured_entity_output';
+      resolveEntityNames(memory, memory._raw_entity_names, messageIndex, entityRegistry);
+    }
+  }
+  if (entityRegistry.length) {
+    reconcileCanonicalEntityRegistry(entityRegistry, context, finalActive);
+    reconcileEntityRegistry(entityRegistry, finalActive);
+    saveCharacterEntityRegistry(characterName, entityRegistry);
+  }
+  let updatedRetired = [...retired, ...active.filter((memory) => newlyRetiredIds.has(memory.id))];
+  if (updatedRetired.length > MAX_RETIRED_POOL) {
+    updatedRetired = updatedRetired.slice(updatedRetired.length - MAX_RETIRED_POOL);
+  }
+  const durableRecords = finalActive.filter((memory) => verified.some((candidate) => candidate.id === memory.id));
+  const durableRecordIds = [...new Set([
+    ...durableRecords.map((memory) => memory.id).filter(Boolean),
+    ...verifiedExisting.map((entry) => entry.durable.id),
+  ])];
+  const durableRecordCandidateMap = Object.fromEntries([...durableRecords
+    .filter((memory) => memory._memorize_candidate_id)
+    .map((memory) => [String(memory.id), String(memory._memorize_candidate_id)]),
+  ...verifiedExisting.filter((entry) => entry.candidate._memorize_candidate_id)
+    .map((entry) => [String(entry.durable.id),
+      String(entry.candidate._memorize_candidate_id)])]);
+  for (const memory of [...finalActive, ...updatedRetired]) delete memory._memorize_candidate_id;
+  if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    await saveChatLocalMemories(characterName, [...finalActive, ...updatedRetired]);
+  } else saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
+  return {
+    owner: characterName,
+    status: durableRecords.length ? 'committed' : 'verified_no_update',
+    added: durableRecords.length,
+    durable_record_ids: durableRecordIds,
+    durable_record_candidate_map: durableRecordCandidateMap,
+  };
+}
+
+/**
  * Extracts memorable facts from recent chat messages via the model and merges
  * them into the character's stored memories. Safe to fire-and-forget.
  * @param {string} characterName
@@ -822,8 +930,26 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     return 0;
   }
 
+  const sourceMessages = recentMessages.filter((message) => message.mes && !message.is_system);
+  const operationRange = sourceRange(sourceMessages);
+  const operationFingerprint = sourceWindowFingerprint(sourceMessages);
+  const operationRootId = execution.provider.root_obligation_id
+    ?? `longterm:${String(characterName).toLowerCase()}:${operationRange.start}-${operationRange.end}:${operationFingerprint}`;
+  const operationContext = createMemorizeOperationContext({
+    logical_run_id: getContext()?.chatMetadata?.[META_KEY]?.active_catchup_run_id,
+    controller_invocation_id: execution.controller.instance_id,
+    transaction_id: execution.controller.transaction_id,
+    transaction_generation: execution.controller.transaction_generation,
+    chunk_id: execution.controller.transaction_id,
+    root_obligation_id: operationRootId,
+    leaf_obligation_id: operationRootId,
+    tier: 'longterm', owner: characterName,
+    source_range: operationRange, source_fingerprint: operationFingerprint,
+    selected_action: execution.provider.selected_recovery_action,
+    action_handler_revision: 2, provider_policy_revision: 2,
+  });
+
   try {
-    const sourceMessages = recentMessages.filter((m) => m.mes && !m.is_system);
     const chatHistory = sourceMessages
       .map((m, index) => `[${index}] ${m.name}: ${m.mes}`)
       .join('\n\n');
@@ -1313,6 +1439,22 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     const registeredIngress = !recoveryOnlyMode && !journalReplayMode
       ? await pipeline.ingestProviderEvidence('register_new_attempt') : null;
     if (registeredIngress && registeredIngress.status !== 'applied') {
+      if (registeredIngress.status === 'operationally_paused') {
+        const pause = new Error('Long-Term provider dispatch paused by the bounded provider policy.');
+        pause.code = 'SME_PROVIDER_POLICY_PAUSED';
+        pause.sme_origin = 'policy_pause';
+        pause.sme_operational_pause = true;
+        pause.sme_reason_code = registeredIngress.reason_code;
+        pause.sme_obligation_id = leafObligationId;
+        pause.sme_request_diagnostics = {
+          ...(registeredIngress.policy_outcome ?? {}),
+          root_obligation_id: rootObligationId,
+          leaf_obligation_id: leafObligationId,
+          provider_call_required: false,
+          next_eligible_action: registeredIngress.next_action ?? 'resume_exact_obligation',
+        };
+        throw pause;
+      }
       const error = new Error('Long-Term provider attempt could not be registered.');
       error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
       error.sme_recovery_blocked = true;
@@ -1385,6 +1527,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         return added;
       }
       const providerStatus = Number(err?.status ?? err?.cause?.status);
+      err.sme_origin ??= 'provider_transport';
+      err.sme_request_diagnostics ??= {};
+      err.sme_request_diagnostics.transport_started = true;
+      err.sme_request_diagnostics.transport_completed = false;
       finishProviderAttempt(providerMetadata, providerAttempt, {
         terminal_outcome: 'provider_failure', recoverable: false,
         failure_classification: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
@@ -2298,12 +2444,12 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     });
     return added;
   } catch (err) {
+    attachMemorizeOperationContext(err, operationContext);
     if (err?.code === 'recovery_request_budget_reached_with_pending_children') {
       err.sme_request_diagnostics ??= {};
       err.sme_request_diagnostics.owner = characterName;
-      err.sme_request_diagnostics.root_obligation_id = rootObligationId;
-      err.sme_request_diagnostics.root_source_range = execution.provider.root_source_range
-        ?? { start: range.start, end: range.end, message_count: range.message_count };
+      err.sme_request_diagnostics.root_obligation_id = operationContext.root_obligation_id;
+      err.sme_request_diagnostics.root_source_range = operationContext.source_range;
       healthFinish({
         terminal_health: 'paused_resumable',
         provider_outcome: 'recovery_request_budget_reached_with_pending_children',

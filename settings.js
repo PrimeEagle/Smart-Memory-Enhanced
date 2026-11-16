@@ -102,7 +102,6 @@ import {
 } from './memorize-obligation-ledger.js';
 import {
   deriveMemorizeResumeEligibility,
-  getAuthoritativeOwnerRangeStatus,
   getAuthoritativeTierRangeStatus,
   isAuthoritativeTierRangeSafelyCovered,
   rebuildMemorizeManifestProjection,
@@ -175,6 +174,7 @@ import {
   getCharacterMemoryPolicy,
   setCharacterMemoryPolicy,
 } from './longterm.js';
+import { extractAndStoreMultiOwnerMemories } from './multi-owner-longterm-runtime.js';
 import {
   clearEpistemicKnowledge,
   extractEpistemicKnowledge,
@@ -251,6 +251,12 @@ import {
 import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
 import { deriveRunStatus, normalizeRunStatusReport, RUN_STATUS_CLASSIFIER_VERSION } from './run-status-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
+import { classifyMemorizeErrorRecord } from './memorize-error-origin.js';
+import { smLog } from './logging.js';
+import { captureMemorizeDiagnosticSnapshot, validateMemorizeDiagnosticSnapshot }
+  from './memorize-diagnostic-snapshot.js';
+import { settleMemorizeTransactionCheckpoint }
+  from './memorize-transaction-settlement.js';
 import {
   markProviderObligationOperationalPause,
   markProviderObligationRecoveryInProgress,
@@ -266,7 +272,7 @@ import {
   updateTargetedReplayCheckpoint, summarizeTargetedReplayCheckpoint,
   TARGETED_REPLAY_SCHEMA_VERSION,
 } from './targeted-replay-utils.js';
-import { MALFORMED_RECOVERY_LIMITS, MALFORMED_RECOVERY_SCHEMA_VERSION } from './malformed-output-recovery.js';
+import { MALFORMED_RECOVERY_SCHEMA_VERSION } from './malformed-output-recovery.js';
 import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
@@ -281,8 +287,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.87',
-  build_fingerprint: 'sme-v0.9.87-current-run-dispatch-r1',
+  extension_version: '0.9.88',
+  build_fingerprint: 'sme-v0.9.88-multi-owner-runtime-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2179,7 +2185,7 @@ export function bindSettingsUI(ctrl) {
         active_action: pending?.next_eligible_action ?? receipt?.action ?? null,
         controller_invocation_id: checkpoint?.controller_heartbeat
           ?.controller_invocation_id ?? null,
-        affected_controller_progress: checkpoint?.status === 'in_progress',
+        affected_controller_progress: checkpoint?.status === 'in_progress' ? true : 'unknown',
         later_handled_or_recovered: false,
         stack_fingerprint: diagnosticFingerprint(String(value?.stack ?? raw)
           .replace(/https?:\/\/\S+/g, '<url>')),
@@ -2426,7 +2432,6 @@ export function bindSettingsUI(ctrl) {
           },
           resume_eligibility: staleResumeEligibility,
           authoritative_recovery: staleAuthority,
-          controller_lease_repair: leaseRepair.detail,
           live_health_repairs: healthRepairs, reconciled_at: Date.now() };
         rawCheckpoint.updated_at = Date.now();
         saveChatMetadata(getContext()).catch((error) => console.warn(
@@ -5411,14 +5416,14 @@ export function bindSettingsUI(ctrl) {
       if (!transaction || transaction.state !== 'active') return transaction ?? null;
       transaction.exact_reason_code = reasonCode;
       const result = rollbackCatchUpTransaction(transaction);
-      const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
-      if (checkpoint) checkpoint.transaction_lifecycle = {
-        schema_version: 1, transaction_id: transaction.transaction_id,
-        state: transaction.state, owner: structuredClone(transaction.owner ?? {}),
-        revision: transaction.revision ?? null, generation: transaction.generation ?? null,
-        started_at: transaction.started_at ?? null, updated_at: Date.now(),
-        exact_reason_code: transaction.exact_reason_code ?? reasonCode,
-      };
+      const metadata = catchUpContext.chatMetadata?.[META_KEY];
+      const checkpoint = metadata?.catch_up_checkpoint;
+      if (checkpoint) {
+        const settledCheckpoint = settleMemorizeTransactionCheckpoint(
+          checkpoint, result, { reason_code: reasonCode });
+        metadata.catch_up_checkpoint = settledCheckpoint;
+        controllerRuntime.checkpoint = settledCheckpoint;
+      }
       return result;
     };
     const recordControllerExit = (input = {}) => {
@@ -5443,19 +5448,32 @@ export function bindSettingsUI(ctrl) {
       currentChunkFailed = true;
       if (tier) runResult.extractionFailuresByTier[tier] = (runResult.extractionFailuresByTier[tier] ?? 0) + 1;
       if (isSave) runResult.saveFailures++;
-      const localEffectBoundaryFailure = /^(SME_(?:MEMORIZE|ATOMIC|PROVIDER_EVIDENCE|LIFECYCLE|RESUME))/.test(
-        String(err?.code ?? ''));
+      const category = classifyMemorizeErrorRecord({
+        ...err,
+        category: err?.category,
+        sme_origin: err?.sme_origin,
+        name: err?.name,
+        persistence: isSave,
+        transport_started: err?.sme_request_diagnostics?.transport_started,
+        transport_completed: err?.sme_request_diagnostics?.transport_completed,
+      });
+      const localEffectBoundaryFailure = category === 'internal_invariant_failure';
       runResult.errors.push({
         label,
         tier,
         persistence: isSave,
         code: err?.code ?? null,
-        category: localEffectBoundaryFailure ? 'internal_invariant_failure' : undefined,
-        provider_fault_attribution: localEffectBoundaryFailure ? false : undefined,
+        category,
+        origin: err?.sme_origin ?? (err?.name === 'ReferenceError'
+          ? 'programming_error' : null),
+        normalized_exception_class: err?.name ?? null,
+        provider_fault_attribution: category === 'provider_transport_failure'
+          || category === 'provider_output_failure',
         message: String(err?.message ?? err ?? 'Unknown error').replace(/\s+/g, ' ').slice(0, 300),
       });
       const requestDiagnostics = err?.sme_request_diagnostics ?? null;
-      const physicalProviderFailure = Boolean(requestDiagnostics)
+      const physicalProviderFailure = category === 'provider_transport_failure'
+        && Boolean(requestDiagnostics)
         && requestDiagnostics.request_prevented !== true
         && (Boolean(requestDiagnostics.provider)
           || Boolean(requestDiagnostics.endpoint_category)
@@ -5660,6 +5678,7 @@ export function bindSettingsUI(ctrl) {
         ? discoveredMessages.slice(0, resumeSourceValidation.source_message_count)
         : discoveredMessages;
       const total = allMessages.length;
+      controllerRuntime.source_message_count = total;
       let resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
       const checkpoint = resumableCheckpoint ?? {
         schema_version: 3,
@@ -6576,25 +6595,14 @@ export function bindSettingsUI(ctrl) {
         updateActivePageMarker(checkpoint, 'source_extraction', 'in_flight');
 
         if (replayLongterm) {
-          for (const name of catchUpCharacterNames) {
-            const priorOwnerStatus = getAuthoritativeOwnerRangeStatus(
-              checkpoint.run_manifest.obligation_ledger, name, canonicalSourceRange);
-            if (priorOwnerStatus?.safely_committed === true) continue;
-            // Historical group rebuilds intentionally give every current card
-            // the full chunk. Older chats may predate the group split or carry
-            // incorrect speaker attribution, so author filtering would hide
-            // the only evidence for a card's earlier dialogue. The extraction
-            // prompt remains explicitly targeted to `name`.
-            const nameChunk = chunk;
-            if (nameChunk.length === 0) continue;
-            const ownerSourceFingerprint = sourceWindowFingerprint(nameChunk);
-            const ownerObligationId = `longterm:${String(name).trim().toLowerCase()}:${currentRange.source_start_index}-${currentRange.source_end_index}:${ownerSourceFingerprint}`;
-            const longtermLiveHealth = createLiveHealth(catchUpContext, 'longterm', nameChunk, 'memorize_chat_catch_up');
-            longtermLiveHealth?.setOwner(name);
-            setStatusMessage(
-              `Catching up... (${i}/${total} messages - extracting long-term for ${name})`,
-            );
-            await extractAndStoreMemories(name, nameChunk, setStatusMessage, {
+          const longtermLiveHealth = createLiveHealth(
+            catchUpContext, 'longterm', chunk, 'memorize_chat_catch_up');
+          longtermLiveHealth?.setOwner('@multi-owner');
+          setStatusMessage(
+            `Catching up... (${i}/${total} messages - extracting Long-Term for ${catchUpCharacterNames.length} characters)`,
+          );
+          await extractAndStoreMultiOwnerMemories(
+            catchUpCharacterNames, chunk, setStatusMessage, {
               extractionCoverage: runResult.extractionCoverage,
               liveHealth: longtermLiveHealth,
               executionContext: createMemorizeExecutionContext({
@@ -6606,9 +6614,14 @@ export function bindSettingsUI(ctrl) {
                   transaction_generation: chunkTransaction.generation },
                 provider: {
                   resumed_pending_obligation: Boolean(resumableCheckpoint
-                    && priorOwnerStatus && priorOwnerStatus.safely_committed !== true),
-                  root_obligation_state: priorOwnerStatus?.current_state ?? null,
-                  selected_recovery_action: priorOwnerStatus?.next_eligible_action ?? null,
+                    && priorLongtermObligation
+                    && priorLongtermObligation.safely_committed !== true),
+                  root_obligation_state: priorLongtermObligation?.current_state ?? null,
+                  selected_recovery_action: priorLongtermObligation?.next_eligible_action ?? null,
+                  request_kind: priorLongtermObligation?.next_eligible_action
+                    ? 'multi_owner_recovery' : 'original',
+                  changed_recovery_dimensions: priorLongtermObligation?.next_eligible_action
+                    ? ['fresh_multi_owner_response', 'bounded_retry'] : [],
                 },
                 recovery: { completed_child_keys: completedOverflowChildren },
                 hooks: {
@@ -6622,46 +6635,20 @@ export function bindSettingsUI(ctrl) {
                   get_canonical_obligation: getCanonicalObligation,
                 },
               }),
-            }).catch((err) => {
-              if (err?.code === 'recovery_request_budget_reached_with_pending_children') {
-                err.sme_request_diagnostics ??= {};
-                err.sme_request_diagnostics.parent_chunk_range = { ...currentRange };
-                recordCatchUpOperationalPause('Long-Term recovery budget pause', err, 'long-term');
-                return;
-              }
-              recordCatchUpError('long-term extraction error (chunk)', err, 'long-term');
-              if (err?.sme_context_overflow_checkpoint_failure) {
-                ctrl.catchUpCancelled = true;
-                ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
-              }
-            });
-            const completedOwnerRecord = runResult.extractionCoverage.longterm.records.findLast((record) =>
-              record?.parent_range_id == null
-              && record?.owner === name
-              && record?.original_range?.start === currentRange.source_start_index
-              && record?.original_range?.end === currentRange.source_end_index
-              && ['completed', 'repartitioned_completed'].includes(record?.coverage_terminal_state));
-            if (!completedOwnerRecord) {
-              await applyAuthoritativeLifecycleEvent({
-                obligation_id: ownerObligationId, tier: 'longterm', owner: name,
-                source_range: { start: currentRange.source_start_index, end: currentRange.source_end_index },
-                source_fingerprint: ownerSourceFingerprint,
-                type: 'recovery_required',
-                reason_code: 'longterm_extraction_not_safely_committed',
-                next_action: 'resume_exact_obligation',
-                coverage_result: 'pending',
-              });
+            },
+          ).catch((err) => {
+            if (err?.sme_operational_pause === true) {
+              err.sme_request_diagnostics ??= {};
+              err.sme_request_diagnostics.parent_chunk_range = { ...currentRange };
+              recordCatchUpOperationalPause('Long-Term multi-owner recovery pause', err, 'long-term');
+              return;
             }
-            if (ctrl.catchUpCancelled) break;
-            // Consolidate after each chunk so near-duplicates are collapsed before
-            // the next chunk can add more similar entries.
-            if (settings.consolidation_enabled) {
-              setStatusMessage(`Catching up... (${i}/${total} messages - consolidating ${name})`);
-              await consolidateMemories(name).catch((err) => {
-                recordCatchUpError('long-term consolidation error (chunk)', err, 'long-term');
-              });
+            recordCatchUpError('Long-Term multi-owner extraction error', err, 'long-term');
+            if (err?.sme_context_overflow_checkpoint_failure) {
+              ctrl.catchUpCancelled = true;
+              ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
             }
-          }
+          });
         }
         if (ctrl.catchUpCancelled) {
           settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
@@ -7132,147 +7119,6 @@ export function bindSettingsUI(ctrl) {
             } else i += chunk.length;
           }
         }
-      }
-
-      // A malformed terminal response can survive an individual source chunk
-      // without corrupting already-authoritative memories. Before any
-      // expensive finalization begins, revisit only those exact unresolved
-      // source obligations with a fresh bounded recovery budget. The compact
-      // checkpoint is saved before and after every target so a page/service
-      // restart resumes without replaying a successfully recovered range.
-      if (!ctrl.catchUpCancelled && Number(checkpoint.next_source_offset) >= total) {
-        reconcileInterruptedExtractionEvents(catchUpContext.chatMetadata?.[META_KEY], checkpoint, {
-          reason: 'source_extraction_completed_before_automatic_malformed_sweep',
-        });
-        const metadata = catchUpContext.chatMetadata?.[META_KEY];
-        const chatId = catchUpContext.chatId ?? catchUpContext.groupId ?? null;
-        const priorSweep = checkpoint.automatic_malformed_recovery;
-        const sweep = priorSweep?.status === 'in_progress'
-          ? priorSweep
-          : {
-            schema_version: 1,
-            status: 'in_progress',
-            started_at: Date.now(),
-            round_count: 0,
-            maximum_rounds: MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds,
-            targets: [],
-            recovered_obligation_ids: [],
-            still_unresolved_obligation_ids: [],
-          };
-        checkpoint.automatic_malformed_recovery = sweep;
-        const completedTargets = new Set((sweep.targets ?? [])
-          .filter((target) => ['completed', 'completed_no_candidates'].includes(target.terminal_outcome))
-          .map((target) => target.root_obligation_id));
-        const saveSweep = async () => {
-          sweep.updated_at = Date.now();
-          checkpoint.updated_at = sweep.updated_at;
-          await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
-        };
-        const commitSweepChild = async (record) => {
-          checkpoint.context_overflow_recovery ??= { schema_version: 1, completed_children: [] };
-          checkpoint.context_overflow_recovery.completed_children ??= [];
-          if (!record?.key || checkpoint.context_overflow_recovery.completed_children.some((item) => item?.key === record.key)) return;
-          checkpoint.context_overflow_recovery.completed_children.push({
-            ...record, committed_at: Date.now(), terminal_state: 'safely_committed',
-          });
-          checkpoint.context_overflow_recovery.completed_children
-            = checkpoint.context_overflow_recovery.completed_children.slice(-2048);
-          await saveSweep();
-        };
-        const summaryBeforeSweep = summarizeProviderAttemptAudit(metadata);
-        sweep.before_unresolved_count ??= Number(summaryBeforeSweep?.terminally_unresolved_malformed_obligations ?? 0);
-        for (let round = Number(sweep.round_count ?? 0);
-          round < MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds; round++) {
-          const summary = summarizeProviderAttemptAudit(metadata);
-          const candidates = buildTargetedReplayCandidates(summary, {
-            chat: catchUpContext.chat ?? [], chatId,
-            configurationSignature: null,
-            allowedOwners: catchUpCharacterNames,
-          }).filter((candidate) => candidate.eligible && !completedTargets.has(candidate.root_obligation_id));
-          if (!candidates.length) break;
-          sweep.round_count = round + 1;
-          for (const candidate of candidates) {
-            if (ctrl.catchUpCancelled) break;
-            const priorTarget = (sweep.targets ?? []).find((item) => item.root_obligation_id === candidate.root_obligation_id);
-            const target = {
-              root_obligation_id: candidate.root_obligation_id,
-              tier: candidate.tier,
-              owner: candidate.owner || null,
-              source_range: candidate.source_range,
-              source_fingerprint: candidate.source_fingerprint,
-              round: round + 1,
-              attempt_count: Number(priorTarget?.attempt_count ?? 0) + 1,
-              prior_attempts: [
-                ...(priorTarget?.prior_attempts ?? []),
-                ...(priorTarget ? [{
-                  round: priorTarget.round,
-                  terminal_outcome: priorTarget.terminal_outcome,
-                  normalized_error_type: priorTarget.normalized_error_type ?? null,
-                  completed_at: priorTarget.completed_at ?? null,
-                }] : []),
-              ].slice(-MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds),
-              terminal_outcome: 'running',
-              started_at: Date.now(),
-            };
-            sweep.targets = [...(sweep.targets ?? []).filter((item) => item.root_obligation_id !== candidate.root_obligation_id), target];
-            setStatusMessage(`Recovering malformed ${candidate.tier === 'session' ? 'Session' : 'Long-Term'} extraction (${candidate.source_range.start}–${candidate.source_range.end}) before finalization...`);
-            await saveSweep();
-            try {
-              const commonOptions = {
-                extractionCoverage: runResult.extractionCoverage,
-                executionContext: createMemorizeExecutionContext({
-                  controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
-                    lifecycle_required: true },
-                  provider: {
-                    root_obligation_id: candidate.root_obligation_id,
-                    root_source_range: candidate.source_range,
-                    root_source_fingerprint: candidate.source_fingerprint,
-                    request_kind: 'automatic_recovery_sweep',
-                    changed_recovery_dimensions: ['automatic_end_of_source_sweep', 'fresh_recovery_budget'],
-                  },
-                  recovery: {
-                    completed_child_keys: (checkpoint.context_overflow_recovery?.completed_children ?? [])
-                      .map((item) => item?.key).filter(Boolean),
-                  },
-                  hooks: {
-                    context_overflow_child_committed: commitSweepChild,
-                    recovery_child_manifest_updated: commitRecoveryChildManifest,
-                    provider_completion_journal_updated: commitProviderCompletionJournal,
-                    provider_completion_command: commitAtomicProviderCompletion,
-                    provider_await_point: commitProviderAwaitPoint,
-                    obligation_event: applyAuthoritativeLifecycleEvent,
-                  },
-                }),
-              };
-              const added = candidate.tier === 'session'
-                ? await extractSessionMemories(candidate.source_messages, null, {
-                  ...commonOptions, sessionDiagnostics: runResult.sessionExtraction,
-                })
-                : await extractAndStoreMemories(candidate.owner, candidate.source_messages, setStatusMessage, commonOptions);
-              target.terminal_outcome = Number(added) > 0 ? 'completed' : 'completed_no_candidates';
-              target.added_memories = Number(added) || 0;
-              target.completed_at = Date.now();
-              completedTargets.add(candidate.root_obligation_id);
-            } catch (error) {
-              target.terminal_outcome = 'failed';
-              target.normalized_error_type = error?.code ?? error?.name ?? 'Error';
-              target.completed_at = Date.now();
-              recordCatchUpError(`automatic malformed-output recovery (${candidate.tier})`, error, candidate.tier);
-            }
-            await saveSweep();
-          }
-          if (ctrl.catchUpCancelled) break;
-        }
-        const summaryAfterSweep = summarizeProviderAttemptAudit(metadata);
-        const unresolvedIds = (summaryAfterSweep?.terminal_unresolved_obligations ?? [])
-          .map((item) => item.root_obligation_id).filter(Boolean);
-        sweep.after_unresolved_count = Number(summaryAfterSweep?.terminally_unresolved_malformed_obligations ?? 0);
-        sweep.recovered_obligation_ids = [...completedTargets].filter((id) => !unresolvedIds.includes(id));
-        sweep.still_unresolved_obligation_ids = unresolvedIds;
-        sweep.status = ctrl.catchUpCancelled ? 'interrupted'
-          : unresolvedIds.length ? 'completed_with_unresolved_failures' : 'completed';
-        sweep.completed_at = ctrl.catchUpCancelled ? null : Date.now();
-        await saveSweep();
       }
 
       const obligationProjectionBeforeFinalization = projectMemorizeObligationLedger(
@@ -9961,44 +9807,6 @@ export function bindSettingsUI(ctrl) {
           reconcileCatchUpRecoverySummary(summarizeCatchUpCheckpoint(checkpoint), providerAttemptSummary),
           logicalRunAtDiagnosticBuild,
         ),
-        automatic_malformed_recovery: (() => {
-          const sweep = checkpoint.automatic_malformed_recovery ?? null;
-          if (!sweep) return {
-            schema_version: 2,
-            status: 'not_started_before_source_pause',
-            reason_code: 'source_ingestion_paused_with_pending_obligations',
-            central_recovery_summary_available: true,
-            unresolved_obligation_count: Number(providerAttemptSummary?.terminally_unresolved_malformed_obligations ?? 0),
-          };
-          const attemptedIds = new Set((sweep.targets ?? []).map((target) => target.root_obligation_id));
-          const unresolvedIds = providerAttemptSummary?.terminal_unresolved_obligations
-            ?.map((item) => item.root_obligation_id).filter(Boolean) ?? [];
-          const eligibleUnresolvedIds = buildTargetedReplayCandidates(providerAttemptSummary, {
-            chat: catchUpContext.chat ?? [],
-            chatId: catchUpContext.chatId ?? catchUpContext.groupId ?? null,
-            configurationSignature: null,
-            allowedOwners: catchUpCharacterNames,
-          }).filter((candidate) => candidate.eligible)
-            .map((candidate) => candidate.root_obligation_id);
-          return {
-            ...sweep,
-            limits: {
-              maximum_rounds: MALFORMED_RECOVERY_LIMITS.automatic_sweep_rounds,
-              maximum_split_depth: MALFORMED_RECOVERY_LIMITS.maximum_split_depth,
-              minimum_child_messages: MALFORMED_RECOVERY_LIMITS.minimum_child_messages,
-              maximum_additional_provider_requests_per_root: MALFORMED_RECOVERY_LIMITS.maximum_additional_provider_requests,
-              maximum_wall_time_ms_per_root: MALFORMED_RECOVERY_LIMITS.maximum_wall_time_ms,
-            },
-            reconciliation: {
-              every_remaining_eligible_obligation_attempted: eligibleUnresolvedIds.every((id) => attemptedIds.has(id)),
-              eligible_unresolved_obligation_count: eligibleUnresolvedIds.length,
-              recovered_and_unresolved_disjoint: (sweep.recovered_obligation_ids ?? [])
-                .every((id) => !unresolvedIds.includes(id)),
-              authoritative_unresolved_count: Number(providerAttemptSummary?.terminally_unresolved_malformed_obligations ?? 0),
-              retained_unresolved_ids: unresolvedIds,
-            },
-          };
-        })(),
         provider_request_reconciliation: (() => {
           const persistedChildren = checkpoint.context_overflow_recovery?.completed_children?.length ?? 0;
           const providerContextChildren = Number(providerAttemptSummary?.request_kind_counts?.repartition_child ?? 0);
@@ -10369,6 +10177,49 @@ export function bindSettingsUI(ctrl) {
         }
         clearCatchUpSettingsStorage(catchUpRunId, catchUpContext);
       }
+      // Re-project every semantic section from one frozen post-settlement read.
+      // Earlier phase-local diagnostics remain observations, never authorities.
+      const diagnosticSnapshot = captureMemorizeDiagnosticSnapshot({
+        metadata: catchUpContext.chatMetadata[META_KEY],
+        checkpoint: terminalCheckpoint,
+      });
+      const snapshotCheckpoint = diagnosticSnapshot.checkpoint;
+      const snapshotMetadata = diagnosticSnapshot.metadata;
+      const snapshotLedger = snapshotCheckpoint?.run_manifest?.obligation_ledger ?? null;
+      if (snapshotCheckpoint?.run_manifest) {
+        diagnostics.logical_run = summarizeCatchUpRunManifest(snapshotCheckpoint.run_manifest);
+      }
+      if (snapshotLedger) {
+        diagnostics.authoritative_obligation_ledger = projectMemorizeObligationLedger(snapshotLedger);
+        diagnostics.memorize_execution_kernel = projectMemorizeKernelDiagnostics(snapshotLedger);
+        diagnostics.authoritative_recovery = deriveMemorizeRecoveryAuthority({
+          checkpoint: snapshotCheckpoint,
+          ledger: snapshotLedger,
+          provider_audit: snapshotMetadata.live_memory_health?.provider_attempt_audit,
+          provider_completion_journal: snapshotMetadata.provider_completion_journal,
+          controller_heartbeat: snapshotCheckpoint.controller_heartbeat,
+          transaction_lifecycle: snapshotCheckpoint.transaction_lifecycle,
+          checkpoint_status: snapshotCheckpoint.status,
+        });
+      }
+      diagnostics.provider_attempt_audit = summarizeProviderAttemptAudit(snapshotMetadata);
+      diagnostics.controller_exit = diagnostics.authoritative_obligation_ledger?.last_controller_exit
+        ?? diagnostics.controller_exit ?? null;
+      diagnostics.diagnostic_snapshot = diagnosticSnapshot.identity;
+      const snapshotConsistency = validateMemorizeDiagnosticSnapshot(
+        diagnostics, diagnosticSnapshot.identity);
+      diagnostics.diagnostic_snapshot_consistency = snapshotConsistency;
+      if (!snapshotConsistency.consistent) {
+        diagnostics.errors = Number(diagnostics.errors ?? 0) + 1;
+        diagnostics.error_details = [...(diagnostics.error_details ?? []), {
+          label: 'diagnostic snapshot consistency failure',
+          category: 'diagnostic_observer_failure',
+          origin: 'diagnostic_observer',
+          code: 'SME_DIAGNOSTIC_SNAPSHOT_INCONSISTENT',
+          message: `Diagnostic snapshot is inconsistent: ${snapshotConsistency.violations.join(', ')}`,
+          provider_fault_attribution: false,
+        }].slice(-50);
+      }
       Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
       runResult.quality = diagnostics.quality ?? runResult.quality;
       catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
@@ -10561,7 +10412,7 @@ export function bindSettingsUI(ctrl) {
             coverage_records: Object.values(failedCoverage)
               .flatMap((tier) => tier?.records ?? []),
             checkpoint_before: failedCheckpoint.next_source_offset,
-            source_message_count: total,
+            source_message_count: Number(controllerRuntime.source_message_count ?? 0),
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         failedCheckpoint.run_manifest.obligation_ledger = failedJournalReconciliation.ledger;

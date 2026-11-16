@@ -71,6 +71,8 @@ export function createMemorizeTierPipeline(input) {
   const rootSourceRange = execution.provider.root_source_range
     ?? { start: range.start, end: range.end, message_count: range.message_count };
   const isRecoveryLeaf = range.start !== rootSourceRange.start || range.end !== rootSourceRange.end;
+  const parentObligationId = isRecoveryLeaf
+    ? execution.provider.parent_obligation_id ?? rootObligationId : null;
   const leafObligationId = isRecoveryLeaf
     ? `${rootObligationId}:leaf:${range.start}-${range.end}:${sourceFingerprint}`
     : rootObligationId;
@@ -98,7 +100,7 @@ export function createMemorizeTierPipeline(input) {
     logical_run_id: metadata?.active_catchup_run_id ?? null,
     root_obligation_id: rootObligationId,
     leaf_obligation_id: leafObligationId,
-    parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
+    parent_obligation_id: parentObligationId,
     tier, owner,
     source_range: { start: range.start, end: range.end, message_count: range.message_count },
     source_fingerprint: sourceFingerprint,
@@ -108,7 +110,7 @@ export function createMemorizeTierPipeline(input) {
       obligation_id: leafObligationId,
       root_obligation_id: rootObligationId,
       leaf_obligation_id: leafObligationId,
-      parent_obligation_id: isRecoveryLeaf ? rootObligationId : null,
+      parent_obligation_id: parentObligationId,
       tier, owner,
       source_range: lifecycleIdentity.source_range,
       source_fingerprint: sourceFingerprint,
@@ -172,7 +174,12 @@ export function createMemorizeTierPipeline(input) {
       physical_attempt_count: Math.max(Number(matchingProfile.physical_attempt_count) || 0,
         attempts.length),
       native_json_schema_observed: expectedOutputFormat === 'structured_json_schema_v1',
-    }), { leaf_attempt_count: leafAttemptCount });
+    }), {
+      leaf_attempt_count: leafAttemptCount,
+      active_recovery_tree: requestKind !== 'original' || depth > 0,
+      safe_boundary: false,
+      projected_request_count: 1,
+    });
     if (requestKind !== 'original' && !policy.allowed) {
       const error = new Error('The bounded provider-attempt policy stopped another recovery transmission.');
       error.code = 'SME_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED';

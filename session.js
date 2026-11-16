@@ -1003,6 +1003,22 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const registeredIngress = !automaticFragmentRecovery && !recoveryOnlyMode && !journalReplayMode
       ? await pipeline.ingestProviderEvidence('register_new_attempt') : null;
     if (registeredIngress && registeredIngress.status !== 'applied') {
+      if (registeredIngress.status === 'operationally_paused') {
+        const pause = new Error('Session provider dispatch paused by the bounded provider policy.');
+        pause.code = 'SME_PROVIDER_POLICY_PAUSED';
+        pause.sme_origin = 'policy_pause';
+        pause.sme_operational_pause = true;
+        pause.sme_reason_code = registeredIngress.reason_code;
+        pause.sme_obligation_id = leafObligationId;
+        pause.sme_request_diagnostics = {
+          ...(registeredIngress.policy_outcome ?? {}),
+          root_obligation_id: rootObligationId,
+          leaf_obligation_id: leafObligationId,
+          provider_call_required: false,
+          next_eligible_action: registeredIngress.next_action ?? 'resume_exact_obligation',
+        };
+        throw pause;
+      }
       const error = new Error('Session provider attempt could not be registered.');
       error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
       error.sme_recovery_blocked = true;
@@ -1090,6 +1106,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         return added;
       }
       const providerStatus = Number(err?.status ?? err?.cause?.status);
+      err.sme_origin ??= 'provider_transport';
+      err.sme_request_diagnostics ??= {};
+      err.sme_request_diagnostics.transport_started = true;
+      err.sme_request_diagnostics.transport_completed = false;
       finishProviderAttempt(providerMetadata, providerAttempt, {
         terminal_outcome: 'provider_failure', recoverable: false,
         failure_classification: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
