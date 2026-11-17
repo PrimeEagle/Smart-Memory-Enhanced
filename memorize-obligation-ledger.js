@@ -9,8 +9,8 @@ import { acknowledgeJournalTransition, requireAppliedLifecycleResult } from './m
  * `explicit_no_update` make an obligation checkpoint eligible.
  */
 
-export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 7;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 10;
+export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 8;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 11;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -367,6 +367,14 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
         ?? prior.recovery_intent ?? defaultNextAction(state, reason),
     recovery_stage: SAFE_STATES.has(state) ? null
       : transition.recovery_stage ?? prior.recovery_stage ?? null,
+    recovery_dimension: SAFE_STATES.has(state) ? null
+      : transition.recovery_dimension ?? input.recovery_dimension
+        ?? prior.recovery_dimension ?? null,
+    budget_state: {
+      ...(prior.budget_state ?? {}),
+      ...(input.budget_state ?? {}),
+      ...(transition.budget_state ?? {}),
+    },
     timestamps: {
       ...(prior.timestamps ?? {}),
       created_at: prior.timestamps?.created_at ?? at,
@@ -567,6 +575,8 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
     next_eligible_action: event.next_action ?? event.next_eligible_action,
     recovery_intent: event.recovery_intent,
     recovery_stage: event.recovery_stage,
+    recovery_dimension: event.recovery_dimension,
+    budget_state: event.budget_state,
     metrics: event.metrics,
     lifecycle: {
       ...(event.lifecycle ?? {}),

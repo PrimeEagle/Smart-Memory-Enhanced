@@ -43,6 +43,7 @@ export function createMemorizeExecutionContext(input = {}) {
       automatic_partial_recovery: input.recovery?.automatic_partial_recovery === true,
       automatic_budget: input.recovery?.automatic_budget ?? null,
       automatic_depth: Number(input.recovery?.automatic_depth ?? 0),
+      controller_owned: input.recovery?.controller_owned === true,
     }),
     hooks: Object.freeze({
       obligation_event: input.hooks?.obligation_event ?? noopAsync,

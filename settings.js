@@ -99,6 +99,7 @@ import {
   reconcileMemorizeLifecycleFromJournal,
   recordMemorizeControllerExit,
   getCanonicalMemorizeObligation,
+  aggregateMemorizeObligationParents,
 } from './memorize-obligation-ledger.js';
 import {
   deriveMemorizeResumeEligibility,
@@ -131,7 +132,9 @@ import {
   trackMemorizeTransaction,
 } from './memorize-controller-runtime.js';
 import { createMemorizeRunEngine, bindMemorizeRunEngine } from './memorize-run-engine.js';
-import { createMemorizeRecoveryScheduler, decideMemorizeRecovery } from './memorize-recovery-scheduler.js';
+import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
+import { runCanonicalMemorizeActions, selectCanonicalMemorizeAction }
+  from './memorize-action-engine.js';
 import { executeSessionTier } from './session-tier-runtime.js';
 import { createMemorizeExecutionContext } from './memorize-execution-context.js';
 import { applyProviderCompletion as applyAtomicProviderCompletion,
@@ -262,7 +265,6 @@ import { settleMemorizeTransactionCheckpoint }
   from './memorize-transaction-settlement.js';
 import {
   markProviderObligationOperationalPause,
-  markProviderObligationRecoveryInProgress,
   providerConfigurationSignature,
   reconcileProviderRecoveryWindowsFromLedger,
   settleOrphanedProviderAttempts,
@@ -290,8 +292,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.90',
-  build_fingerprint: 'sme-v0.9.90-canonical-recovery-scheduler-r1',
+  extension_version: '0.9.91',
+  build_fingerprint: 'sme-v0.9.91-canonical-session-action-engine-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -3028,8 +3030,14 @@ export function bindSettingsUI(ctrl) {
   // metadata must be rolled back. Export Diagnostics must still be useful in
   // that exact failure case.
   let latestExportDiagnostics = null;
-  const buildCentralMalformedRecoverySummary = (providerSummary, checkpointSummary, logicalRun) => {
+  const buildCentralMalformedRecoverySummary = (providerSummary, checkpointSummary, logicalRun,
+    obligationLedger = null) => {
     const unresolved = providerSummary?.terminal_unresolved_obligations ?? [];
+    const canonicalPending = (obligationLedger
+      ? projectMemorizeObligationLedger(obligationLedger).pending_obligations : null)
+      ?? checkpointSummary?.authoritative_obligation_ledger?.pending_obligations
+      ?? checkpointSummary?.pending_obligations ?? [];
+    const canonicalUnresolved = canonicalPending.filter((item) => item?.checkpoint_eligible !== true);
     if (!providerSummary && !checkpointSummary?.available) return null;
     const pendingRange = Object.values(logicalRun?.cumulative_tier_coverage ?? {})
       .flatMap((tier) => tier?.pending_obligations ?? []).at(0) ?? null;
@@ -3049,9 +3057,14 @@ export function bindSettingsUI(ctrl) {
         source_start_index: pendingRange.source_start_index,
         source_end_index: pendingRange.source_end_index,
       } : null,
-      unresolved_obligation_count: unresolved.length,
-      blocked_obligation_count: unresolved.filter((item) => item.recovery_blocked === true).length,
-      unresolved_obligations: unresolved.map((item) => ({
+      unresolved_obligation_count: canonicalUnresolved.length || unresolved.length,
+      blocked_obligation_count: canonicalUnresolved.length
+        ? canonicalUnresolved.filter((item) => ['blocked', 'terminal_failed']
+          .includes(item.current_state)).length
+        : unresolved.filter((item) => item.recovery_blocked === true).length,
+      authority: canonicalUnresolved.length ? 'canonical_obligation_ledger' : 'provider_attempt_audit',
+      unresolved_obligations: (canonicalUnresolved.length ? canonicalUnresolved : unresolved).map((item) => ({
+        obligation_id: item.obligation_id ?? null,
         root_obligation_id: item.root_obligation_id,
         tier: item.tier,
         owner: item.owner,
@@ -3069,8 +3082,11 @@ export function bindSettingsUI(ctrl) {
         repeated_failure_signature: item.last_terminal_signature,
         terminal_signature_repeat_count: item.terminal_signature_repeat_count,
         replay_count: item.retry_replay_count,
-        blocked: item.recovery_blocked,
-        next_eligible_recovery_action: item.next_eligible_recovery_action,
+        blocked: item.recovery_blocked ?? ['blocked', 'terminal_failed'].includes(item.current_state),
+        current_state: item.current_state ?? null,
+        exact_reason_code: item.exact_reason_code ?? null,
+        next_eligible_recovery_action: item.next_eligible_action
+          ?? item.next_eligible_recovery_action,
         recovery_eligibility: item.recovery_eligibility,
       })),
       skipped_safe_sibling_owners: [...new Set(safeOwners)],
@@ -3133,6 +3149,7 @@ export function bindSettingsUI(ctrl) {
       liveProviderSummary ?? completedRun?.provider_attempt_audit,
       recovery,
       liveLogicalRun,
+      liveLedger,
     );
     if (completedRun) {
       // Keep live, incremental health alongside an existing historical report.
@@ -5897,7 +5914,9 @@ export function bindSettingsUI(ctrl) {
           : priorTerminalReason === 'finalization_phase_failed' ? 'resumed_after_phase_failure'
             : priorTerminalReason === 'unclassified_page_interruption' ? 'resumed_after_page_interruption'
               : resumableCheckpoint.status === 'in_progress' ? 'resumed_after_application_restart'
-                : 'resumed_after_unknown_interruption';
+                : checkpoint.resume_eligibility?.obligation_id
+                  ? 'resumed_after_canonical_recovery'
+                  : 'resumed_after_unknown_interruption';
       checkpoint.run_manifest = beginCatchUpAttempt(checkpoint.run_manifest, {
         type: resumeAttemptType,
         resumeOffset,
@@ -6731,154 +6750,92 @@ export function bindSettingsUI(ctrl) {
         }
         if (replaySession) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
-          const sessionOutcome = await executeSessionTier(chunk, null, {
-            sessionDiagnostics: runResult.sessionExtraction,
-            extractionCoverage: runResult.extractionCoverage,
-            liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
-            executionContext: createMemorizeExecutionContext({
-              controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
-                lifecycle_required: true,
-                instance_id: controllerRuntime.invocation_id,
-                transaction_id: chunkTransaction.transaction_id,
-                transaction_revision: chunkTransaction.revision,
-                transaction_generation: chunkTransaction.generation },
-              provider: {
-                resumed_pending_obligation: Boolean(resumableCheckpoint && priorSessionObligation
-                  && priorSessionObligation.safely_committed !== true),
-                root_obligation_state: priorSessionObligation?.current_state ?? null,
-                selected_recovery_action: priorSessionObligation?.next_eligible_action ?? null,
-              },
-              recovery: {
-                completed_child_keys: completedOverflowChildren,
-                automatic_partial_recovery: true,
-              },
-              hooks: {
-                context_overflow_child_committed: commitOverflowChild,
-                recovery_child_manifest_updated: commitRecoveryChildManifest,
-                obligation_event: applyAuthoritativeLifecycleEvent,
-                provider_completion_command: commitAtomicProviderCompletion,
-                action_receipt: commitActionReceipt,
-                get_canonical_obligation: getCanonicalObligation,
-                recovery_epoch_initialized: async (epoch) => {
-                  return runLeasedPersistence('recovery_epoch_initialized', () => {
-                    checkpoint.recovery_epoch = { ...epoch, status: 'initialized_before_dispatch' };
-                    checkpoint.updated_at = Date.now();
-                  }, { obligation_id: epoch.root_obligation_id });
-                },
-                automatic_recovery_boundary: async (detail) => {
-                  return runLeasedPersistence('automatic_recovery_boundary', () => {
-                  const recoveryElapsedMs = Math.max(0,
-                    Date.now() - Number(detail.recovery_started_at ?? Date.now()));
-                  const recoveryRequestsRemaining = Math.max(0,
-                    Number(detail.request_budget_maximum ?? 0) - Number(detail.request_budget_used ?? 0));
-                  detail = {
-                    ...detail,
-                    recovery_elapsed_ms: recoveryElapsedMs,
-                    request_budget_remaining: recoveryRequestsRemaining,
-                  };
-                  runResult.automaticRecovery ??= {
-                    attempted: 0, completed: 0, paused: 0,
-                    accepted_records_preserved: 0, recovered_records: 0,
-                    records: [],
-                  };
-                  runResult.automaticRecovery.attempted++;
-                  runResult.automaticRecovery.accepted_records_preserved
-                    += Number(detail.accepted_records_preserved ?? 0);
-                  runResult.automaticRecovery.records.push({
-                    ...detail,
-                    status: 'recovery_in_progress',
-                    started_at: Date.now(),
-                  });
-                  runResult.automaticRecovery.records = runResult.automaticRecovery.records.slice(-64);
-                  markProviderObligationRecoveryInProgress(
-                    catchUpContext.chatMetadata?.[META_KEY], detail.root_obligation_id, detail);
-                  checkpoint.automatic_recovery = {
-                    schema_version: 1,
-                    status: 'recovery_in_progress',
-                    ...detail,
-                    updated_at: Date.now(),
-                  };
-                  checkpoint.updated_at = Date.now();
-                  setStatusMessage(`Automatically recovering Session ${detail.source_range.start}–${detail.source_range.end}: ${formatDiagnosticIdentifier(detail.recovery_stage, 'recovery stage pending')}; ${detail.unresolved_fragment_count} unresolved fragment${detail.unresolved_fragment_count === 1 ? '' : 's'}, ${detail.accepted_records_preserved} accepted record${detail.accepted_records_preserved === 1 ? '' : 's'} preserved; recovery request budget ${detail.request_budget_used}/${detail.request_budget_maximum} (${detail.request_budget_remaining} remaining), elapsed ${formatCatchUpDuration(detail.recovery_elapsed_ms)}.`);
-                  }, { obligation_id: detail.root_obligation_id });
-                },
-                automatic_recovery_completed: async (detail) => {
-                  return runLeasedPersistence('automatic_recovery_completed', () => {
-                  runResult.automaticRecovery ??= {
-                    attempted: 0, completed: 0, paused: 0,
-                    accepted_records_preserved: 0, recovered_records: 0,
-                    records: [],
-                  };
-                  runResult.automaticRecovery.completed++;
-                  runResult.automaticRecovery.recovered_records += Number(detail.recovered_record_count ?? 0);
-                  runResult.automaticRecovery.records.push({
-                    ...detail,
-                    status: 'recovered_automatically',
-                    completed_at: Date.now(),
-                  });
-                  runResult.automaticRecovery.records = runResult.automaticRecovery.records.slice(-64);
-                  checkpoint.automatic_recovery = {
-                    schema_version: 1,
-                    status: 'recovered_automatically',
-                    ...detail,
-                    updated_at: Date.now(),
-                  };
-                  delete checkpoint.operational_pause;
-                  checkpoint.updated_at = Date.now();
-                  setStatusMessage(`Session ${detail.source_range.start}–${detail.source_range.end} recovered automatically; continuing Memorize Chat.`);
-                  }, { obligation_id: detail.root_obligation_id });
-                },
-              },
-            }),
-          }, extractSessionMemories).catch((err) => {
-            recordCatchUpError('session extraction error (chunk)', err, 'session');
-            if (err?.sme_context_overflow_checkpoint_failure) {
-              ctrl.catchUpCancelled = true;
-              ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
-            }
-            return null;
-          });
-          if (sessionOutcome) {
-            const sessionDecision = decideMemorizeRecovery({ outcome: sessionOutcome,
-              cancelled: ctrl.catchUpCancelled === true, remaining_attempts: 0,
-              provider_available: true, source_available: true });
-            if (sessionDecision.decision === 'pause_for_user') {
-              const evidence = sessionOutcome.evidence ?? {};
-              if (checkpoint.automatic_recovery?.status === 'recovery_in_progress') {
-                checkpoint.automatic_recovery = {
-                  ...checkpoint.automatic_recovery,
-                  status: 'operationally_paused_resumable',
-                  pause_reason: sessionDecision.reason_code,
-                  budget: {
-                    consumed_requests: Number(evidence.consumed_requests ?? 0),
-                    remaining_requests: Number(evidence.remaining_requests ?? 0),
-                    fresh_budget_on_resume: evidence.fresh_budget_on_resume === true,
+          let sessionRootObligationId = priorSessionObligation?.parent_obligation_id
+            ? priorSessionObligation.parent_obligation_id : priorSessionObligation?.obligation_id ?? null;
+          const messagesForRange = (selectedRange) => {
+            if (!selectedRange) return chunk;
+            const exact = chunk.filter((message) => Number.isInteger(message.__sme_original_index)
+              && message.__sme_original_index >= selectedRange.start
+              && message.__sme_original_index <= selectedRange.end);
+            return exact.length ? exact : chunk;
+          };
+          const sessionRun = await runCanonicalMemorizeActions({
+            maximum_actions: Math.max(16,
+              (Number(settings.provider_max_retries ?? 5) + 1) * 8),
+            read_ledger: () => checkpoint.run_manifest.obligation_ledger,
+            select: (ledger) => selectCanonicalMemorizeAction({ ledger, tier: 'session',
+              source_range: canonicalSourceRange, root_obligation_id: sessionRootObligationId }),
+            cancelled: () => ctrl.catchUpCancelled === true,
+            aggregate: async (selected) => runLeasedPersistence('aggregate_session_children', () => {
+              aggregateMemorizeObligationParents(checkpoint.run_manifest.obligation_ledger, Date.now());
+              checkpoint.updated_at = Date.now();
+            }, { obligation_id: selected.obligation.obligation_id }),
+            execute: async (selected, { action_index: actionIndex }) => {
+              const selectedRange = selected.obligation?.source_range ?? canonicalSourceRange;
+              const actionMessages = messagesForRange(selectedRange);
+              const root = selected.root_obligation ?? selected.obligation;
+              sessionRootObligationId ??= root?.obligation_id ?? null;
+              setStatusMessage(actionIndex === 0
+                ? `Catching up... (${i}/${total} messages - extracting session)`
+                : `Automatically continuing Session ${selectedRange.start}–${selectedRange.end}...`);
+              return executeSessionTier(actionMessages, null, {
+                sessionDiagnostics: runResult.sessionExtraction,
+                extractionCoverage: runResult.extractionCoverage,
+                liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
+                executionContext: createMemorizeExecutionContext({
+                  controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
+                    lifecycle_required: true, instance_id: controllerRuntime.invocation_id,
+                    transaction_id: chunkTransaction.transaction_id,
+                    transaction_revision: chunkTransaction.revision,
+                    transaction_generation: chunkTransaction.generation },
+                  provider: {
+                    root_obligation_id: root?.obligation_id ?? null,
+                    root_source_range: root?.source_range ?? canonicalSourceRange,
+                    root_source_fingerprint: root?.source_fingerprint ?? null,
+                    parent_obligation_id: selected.obligation?.parent_obligation_id ?? null,
+                    resumed_pending_obligation: selected.kind !== 'dispatch_root',
+                    root_obligation_state: root?.current_state ?? null,
+                    selected_recovery_action: selected.action,
+                    request_kind: selected.kind === 'dispatch_root' ? 'original' : 'canonical_leaf_recovery',
+                    changed_recovery_dimensions: selected.kind === 'dispatch_root'
+                      ? [] : ['source_range', `canonical_action_${actionIndex}`],
                   },
-                  updated_at: Date.now(),
-                };
-                runResult.automaticRecovery ??= { attempted: 0, completed: 0, paused: 0, records: [] };
-                runResult.automaticRecovery.paused = Number(runResult.automaticRecovery.paused ?? 0) + 1;
-              }
-              recordCatchUpOperationalPause('Session downstream validation pending', {
-                sme_reason_code: sessionDecision.reason_code,
-                sme_obligation_id: sessionOutcome.value?.obligation_id,
-                sme_request_diagnostics: evidence,
-              }, 'session');
-            } else if (sessionDecision.decision === 'stop_blocked') {
-              const blocked = new Error('Session recovery cannot continue without an external change.');
-              blocked.code = sessionDecision.reason_code;
-              blocked.sme_recovery_blocked = true;
-              blocked.sme_origin = 'validation';
-              recordCatchUpError('Session recovery blocked', blocked, 'session');
-            } else if (sessionDecision.decision === 'cancelled') {
-              ctrl.catchUpCancelled = true;
-              ctrl.catchUpStopReason = 'cancelled';
-            } else if (sessionDecision.decision === 'terminal_failure') {
-              const failure = new Error('Session returned an unsupported tier outcome.');
-              failure.code = sessionDecision.reason_code;
-              failure.sme_origin = 'internal_invariant';
-              recordCatchUpError('Session tier outcome failure', failure, 'session');
-            }
+                  recovery: { completed_child_keys: completedOverflowChildren,
+                    controller_owned: true },
+                  hooks: {
+                    context_overflow_child_committed: commitOverflowChild,
+                    recovery_child_manifest_updated: commitRecoveryChildManifest,
+                    obligation_event: applyAuthoritativeLifecycleEvent,
+                    provider_completion_command: commitAtomicProviderCompletion,
+                    action_receipt: commitActionReceipt,
+                    get_canonical_obligation: getCanonicalObligation,
+                  },
+                }),
+              }, extractSessionMemories);
+            },
+          }).catch((err) => {
+            recordCatchUpError('session canonical action engine error', err, 'session');
+            return { status: 'blocked', reason_code: err?.code ?? 'session_action_engine_failure' };
+          });
+          if (sessionRun.status === 'cancelled') {
+            ctrl.catchUpCancelled = true;
+            ctrl.catchUpStopReason = 'cancelled';
+          } else if (sessionRun.status === 'paused') {
+            recordCatchUpOperationalPause('Session canonical action engine paused', {
+              sme_reason_code: sessionRun.reason_code,
+              sme_obligation_id: sessionRun.selected?.obligation?.obligation_id ?? null,
+              sme_request_diagnostics: {
+                next_eligible_recovery_action: sessionRun.selected?.action ?? null,
+                provider_call_required: sessionRun.selected?.provider_call_required === true,
+              },
+            }, 'session');
+          } else if (sessionRun.status !== 'complete') {
+            const blocked = new Error('Session canonical action engine did not reach terminal coverage.');
+            blocked.code = sessionRun.reason_code ?? 'session_canonical_action_incomplete';
+            blocked.sme_origin = sessionRun.status === 'failed'
+              ? 'internal_invariant' : 'external_blocker';
+            blocked.sme_recovery_blocked = sessionRun.status === 'blocked';
+            recordCatchUpError('Session recovery incomplete', blocked, 'session');
           }
           if (ctrl.catchUpCancelled) {
             settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
@@ -9914,6 +9871,7 @@ export function bindSettingsUI(ctrl) {
           providerAttemptSummary,
           reconcileCatchUpRecoverySummary(summarizeCatchUpCheckpoint(checkpoint), providerAttemptSummary),
           logicalRunAtDiagnosticBuild,
+          checkpoint.run_manifest?.obligation_ledger,
         ),
         provider_request_reconciliation: (() => {
           const persistedChildren = checkpoint.context_overflow_recovery?.completed_children?.length ?? 0;

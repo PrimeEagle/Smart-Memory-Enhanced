@@ -24,6 +24,10 @@ const originCategory = Object.freeze({
 /** Categorization is based only on typed origin/evidence, never message substrings. */
 export function classifyMemorizeErrorRecord(value = {}) {
   if (categorySet.has(value.category)) return value.category;
+  if (['SME_MALFORMED_PROVIDER_OUTPUT', 'SME_RECOVERY_PATH_EXHAUSTED',
+    'recovery_request_budget_reached_with_pending_children']
+    .includes(value.code)) return value.sme_operational_pause === true
+      ? 'operational_pause' : 'provider_output_failure';
   if (originCategory[value.sme_origin ?? value.origin]) {
     return originCategory[value.sme_origin ?? value.origin];
   }

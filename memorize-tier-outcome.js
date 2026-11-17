@@ -1,7 +1,7 @@
 export const MEMORIZE_TIER_OUTCOME_KINDS = Object.freeze([
   'complete', 'complete_no_update', 'partial_recoverable',
   'malformed_recoverable', 'context_overflow_recoverable',
-  'validation_recoverable', 'policy_paused', 'blocked',
+  'validation_recoverable', 'transport_retryable', 'policy_paused', 'blocked',
   'cancelled', 'terminal_failure',
 ]);
 
@@ -29,6 +29,13 @@ export function createMemorizeTierOutcome(input = {}) {
     next_action: input.next_action ?? null,
     provider_call_required: input.provider_call_required === true,
     recovery_dimension: input.recovery_dimension ?? null,
+    source_range: immutableClone(input.source_range ?? null),
+    source_fingerprint: input.source_fingerprint ?? null,
+    owner: input.owner ?? null,
+    owner_subset: immutableClone(input.owner_subset ?? []),
+    rejected_units: immutableClone(input.rejected_units ?? []),
+    missing_units: immutableClone(input.missing_units ?? []),
+    budget_state: immutableClone(input.budget_state ?? null),
     accepted_owners: immutableClone(input.accepted_owners ?? []),
     explicit_no_update_owners: immutableClone(input.explicit_no_update_owners ?? []),
     missing_owners: immutableClone(input.missing_owners ?? []),

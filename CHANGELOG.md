@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.91] - 2026-11-17
+
+### Added
+
+- Added a canonical durable action engine that selects one exact obligation
+  leaf, rereads the obligation graph after every bounded action, traverses
+  siblings, and aggregates completed parents without provider replay.
+- Added a production-path architecture inventory and nested Session recovery
+  regression coverage for uninterrupted execution and crash/Resume after a
+  committed grandchild.
+- Added durable recovery-dimension and budget-state fields to the current
+  obligation schema, plus the typed `transport_retryable` tier outcome.
+
+### Changed
+
+- Memorize Chat Session recovery now declares malformed/context-overflow
+  children and yields control to the controller-owned action loop. Initial
+  execution and Resume use the same graph selector, including exact nested
+  leaf dispatch and local parent aggregation.
+- The current obligation schema is intentionally incompatible with incomplete
+  pre-change runs; use **Fresh Start** once after upgrading rather than
+  reconstructing legacy recovery state.
+- Truncated-output recovery retains its changed-dimension ladder (compact
+  contract, structured JSON, smaller source range, and single-source decision)
+  while durable child selection is controller-owned.
+
+### Removed
+
+- Removed the Memorize Chat controller's Session one-shot call followed by a
+  hardcoded zero-attempt recovery decision.
+- Removed Session's recursive child and partial-fragment execution from the
+  controller-owned Memorize path; registered recovery work is now durable
+  graph state rather than JavaScript call-stack state.
+
+### Fixed
+
+- Fixed the v0.9.90 nested Session failure where 30–34 committed but the
+  executable 35–39 sibling remained unattempted and was reported as
+  `SME_MALFORMED_PROVIDER_OUTPUT`.
+- Fixed malformed/truncated provider output being categorized as an internal
+  invariant failure, known recovery resumes being labeled unknown, and the
+  central malformed-recovery summary reporting zero unresolved work while the
+  canonical ledger still contained pending obligations.
+
 ## [0.9.90] - 2026-11-17
 
 ### Added

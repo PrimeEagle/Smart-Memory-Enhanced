@@ -607,6 +607,21 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           };
         }),
       });
+      if (execution.recovery.controller_owned) {
+        const signal = new Error('Session context-overflow children were registered for controller dispatch.');
+        signal.code = 'SME_CANONICAL_GRAPH_ADVANCED';
+        signal.sme_operational_pause = true;
+        signal.sme_reason_code = 'canonical_recovery_children_declared';
+        signal.sme_obligation_id = rootObligationId;
+        signal.sme_request_diagnostics = {
+          root_obligation_id: rootObligationId,
+          source_range: { start: range.start, end: range.end, message_count: range.message_count },
+          next_eligible_recovery_action: 'resume_first_actionable_recovery_leaf',
+          provider_call_required: true,
+          controller_continuation_required: true,
+        };
+        throw signal;
+      }
       let added = 0;
       try {
         const schedule = await createMemorizeRecoveryScheduler().run({
@@ -737,6 +752,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           };
         }),
       });
+      if (execution.recovery.controller_owned) return {
+        completed: false,
+        paused: true,
+        reason: 'canonical_recovery_children_declared',
+        next_resumable_child: children[0] ? extractionRecoveryChildKey('session', 'chat', children[0]) : null,
+        unattempted_siblings: children.slice(1)
+          .map((child) => extractionRecoveryChildKey('session', 'chat', child)),
+        progress_made: true,
+      };
       let added = 0;
       const expectedChildKeys = children.map((child) => extractionRecoveryChildKey('session', 'chat', child));
       const schedule = await createMemorizeRecoveryScheduler().run({
@@ -2349,7 +2373,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         unresolved_fragment_count: unresolvedPartialFragments,
       });
       const automaticRecoveryDepth = execution.recovery.automatic_depth;
-      if (execution.recovery.automatic_partial_recovery
+      if (!execution.recovery.controller_owned
+        && execution.recovery.automatic_partial_recovery
         && rejectedPartialFragments.length > 0
         && automaticRecoveryDepth < AUTOMATIC_SESSION_RECOVERY_LIMITS.maximum_controller_cycles) {
         const automaticBudget = execution.recovery.automatic_budget ?? {

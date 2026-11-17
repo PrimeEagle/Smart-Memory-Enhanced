@@ -33,6 +33,29 @@ export async function executeSessionTier(messages, abortCheck = null, options = 
         value: { obligation_id: error?.sme_obligation_id ?? null },
       });
     }
+    if (error?.sme_origin === 'provider_transport'
+      || (error?.transport_started === true && error?.transport_completed === false)) {
+      return createMemorizeTierOutcome({ kind: 'transport_retryable',
+        reason_code: error?.code ?? 'provider_transport_failure',
+        next_action: 'retry_provider_with_backoff', provider_call_required: true,
+        recovery_dimension: 'provider_transport_retry',
+        evidence: error?.sme_request_diagnostics ?? null,
+        value: { obligation_id: error?.sme_obligation_id ?? null },
+      });
+    }
+    if (error?.code === 'SME_CANONICAL_GRAPH_ADVANCED'
+      || error?.sme_reason_code === 'canonical_recovery_children_declared'
+      || error?.sme_request_diagnostics?.pause_reason === 'canonical_recovery_children_declared') {
+      const evidence = error?.sme_request_diagnostics ?? {};
+      return createMemorizeTierOutcome({ kind: 'malformed_recoverable',
+        reason_code: 'canonical_recovery_children_declared',
+        next_action: evidence.next_eligible_recovery_action
+          ?? 'resume_first_actionable_recovery_leaf',
+        provider_call_required: true,
+        recovery_dimension: `canonical-child:${error?.sme_obligation_id ?? 'unknown'}`,
+        evidence, value: { obligation_id: error?.sme_obligation_id ?? null },
+      });
+    }
     if (error?.sme_operational_pause === true
       || error?.code === 'SME_DOWNSTREAM_VALIDATION_PENDING') {
       const evidence = error?.sme_request_diagnostics ?? {};

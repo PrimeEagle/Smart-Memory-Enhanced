@@ -28,7 +28,8 @@ export function decideMemorizeRecovery(state = {}) {
     automatic: false,
   });
   const recoverable = ['partial_recoverable', 'malformed_recoverable',
-    'context_overflow_recoverable', 'validation_recoverable'].includes(outcome?.kind);
+    'context_overflow_recoverable', 'validation_recoverable',
+    'transport_retryable'].includes(outcome?.kind);
   if (!recoverable) return Object.freeze({
     decision: 'terminal_failure', reason_code: 'unknown_tier_outcome', automatic: false,
   });
