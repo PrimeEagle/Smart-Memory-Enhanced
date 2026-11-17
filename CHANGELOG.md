@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.90] - 2026-11-17
+
+### Added
+
+- Added typed tier outcomes and one canonical recovery-scheduler decision model
+  for automatic dispatch, obligation commit, user pause, blocking,
+  cancellation, and terminal failure.
+- Added progressive multi-owner recovery tests covering exact shrinking owner
+  subsets, duplicate-free persistence, automatic completion, and real recovery
+  budget exhaustion.
+
+### Changed
+
+- Long-Term missing-owner coverage now remains active controller work. Valid
+  owner results are persisted, the scheduler automatically requests only the
+  missing owners, merges their coverage, and continues the chunk without a
+  manual Resume.
+- Session and Long-Term now cross the controller boundary through the same
+  immutable typed-outcome and canonical scheduler decision contract. Expected
+  Session pauses and blockers are data; unexpected faults remain exceptions.
+- Chunk projections now distinguish Long-Term owner recovery, Session fragment
+  recovery, multiple-tier recovery, blocking, and committed coverage.
+
+### Fixed
+
+- Fixed expected partial Long-Term output being thrown as an operational-pause
+  exception and converted into `awaiting_manual_resume` despite having an exact
+  executable recovery action.
+- Fixed every operational pause being recorded as
+  `recovery_budget_exhausted`; that lifecycle event is now reserved for a
+  genuinely consumed budget, while other pauses retain their exact reason and
+  action.
+- Fixed missing-owner recovery being mislabeled as unresolved-fragment recovery
+  in pause and chunk-status projections.
+
 ## [0.9.89] - 2026-11-16
 
 ### Added

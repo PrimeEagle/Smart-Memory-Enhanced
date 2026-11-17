@@ -441,7 +441,7 @@ export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
   'parser_partially_accepted', 'parser_rejected', 'parser_evidence_enriched', 'validation_accepted',
   'validation_partially_accepted', 'validation_rejected', 'records_staged',
   'records_durably_persisted', 'explicit_no_update_accepted', 'recovery_required',
-  'recovery_budget_exhausted', 'leaf_coverage_completed', 'parent_children_completed',
+  'recovery_budget_exhausted', 'recovery_paused', 'leaf_coverage_completed', 'parent_children_completed',
   'obligation_blocked', 'candidate_mapping_reconciled',
   'terminal_malformed_attempt_settled', 'terminal_attempt_evidence_reconciled',
   'controller_relinquished_ownership',
@@ -880,11 +880,13 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
       break;
     case 'recovery_required':
     case 'recovery_budget_exhausted':
+    case 'recovery_paused':
       if (!(event.reason_code ?? event.exact_reason_code)
         || !(event.next_action ?? event.next_eligible_action)) return recordSemanticViolation(ledger, identity, event,
         'recovery_event_missing_typed_action', { missing_evidence: ['reason_code', 'next_action'] });
       result = transitionForSemanticEvent(ledger, identity, event,
-        event.type === 'recovery_budget_exhausted' ? 'operationally_paused' : 'pending_recovery', details);
+        ['recovery_budget_exhausted', 'recovery_paused'].includes(event.type)
+          ? 'operationally_paused' : 'pending_recovery', details);
       break;
     case 'parent_children_completed':
       if (!(existing?.expected_child_obligation_ids?.length)
@@ -1497,8 +1499,17 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     chunk.obligation_ids.push(item.obligation_id);
     if (!item.checkpoint_eligible) {
       chunk.pending_obligation_ids.push(item.obligation_id);
-      chunk.status = item.tier === 'session' ? 'pending_session_recovery' : 'pending_recovery';
     }
+  }
+  for (const chunk of Object.values(chunks)) {
+    const pendingItems = chunk.pending_obligation_ids
+      .map((id) => ledger.obligations[id]).filter(Boolean);
+    const tiers = new Set(pendingItems.map((item) => item.tier));
+    chunk.status = pendingItems.some((item) => ['blocked', 'terminal_failed'].includes(item.current_state))
+      ? 'blocked'
+      : tiers.size > 1 ? 'pending_multiple_tier_recovery'
+        : tiers.has('session') ? 'pending_session_fragment_recovery'
+          : tiers.has('longterm') ? 'pending_longterm_owner_recovery' : 'completed';
   }
   const violations = [];
   for (const item of pending) {

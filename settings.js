@@ -131,6 +131,8 @@ import {
   trackMemorizeTransaction,
 } from './memorize-controller-runtime.js';
 import { createMemorizeRunEngine, bindMemorizeRunEngine } from './memorize-run-engine.js';
+import { createMemorizeRecoveryScheduler, decideMemorizeRecovery } from './memorize-recovery-scheduler.js';
+import { executeSessionTier } from './session-tier-runtime.js';
 import { createMemorizeExecutionContext } from './memorize-execution-context.js';
 import { applyProviderCompletion as applyAtomicProviderCompletion,
   ensureMemorizeExecutionAggregate, recordMemorizeActionReceipt }
@@ -288,8 +290,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.89',
-  build_fingerprint: 'sme-v0.9.89-diagnostic-owner-recovery-r1',
+  extension_version: '0.9.90',
+  build_fingerprint: 'sme-v0.9.90-canonical-recovery-scheduler-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5527,22 +5529,26 @@ export function bindSettingsUI(ctrl) {
       const pausedObligationId = requestDiagnostics.root_obligation_id ?? err?.sme_obligation_id;
       const pauseLedger = controllerRuntime?.checkpoint?.run_manifest?.obligation_ledger;
       if (pauseLedger && pausedObligationId) {
+        const budgetExhausted = pause.reason_code === 'recovery_budget_exhausted'
+          || pause.reason_code === 'recovery_request_budget_reached_with_pending_children';
+        const pauseEventType = budgetExhausted ? 'recovery_budget_exhausted' : 'recovery_paused';
         const pauseResult = applyMemorizeLifecycleEvent(pauseLedger, {
           obligation_id: pausedObligationId,
           logical_run_id: controllerRuntime.checkpoint.run_manifest.logical_run_id,
         }, {
-          type: 'recovery_budget_exhausted', reason_code: pause.reason_code,
+          type: pauseEventType, reason_code: pause.reason_code,
           next_action: requestDiagnostics.next_eligible_recovery_action
             ?? requestDiagnostics.recovery_intent ?? 'resume_exact_obligation',
           recovery_intent: requestDiagnostics.recovery_intent
-            ?? 'recover_unresolved_partial_output_fragments',
-          recovery_stage: requestDiagnostics.recovery_stage ?? 'bounded_recovery_exhausted',
+            ?? requestDiagnostics.next_eligible_recovery_action ?? 'resume_exact_obligation',
+          recovery_stage: requestDiagnostics.recovery_stage
+            ?? (budgetExhausted ? 'bounded_recovery_exhausted' : 'manual_pause'),
           persistence_result: pause.accepted_records_preserved > 0
             ? 'partial_records_committed' : undefined,
         });
         requireAppliedLifecycleResult(pauseResult, ['operationally_paused'], {
           stage: 'controller_operational_pause', obligation_id: pausedObligationId,
-          event_type: 'recovery_budget_exhausted',
+          event_type: pauseEventType,
         });
       }
       console.warn(`[Smart Memory Enhanced] Catch-up ${label}:`, pause);
@@ -6603,62 +6609,121 @@ export function bindSettingsUI(ctrl) {
         updateActivePageMarker(checkpoint, 'source_extraction', 'in_flight');
 
         if (replayLongterm) {
-          const longtermLiveHealth = createLiveHealth(
-            catchUpContext, 'longterm', chunk, 'memorize_chat_catch_up');
-          longtermLiveHealth?.setOwner('@multi-owner');
-          setStatusMessage(
-            `Catching up... (${i}/${total} messages - extracting Long-Term for ${longtermOwnersForRequest.length} characters)`,
-          );
-          await extractAndStoreMultiOwnerMemories(
-            longtermOwnersForRequest, chunk, setStatusMessage, {
-              requiredOwners: catchUpCharacterNames,
-              priorOwnerCoverage: priorLongtermCapsule?.owner_coverage ?? null,
-              extractionCoverage: runResult.extractionCoverage,
-              liveHealth: longtermLiveHealth,
-              executionContext: createMemorizeExecutionContext({
-                controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
-                  lifecycle_required: true,
-                  instance_id: controllerRuntime.invocation_id,
-                  transaction_id: chunkTransaction.transaction_id,
-                  transaction_revision: chunkTransaction.revision,
-                  transaction_generation: chunkTransaction.generation },
-                provider: {
-                  resumed_pending_obligation: Boolean(resumableCheckpoint
-                    && priorLongtermObligation
-                    && priorLongtermObligation.safely_committed !== true),
-                  root_obligation_state: priorLongtermObligation?.current_state ?? null,
-                  selected_recovery_action: priorLongtermObligation?.next_eligible_action ?? null,
-                  request_kind: priorLongtermObligation?.next_eligible_action
-                    ? 'multi_owner_recovery' : 'original',
-                  changed_recovery_dimensions: priorLongtermObligation?.next_eligible_action
-                    ? ['fresh_multi_owner_response', 'bounded_retry'] : [],
+          let activeOwnerCoverage = priorLongtermCapsule?.owner_coverage ?? null;
+          const initialLongtermAction = priorLongtermObligation?.next_eligible_action
+            ?? 'dispatch_provider_request';
+          const longtermScheduler = createMemorizeRecoveryScheduler();
+          const longtermSchedule = await longtermScheduler.runOutcomes({
+            maximum_attempts: Math.max(1, Number(settings.provider_max_retries ?? 5) + 1),
+            initial_action: initialLongtermAction,
+            cancelled: () => ctrl.catchUpCancelled === true,
+            execute: async ({ action, attempt_index: attemptIndex }) => {
+              const ownerSubset = activeOwnerCoverage?.owners_requiring_recovery?.length
+                ? [...activeOwnerCoverage.owners_requiring_recovery]
+                : longtermOwnersForRequest;
+              const longtermLiveHealth = createLiveHealth(
+                catchUpContext, 'longterm', chunk, 'memorize_chat_catch_up');
+              longtermLiveHealth?.setOwner('@multi-owner');
+              setStatusMessage(attemptIndex === 0
+                ? `Catching up... (${i}/${total} messages - extracting Long-Term for ${ownerSubset.length} characters)`
+                : `Automatically recovering Long-Term owner coverage for ${ownerSubset.join(', ')} (attempt ${attemptIndex + 1})...`);
+              const outcome = await extractAndStoreMultiOwnerMemories(
+                ownerSubset, chunk, setStatusMessage, {
+                  requiredOwners: catchUpCharacterNames,
+                  priorOwnerCoverage: activeOwnerCoverage,
+                  recoveryAttempt: attemptIndex,
+                  extractionCoverage: runResult.extractionCoverage,
+                  liveHealth: longtermLiveHealth,
+                  executionContext: createMemorizeExecutionContext({
+                    controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
+                      lifecycle_required: true,
+                      instance_id: controllerRuntime.invocation_id,
+                      transaction_id: chunkTransaction.transaction_id,
+                      transaction_revision: chunkTransaction.revision,
+                      transaction_generation: chunkTransaction.generation },
+                    provider: {
+                      resumed_pending_obligation: action !== 'dispatch_provider_request',
+                      root_obligation_state: priorLongtermObligation?.current_state ?? null,
+                      selected_recovery_action: action,
+                      request_kind: action === 'recover_missing_owner_coverage'
+                        ? 'multi_owner_recovery' : 'original',
+                      changed_recovery_dimensions: action === 'recover_missing_owner_coverage'
+                        ? ['missing_owner_subset', `recovery_pass_${attemptIndex}`] : [],
+                    },
+                    recovery: { completed_child_keys: completedOverflowChildren },
+                    hooks: {
+                      context_overflow_child_committed: commitOverflowChild,
+                      recovery_child_manifest_updated: commitRecoveryChildManifest,
+                      provider_completion_journal_updated: commitProviderCompletionJournal,
+                      provider_completion_command: commitAtomicProviderCompletion,
+                      action_receipt: commitActionReceipt,
+                      provider_await_point: commitProviderAwaitPoint,
+                      obligation_event: applyAuthoritativeLifecycleEvent,
+                      get_canonical_obligation: getCanonicalObligation,
+                    },
+                  }),
                 },
-                recovery: { completed_child_keys: completedOverflowChildren },
-                hooks: {
-                  context_overflow_child_committed: commitOverflowChild,
-                  recovery_child_manifest_updated: commitRecoveryChildManifest,
-                  provider_completion_journal_updated: commitProviderCompletionJournal,
-                  provider_completion_command: commitAtomicProviderCompletion,
-                  action_receipt: commitActionReceipt,
-                  provider_await_point: commitProviderAwaitPoint,
-                  obligation_event: applyAuthoritativeLifecycleEvent,
-                  get_canonical_obligation: getCanonicalObligation,
-                },
-              }),
+              );
+              if (outcome?.owner_coverage) activeOwnerCoverage = outcome.owner_coverage;
+              return outcome;
             },
-          ).catch((err) => {
-            if (err?.sme_operational_pause === true) {
-              err.sme_request_diagnostics ??= {};
-              err.sme_request_diagnostics.parent_chunk_range = { ...currentRange };
-              recordCatchUpOperationalPause('Long-Term multi-owner recovery pause', err, 'long-term');
-              return;
-            }
+            onDecision: async (decision, outcome, accounting) => {
+              runResult.automaticRecovery ??= {
+                attempted: 0, completed: 0, paused: 0,
+                accepted_records_preserved: 0, recovered_records: 0, records: [],
+              };
+              if (decision.decision === 'dispatch_recovery') {
+                runResult.automaticRecovery.attempted++;
+                runResult.automaticRecovery.records.push({
+                  tier: 'longterm', status: 'recovery_in_progress',
+                  reason_code: outcome.reason_code,
+                  owner_subset: decision.owner_subset,
+                  attempts_used: accounting.attempts_used,
+                  maximum_attempts: accounting.maximum_attempts,
+                });
+              } else if (decision.decision === 'commit_obligation'
+                && accounting.attempts_used > 1) {
+                runResult.automaticRecovery.completed++;
+              }
+              runResult.automaticRecovery.records
+                = runResult.automaticRecovery.records.slice(-64);
+            },
+          }).catch((err) => {
             recordCatchUpError('Long-Term multi-owner extraction error', err, 'long-term');
-            if (err?.sme_context_overflow_checkpoint_failure) {
-              ctrl.catchUpCancelled = true;
-              ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
-            }
+            return { decision: 'terminal_failure', reason_code: err?.code ?? 'internal_exception',
+              outcome: null, attempts_used: 0,
+              maximum_attempts: Math.max(1, Number(settings.provider_max_retries ?? 5) + 1) };
           });
+          if (longtermSchedule.decision === 'pause_for_user') {
+            const pauseSignal = {
+              sme_reason_code: longtermSchedule.reason_code,
+              sme_obligation_id: longtermSchedule.outcome?.value?.root_obligation_id
+                ?? priorLongtermObligation?.obligation_id,
+              sme_request_diagnostics: {
+                root_obligation_id: longtermSchedule.outcome?.value?.root_obligation_id
+                  ?? priorLongtermObligation?.obligation_id,
+                next_eligible_recovery_action: longtermSchedule.next_action,
+                recovery_intent: longtermSchedule.next_action,
+                recovery_stage: 'missing_owner_coverage_recovery',
+                targeted_recovery_owners: longtermSchedule.outcome?.missing_owners ?? [],
+                consumed_requests: longtermSchedule.attempts_used,
+                remaining_requests: Math.max(0,
+                  longtermSchedule.maximum_attempts - longtermSchedule.attempts_used),
+                provider_call_required: true,
+              },
+            };
+            recordCatchUpOperationalPause('Long-Term recovery paused', pauseSignal, 'long-term');
+          } else if (longtermSchedule.decision === 'stop_blocked'
+            || longtermSchedule.decision === 'terminal_failure') {
+            const error = new Error('Long-Term recovery cannot continue automatically.');
+            error.code = longtermSchedule.reason_code;
+            error.sme_origin = 'validation';
+            error.sme_recovery_blocked = longtermSchedule.decision === 'stop_blocked';
+            recordCatchUpError('Long-Term multi-owner recovery failure', error, 'long-term');
+          } else if (longtermSchedule.decision === 'cancelled') {
+            ctrl.catchUpCancelled = true;
+            ctrl.catchUpStopReason = 'cancelled';
+          }
         }
         if (ctrl.catchUpCancelled) {
           settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
@@ -6666,7 +6731,7 @@ export function bindSettingsUI(ctrl) {
         }
         if (replaySession) {
           setStatusMessage(`Catching up... (${i}/${total} messages - extracting session)`);
-          await extractSessionMemories(chunk, null, {
+          const sessionOutcome = await executeSessionTier(chunk, null, {
             sessionDiagnostics: runResult.sessionExtraction,
             extractionCoverage: runResult.extractionCoverage,
             liveHealth: createLiveHealth(catchUpContext, 'session', chunk, 'memorize_chat_catch_up'),
@@ -6765,34 +6830,56 @@ export function bindSettingsUI(ctrl) {
                 },
               },
             }),
-          }).catch((err) => {
-            if (err?.code === 'SME_DOWNSTREAM_VALIDATION_PENDING'
-              || err?.sme_operational_pause === true) {
+          }, extractSessionMemories).catch((err) => {
+            recordCatchUpError('session extraction error (chunk)', err, 'session');
+            if (err?.sme_context_overflow_checkpoint_failure) {
+              ctrl.catchUpCancelled = true;
+              ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
+            }
+            return null;
+          });
+          if (sessionOutcome) {
+            const sessionDecision = decideMemorizeRecovery({ outcome: sessionOutcome,
+              cancelled: ctrl.catchUpCancelled === true, remaining_attempts: 0,
+              provider_available: true, source_available: true });
+            if (sessionDecision.decision === 'pause_for_user') {
+              const evidence = sessionOutcome.evidence ?? {};
               if (checkpoint.automatic_recovery?.status === 'recovery_in_progress') {
                 checkpoint.automatic_recovery = {
                   ...checkpoint.automatic_recovery,
                   status: 'operationally_paused_resumable',
-                  pause_reason: err?.sme_request_diagnostics?.pause_reason
-                    ?? err?.sme_reason_code ?? err?.code,
+                  pause_reason: sessionDecision.reason_code,
                   budget: {
-                    consumed_requests: Number(err?.sme_request_diagnostics?.consumed_requests ?? 0),
-                    remaining_requests: Number(err?.sme_request_diagnostics?.remaining_requests ?? 0),
-                    fresh_budget_on_resume: err?.sme_request_diagnostics?.fresh_budget_on_resume === true,
+                    consumed_requests: Number(evidence.consumed_requests ?? 0),
+                    remaining_requests: Number(evidence.remaining_requests ?? 0),
+                    fresh_budget_on_resume: evidence.fresh_budget_on_resume === true,
                   },
                   updated_at: Date.now(),
                 };
                 runResult.automaticRecovery ??= { attempted: 0, completed: 0, paused: 0, records: [] };
                 runResult.automaticRecovery.paused = Number(runResult.automaticRecovery.paused ?? 0) + 1;
               }
-              recordCatchUpOperationalPause('Session downstream validation pending', err, 'session');
-              return;
-            }
-            recordCatchUpError('session extraction error (chunk)', err, 'session');
-            if (err?.sme_context_overflow_checkpoint_failure) {
+              recordCatchUpOperationalPause('Session downstream validation pending', {
+                sme_reason_code: sessionDecision.reason_code,
+                sme_obligation_id: sessionOutcome.value?.obligation_id,
+                sme_request_diagnostics: evidence,
+              }, 'session');
+            } else if (sessionDecision.decision === 'stop_blocked') {
+              const blocked = new Error('Session recovery cannot continue without an external change.');
+              blocked.code = sessionDecision.reason_code;
+              blocked.sme_recovery_blocked = true;
+              blocked.sme_origin = 'validation';
+              recordCatchUpError('Session recovery blocked', blocked, 'session');
+            } else if (sessionDecision.decision === 'cancelled') {
               ctrl.catchUpCancelled = true;
-              ctrl.catchUpStopReason = 'checkpoint_persistence_failure';
+              ctrl.catchUpStopReason = 'cancelled';
+            } else if (sessionDecision.decision === 'terminal_failure') {
+              const failure = new Error('Session returned an unsupported tier outcome.');
+              failure.code = sessionDecision.reason_code;
+              failure.sme_origin = 'internal_invariant';
+              recordCatchUpError('Session tier outcome failure', failure, 'session');
             }
-          });
+          }
           if (ctrl.catchUpCancelled) {
             settleActiveRunTransaction(ctrl.catchUpStopReason ?? 'chunk_cancelled');
             break;
@@ -6957,6 +7044,17 @@ export function bindSettingsUI(ctrl) {
           rangeBlocked = committedProjection.pending_obligations.some((obligation) =>
             Number(obligation.source_range?.start) === Number(currentRange.source_start_index)
             && Number(obligation.source_range?.end) === Number(currentRange.source_end_index));
+          const rangePendingObligations = committedProjection.pending_obligations.filter((obligation) =>
+            Number(obligation.source_range?.start) === Number(currentRange.source_start_index)
+            && Number(obligation.source_range?.end) === Number(currentRange.source_end_index));
+          const rangePendingTiers = new Set(rangePendingObligations.map((obligation) => obligation.tier));
+          const rangePendingStatus = rangePendingObligations.some((obligation) =>
+            ['blocked', 'terminal_failed'].includes(obligation.current_state))
+            ? 'blocked'
+            : rangePendingTiers.size > 1 ? 'pending_multiple_tier_recovery'
+              : rangePendingTiers.has('longterm') ? 'pending_longterm_owner_recovery'
+                : rangePendingTiers.has('session') ? 'pending_session_fragment_recovery'
+                  : 'pending_recovery';
           runResult.totalChunks++;
           runResult.chunks.push({
             number: runResult.totalChunks,
@@ -6964,7 +7062,7 @@ export function bindSettingsUI(ctrl) {
             source_end_index: chunk.at(-1)?.__sme_original_index ?? null,
             message_count: chunk.length,
             token_estimate: chunkTokens,
-            status: rangeBlocked ? (replaySession ? 'pending_session_recovery' : 'pending_recovery')
+            status: rangeBlocked ? rangePendingStatus
               : currentChunkFailed ? 'partial' : 'completed',
           });
           runResult.chunks = runResult.chunks.slice(-512);

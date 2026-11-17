@@ -23,6 +23,7 @@ import { attachMemorizeOperationContext, createMemorizeOperationContext }
   from './memorize-operation-context.js';
 import { persistLongtermOwnerPartition } from './longterm.js';
 import { projectMultiOwnerCoverage } from './multi-owner-coverage.js';
+import { createMemorizeTierOutcome } from './memorize-tier-outcome.js';
 
 const OWNER_SCOPE = '@multi-owner';
 
@@ -34,17 +35,10 @@ function sourcePrompt(messages) {
   return messages.map((message, index) => `[${index}] ${message.name}: ${message.mes}`).join('\n\n');
 }
 
-function policyPause(ingress, leafId) {
-  const error = new Error('Multi-owner Long-Term dispatch paused by provider policy.');
-  error.code = 'SME_PROVIDER_POLICY_PAUSED';
-  error.sme_origin = 'policy_pause';
-  error.sme_operational_pause = true;
-  error.sme_reason_code = ingress.reason_code;
-  error.sme_obligation_id = leafId;
-  error.sme_request_diagnostics = { ...(ingress.policy_outcome ?? {}),
+function policyPauseEvidence(ingress, leafId, rootId) {
+  return { ...(ingress.policy_outcome ?? {}), root_obligation_id: rootId,
     leaf_obligation_id: leafId, provider_call_required: false,
     next_eligible_action: ingress.next_action ?? 'resume_exact_obligation' };
-  return error;
 }
 
 /** One provider action and one lifecycle leaf for every Long-Term owner in a chunk. */
@@ -54,8 +48,9 @@ export async function extractAndStoreMultiOwnerMemories(
   const owners = boundedOwnerList(ownersValue);
   const requiredOwners = boundedOwnerList(options.requiredOwners ?? owners);
   const sourceMessages = recentMessages.filter((message) => message?.mes && !message.is_system);
-  if (!owners.length || !sourceMessages.length) return Object.freeze({
-    status: 'not_applicable', added: 0, owners: {}, physical_provider_requests: 0,
+  if (!owners.length || !sourceMessages.length) return createMemorizeTierOutcome({
+    kind: 'complete_no_update', reason_code: 'not_applicable',
+    value: { status: 'not_applicable', added: 0, owners: {}, physical_provider_requests: 0 },
   });
   const settings = extension_settings[MODULE_NAME];
   const execution = resolveMemorizeExecutionContext(options);
@@ -71,7 +66,9 @@ export async function extractAndStoreMultiOwnerMemories(
     perOwnerResponseLength * owners.length,
   ));
   const capabilities = { ...getMemoryProviderCapabilities(), simple_json_records: true };
-  const basePrompt = buildMultiOwnerLongtermPrompt(sourcePrompt(sourceMessages), owners);
+  const recoveryAttempt = Math.max(0, Number(options.recoveryAttempt ?? 0));
+  const basePrompt = `${buildMultiOwnerLongtermPrompt(sourcePrompt(sourceMessages), owners)}${
+    recoveryAttempt > 0 ? `\n\nRECOVERY PASS ${recoveryAttempt}: Return coverage only for the listed owners. Explicitly place every owner with no supported record in no_update_owners.` : ''}`;
   const request = buildStructuredMemoryProviderRequest(basePrompt, {
     tier: 'longterm', owner: null, allowedOwners: owners, capabilities,
   });
@@ -134,7 +131,14 @@ export async function extractAndStoreMultiOwnerMemories(
   await pipeline.recordActionReceipt('action_started', { action: dispatchAction });
   const registration = await pipeline.ingestProviderEvidence('register_new_attempt');
   if (registration.status === 'operationally_paused') {
-    throw fail(policyPause(registration, pipeline.leafObligationId));
+    const evidence = policyPauseEvidence(registration, pipeline.leafObligationId,
+      pipeline.rootObligationId);
+    healthFinish({ terminal_health: 'policy_paused', provider_outcome: 'not_dispatched',
+      attention_reason_codes: [registration.reason_code] });
+    return createMemorizeTierOutcome({ kind: 'policy_paused',
+      reason_code: registration.reason_code,
+      next_action: evidence.next_eligible_action, provider_call_required: false,
+      evidence, value: { root_obligation_id: pipeline.rootObligationId } });
   }
   if (registration.status !== 'applied') {
     const error = new Error('Multi-owner Long-Term provider attempt could not be registered.');
@@ -270,27 +274,47 @@ export async function extractAndStoreMultiOwnerMemories(
         execute: async (child) => {
           const childRange = sourceRange(child);
           const childFingerprint = sourceWindowFingerprint(child);
-          return extractAndStoreMultiOwnerMemories(owners, child, statusFn, {
-            ...options, liveHealth: null,
-            executionContext: extendMemorizeExecutionContext(execution, {
-              provider: {
-                root_obligation_id: pipeline.rootObligationId,
-                root_source_range: execution.provider.root_source_range ?? range,
-                root_source_fingerprint: execution.provider.root_source_fingerprint
-                  ?? sourceFingerprint,
-                parent_obligation_id: pipeline.leafObligationId,
-                parent_attempt_id: attempt?.attempt_id,
-                request_kind: 'malformed_repartition_child',
-                selected_recovery_action: 'dispatch_provider_request',
-                changed_recovery_dimensions: ['source_range', 'multi_owner_contract_size'],
-                resumed_pending_obligation: false,
-                root_obligation_state: null,
-              },
-              recovery: { malformed_depth: depth + 1 },
-            }),
-            source_range: childRange,
-            source_fingerprint: childFingerprint,
+          let childOwnerCoverage = null;
+          let childAdded = 0;
+          const childSchedule = await createMemorizeRecoveryScheduler().runOutcomes({
+            maximum_attempts: Math.max(1, Number(settings.provider_max_retries ?? 5) + 1),
+            execute: async ({ action, attempt_index: recoveryAttempt }) => {
+              const childOwners = childOwnerCoverage?.owners_requiring_recovery?.length
+                ? childOwnerCoverage.owners_requiring_recovery : owners;
+              const outcome = await extractAndStoreMultiOwnerMemories(childOwners, child, statusFn, {
+                ...options, liveHealth: null, priorOwnerCoverage: childOwnerCoverage,
+                recoveryAttempt,
+                executionContext: extendMemorizeExecutionContext(execution, {
+                  provider: {
+                    root_obligation_id: pipeline.rootObligationId,
+                    root_source_range: execution.provider.root_source_range ?? range,
+                    root_source_fingerprint: execution.provider.root_source_fingerprint
+                      ?? sourceFingerprint,
+                    parent_obligation_id: pipeline.leafObligationId,
+                    parent_attempt_id: attempt?.attempt_id,
+                    request_kind: action === 'recover_missing_owner_coverage'
+                      ? 'multi_owner_recovery' : 'malformed_repartition_child',
+                    selected_recovery_action: action === 'recover_missing_owner_coverage'
+                      ? action : 'dispatch_provider_request',
+                    changed_recovery_dimensions: action === 'recover_missing_owner_coverage'
+                      ? ['missing_owner_subset', `recovery_pass_${recoveryAttempt}`]
+                      : ['source_range', 'multi_owner_contract_size'],
+                    resumed_pending_obligation: action === 'recover_missing_owner_coverage',
+                    root_obligation_state: null,
+                  },
+                  recovery: { malformed_depth: depth + 1 },
+                }),
+                source_range: childRange,
+                source_fingerprint: childFingerprint,
+              });
+              childOwnerCoverage = outcome.owner_coverage ?? childOwnerCoverage;
+              childAdded += Number(outcome.value?.added ?? 0);
+              return outcome;
+            },
           });
+          return { committed: childSchedule.decision === 'commit_obligation',
+            added: childAdded, outcome: childSchedule.outcome,
+            reason_code: childSchedule.reason_code };
         },
         onCommitted: async (child, { key }) => {
           const childRange = sourceRange(child);
@@ -309,8 +333,7 @@ export async function extractAndStoreMultiOwnerMemories(
         },
         });
       } catch (error) {
-        healthFinish({ terminal_health: error?.sme_operational_pause
-          ? 'paused_resumable' : 'recovery_failure',
+        healthFinish({ terminal_health: 'recovery_failure',
         provider_outcome: 'multi_owner_repartition_incomplete',
         parser_outcome: 'repartition_child_pending', persistence: 'partial_valid_records_saved',
         attention_reason_codes: [error?.sme_reason_code ?? error?.code
@@ -325,22 +348,31 @@ export async function extractAndStoreMultiOwnerMemories(
         healthFinish({ terminal_health: 'completed_repartitioned',
           provider_outcome: 'malformed_multi_owner_repartition_recovered',
           parser_outcome: 'repartitioned', persistence: 'saved' });
-        return Object.freeze({ status: 'completed_repartitioned', added: schedule.added,
-          owners: {}, physical_provider_requests: 1 + schedule.executed,
-          root_obligation_id: pipeline.rootObligationId });
+        return createMemorizeTierOutcome({ kind: 'complete',
+          reason_code: 'malformed_multi_owner_repartition_recovered',
+          value: { status: 'completed_repartitioned', added: schedule.added,
+            owners: {}, physical_provider_requests: 1 + schedule.executed,
+            root_obligation_id: pipeline.rootObligationId } });
       }
+      return createMemorizeTierOutcome({ kind: 'policy_paused',
+        reason_code: schedule.pause_reason ?? 'malformed_multi_owner_recovery_incomplete',
+        next_action: 'dispatch_bounded_recovery_attempt', provider_call_required: true,
+        value: { root_obligation_id: pipeline.rootObligationId },
+        evidence: { next_task_key: schedule.next_task_key,
+          unattempted_task_keys: schedule.unattempted_task_keys } });
     }
-    const error = new Error('The multi-owner Long-Term response was malformed.');
-    error.code = 'SME_MALFORMED_MULTI_OWNER_OUTPUT';
-    error.sme_origin = 'provider_output';
-    error.sme_operational_pause = true;
-    error.sme_reason_code = 'malformed_multi_owner_contract';
-    error.sme_obligation_id = pipeline.leafObligationId;
     healthFinish({ terminal_health: 'paused_resumable',
       provider_outcome: 'malformed_multi_owner_contract',
       parser_outcome: 'bounded_recovery_required', persistence: 'not_required',
       attention_reason_codes: ['unparseable_provider_response'] });
-    throw fail(error);
+    return createMemorizeTierOutcome({ kind: 'policy_paused',
+      reason_code: 'malformed_multi_owner_contract',
+      next_action: 'dispatch_bounded_recovery_attempt', provider_call_required: true,
+      value: { root_obligation_id: pipeline.rootObligationId },
+      evidence: { root_obligation_id: pipeline.rootObligationId,
+        leaf_obligation_id: pipeline.leafObligationId,
+        recovery_stage: 'malformed_multi_owner_contract',
+        next_eligible_recovery_action: 'dispatch_bounded_recovery_attempt' } });
   }
   const originalIndices = sourceMessages.map((message, index) =>
     Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : index);
@@ -432,22 +464,25 @@ export async function extractAndStoreMultiOwnerMemories(
     next_action: 'recover_missing_owner_coverage' } : {}),
   });
   if (needsRecovery) {
-    const error = new Error('Some required Long-Term owners still need an accepted record or explicit no-update result.');
-    error.code = 'SME_MISSING_OWNER_COVERAGE_RECOVERY';
-    error.sme_origin = 'validation';
-    error.sme_operational_pause = true;
-    error.sme_reason_code = 'missing_owner_coverage_recovery';
-    error.sme_obligation_id = pipeline.leafObligationId;
-    error.sme_request_diagnostics = { targeted_recovery_owners:
-      ownerCoverage.owners_requiring_recovery, owner_coverage: ownerCoverage,
-      next_eligible_recovery_action: 'recover_missing_owner_coverage',
-      recovery_stage: 'missing_owner_coverage_recovery', rejected_reason_codes:
-      [...new Set(partition.rejected.map((item) => item.reason_code))] };
-    healthFinish({ terminal_health: 'paused_resumable',
+    healthFinish({ terminal_health: 'automatic_recovery_pending',
       provider_outcome: 'partial_multi_owner_contract',
       parser_outcome: 'partial', persistence: 'partial_valid_records_saved',
       attention_reason_codes: ['missing_owner_coverage_recovery'] });
-    throw fail(error);
+    return createMemorizeTierOutcome({ kind: 'partial_recoverable',
+      reason_code: 'missing_owner_coverage_recovery',
+      next_action: 'recover_missing_owner_coverage', provider_call_required: true,
+      recovery_dimension: `missing-owner-pass:${recoveryAttempt}:${
+        ownerCoverage.owners_requiring_recovery.join('|')}`,
+      accepted_owners: ownerCoverage.owners_with_accepted_records,
+      explicit_no_update_owners: ownerCoverage.owners_with_explicit_no_update,
+      missing_owners: ownerCoverage.owners_requiring_recovery,
+      rejected_owners: ownerCoverage.owners_with_rejected_output,
+      durable_receipts: allDurableIds, owner_coverage: ownerCoverage,
+      value: { status: 'partial_recoverable', added, owners: ownerResults,
+        physical_provider_requests: 1, root_obligation_id: pipeline.rootObligationId },
+      evidence: { rejected_reason_codes:
+        [...new Set(partition.rejected.map((item) => item.reason_code))] },
+    });
   }
   pipeline.recordCompletedCoverage('completed_multi_owner');
   healthFinish({ terminal_health: 'completed', provider_outcome: 'completed',
@@ -455,8 +490,13 @@ export async function extractAndStoreMultiOwnerMemories(
     persistence: explicitNoUpdate ? 'not_needed' : 'saved',
     candidates: { accepted: partition.accepted_record_count,
       rejected: partition.rejected.length } });
-  return Object.freeze({ status: 'completed', added, owners: ownerResults,
-    physical_provider_requests: 1, explicit_no_update_owners: partition.no_update_owners,
-    owner_coverage: ownerCoverage,
-    root_obligation_id: pipeline.rootObligationId });
+  return createMemorizeTierOutcome({ kind: explicitNoUpdate ? 'complete_no_update' : 'complete',
+    reason_code: 'completed_multi_owner', accepted_owners:
+      ownerCoverage.owners_with_accepted_records,
+    explicit_no_update_owners: ownerCoverage.owners_with_explicit_no_update,
+    durable_receipts: allDurableIds, owner_coverage: ownerCoverage,
+    value: { status: 'completed', added, owners: ownerResults,
+      physical_provider_requests: 1, explicit_no_update_owners: partition.no_update_owners,
+      owner_coverage: ownerCoverage, root_obligation_id: pipeline.rootObligationId },
+  });
 }

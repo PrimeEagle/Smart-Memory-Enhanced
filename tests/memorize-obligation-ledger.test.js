@@ -113,7 +113,7 @@ test('Session 640-659 downstream rejection remains exact pending recovery', () =
   assert.equal(result.next_eligible_obligation.recovery_intent, 'recover_unresolved_partial_output_fragments');
   assert.equal(result.next_eligible_obligation.recovery_stage, 'compact_response_repair');
   assert.equal(result.tier_coverage.session.coverage_complete, false);
-  assert.equal(result.chunks[0].status, 'pending_session_recovery');
+  assert.equal(result.chunks[0].status, 'pending_session_fragment_recovery');
   assert.equal(result.invariants.valid, true);
 });
 
