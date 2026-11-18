@@ -6,6 +6,7 @@ import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
   from './memorize-lifecycle-coordinator.js';
 import { assertMemorizeActionSelected, canonicalizeMemorizeAction, dispatchMemorizeAction }
   from './memorize-action-dispatcher.js';
+import { preparePersistenceCommand } from './persistence-command.js';
 
 const EXPECTED_EVENT_STATES = Object.freeze({
   obligation_registered: [],
@@ -199,6 +200,8 @@ export function createMemorizeTierPipeline(input) {
       child_obligation_id: leafObligationId,
       controller_attempt_number: execution.controller.attempt_number,
       controller_instance_id: execution.controller.instance_id,
+      page_instance_id: execution.controller.page_instance_id,
+      cancellation_epoch: execution.controller.cancellation_epoch,
       transaction_id: execution.controller.transaction_id,
       transaction_revision: execution.controller.transaction_revision,
       transaction_generation: execution.controller.transaction_generation,
@@ -317,23 +320,53 @@ export function createMemorizeTierPipeline(input) {
     error.sme_obligation_id = leafObligationId;
     throw error;
   }
-  const applyProviderCompletion = async (details = {}) => {
-    if (!atomicCompletionEnabled) return null;
+  const buildProviderCompletionCommand = (details = {}) => {
     const attemptId = details.attempt_id ?? details.provider_attempt_id;
     const commandId = details.command_id ?? `provider-completion:${attemptId}:${leafObligationId}`;
-    const journalEntry = completionJournalEntry(metadata, attemptId);
-    if (journalEntry) {
-      journalEntry.command_id = commandId;
-      journalEntry.obligation_leaf_id = leafObligationId;
-      journalEntry.updated_at = Date.now();
-    }
-    const result = await execution.hooks.provider_completion_command({
+    const persistence = details.persistence_outcome ?? {};
+    const durableIds = [...new Set(persistence.durable_record_ids ?? [])];
+    const candidateMap = persistence.durable_record_candidate_map ?? {};
+    const provenance = persistence.source_provenance ?? {};
+    return preparePersistenceCommand({
       command_id: commandId,
+      execution_scope: execution.controller.lifecycle_required
+        ? 'controller_managed' : 'independent_workflow',
       logical_run_id: lifecycleIdentity.logical_run_id,
+      workflow_id: lifecycleIdentity.logical_run_id,
       root_obligation_id: rootObligationId,
       obligation_leaf_id: leafObligationId,
       attempt_id: attemptId,
       tier, owner,
+      controller_instance_id: execution.controller.instance_id,
+      page_instance_id: execution.controller.page_instance_id,
+      cancellation_epoch: execution.controller.cancellation_epoch,
+      transaction_id: execution.controller.transaction_id,
+      transaction_generation: execution.controller.transaction_generation,
+      controller_identity: {
+        instance_id: execution.controller.instance_id,
+        page_instance_id: execution.controller.page_instance_id,
+        cancellation_epoch: execution.controller.cancellation_epoch,
+      },
+      transaction_identity: {
+        transaction_id: execution.controller.transaction_id,
+        generation: execution.controller.transaction_generation,
+      },
+      work_item_id: leafObligationId,
+      durable_records: durableIds.map((recordId) => ({
+        record_id: recordId,
+        candidate_id: candidateMap[recordId] ?? null,
+        source_provenance: provenance,
+        idempotency_key: `${commandId}:record:${recordId}`,
+      })),
+      idempotency_keys: [commandId, ...durableIds.map((recordId) =>
+        `${commandId}:record:${recordId}`)],
+      duplicate_no_update_disposition: durableIds.length
+        ? 'write_validated_records' : 'verified_no_durable_write',
+      intended_state_transition: details.terminal === false
+        ? 'pending_recovery' : durableIds.length ? 'durably_committed' : 'explicit_no_update',
+      checkpoint_effect: { obligation_leaf_id: leafObligationId,
+        checkpoint_eligible_on_commit: details.terminal !== false },
+      journal_receipt_identity: commandId,
       source_range: lifecycleIdentity.source_range,
       source_fingerprint: sourceFingerprint,
       provider_profile_signature: providerConfigSignature,
@@ -342,6 +375,25 @@ export function createMemorizeTierPipeline(input) {
         ?? 'dispatch_provider_request',
       ...details,
     });
+  };
+  const prepareProviderCompletion = (details = {}) => buildProviderCompletionCommand(details);
+  const applyProviderCompletion = async (details = {}) => {
+    if (!atomicCompletionEnabled) return null;
+    const command = buildProviderCompletionCommand(details);
+    const journalEntry = completionJournalEntry(metadata, command.attempt_id);
+    if (journalEntry) {
+      journalEntry.command_id = command.command_id;
+      journalEntry.obligation_leaf_id = leafObligationId;
+      journalEntry.updated_at = Date.now();
+      journalEntry.persistence_command_receipt = {
+        command_id: command.command_id,
+        journal_receipt_identity: command.journal_receipt_identity,
+        intended_state_transition: command.intended_state_transition,
+        checkpoint_effect: structuredClone(command.checkpoint_effect),
+        durable_record_count: command.durable_records.length,
+      };
+    }
+    const result = await execution.hooks.provider_completion_command(command);
     if (!['applied', 'idempotent_duplicate', 'late_callback_ignored'].includes(result?.status)) {
       const error = new Error('Atomic Memorize provider completion was rejected.');
       error.code = 'SME_ATOMIC_PROVIDER_COMPLETION_REJECTED';
@@ -397,7 +449,7 @@ export function createMemorizeTierPipeline(input) {
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
     beginRegisteredAttempt, ingestProviderEvidence, getCanonicalObligation,
     requireSelectedAction, executeSelectedAction, recordActionReceipt,
-    atomicCompletionEnabled, applyProviderCompletion,
+    atomicCompletionEnabled, prepareProviderCompletion, applyProviderCompletion,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),
   });
 }

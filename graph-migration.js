@@ -46,6 +46,8 @@
 import { saveSettingsDebounced } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
+  recordFeaturePersistenceReceipt } from './feature-persistence.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
 import { isGrounded } from './grounding.js';
@@ -285,11 +287,22 @@ export function saveCharacterEntityRegistry(characterName, entities) {
   if (!characterName || !Array.isArray(entities)) return;
   const policy = getCharacterMemoryPolicy(characterName);
   if (policy === 'read_only' || policy === 'disabled') return;
+  const context = getContext();
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `entity-registry:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'entity_registry', operation: 'replace_character_registry',
+    owner: characterName, records: entities });
   if (policy === 'chat_local') {
-    const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
-    (context.chatMetadata[META_KEY].card_local_entities ??= {})[characterName] = entities;
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local entity registry:', err));
+    const metadata = context.chatMetadata[META_KEY];
+    executeFeaturePersistence({ command,
+      snapshot: () => structuredClone(metadata.card_local_entities?.[characterName] ?? []),
+      apply: () => { (metadata.card_local_entities ??= {})[characterName] = entities; },
+      persist: () => saveChatMetadata(context),
+      restore: (before) => { (metadata.card_local_entities ??= {})[characterName] = before; },
+      receipt_container: metadata,
+    }).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local entity registry:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -300,6 +313,7 @@ export function saveCharacterEntityRegistry(characterName, entities) {
     ...existing,
     entities,
   };
+  recordFeaturePersistenceReceipt(command, extension_settings[MODULE_NAME]);
 }
 
 // ---- Entity registry: session-scoped (chatMetadata) -------------------------
@@ -326,8 +340,17 @@ export async function saveSessionEntityRegistry(entities) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].sessionEntities = entities;
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? 'session-entity-registry';
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'entity_registry', operation: 'replace_session_registry', records: entities });
+  await executeFeaturePersistence({ command,
+    snapshot: () => structuredClone(metadata.sessionEntities ?? []),
+    apply: () => { metadata.sessionEntities = entities; },
+    persist: () => saveChatMetadata(context),
+    restore: (before) => { metadata.sessionEntities = before; },
+    receipt_container: metadata });
 }
 
 /**

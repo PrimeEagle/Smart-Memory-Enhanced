@@ -1,9 +1,11 @@
 export function createTransactionLease(transaction, detail = {}) {
   if (!transaction) return null;
   return Object.freeze({
-    schema_version: 1,
+    schema_version: 2,
     logical_run_id: transaction.owner?.logical_run_id ?? null,
     controller_instance_id: transaction.owner?.controller_instance_id ?? null,
+    page_instance_id: transaction.owner?.page_instance_id ?? null,
+    cancellation_epoch: transaction.owner?.cancellation_epoch ?? 0,
     transaction_id: transaction.transaction_id,
     transaction_revision: transaction.revision,
     transaction_generation: transaction.generation,
@@ -22,16 +24,28 @@ export function inspectTransactionLease(transaction, currentTransaction, lease,
   else if (transaction !== currentTransaction) reason_code = 'transaction_lease_not_current';
   else if (transaction.state !== 'active') reason_code = 'transaction_lease_transaction_settled';
   else if (transaction.transaction_id !== lease.transaction_id) reason_code = 'transaction_lease_id_mismatch';
-  else if (transaction.revision !== lease.transaction_revision
-    || transaction.generation !== lease.transaction_generation) reason_code = 'transaction_lease_revision_mismatch';
+  else if (transaction.generation !== lease.transaction_generation) {
+    reason_code = 'transaction_lease_generation_mismatch';
+  }
   else if ((transaction.owner?.logical_run_id ?? null) !== (lease.logical_run_id ?? null)) {
     reason_code = 'transaction_lease_logical_run_mismatch';
   } else if ((transaction.owner?.controller_instance_id ?? null)
     !== (lease.controller_instance_id ?? null)) reason_code = 'transaction_lease_controller_mismatch';
+  else if ((transaction.owner?.page_instance_id ?? null)
+    !== (lease.page_instance_id ?? null)) reason_code = 'transaction_lease_page_mismatch';
+  else if (Number(transaction.owner?.cancellation_epoch ?? 0)
+    !== Number(lease.cancellation_epoch ?? 0)) reason_code = 'transaction_lease_cancellation_epoch_mismatch';
+  const revisionRebased = reason_code === null
+    && transaction.revision !== lease.transaction_revision;
   return {
     allowed: reason_code === null,
-    disposition: reason_code === null ? 'lease_current' : 'stale_lease_mutation_rejected',
+    disposition: reason_code === null
+      ? revisionRebased ? 'same_owner_revision_rebased' : 'lease_current'
+      : 'stale_lease_mutation_rejected',
     reason_code,
+    revision_rebased: revisionRebased,
+    captured_revision: lease?.transaction_revision ?? null,
+    current_revision: transaction?.revision ?? null,
     captured_lease: captured,
     current_transaction: current,
     durable_mutation_performed: false,

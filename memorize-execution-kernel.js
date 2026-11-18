@@ -8,8 +8,10 @@ import {
   assessMemorizeRecoveryCapsule,
   createMemorizeRecoveryCapsule,
 } from './memorize-recovery-capsule.js';
+import { preparePersistenceCommand, providerCompletionIdentity }
+  from './persistence-command.js';
 
-export const MEMORIZE_EXECUTION_KERNEL_VERSION = 2;
+export const MEMORIZE_EXECUTION_KERNEL_VERSION = 3;
 export const MEMORIZE_ACTION_HANDLER_REVISION = 1;
 export const MEMORIZE_ACTIONS = Object.freeze([
   'dispatch_provider_request', 'apply_journaled_provider_completion',
@@ -47,12 +49,11 @@ export const MEMORIZE_ACTION_RECEIPT_PHASES = Object.freeze([
 ]);
 const TERMINAL_STATES = new Set(['durably_committed', 'explicit_no_update']);
 const bounded = (items = [], maximum = 512) => items.slice(-maximum);
-const unique = (items = []) => [...new Set((Array.isArray(items) ? items : [])
-  .map((item) => String(item ?? '').trim()).filter(Boolean))];
 
 function clone(value) {
   return value == null ? value : structuredClone(value);
 }
+
 
 function ensureKernelState(ledger, now = Date.now()) {
   if (ledger.execution_kernel
@@ -157,19 +158,6 @@ export function latestMemorizeActionReceipt(aggregateValue, obligationId = null)
     || item.obligation_id === obligationId) ?? null);
 }
 
-function commandIdentity(command = {}) {
-  const commandId = String(command.command_id ?? command.commandId ?? '').trim();
-  const logicalRunId = String(command.logical_run_id ?? command.logicalRunId ?? '').trim();
-  const leafId = String(command.obligation_leaf_id ?? command.obligationLeafId ?? '').trim();
-  const attemptId = String(command.attempt_id ?? command.attemptId ?? '').trim();
-  if (!commandId || !logicalRunId || !leafId || !attemptId) {
-    throw Object.assign(new Error('Atomic provider completion requires command, run, leaf, and attempt identity.'), {
-      code: 'SME_INVALID_PROVIDER_COMPLETION_COMMAND',
-    });
-  }
-  return { commandId, logicalRunId, leafId, attemptId };
-}
-
 function semanticEvent(kernel, commandId, type, detail = {}) {
   kernel.semantic_events = bounded([...kernel.semantic_events, {
     sequence: kernel.revision + 1,
@@ -193,60 +181,13 @@ function applyRequiredEvent(ledger, identity, event, expectedState = null) {
   return result;
 }
 
-function normalizedParserOutcome(value = {}) {
-  const status = value.status ?? 'rejected';
-  return {
-    status: ['accepted', 'partial', 'rejected', 'explicit_none'].includes(status)
-      ? status : 'rejected',
-    accepted_candidate_ids: unique(value.accepted_candidate_ids),
-    rejected_fragment_ids: unique(value.rejected_fragment_ids),
-    reason_code: value.reason_code ?? null,
-  };
-}
-
-function normalizedValidationOutcome(value = {}) {
-  const status = value.status ?? 'not_applicable';
-  return {
-    status: ['accepted', 'partial', 'rejected', 'not_applicable', 'validated_no_update']
-      .includes(status) ? status : 'rejected',
-    accepted_candidate_ids: unique(value.accepted_candidate_ids),
-    rejected_candidate_ids: unique(value.rejected_candidate_ids),
-    reason_code: value.reason_code ?? null,
-  };
-}
-
-function normalizedPersistence(value = {}) {
-  return {
-    status: value.status ?? 'not_required',
-    durable_record_ids: unique(value.durable_record_ids),
-    durable_record_candidate_map: { ...(value.durable_record_candidate_map ?? {}) },
-    source_provenance: { ...(value.source_provenance ?? {}) },
-  };
-}
-
-function validateDurableMappings(parser, persistence) {
-  if (!persistence.durable_record_ids.length) return;
-  for (const recordId of persistence.durable_record_ids) {
-    const candidateId = String(persistence.durable_record_candidate_map[recordId] ?? '').trim();
-    if (!candidateId || !parser.accepted_candidate_ids.includes(candidateId)) {
-      throw Object.assign(new Error('Every durable record must map to a parser-accepted candidate.'), {
-        code: 'SME_DURABLE_RECORD_MAPPING_REQUIRED', record_id: recordId,
-      });
-    }
-  }
-  if (!Object.keys(persistence.source_provenance).length) {
-    throw Object.assign(new Error('Durable records require source provenance.'), {
-      code: 'SME_DURABLE_RECORD_PROVENANCE_REQUIRED',
-    });
-  }
-}
-
 /**
  * Pure atomic ingestion for one exact provider leaf and physical attempt.
  * The returned aggregate is a new value; callers persist it once.
  */
 export function applyProviderCompletion(aggregateValue, command, now = Date.now()) {
-  const { commandId, logicalRunId, leafId, attemptId } = commandIdentity(command);
+  command = preparePersistenceCommand(command);
+  const { commandId, logicalRunId, leafId, attemptId } = providerCompletionIdentity(command);
   const aggregate = clone(ensureMemorizeExecutionAggregate(aggregateValue, logicalRunId));
   const kernel = ensureKernelState(aggregate, now);
   if (kernel.applied_commands[commandId]) return Object.freeze({
@@ -306,10 +247,9 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
     reason_code: 'attempt_belongs_to_different_leaf',
   });
 
-  const parser = normalizedParserOutcome(command.parser_outcome);
-  const validation = normalizedValidationOutcome(command.validation_outcome);
-  const persistence = normalizedPersistence(command.persistence_outcome);
-  validateDurableMappings(parser, persistence);
+  const parser = command.parser_outcome;
+  const validation = command.validation_outcome;
+  const persistence = command.persistence_outcome;
   const attempt = kernel.attempts[attemptId] = {
     ...(existingAttempt ?? {}), attempt_id: attemptId, obligation_leaf_id: leafId,
     root_obligation_id: identity.root_obligation_id, logical_run_id: logicalRunId,

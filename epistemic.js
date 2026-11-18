@@ -51,6 +51,9 @@ import {
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
+  recordFeaturePersistenceReceipt } from './feature-persistence.js';
+import { assignCandidateIdentity } from './candidate-identity.js';
 import {
   MODULE_NAME,
   META_KEY,
@@ -187,17 +190,29 @@ export function loadEpistemicKnowledge(characterName) {
 export function saveEpistemicKnowledge(characterName, entries) {
   if (!characterName || !Array.isArray(entries)) return;
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  const context = getContext();
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `interactive-epistemic:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'epistemic', operation: 'replace_epistemic_knowledge',
+    owner: characterName, records: entries });
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
-    (context.chatMetadata[META_KEY].card_local_epistemic ??= {})[characterName] = entries;
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local epistemic knowledge:', err));
+    const metadata = context.chatMetadata[META_KEY];
+    executeFeaturePersistence({ command,
+      snapshot: () => structuredClone(metadata.card_local_epistemic?.[characterName] ?? []),
+      apply: () => { (metadata.card_local_epistemic ??= {})[characterName] = entries; },
+      persist: () => saveChatMetadata(context),
+      restore: (before) => { (metadata.card_local_epistemic ??= {})[characterName] = before; },
+      receipt_container: metadata,
+    }).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local epistemic knowledge:', err));
     return;
   }
   const s = extension_settings[MODULE_NAME];
   if (!s.characters) s.characters = {};
   const existing = s.characters[characterName] ?? {};
   s.characters[characterName] = { ...existing, epistemic_knowledge: entries };
+  recordFeaturePersistenceReceipt(command, s);
   saveSettingsDebounced();
 }
 
@@ -491,6 +506,7 @@ const isRoutineKnowledge = (entry) => entry.type === 'knows' &&
       ? message.__sme_original_index : context.chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
     for (const entry of parsed) {
       entry.id = generateMemoryId();
+      assignCandidateIdentity(entry, `epistemic-candidate:${entry.id}`);
       entry.ts = Date.now();
       entry.source_message_indices = sourceMessageIndices;
       validateGeneratedRecord(entry);

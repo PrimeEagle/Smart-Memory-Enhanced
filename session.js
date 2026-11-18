@@ -45,6 +45,9 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
+  from './feature-persistence.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
 import { flattenConsolidationProvenance, validateGeneratedRecord } from './record-validation.js';
 import {
@@ -293,8 +296,17 @@ export async function saveSessionMemories(memories) {
   for (const memory of memories ?? []) validateGeneratedMemoryRecord(memory, memories);
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].sessionMemories = memories;
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? 'interactive-session';
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'session', operation: 'replace_session_memories', records: memories ?? [] });
+  await executeFeaturePersistence({ command,
+    snapshot: () => structuredClone(metadata.sessionMemories ?? []),
+    apply: () => { metadata.sessionMemories = memories; },
+    persist: () => saveChatMetadata(context),
+    restore: (before) => { metadata.sessionMemories = before; },
+    receipt_container: metadata });
 }
 
 /**
@@ -1602,6 +1614,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // repair so a downstream split or rejection cannot rewrite parser history.
     for (const [index, candidate] of parsedCandidates.entries()) {
       candidate._citation_candidate_id ??= `session-candidate:${coverageBase.source_fingerprint}:${index}:${stableCitationClaimHash(candidate)}`;
+      assignCandidateIdentity(candidate, candidate._citation_candidate_id);
     }
     const parserAcceptedCandidateIds = [...new Set(parsedCandidates
       .map((candidate) => candidate._citation_candidate_id))];
@@ -2135,6 +2148,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const context = getContext();
     const chatLen = context.chat?.length ?? 1;
     for (const memory of incoming) {
+      assignCandidateIdentity(memory,
+        candidateIdentityOf(memory) ?? memory._citation_candidate_id);
       delete memory.__sme_citation_repair;
       validateGeneratedMemoryRecord(memory, existing);
     }
@@ -2148,6 +2163,18 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     const max = settings.session_max_memories ?? 30;
     const merged = await deduplicateSession(existing, incoming, max);
+    // Candidate identity is assigned at parser acceptance and must survive
+    // deduplication.  Reattach it deterministically when an adapter returned a
+    // cloned record instead of the original candidate object.
+    const acceptedCandidateIdentity = new Map(incoming.map((memory) => [
+      `${memory.type}|${String(memory.content ?? '').trim()}`,
+      candidateIdentityOf(memory),
+    ]));
+    for (const memory of merged) {
+      const acceptedIdentity = candidateIdentityOf(memory) ?? acceptedCandidateIdentity.get(
+        `${memory.type}|${String(memory.content ?? '').trim()}`) ?? null;
+      if (acceptedIdentity) assignCandidateIdentity(memory, acceptedIdentity);
+    }
 
     // Apply supersession links. For each candidate that supersedes an existing
     // memory: mark the old memory as retired (superseded_by + valid_to) and
@@ -2249,10 +2276,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (entityRegistry.length > 0) {
       reconcileCanonicalEntityRegistry(entityRegistry, getContext(), finalActive);
       reconcileEntityRegistry(entityRegistry, finalActive);
-      if (!abortCheck?.()) {
-        persistenceStarted = true;
-        await saveSessionEntityRegistry(entityRegistry);
-      }
     }
 
     // Newly retired active memories move to the retired pool.
@@ -2267,8 +2290,52 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     const added = newlyAddedMemories.length;
     const addedRecordIds = newlyAddedMemories.map((memory) => memory.id).filter(Boolean);
     const durableRecordCandidateMap = Object.fromEntries(newlyAddedMemories
-      .filter((memory) => memory.id && memory._citation_candidate_id)
-      .map((memory) => [String(memory.id), String(memory._citation_candidate_id)]));
+      .filter((memory) => memory.id && candidateIdentityOf(memory))
+      .map((memory) => [String(memory.id), candidateIdentityOf(memory)]));
+    const sourceProvenance = { source_indices: sourceMessages
+      .map((message) => message.__sme_original_index).filter(Number.isInteger) };
+    const persistenceCompletionDetails = {
+      attempt_id: lifecycleAttemptId,
+      terminal: unresolvedPartialFragments === 0,
+      ...(unresolvedPartialFragments > 0 ? {
+        reason_code: 'partial_valid_output_has_unresolved_fragments',
+        next_action: 'regenerate_unresolved_from_verified_source',
+      } : {}),
+      raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
+      parser_outcome: {
+        status: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
+        accepted_candidate_ids: parserAcceptedCandidateIds,
+        rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+      },
+      validation_outcome: {
+        status: unresolvedPartialFragments > 0 ? 'partial' : 'accepted',
+        accepted_candidate_ids: Object.values(durableRecordCandidateMap),
+      },
+      persistence_outcome: {
+        status: addedRecordIds.length ? 'committed' : 'not_required',
+        durable_record_ids: addedRecordIds,
+        durable_record_candidate_map: durableRecordCandidateMap,
+        source_provenance: addedRecordIds.length ? sourceProvenance : {},
+      },
+      recovery_capsule: unresolvedPartialFragments > 0 ? {
+        rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
+        private_fragment_payload_available: rejectedPartialFragments.some((item) => item.raw),
+        source_backed_regeneration_available: true,
+        provider_profile_signature: providerConfigSignature,
+        protocol: 'session_tagged_lines_v1',
+      } : recoveredRecordFragmentIds.length || recoveredNoUpdateFragmentIds.length
+        ? { rejected_fragment_ids: [], private_fragment_payload_available: false,
+          source_backed_regeneration_available: true } : null,
+    };
+    // This throws before either the Session store or its completion journal can
+    // claim success when a record lost its accepted-candidate identity.
+    if (pipeline.atomicCompletionEnabled) {
+      pipeline.prepareProviderCompletion(persistenceCompletionDetails);
+    }
+    if (entityRegistry.length > 0 && !abortCheck?.()) {
+      persistenceStarted = true;
+      await saveSessionEntityRegistry(entityRegistry);
+    }
     for (const memory of finalActive) {
       delete memory._citation_candidate_id;
       delete memory._citation_claim_hash;
@@ -2277,7 +2344,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     persistenceStarted = true;
     await saveSessionMemories([...finalActive, ...updatedRetired]);
     updateCompletionJournal(providerAttempt, {
+      parser_accepted_candidate_ids: parserAcceptedCandidateIds,
       validation: { status: 'accepted', accepted_count: incoming.length },
+      validation_accepted_candidate_ids: Object.values(durableRecordCandidateMap),
       validated_record_identities: incoming.map((memory) => ({
         id: memory.id ?? null,
         candidate_id: memory._citation_candidate_id ?? durableRecordCandidateMap[memory.id] ?? null,
@@ -2286,7 +2355,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       persistence: {
         status: addedRecordIds.length ? 'committed' : 'verified_existing',
         durable_record_ids: addedRecordIds,
+        durable_record_candidate_map: durableRecordCandidateMap,
+        source_provenance: addedRecordIds.length ? sourceProvenance : {},
       },
+      durable_record_candidate_mappings: durableRecordCandidateMap,
+      source_provenance: addedRecordIds.length ? sourceProvenance : {},
+      checkpoint_effect: { obligation_leaf_id: pipeline.leafObligationId,
+        checkpoint_eligible_on_commit: unresolvedPartialFragments === 0 },
     });
     if (stagedRecoveryObligationId) {
       markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
@@ -2315,33 +2390,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         candidate_shape_repair_count: shapeRepair.repaired_count,
         next_eligible_action: 'recover_unresolved_partial_output_fragments',
       });
-      if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
-        attempt_id: lifecycleAttemptId,
-        terminal: false,
-        reason_code: 'partial_valid_output_has_unresolved_fragments',
-        next_action: 'regenerate_unresolved_from_verified_source',
-        raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
-        parser_outcome: {
-          status: 'partial', accepted_candidate_ids: parserAcceptedCandidateIds,
-          rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
-        },
-        validation_outcome: { status: 'partial',
-          accepted_candidate_ids: Object.values(durableRecordCandidateMap) },
-        persistence_outcome: {
-          status: addedRecordIds.length ? 'committed' : 'not_required',
-          durable_record_ids: addedRecordIds,
-          durable_record_candidate_map: durableRecordCandidateMap,
-          source_provenance: addedRecordIds.length ? { source_indices: sourceMessages
-            .map((message) => message.__sme_original_index).filter(Number.isInteger) } : {},
-        },
-        recovery_capsule: {
-          rejected_fragment_ids: rejectedPartialFragments.map((item) => item.fragment_id),
-          private_fragment_payload_available: rejectedPartialFragments.some((item) => item.raw),
-          source_backed_regeneration_available: true,
-          provider_profile_signature: providerConfigSignature,
-          protocol: 'session_tagged_lines_v1',
-        },
-      });
+      if (pipeline.atomicCompletionEnabled) {
+        await pipeline.applyProviderCompletion(persistenceCompletionDetails);
+      }
       else await emitLifecycleEvent('recovery_required', {
         parser_result: 'partial', downstream_validation_result: 'accepted_partial_records',
         persistence_result: 'partial_records_committed', coverage_result: 'pending',
@@ -2479,22 +2530,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       validation_accepted: true, persistence_committed: true, accepted_count: added,
       candidate_shape_repair_count: shapeRepair.repaired_count,
     });
-    if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
-      attempt_id: lifecycleAttemptId,
-      raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
-      parser_outcome: { status: 'accepted', accepted_candidate_ids: parserAcceptedCandidateIds },
-      validation_outcome: { status: 'accepted',
-        accepted_candidate_ids: Object.values(durableRecordCandidateMap) },
-      persistence_outcome: {
-        status: 'committed', durable_record_ids: addedRecordIds,
-        durable_record_candidate_map: durableRecordCandidateMap,
-        source_provenance: { source_indices: sourceMessages
-          .map((message) => message.__sme_original_index).filter(Number.isInteger) },
-      },
-      recovery_capsule: recoveredRecordFragmentIds.length || recoveredNoUpdateFragmentIds.length
-        ? { rejected_fragment_ids: [], private_fragment_payload_available: false,
-          source_backed_regeneration_available: true } : null,
-    });
+    if (pipeline.atomicCompletionEnabled) {
+      await pipeline.applyProviderCompletion(persistenceCompletionDetails);
+    }
     else {
       await emitLifecycleEvent('records_staged', {
         provider_attempt_id: lifecycleAttemptId, persistence_result: 'staged',

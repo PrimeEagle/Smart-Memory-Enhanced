@@ -19,6 +19,7 @@ function transactionOwner(context, ownership = {}) {
     logical_run_id: ownership.logical_run_id ?? null,
     attempt_number: ownership.attempt_number ?? null,
     page_instance_id: ownership.page_instance_id ?? null,
+    cancellation_epoch: ownership.cancellation_epoch ?? 0,
     phase: ownership.phase ?? null,
     tier: ownership.tier ?? null,
     owner: ownership.owner ?? null,

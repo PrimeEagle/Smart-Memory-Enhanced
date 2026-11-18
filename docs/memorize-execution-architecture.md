@@ -1,62 +1,171 @@
 # Memorize execution architecture
 
-This inventory defines which provider paths belong to the durable Memorize Chat
-execution graph. It is a release-gate reference, not a second runtime authority.
+This document describes the production wiring in the current source tree. It
+is descriptive; the execution kernel and persisted checkpoint are the runtime
+authorities.
 
-## Category A — durable extraction work
+## Authoritative path
 
-| Path | Durable owner | Worker contract |
-| --- | --- | --- |
-| Long-Term source extraction and missing-owner recovery | Canonical controller scheduler and obligation ledger | One typed attempt/outcome per dispatch |
-| Session source extraction, malformed recovery, and context repartition | `memorize-action-engine.js` and obligation ledger | Declare children, yield, execute one selected leaf |
+Memorize Chat has one controller-owned loop:
 
-Category A work must use the same initial/Resume loop. A worker must not own a
-recursive retry scheduler, a private continuation budget, or parent aggregation.
-The controller rereads the durable graph after every action. Registered parents
-are containers: only incomplete leaves may issue provider requests.
+1. `memorize-action-engine.js` selects one exact incomplete leaf from the
+   obligation ledger.
+2. `memorize-tier-pipeline.js` registers one physical attempt and constructs a
+   complete provider-completion command.
+3. The tier parser assigns a `candidate_identity` envelope at parser
+   acceptance. Normalization, repair, deduplication, owner partitioning, and
+   active/retired merging preserve that envelope.
+4. Session and multi-owner Long-Term construct durable record IDs, candidate
+   mappings, provenance, idempotency keys, transition intent, checkpoint
+   effect, controller ownership, and transaction generation before storage.
+5. `prepareProviderCompletionCommand()` validates the complete immutable
+   command before the first production record write.
+6. The storage adapter writes only the validated record set. The unit-of-work
+   journal records `prepared`, `storage_write_started`,
+   `storage_write_confirmed`, `canonical_receipt_pending`, and `committed`.
+   Storage failure becomes `compensation_required`.
+7. `memorize-execution-kernel.js` is the only component that can make the leaf
+   checkpoint-eligible. Coverage, health, action receipts, and provider journal
+   entries are evidence or projections; they are not commitment authorities.
+8. The controller rereads the graph. It dispatches the next sibling, performs
+   a local parent aggregation, advances the safe checkpoint, or reports one
+   exact blocker.
 
-## Category B — read-only verification
+The execution-kernel schema is 3, execution-context schema is 2,
+unit-of-work schema is 2, and provider-completion-journal schema is 7. Older
+incomplete runs are intentionally unsupported and require **Fresh Start**.
 
-Diagnostics, idempotence checks, integrity audits, and canonical projections may
-read immutable snapshots. They cannot dispatch providers, persist extraction
-records, advance checkpoints, or infer a different recovery action.
+## Candidate and persistence contracts
 
-## Category C — presentation and injection
+`candidate-identity.js` owns the typed identity envelope. Provider candidates
+receive identity when the parser materializes the accepted record (or, for a
+string-returning parser, when its typed domain record is constructed). A
+transformation preserves that identity; changing it is rejected unless a
+derived-candidate contract supplies a parent identity and transformation
+receipt. User edits and pre-existing records receive deterministic identities
+at the common save boundary because they have no provider parser event.
 
-UI status, Resume enablement, live health, diagnostics export, and prompt
-injection are pure projections of canonical state. Observer failures are
-non-fatal and remain separately classified.
+A controller-managed persistence command contains:
 
-## Category D — independent workflows
+- command, workflow, controller, page, transaction, generation, work-item,
+  tier, owner, source-range, and source-fingerprint identity;
+- parser- and validation-accepted candidate IDs;
+- stable durable record IDs and one candidate mapping per record;
+- source provenance and an idempotency key per record;
+- duplicate/no-update disposition, intended transition, checkpoint effect,
+  and journal receipt identity.
 
-| Production path | Category | Lifecycle justification |
-| --- | --- | --- |
-| Provider-attempt audit, idempotence, integrity, stabilization audit | B | Evidence/projection only |
-| Diagnostics export and run-status derivation | B | Frozen settled snapshot only |
-| Resume button, live health, ETA, error/status panels | C | Canonical-state presentation only |
-| Memory injection and retrieval | D | Request-time prompt assembly; never extraction authority |
-| Profile extraction and repair | D | Finalization workflow with its own validated record contract |
-| Scene extraction/detection | D | Finalization workflow with scene-boundary semantics |
-| Story Arc extraction and repair | D | Finalization workflow after scene completion |
-| Relationship extraction/history | D | Finalization workflow with grounded pair validation |
-| State Ledger extraction | D | Independently enabled structured-state workflow |
-| Short-term compaction/finalization | D | Summary workflow with a separate resumable phase checkpoint |
-| Realtime Long-Term/Session building | D | Interactive incremental workflow outside Memorize traversal |
-| Continuity Check provider work | D | Read/repair workflow initiated independently by the user |
-| Automatic stabilization and final reconciliation | D | Post-extraction canonicalization; cannot dispatch tier recovery |
-| Cancellation/page reload/finalization eligibility | A | Owned by the Memorize controller and durable checkpoint |
+Duplicate record IDs, missing or extraneous mappings, parser/validation
+disagreement, missing provenance, missing idempotency, and missing ownership
+identity fail before storage. The exact validated command is submitted to the
+kernel and summarized in the replay journal.
 
-Category D paths retain explicit independent lifecycles. They may not mutate
-the Memorize obligation graph or present themselves as its recovery authority.
+`persistence-command.js` is domain-neutral. `feature-persistence.js` adapts
+independent workflows to it with explicit synthetic controller ownership and
+one transaction generation per command. It validates before `apply`, keeps a
+bounded idempotent receipt table, persists the domain state and receipt in one
+host save where the host exposes an awaitable save, and restores both on
+failure. SillyTavern's settings API is debounced rather than awaitable;
+settings-backed stores therefore validate and record the receipt synchronously
+before requesting the host save, while chat-metadata stores use the full
+awaitable rollback path.
 
-## Invariants
+## Transaction model
 
-1. One controller owns action selection, retry order, durable budgets, and
-   parent aggregation.
-2. Initial execution and Resume call the same action loop.
-3. A selected leaf identity includes tier, owner, exact source range, source
-   fingerprint, root, and immediate parent.
-4. A committed leaf is never dispatched again.
-5. A parent with incomplete registered children is never dispatched.
-6. Diagnostics and UI report the canonical graph, never compatibility caches.
-7. Provider output failures are not internal invariant failures.
+The immutable ownership lease contains logical run, controller, transaction,
+generation, page, and cancellation epoch. A generation, owner, page,
+cancellation epoch, settled transaction, or transaction-ID change is stale.
+Revision is optimistic mutable state, not ownership. A callback whose revision
+advanced under the same active owner/generation is rebased and revalidated;
+it is reported as `same_owner_revision_rebased`, not a stale callback.
+
+## Resume and error behavior
+
+`deriveMemorizeRecoveryAuthority()` is the single UI, diagnostics, controller,
+and status decision. It is fail-closed over
+`deriveMemorizeResumeEligibility()`: a later executable sibling cannot override
+an invalid earlier leaf. Persistence-command failure is one root error and the
+affected obligation is moved to an exact blocked state; the controller does
+not add a derivative “recovery incomplete” root error.
+
+The provider journal retains bounded structural evidence needed for local
+replay: command/attempt/work-item identity, accepted candidate IDs, validation
+IDs, durable IDs, mappings, provenance, persistence command receipt,
+transaction generation, checkpoint effect, and terminal disposition. Provider
+response bodies and memory bodies are not exported.
+
+## Production path inventory
+
+| Path | Execution owner | Durable state / transaction | Current shared foundations |
+| --- | --- | --- | --- |
+| Memorize multi-owner Long-Term and missing-owner recovery | Canonical action engine | Owner stores inside catch-up transaction | Typed candidates, pre-write command validation, deferred owner commits, kernel receipt, journal v7 |
+| Memorize Session, malformed children, partial fragments, citation repair | Canonical action engine | Session store inside catch-up transaction | Typed candidates, pre-write command validation, kernel receipt, journal v7 |
+| Context-overflow and nested child recovery | Canonical action engine | Obligation children and transaction checkpoint | Same leaf command and receipt path; parents cannot dispatch |
+| Provider attempt, action receipt, coverage and live health | Controller observers | Metadata checkpoint | Evidence only; cannot commit a leaf |
+| Cancellation, page reload, Resume, finalization eligibility | Controller | Checkpoint and ownership lease | One recovery authority and ownership/generation lease |
+| Diagnostics, integrity and idempotence audits | Observer | Read-only snapshots | Pure projections; bounded recent tables and no response bodies |
+| Retrieval and prompt injection | Request-time reader | No extraction write | Outside the obligation graph |
+| Realtime Long-Term and Session | Interactive workflow | Character/chat stores | Shared candidate envelope and feature persistence command; not a Memorize recovery owner |
+| Profiles and profile repair | Finalization/domain workflow | Chat profile map | Shared command, snapshot rollback, bounded receipt; pending-generation notice remains operational metadata |
+| Scene detection and summaries | Scene workflow | Chat scene archive | Scene candidate identity plus shared command/rollback/receipt |
+| Story Arcs, resolved summaries, persistent character/group arcs | Arc workflow | Chat and settings arc stores | Shared command; chat saves rollback, settings saves validate synchronously |
+| Relationship History and epistemic knowledge | Realtime/finalization workflow | Chat-local or character settings | Shared identity, command, mapping, provenance fallback, receipt |
+| State Ledger and entity registries | Realtime/reconciliation workflow | Chat or character stores | Shared command; reconciliation remains the domain owner |
+| Short-Term compaction | Compaction workflow | Summary, boundary and pass checkpoint | Each pass/final snapshot is one validated command and rollback unit |
+| Canon | User/finalization workflow | Chat-local or character settings | Shared command and receipt; no Memorize checkpoint authority |
+| Continuity Check | User-invoked read/repair workflow | Domain repair stores | Outside Memorize action selection; cannot alter Memorize checkpoint eligibility |
+| Stabilization and reconciliation | Finalization workflow | Canonical stores | No tier-recovery dispatch and no alternate Memorize commitment authority |
+
+## Diagnostic retention
+
+The export contains one kernel table with compact obligations, attempts,
+capsules, and recent receipts. Current-attempt chunk history retains at most 64
+entries with total/retained/truncated metadata; the former three duplicate
+chunk arrays were removed. Kernel semantic events, action receipts, stale
+callbacks, provider-journal entries, errors, and historical run summaries are
+independently bounded.
+
+## Non-writing and control-path audit
+
+- Retrieval and injection read canonical stores and update prompt/cache state;
+  they do not create memory records or advance extraction checkpoints.
+- Continuity Check owns its user-requested domain repair, but all resulting
+  Session, Long-Term, relationship, entity, scene, arc, ledger, and canon saves
+  enter through the corresponding shared writer above.
+- Stabilization and reconciliation may transform several domain stores in one
+  staged catch-up transaction. They cannot register provider success or make a
+  Memorize leaf checkpoint-eligible.
+- Cancellation increments the cancellation epoch and aborts active provider
+  work. Page replacement changes page ownership. Either invalidates an old
+  lease; an ordinary same-owner revision increment does not.
+- Fresh Start deletes current run state rather than migrating an incompatible
+  execution graph. Resume only settles attempts, replays complete evidence,
+  selects an exact repair action, or returns an exact blocker.
+- Diagnostics and UI consume frozen projections. Observer exceptions are
+  classified and contained; neither layer may dispatch, persist, repair, or
+  mutate canonical execution state.
+
+## Error taxonomy
+
+The command boundary preserves separate reason classes for provider transport,
+malformed output, parsing, semantic/provenance validation,
+persistence-command validation, storage write, canonical receipt, saga repair,
+ownership loss, optimistic revision conflict, cancellation, page interruption,
+external blocker, programming invariant, diagnostic observer, and UI
+presentation failures. A recovery/status projection references its root error;
+it does not create a second root error. The state impact, exact repair action,
+and terminal/recovered disposition remain attached to that causal chain.
+
+## Release gates
+
+- Invalid mappings/provenance and duplicate durable IDs perform zero writes.
+- Same-owner revision advancement rebases; real ownership/generation changes
+  reject.
+- An invalid earlier leaf suppresses Resume even when a later sibling is
+  executable.
+- A 9,434-message deterministic canonical orchestration completes without a
+  missing leaf or duplicate dispatch.
+- Diagnostic observers cannot mutate or fail a committed command.
+- Feature storage failure restores both the domain snapshot and its receipt;
+  repeated command IDs replace rather than duplicate receipts, and retention is
+  bounded to 128 entries.

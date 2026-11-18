@@ -9,11 +9,13 @@ const noopLookup = () => null;
 
 export function createMemorizeExecutionContext(input = {}) {
   return Object.freeze({
-    schema_version: 1,
+    schema_version: 2,
     controller: Object.freeze({
       attempt_number: input.controller?.attempt_number ?? null,
       lifecycle_required: input.controller?.lifecycle_required === true,
       instance_id: input.controller?.instance_id ?? null,
+      page_instance_id: input.controller?.page_instance_id ?? null,
+      cancellation_epoch: Number(input.controller?.cancellation_epoch ?? 0),
       transaction_id: input.controller?.transaction_id ?? null,
       transaction_revision: input.controller?.transaction_revision ?? null,
       transaction_generation: input.controller?.transaction_generation ?? null,
@@ -72,7 +74,7 @@ export function extendMemorizeExecutionContext(context, overrides = {}) {
 
 /** Resolve one stable view. Legacy underscore protocols are intentionally unsupported. */
 export function resolveMemorizeExecutionContext(options = {}) {
-  return options.executionContext?.schema_version === 1
+  return options.executionContext?.schema_version === 2
     ? options.executionContext : createMemorizeExecutionContext();
 }
 

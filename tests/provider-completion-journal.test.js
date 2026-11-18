@@ -45,6 +45,28 @@ test('completion journal replays missing transitions once and never duplicates p
   assert.ok(entry.completed_at);
 });
 
+test('journal export retains structural replay evidence without response bodies', () => {
+  const metadata = {};
+  recordProviderCompletion(metadata, attempt(), {
+    command_id: 'command:1', response_text: 'private body',
+    parser_result: { status: 'accepted', accepted_count: 1 },
+    parser_accepted_candidate_ids: ['candidate:1'],
+    validation: { status: 'accepted', accepted_count: 1 },
+    validation_accepted_candidate_ids: ['candidate:1'],
+    persistence: { status: 'committed', durable_record_ids: ['record:1'],
+      durable_record_candidate_map: { 'record:1': 'candidate:1' },
+      source_provenance: { source_indices: [340] } },
+    checkpoint_effect: { checkpoint_eligible_on_commit: true },
+  });
+  const exported = exportProviderCompletionJournal(metadata).entries[0];
+  assert.deepEqual(exported.parser_accepted_candidate_ids, ['candidate:1']);
+  assert.deepEqual(exported.durable_record_candidate_mappings,
+    { 'record:1': 'candidate:1' });
+  assert.deepEqual(exported.source_provenance, { source_indices: [340] });
+  assert.equal(exported.private_response_retained, true);
+  assert.equal(Object.hasOwn(exported, 'response_text'), false);
+});
+
 test('provider completion journal rejects non-current persisted schemas', () => {
   const metadata = { provider_completion_journal: {
     schema_version: 4, entries: {}, order: [], reconciliation: null,
@@ -60,7 +82,7 @@ test('provider completion journal rejects non-current persisted schemas', () => 
 
 test('provider completion journal rejects incomplete current-schema containers', () => {
   const metadata = { provider_completion_journal: {
-    schema_version: 6, entries: {}, reconciliation: null,
+    schema_version: 7, entries: {}, reconciliation: null,
   } };
   assert.throws(() => recordProviderCompletion(metadata, attempt()), (error) => {
     assert.equal(error.code, 'SME_MEMORIZE_SCHEMA_UNSUPPORTED');

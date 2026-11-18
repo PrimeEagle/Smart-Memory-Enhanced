@@ -1,14 +1,19 @@
 import { applyProviderCompletion, ensureMemorizeExecutionAggregate,
   observeMemorizeKernelCommit } from './memorize-execution-kernel.js';
+import { preparePersistenceCommand } from './persistence-command.js';
 import { deriveMemorizeSafeResumeOffset } from './memorize-obligation-ledger.js';
 
-export const MEMORIZE_UNIT_OF_WORK_SCHEMA_VERSION = 1;
+export const MEMORIZE_UNIT_OF_WORK_SCHEMA_VERSION = 2;
 
 function clone(value) {
   return value == null ? value : structuredClone(value);
 }
 
 export function prepareMemorizeUnitOfWork(stateValue, command, now = Date.now()) {
+  // The command must be complete before an intent is journaled or a storage
+  // callback can run.  In particular, candidate mappings cannot be discovered
+  // after records have already been written.
+  command = preparePersistenceCommand(command);
   const state = clone(stateValue ?? {});
   state.aggregate = ensureMemorizeExecutionAggregate(state.aggregate, command.logical_run_id);
   state.unit_of_work_journal ??= [];
@@ -38,10 +43,34 @@ export function markMemorizeRecordsApplied(stateValue, commandId, recordResult =
     code: 'SME_MEMORIZE_UNIT_OF_WORK_INTENT_MISSING',
   });
   if (intent.phase === 'committed') return { status: 'idempotent_duplicate', state, intent };
-  intent.phase = 'records_applied';
+  intent.phase = 'storage_write_confirmed';
   intent.record_result = clone(recordResult);
   intent.records_applied_at = now;
-  return { status: 'records_applied', state, intent };
+  return { status: 'storage_write_confirmed', state, intent };
+}
+
+export function markMemorizeStorageWriteStarted(stateValue, commandId, now = Date.now()) {
+  const state = clone(stateValue);
+  const intent = state.unit_of_work_journal?.find((item) => item.command_id === commandId);
+  if (!intent) throw Object.assign(new Error('Memorize unit-of-work intent is missing.'), {
+    code: 'SME_MEMORIZE_UNIT_OF_WORK_INTENT_MISSING',
+  });
+  if (intent.phase === 'committed') return { status: 'idempotent_duplicate', state, intent };
+  intent.phase = 'storage_write_started';
+  intent.storage_write_started_at = now;
+  return { status: intent.phase, state, intent };
+}
+
+export function markMemorizeCanonicalReceiptPending(stateValue, commandId, now = Date.now()) {
+  const state = clone(stateValue);
+  const intent = state.unit_of_work_journal?.find((item) => item.command_id === commandId);
+  if (!intent || intent.phase !== 'storage_write_confirmed') throw Object.assign(
+    new Error('A canonical receipt requires a confirmed storage write.'), {
+      code: 'SME_MEMORIZE_UNIT_OF_WORK_PHASE_INVALID',
+    });
+  intent.phase = 'canonical_receipt_pending';
+  intent.canonical_receipt_pending_at = now;
+  return { status: intent.phase, state, intent };
 }
 
 export function commitMemorizeUnitOfWork(stateValue, commandId, checkpointPatch = {}, now = Date.now()) {
@@ -52,7 +81,7 @@ export function commitMemorizeUnitOfWork(stateValue, commandId, checkpointPatch 
   });
   if (intent.phase === 'committed') return { status: 'idempotent_duplicate', state, intent,
     receipt: intent.receipt };
-  if (!['prepared', 'records_applied'].includes(intent.phase)) throw Object.assign(
+  if (!['storage_write_confirmed', 'canonical_receipt_pending'].includes(intent.phase)) throw Object.assign(
     new Error(`Memorize unit-of-work phase ${intent.phase} cannot commit.`), {
       code: 'SME_MEMORIZE_UNIT_OF_WORK_PHASE_INVALID',
     });
@@ -84,12 +113,36 @@ export async function executeMemorizeUnitOfWork(input = {}) {
   let prepared = prepareMemorizeUnitOfWork(input.state, input.command, input.now?.() ?? Date.now());
   if (prepared.status === 'idempotent_duplicate') return prepared;
   let state = prepared.state;
+  await input.persist?.(clone(state));
   if (input.apply_records) {
-    const recordResult = await input.apply_records(clone(input.command.persistence_outcome));
-    state = markMemorizeRecordsApplied(state, prepared.intent.command_id, recordResult,
+    state = markMemorizeStorageWriteStarted(state, prepared.intent.command_id,
       input.now?.() ?? Date.now()).state;
     await input.persist?.(clone(state));
+    try {
+      const recordResult = await input.apply_records(clone(prepared.intent.command.persistence_outcome));
+      state = markMemorizeRecordsApplied(state, prepared.intent.command_id, recordResult,
+        input.now?.() ?? Date.now()).state;
+      await input.persist?.(clone(state));
+    } catch (error) {
+      const failed = clone(state);
+      const intent = failed.unit_of_work_journal.find((item) =>
+        item.command_id === prepared.intent.command_id);
+      intent.phase = 'compensation_required';
+      intent.storage_error = { code: error?.code ?? null, message: error?.message ?? String(error) };
+      intent.compensation_required_at = input.now?.() ?? Date.now();
+      await input.persist?.(clone(failed));
+      error.sme_unit_of_work_state = failed;
+      error.sme_reason_code ??= 'storage_write_failed_compensation_required';
+      throw error;
+    }
+  } else {
+    state = markMemorizeRecordsApplied(state, prepared.intent.command_id, {
+      persistence_status: 'not_required', durable_record_ids: [],
+    }, input.now?.() ?? Date.now()).state;
   }
+  state = markMemorizeCanonicalReceiptPending(state, prepared.intent.command_id,
+    input.now?.() ?? Date.now()).state;
+  await input.persist?.(clone(state));
   const committed = commitMemorizeUnitOfWork(state, prepared.intent.command_id,
     input.checkpoint_patch, input.now?.() ?? Date.now());
   if (committed.status === 'blocked') return committed;

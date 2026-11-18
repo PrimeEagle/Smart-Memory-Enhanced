@@ -45,6 +45,9 @@ import {
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
+  from './feature-persistence.js';
+import { assignCandidateIdentity } from './candidate-identity.js';
 import { MODULE_NAME, META_KEY, PROMPT_KEY_STATE_LEDGER, estimateTokens } from './constants.js';
 import { buildStateCardPrompt } from './prompts.js';
 import { parseStateCardResponse } from './parsers.js';
@@ -124,8 +127,19 @@ export async function saveStateLedger(ledger) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].state_ledger = ledger;
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const stagedRecords = Object.entries(ledger ?? {}).map(([key, value]) => ({ ...value, key }));
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? 'interactive-state-ledger';
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'state_ledger', operation: 'replace_state_ledger', records: stagedRecords,
+    source_provenance: { validation: 'state_card_schema_and_grounding' } });
+  const stagedLedger = Object.fromEntries(stagedRecords.map(({ key, ...value }) => [key, value]));
+  await executeFeaturePersistence({ command,
+    snapshot: () => structuredClone(metadata.state_ledger ?? {}),
+    apply: () => { metadata.state_ledger = stagedLedger; },
+    persist: () => saveChatMetadata(context),
+    restore: (before) => { metadata.state_ledger = before; }, receipt_container: metadata });
 }
 
 /**
@@ -335,6 +349,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
         source_message_indices: sourceMessageIndices,
         parent_memory_ids: [],
       };
+      assignCandidateIdentity(record, `state-ledger-candidate:${canonicalKey}`);
       validateGeneratedRecord(record);
       ledger[canonicalKey] = record;
       count++;

@@ -49,10 +49,13 @@ test('chat-save failures: catch-up persistence is staged and rolls back failed c
   assert.match(source, /await saveChat\(\)/);
   assert.match(source, /rollbackCatchUpTransaction\(transaction\)/);
   assert.match(longterm, /await saveChatMetadata\(context\)/);
-  assert.match(graph, /saveChatMetadata\(context\)\.catch/);
-  assert.match(epistemic, /saveChatMetadata\(context\)\.catch/);
+  assert.match(graph, /executeFeaturePersistence/);
+  assert.match(graph, /persist: \(\) => saveChatMetadata\(context\)/);
+  assert.match(epistemic, /executeFeaturePersistence/);
+  assert.match(epistemic, /persist: \(\) => saveChatMetadata\(context\)/);
   assert.match(scenes, /await saveChatMetadata\(context\)/);
-  assert.match(compaction, /await saveChatMetadata\(context\)/);
+  assert.match(compaction, /executeFeaturePersistence/);
+  assert.match(compaction, /persist: \(\) => saveChatMetadata\(context\)/);
   assert.match(settings, /finalTransaction = beginRunTransaction\('finalization'\)/);
   assert.match(settings, /final persistence error/);
   assert.match(settings, /runStagedChatCleanup/);
@@ -706,7 +709,9 @@ test('explicit card-owner family facts retain source provenance and target-relat
   assert.match(profiles, /grounded-entity-registry/);
   assert.match(profiles, /relationshipRoster/);
   assert.match(profiles, /return stored \? migrateProfileRoleDescriptorSeparation/);
-  assert.match(profiles, /profiles\[characterName\] = migrateProfileRoleDescriptorSeparation/);
+  assert.match(profiles, /const staged =\s*migrateProfileRoleDescriptorSeparation\(profiles\)\.profile/);
+  assert.match(profiles, /prepareFeaturePersistenceCommand/);
+  assert.match(profiles, /metadata\.profiles\[characterName\] = staged/);
   assert.match(profiles, /rejected_placeholder/);
   assert.match(profiles, /placeholder_relationship_descriptor/);
 });
@@ -1098,7 +1103,9 @@ test('scene archive: retention, injection, provenance, audit, and legacy setting
   assert.match(settings, /Scenes: \$\{sceneAudit\.candidates\} detected/);
   assert.match(scenes, /trimSceneArchive/);
   assert.match(scenes, /selectScenesForInjection\([\s\S]*settings\.scene_inject_count/);
-  assert.match(scenes, /metadata\.sceneHistory = previous/);
+  assert.match(scenes, /prepareFeaturePersistenceCommand/);
+  assert.match(scenes, /metadata\.sceneHistory = staged/);
+  assert.match(scenes, /metadata\.sceneHistory = before/);
   assert.match(ui, /sme_jump_scene/);
   assert.match(ui, /sme_resummarize_scene/);
   assert.match(ui, /source_start_index/);
@@ -1663,7 +1670,9 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(projections, /Next action:/);
   assert.match(settings, /canonical_pending_obligation_has_no_executable_action/);
   assert.match(settings, /const logicalRunAtDiagnosticBuild = summarizeCatchUpRunManifest/);
-  assert.match(settings, /chunks_scope: 'current_attempt'/);
+  assert.match(settings, /chunks: runResult\.chunks\.slice\(-64\)/);
+  assert.match(settings, /chunk_history_retention/);
+  assert.doesNotMatch(settings, /current_attempt_chunks: runResult\.chunks/);
   assert.match(settings, /scope: 'cumulative_logical_run_across_attempts'/);
   assert.match(settings, /full cumulative coverage confirmed/);
   assert.match(settings, /source_message_count: Math\.max\(0, total - resumeOffset\)/);
@@ -1791,7 +1800,7 @@ test('context-limited empty compaction partitions input and refuses exhausted eq
   assert.match(compaction, /const firstHalf = completedChunk\.slice\(0, midpoint\)/);
   assert.match(compaction, /await summarizeChunk\(partitionDepth \+ 1\)/);
   assert.match(compaction, /adaptation_unavailable/);
-  assert.match(compaction, /pending_tail_start: meta\.summaryEnd/);
+  assert.match(compaction, /pending_tail_start: nextSummaryEnd/);
   assert.match(compaction, /summary_hash: summaryFingerprint\(summary\)/);
   assert.match(settings, /resumed_after_phase_failure/);
   assert.match(settings, /operator_action_required/);

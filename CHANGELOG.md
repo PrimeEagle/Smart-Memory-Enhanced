@@ -5,7 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.92] - 2026-11-17
+
+### Added
+
+- Added an immutable controller persistence-command contract containing exact
+  workflow/controller/transaction/work-item identity, accepted candidate IDs,
+  durable record mappings, per-record provenance and idempotency, transition
+  intent, checkpoint effect, and journal receipt identity.
+- Added a typed `candidate_identity` envelope that survives Session and
+  Long-Term normalization, repair, deduplication, owner partitioning, and
+  active/retired merging.
+- Added explicit persistence saga phases for prepared commands, storage start
+  and confirmation, pending canonical receipts, committed receipts, and
+  compensation-required storage failures.
+- Added a domain-neutral feature-persistence adapter so finalization,
+  real-time, and reconciliation writers use the same validated command,
+  rollback, idempotency-receipt, and observer-isolation primitives without
+  joining the Memorize obligation graph.
+
+### Changed
+
+- Session and production multi-owner Long-Term now validate the complete
+  canonical command before changing their memory stores. Multi-owner writes
+  prepare every owner result and defer all owner commits until the aggregate
+  command validates.
+- Transaction leases now separate immutable owner/generation/page/cancellation
+  identity from mutable revision. Expected same-owner revision advancement is
+  rebased; genuine ownership or generation changes remain stale rejections.
+- Provider journal schema 7 retains parser/validation candidate IDs, durable
+  mappings, provenance, command receipts, checkpoint effects, and persistence
+  receipt identity required for deterministic local replay.
+- Resume presentation and controller eligibility now fail closed over the same
+  base invariant decision. An executable later sibling cannot hide an invalid
+  earlier obligation.
+- Diagnostics retain one bounded current-attempt chunk table (64 entries with
+  truncation metadata) instead of three duplicate full chunk arrays.
+- Current execution-kernel, execution-context, unit-of-work, transaction-lease,
+  and provider-journal schemas intentionally require **Fresh Start** for an
+  incomplete run created by an earlier build.
+- Session snapshots, chat-local and character Long-Term stores, Relationship
+  History, profiles, scenes, Story Arcs and persistent arcs, State Ledger,
+  epistemic knowledge, canon, entity registries, and Short-Term pass/final
+  summaries now validate a complete persistence command before mutation.
+- Independent commands now carry explicit workflow/controller/transaction,
+  work-item, source-range, source-fingerprint, transition, checkpoint, and
+  receipt identities instead of using a weaker feature-specific contract.
+- Candidate identity is persisted on generated scene, arc, epistemic, State
+  Ledger, Session, Long-Term, relationship, entity, profile, and summary
+  records; save boundaries supply a deterministic identity only for
+  user-authored or pre-existing records that did not originate in a parser.
+
+### Removed
+
+- Removed revision-only transaction lease rejection, post-write discovery of
+  Session candidate mappings, immediate per-owner Long-Term writes before
+  aggregate validation, duplicate current-attempt chunk exports, and the
+  derivative “Session recovery incomplete” root error after an engine error.
+- Removed direct unvalidated writes from the migrated feature stores and the
+  assumption that settings-backed writers were exempt from persistence-command
+  validation.
+
+### Fixed
+
+- Fixed the v0.9.91 failure where Session storage could commit child 340–349
+  before `SME_DURABLE_RECORD_MAPPING_REQUIRED`, leaving that child in a
+  non-actionable state while Resume incorrectly advertised sibling 350–359.
+- Fixed ordinary same-controller transaction progress being recorded as nine
+  false `transaction_lease_revision_mismatch` callbacks.
+- Fixed provider journals recording durable IDs without the corresponding
+  candidate map, provenance, validation identity, and checkpoint effect.
+- Fixed failed feature storage leaving an in-memory success receipt behind
+  after its domain state had been rolled back.
 
 ## [0.9.91] - 2026-11-17
 

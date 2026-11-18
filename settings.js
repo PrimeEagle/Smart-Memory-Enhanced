@@ -292,8 +292,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.91',
-  build_fingerprint: 'sme-v0.9.91-canonical-session-action-engine-r1',
+  extension_version: '0.9.92',
+  build_fingerprint: 'sme-v0.9.92-persistence-command-architecture-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5402,6 +5402,7 @@ export function bindSettingsUI(ctrl) {
         logical_run_id: controllerRuntime.logical_run_id,
         attempt_number: controllerRuntime.attempt_number,
         page_instance_id: pageInstanceId,
+        cancellation_epoch: Number(controllerRuntime.cancellation_epoch ?? 0),
         controller_instance_id: controllerRuntime.invocation_id,
         phase,
         tier: detail.tier,
@@ -6657,6 +6658,8 @@ export function bindSettingsUI(ctrl) {
                     controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
                       lifecycle_required: true,
                       instance_id: controllerRuntime.invocation_id,
+                      page_instance_id: pageInstanceId,
+                      cancellation_epoch: Number(controllerRuntime.cancellation_epoch ?? 0),
                       transaction_id: chunkTransaction.transaction_id,
                       transaction_revision: chunkTransaction.revision,
                       transaction_generation: chunkTransaction.generation },
@@ -6785,6 +6788,8 @@ export function bindSettingsUI(ctrl) {
                 executionContext: createMemorizeExecutionContext({
                   controller: { attempt_number: checkpoint.run_manifest?.attempt_count ?? null,
                     lifecycle_required: true, instance_id: controllerRuntime.invocation_id,
+                    page_instance_id: pageInstanceId,
+                    cancellation_epoch: Number(controllerRuntime.cancellation_epoch ?? 0),
                     transaction_id: chunkTransaction.transaction_id,
                     transaction_revision: chunkTransaction.revision,
                     transaction_generation: chunkTransaction.generation },
@@ -6813,9 +6818,31 @@ export function bindSettingsUI(ctrl) {
                 }),
               }, extractSessionMemories);
             },
-          }).catch((err) => {
+          }).catch(async (err) => {
+            const obligation = getCanonicalObligation(err?.sme_obligation_id);
+            if (obligation) {
+              try {
+                await applyAuthoritativeLifecycleEvent({
+                  type: 'obligation_blocked',
+                  obligation_id: obligation.obligation_id,
+                  root_obligation_id: obligation.root_obligation_id,
+                  parent_obligation_id: obligation.parent_obligation_id,
+                  tier: obligation.tier, owner: obligation.owner,
+                  source_range: obligation.source_range,
+                  source_fingerprint: obligation.source_fingerprint,
+                  exact_reason_code: err?.sme_reason_code ?? err?.code
+                    ?? 'persistence_command_validation_failed',
+                  next_eligible_action: null,
+                });
+              } catch (blockError) {
+                err.sme_block_transition_error = {
+                  code: blockError?.code ?? null, message: blockError?.message ?? String(blockError),
+                };
+              }
+            }
             recordCatchUpError('session canonical action engine error', err, 'session');
-            return { status: 'blocked', reason_code: err?.code ?? 'session_action_engine_failure' };
+            return { status: 'blocked', reason_code: err?.code ?? 'session_action_engine_failure',
+              root_error_recorded: true };
           });
           if (sessionRun.status === 'cancelled') {
             ctrl.catchUpCancelled = true;
@@ -6829,7 +6856,7 @@ export function bindSettingsUI(ctrl) {
                 provider_call_required: sessionRun.selected?.provider_call_required === true,
               },
             }, 'session');
-          } else if (sessionRun.status !== 'complete') {
+          } else if (sessionRun.status !== 'complete' && sessionRun.root_error_recorded !== true) {
             const blocked = new Error('Session canonical action engine did not reach terminal coverage.');
             blocked.code = sessionRun.reason_code ?? 'session_canonical_action_incomplete';
             blocked.sme_origin = sessionRun.status === 'failed'
@@ -9830,16 +9857,16 @@ export function bindSettingsUI(ctrl) {
         created_at: Date.now(),
         status: projectedStatus,
         operational_status: projectedStatus,
-        // Compatibility field: this is intentionally only the attempt that
-        // just ran. The explicitly scoped object below is the canonical view.
-        chunks: runResult.chunks,
-        chunks_scope: 'current_attempt',
-        current_attempt_chunks: runResult.chunks,
         current_attempt: {
           scope: 'current_attempt',
           chunk_count: runResult.chunks.length,
           range_count: currentAttemptAtDiagnosticBuild?.current_attempt_range_count ?? null,
-          chunks: runResult.chunks,
+          chunks: runResult.chunks.slice(-64),
+          chunk_history_retention: {
+            retained: Math.min(64, runResult.chunks.length),
+            total: runResult.chunks.length,
+            truncated: runResult.chunks.length > 64,
+          },
           extraction_coverage_scope: 'current_attempt',
           extraction_coverage: runResult.extractionCoverage,
           timing: {

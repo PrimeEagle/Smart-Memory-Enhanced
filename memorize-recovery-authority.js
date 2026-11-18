@@ -88,6 +88,15 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     evidence: { attempted_stages: stageEligibility.attempted_stages,
       exhausted_stages: stageEligibility.exhausted_stages },
   });
+  // The foundational eligibility model is fail-closed.  No later projection
+  // may advertise Resume when it found an invariant, active-runtime, or
+  // transaction blocker for the same canonical state.
+  if (base.eligible !== true && !['no_pending_resume_obligation'].includes(base.reason_code)) {
+    blockers.push({
+      reason_code: base.reason_code ?? 'base_resume_eligibility_rejected',
+      evidence: base.invariant_violations ?? null,
+    });
+  }
   if (!blockers.length && pending && kernelStatus && kernelStatus.action_executable !== true) blockers.push({
     reason_code: kernelStatus.exact_blocker ?? 'no_executable_canonical_action', evidence: null,
   });

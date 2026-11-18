@@ -49,6 +49,8 @@ import {
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
+  from './feature-persistence.js';
 import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
@@ -110,13 +112,34 @@ async function saveProfiles(profiles, characterName) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  if (!context.chatMetadata[META_KEY].profiles) context.chatMetadata[META_KEY].profiles = {};
-  context.chatMetadata[META_KEY].profiles[characterName] = migrateProfileRoleDescriptorSeparation(profiles).profile;
-  // A valid saved profile resolves any prior format-recovery pending state.
-  if (context.chatMetadata[META_KEY].profile_generation_pending) {
-    delete context.chatMetadata[META_KEY].profile_generation_pending[characterName];
-  }
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const staged = migrateProfileRoleDescriptorSeparation(profiles).profile;
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `interactive-profile:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'profiles', operation: 'replace_profile', owner: characterName,
+    records: [staged], source_provenance: { validation: 'grounded_profile_fields' } });
+  await executeFeaturePersistence({ command,
+    snapshot: () => ({ profile: structuredClone(metadata.profiles?.[characterName] ?? null),
+      pending: structuredClone(metadata.profile_generation_pending?.[characterName] ?? null) }),
+    apply: () => {
+      metadata.profiles ??= {};
+      metadata.profiles[characterName] = staged;
+      if (metadata.profile_generation_pending) {
+        delete metadata.profile_generation_pending[characterName];
+      }
+    },
+    persist: () => saveChatMetadata(context),
+    restore: (before) => {
+      metadata.profiles ??= {};
+      if (before.profile == null) delete metadata.profiles[characterName];
+      else metadata.profiles[characterName] = before.profile;
+      if (before.pending != null) {
+        metadata.profile_generation_pending ??= {};
+        metadata.profile_generation_pending[characterName] = before.pending;
+      }
+    }, receipt_container: metadata,
+  });
 }
 
 /** Stores no generated facts—only an actionable, durable profile coverage state. */

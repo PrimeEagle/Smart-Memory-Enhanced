@@ -46,6 +46,9 @@ import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
+  from './feature-persistence.js';
+import { assignCandidateIdentity } from './candidate-identity.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
 import { buildSceneDetectPrompt, buildSceneDetectBatchPrompt, buildSceneDetectBatchRepairPrompt, buildSceneSummaryPrompt } from './prompts.js';
 import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
@@ -819,6 +822,7 @@ export function createSceneRecord(summary, messages = [], details = {}) {
     identity_rejections: deduplicateIdentityDecisions([...(details.identity_rejections ?? []), ...participantResolution.rejected], 'scene'),
     identity_replacements: deduplicateIdentityDecisions([...(details.identity_replacements ?? []), ...narrativeResolution.replacements], 'scene'),
   }, generateMemoryId);
+  assignCandidateIdentity(record, `scene-candidate:${record.id}`);
   for (const rejection of record.identity_rejections ?? []) {
     recordIdentityReviewCandidate({
       status: 'rejected',
@@ -847,14 +851,16 @@ export async function saveSceneHistory(scenes) {
     if (normalized.detected_by !== 'legacy') validateGeneratedRecord(normalized);
     return normalized;
   }), max);
-  metadata.sceneHistory = staged;
-  try {
-    await saveChatMetadata(context);
-  } catch (error) {
-    // Do not leave a failed scene save visible as if it were committed.
-    metadata.sceneHistory = previous;
-    throw error;
-  }
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? 'interactive-scenes';
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'scenes', operation: 'replace_scene_history', records: staged,
+    source_provenance: { validation: 'grounded_scene_records' } });
+  await executeFeaturePersistence({ command, snapshot: () => structuredClone(previous),
+    apply: () => { metadata.sceneHistory = staged; },
+    persist: () => saveChatMetadata(context),
+    restore: (before) => { metadata.sceneHistory = before; },
+    receipt_container: metadata });
 }
 
 /**

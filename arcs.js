@@ -58,6 +58,10 @@ import { generateMemoryExtract, getMemoryInputBudget, retryTransientMemoryOperat
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
+  recordFeaturePersistenceReceipt }
+  from './feature-persistence.js';
+import { assignCandidateIdentity } from './candidate-identity.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
 import { buildArcExtractionPrompt, buildArcResolutionClassifierPrompt, buildArcSummaryPrompt, buildArcSummaryVerificationPrompt } from './prompts.js';
 import { parseArcOutput, stripOuterGeneratedWrapper } from './parsers.js';
@@ -359,8 +363,17 @@ export async function saveArcs(arcs, { roster = null } = {}) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].storyArcs = arcs.map((arc) => normalizeArcRecord(arc, context, roster));
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const staged = arcs.map((arc) => normalizeArcRecord(arc, context, roster));
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? 'interactive-arcs';
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'story_arcs', operation: 'replace_arcs', records: staged,
+    source_provenance: { validation: 'grounded_arc_records' } });
+  await executeFeaturePersistence({ command,
+    snapshot: () => structuredClone(metadata.storyArcs ?? []),
+    apply: () => { metadata.storyArcs = staged; }, persist: () => saveChatMetadata(context),
+    restore: (before) => { metadata.storyArcs = before; }, receipt_container: metadata });
 }
 
 /**
@@ -447,8 +460,18 @@ export async function saveArcSummaries(summaries) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
-  context.chatMetadata[META_KEY].arcSummaries = summaries.map(normalizeArcSummaryRecord);
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const staged = summaries.map(normalizeArcSummaryRecord);
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? 'interactive-arc-summaries';
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'arc_summaries', operation: 'replace_arc_summaries', records: staged,
+    source_provenance: { validation: 'verified_derived_arc_summaries' } });
+  await executeFeaturePersistence({ command,
+    snapshot: () => structuredClone(metadata.arcSummaries ?? []),
+    apply: () => { metadata.arcSummaries = staged; },
+    persist: () => saveChatMetadata(context),
+    restore: (before) => { metadata.arcSummaries = before; }, receipt_container: metadata });
 }
 
 /**
@@ -487,7 +510,15 @@ export function savePersistentArcs(characterName, arcs) {
   if (!extension_settings[MODULE_NAME].characters) extension_settings[MODULE_NAME].characters = {};
   if (!extension_settings[MODULE_NAME].characters[characterName])
     extension_settings[MODULE_NAME].characters[characterName] = {};
-  extension_settings[MODULE_NAME].characters[characterName].persistent_arcs = arcs;
+  const settings = extension_settings[MODULE_NAME];
+  const context = getContext();
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.chatId ?? `persistent-arcs:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'persistent_arcs', operation: 'replace_character_arcs',
+    owner: characterName, records: arcs });
+  settings.characters[characterName].persistent_arcs = arcs;
+  recordFeaturePersistenceReceipt(command, settings);
   saveSettingsDebounced();
 }
 
@@ -512,7 +543,15 @@ export function saveGroupPersistentArcs(groupId, arcs) {
   if (!groupId) return;
   if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
   if (!extension_settings[MODULE_NAME].group_arcs) extension_settings[MODULE_NAME].group_arcs = {};
-  extension_settings[MODULE_NAME].group_arcs[groupId] = arcs;
+  const settings = extension_settings[MODULE_NAME];
+  const context = getContext();
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.groupId ?? `persistent-group-arcs:${groupId}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'persistent_arcs', operation: 'replace_group_arcs',
+    owner: groupId, records: arcs });
+  settings.group_arcs[groupId] = arcs;
+  recordFeaturePersistenceReceipt(command, settings);
   saveSettingsDebounced();
 }
 
@@ -1315,6 +1354,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
                 reason_code: resolved.resolution_decision.reason_code,
               },
             };
+            assignCandidateIdentity(summaryRecord, `arc-summary-candidate:${summaryRecord.id}`);
             arcSummaries.push(summaryRecord);
             traceArcTerminal(resolved, terminalStatus, terminalReason);
             smLog(`[Smart Memory Enhanced] Arc summary generated for: "${resolved.content.slice(0, 60)}"`);
@@ -1437,6 +1477,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
             verified_at: Date.now(),
           },
         };
+        assignCandidateIdentity(record, `story-arc-candidate:${record.id}`);
         validateGeneratedRecord(record);
         for (const rejection of record.identity_rejections ?? []) {
           recordIdentityReviewCandidate({

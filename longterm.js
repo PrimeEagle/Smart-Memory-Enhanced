@@ -59,6 +59,9 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
+  recordFeaturePersistenceReceipt } from './feature-persistence.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -291,9 +294,22 @@ async function saveChatLocalMemories(characterName, memories) {
   const context = getContext();
   context.chatMetadata ??= {};
   context.chatMetadata[META_KEY] ??= {};
-  context.chatMetadata[META_KEY].card_local_memories ??= {};
-  context.chatMetadata[META_KEY].card_local_memories[characterName] = memories;
-  await saveChatMetadata(context);
+  const metadata = context.chatMetadata[META_KEY];
+  const workflowId = metadata.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `interactive-longterm:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'longterm', operation: 'replace_chat_local_memories',
+    owner: characterName, records: memories });
+  await executeFeaturePersistence({ command,
+    snapshot: () => structuredClone(metadata.card_local_memories?.[characterName] ?? []),
+    apply: () => {
+      metadata.card_local_memories ??= {};
+      metadata.card_local_memories[characterName] = memories;
+    }, persist: () => saveChatMetadata(context),
+    restore: (before) => {
+      metadata.card_local_memories ??= {};
+      metadata.card_local_memories[characterName] = before;
+    }, receipt_container: metadata });
 }
 
 /**
@@ -348,14 +364,22 @@ export function saveCharacterMemories(characterName, memories) {
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
+  const context = getContext();
+  const settings = extension_settings[MODULE_NAME];
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `interactive-longterm:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'longterm', operation: 'replace_character_memories',
+    owner: characterName, records: memories });
   // Spread the existing character object so the entity registry and any other
   // fields stored alongside memories (e.g. entities, canon) are preserved.
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
+  const existing = settings.characters[characterName] ?? {};
+  settings.characters[characterName] = {
     ...existing,
     memories,
     lastUpdated: Date.now(),
   };
+  recordFeaturePersistenceReceipt(command, settings);
 }
 
 /**
@@ -419,11 +443,29 @@ export function loadRelationshipHistory(characterName) {
 export function saveRelationshipHistory(characterName, history) {
   if (!characterName || typeof history !== 'object') return;
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
+  const context = getContext();
+  const records = Object.entries(history).map(([key, state]) => {
+    if (!state || typeof state !== 'object') return { id: key, value: state };
+    state.id ??= key;
+    return state;
+  });
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `interactive-relationships:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'relationship_history', operation: 'replace_relationship_history',
+    owner: characterName, records });
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    const context = getContext();
     context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
-    (context.chatMetadata[META_KEY].card_local_relationships ??= {})[characterName] = history;
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local relationships:', err));
+    const metadata = context.chatMetadata[META_KEY];
+    executeFeaturePersistence({ command,
+      snapshot: () => structuredClone(metadata.card_local_relationships?.[characterName] ?? {}),
+      apply: () => {
+        (metadata.card_local_relationships ??= {})[characterName] = history;
+      }, persist: () => saveChatMetadata(context),
+      restore: (before) => {
+        (metadata.card_local_relationships ??= {})[characterName] = before;
+      }, receipt_container: metadata,
+    }).catch((err) => smLog('[Smart Memory Enhanced] Failed to save chat-local relationships:', err));
     return;
   }
   if (!extension_settings[MODULE_NAME].characters) {
@@ -434,6 +476,7 @@ export function saveRelationshipHistory(characterName, history) {
     ...existing,
     relationship_history: history,
   };
+  recordFeaturePersistenceReceipt(command, extension_settings[MODULE_NAME]);
 }
 
 /**
@@ -810,7 +853,9 @@ function mergeMemories(existing, incoming, maxTotal) {
  * lifecycle state; the multi-owner adapter commits its aggregate result.
  */
 export async function persistLongtermOwnerPartition(
-  characterName, candidates, recentMessages, { targeted_replay: targetedReplay = false } = {},
+  characterName, candidates, recentMessages, {
+    targeted_replay: targetedReplay = false, defer_commit: deferCommit = false,
+  } = {},
 ) {
   const settings = extension_settings[MODULE_NAME];
   const policy = getCharacterMemoryPolicy(characterName);
@@ -839,6 +884,15 @@ export async function persistLongtermOwnerPartition(
     validateGeneratedMemoryRecord(memory, active);
   }
   const merged = mergeMemories(active, verified, settings.longterm_max_memories || 25);
+  const acceptedCandidateIdentity = new Map(candidates.map((memory) => [
+    `${memory.type}|${String(memory.content ?? '').trim()}`,
+    candidateIdentityOf(memory) ?? memory._memorize_candidate_id,
+  ]));
+  for (const memory of merged) {
+    const acceptedIdentity = candidateIdentityOf(memory) ?? acceptedCandidateIdentity.get(
+      `${memory.type}|${String(memory.content ?? '').trim()}`) ?? null;
+    if (acceptedIdentity) assignCandidateIdentity(memory, acceptedIdentity);
+  }
   const newlyRetiredIds = new Set();
   for (const [candidateText, oldId] of superseded) {
     const replacement = merged.find((memory) => String(memory.content ?? '').trim().toLowerCase() === candidateText);
@@ -880,7 +934,6 @@ export async function persistLongtermOwnerPartition(
   if (entityRegistry.length) {
     reconcileCanonicalEntityRegistry(entityRegistry, context, finalActive);
     reconcileEntityRegistry(entityRegistry, finalActive);
-    saveCharacterEntityRegistry(characterName, entityRegistry);
   }
   let updatedRetired = [...retired, ...active.filter((memory) => newlyRetiredIds.has(memory.id))];
   if (updatedRetired.length > MAX_RETIRED_POOL) {
@@ -892,21 +945,31 @@ export async function persistLongtermOwnerPartition(
     ...verifiedExisting.map((entry) => entry.durable.id),
   ])];
   const durableRecordCandidateMap = Object.fromEntries([...durableRecords
-    .filter((memory) => memory._memorize_candidate_id)
-    .map((memory) => [String(memory.id), String(memory._memorize_candidate_id)]),
-  ...verifiedExisting.filter((entry) => entry.candidate._memorize_candidate_id)
+    .filter((memory) => candidateIdentityOf(memory))
+    .map((memory) => [String(memory.id), candidateIdentityOf(memory)]),
+  ...verifiedExisting.filter((entry) => candidateIdentityOf(entry.candidate)
+    ?? entry.candidate._memorize_candidate_id)
     .map((entry) => [String(entry.durable.id),
-      String(entry.candidate._memorize_candidate_id)])]);
-  for (const memory of [...finalActive, ...updatedRetired]) delete memory._memorize_candidate_id;
-  if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    await saveChatLocalMemories(characterName, [...finalActive, ...updatedRetired]);
-  } else saveCharacterMemories(characterName, [...finalActive, ...updatedRetired]);
+      candidateIdentityOf(entry.candidate) ?? String(entry.candidate._memorize_candidate_id)])]);
+  const durableMemories = [...finalActive, ...updatedRetired].map((memory) => {
+    const copy = { ...memory };
+    delete copy._memorize_candidate_id;
+    return copy;
+  });
+  const commit = async () => {
+    if (entityRegistry.length) saveCharacterEntityRegistry(characterName, entityRegistry);
+    if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+      await saveChatLocalMemories(characterName, durableMemories);
+    } else saveCharacterMemories(characterName, durableMemories);
+  };
+  if (!deferCommit) await commit();
   return {
     owner: characterName,
     status: durableRecords.length ? 'committed' : 'verified_no_update',
     added: durableRecords.length,
     durable_record_ids: durableRecordIds,
     durable_record_candidate_map: durableRecordCandidateMap,
+    ...(deferCommit ? { commit } : {}),
   };
 }
 
@@ -1930,8 +1993,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     parsed.forEach((item, index) => {
       item._memorize_candidate_id ??= item.id
         ?? `longterm-candidate:${leafObligationId}:${index}`;
+      assignCandidateIdentity(item, item._memorize_candidate_id);
     });
-    const parserAcceptedCandidateIds = parsed.map((item) => item._memorize_candidate_id);
+    const parserAcceptedCandidateIds = parsed.map((item) => candidateIdentityOf(item));
     if (!pipeline.atomicCompletionEnabled) await emitLifecycleEvent('parser_accepted', {
       provider_attempt_id: lifecycleAttemptId,
       parser_result: 'accepted',
@@ -2367,9 +2431,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       candidate.id === memory.id)).map((memory) => memory.id).filter(Boolean);
     const durableIdSet = new Set(durableRecordIds.map(String));
     const durableRecordCandidateMap = Object.fromEntries(newMemories
-      .filter((memory) => memory.id && memory._memorize_candidate_id
+      .filter((memory) => memory.id && (candidateIdentityOf(memory)
+        ?? memory._memorize_candidate_id)
         && durableIdSet.has(String(memory.id)))
-      .map((memory) => [String(memory.id), String(memory._memorize_candidate_id)]));
+      .map((memory) => [String(memory.id), candidateIdentityOf(memory)
+        ?? String(memory._memorize_candidate_id)]));
     // Candidate identities are lifecycle evidence, not memory payload fields.
     for (const memory of [...finalActive, ...updatedRetired]) delete memory._memorize_candidate_id;
     // Save: final active set + all retired memories (history is preserved).

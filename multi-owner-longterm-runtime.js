@@ -24,6 +24,7 @@ import { attachMemorizeOperationContext, createMemorizeOperationContext }
 import { persistLongtermOwnerPartition } from './longterm.js';
 import { projectMultiOwnerCoverage } from './multi-owner-coverage.js';
 import { createMemorizeTierOutcome } from './memorize-tier-outcome.js';
+import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
 
 const OWNER_SCOPE = '@multi-owner';
 
@@ -391,14 +392,18 @@ export async function extractAndStoreMultiOwnerMemories(
       parsed.forEach((memory, index) => {
         memory._memorize_candidate_id ??=
           `multi-owner:${pipeline.leafObligationId}:${owner}:${index}`;
+        assignCandidateIdentity(memory, memory._memorize_candidate_id);
       });
-      const candidateIdsForOwner = parsed.map((memory) => memory._memorize_candidate_id);
+      const candidateIdsForOwner = parsed.map((memory) => candidateIdentityOf(memory));
       allCandidateIds.push(...candidateIdsForOwner);
       return { records: parsed, candidate_ids: candidateIdsForOwner };
     },
     persist_partition: (owner, parsed) =>
       (options.persistPartition ?? persistLongtermOwnerPartition)(
-        owner, parsed, sourceMessages, { targeted_replay: execution.recovery.targeted_replay }),
+        owner, parsed, sourceMessages, {
+          targeted_replay: execution.recovery.targeted_replay,
+          defer_commit: !options.persistPartition,
+        }),
   });
   for (const result of Object.values(ownerResults)) {
     added += Number(result.added ?? 0);
@@ -417,6 +422,36 @@ export async function extractAndStoreMultiOwnerMemories(
   const candidateIds = [...new Set(allCandidateIds)];
   const explicitNoUpdate = partition.accepted_record_count === 0
     && partition.no_update_owners.length === owners.length && !needsRecovery;
+  const sourceProvenance = { source_indices: originalIndices };
+  const persistenceCompletionDetails = {
+    attempt_id: attempt?.attempt_id, terminal: !needsRecovery,
+    raw_response_reference: { retained: true, journal_attempt_id: attempt?.attempt_id },
+    parser_outcome: { status: explicitNoUpdate ? 'explicit_none'
+      : needsRecovery ? 'partial' : 'accepted',
+    accepted_candidate_ids: candidateIds,
+    rejected_fragment_ids: partition.rejected.map((item) =>
+      `owner-record:${item.record_index ?? 'unknown'}:${item.reason_code}`) },
+    validation_outcome: { status: explicitNoUpdate ? 'validated_no_update'
+      : needsRecovery ? 'partial' : 'accepted', accepted_candidate_ids: candidateIds },
+    persistence_outcome: { status: explicitNoUpdate ? 'not_required' : 'committed',
+      durable_record_ids: allDurableIds, durable_record_candidate_map: allCandidateMap,
+      source_provenance: allDurableIds.length ? sourceProvenance : {} },
+    ...(needsRecovery ? { recovery_capsule: {
+      private_fragment_payload_available: false, source_backed_regeneration_available: true,
+      recovery_stage: 'missing_owner_coverage_recovery', protocol: request.protocol,
+      owner_coverage: ownerCoverage,
+      rejected_fragment_ids: partition.rejected.map((item) =>
+        `owner-record:${item.record_index ?? 'unknown'}:${item.reason_code}`),
+      durable_record_ids: allDurableIds, durable_record_candidate_map: allCandidateMap,
+    }, reason_code: 'missing_owner_coverage_recovery',
+    next_action: 'recover_missing_owner_coverage' } : {}),
+  };
+  if (pipeline.atomicCompletionEnabled) {
+    pipeline.prepareProviderCompletion(persistenceCompletionDetails);
+  }
+  // Default production adapters expose deferred commits.  All partitions are
+  // validated as one command before the first owner store is changed.
+  for (const result of Object.values(ownerResults)) await result.commit?.();
   finishProviderAttempt(metadata, attempt, {
     terminal_outcome: needsRecovery ? 'partial_valid_output' : 'completed',
     recoverable: needsRecovery, accepted_record_count: partition.accepted_record_count,
@@ -427,42 +462,24 @@ export async function extractAndStoreMultiOwnerMemories(
       : needsRecovery ? 'partial' : 'accepted',
       accepted_count: partition.accepted_record_count,
       rejected_count: partition.rejected.length },
+    parser_accepted_candidate_ids: candidateIds,
     validation: { status: explicitNoUpdate ? 'validated_no_update'
       : needsRecovery ? 'partial' : 'accepted',
       accepted_count: candidateIds.length },
+    validation_accepted_candidate_ids: candidateIds,
     persistence: { status: explicitNoUpdate ? 'not_needed' : 'committed',
-      durable_record_ids: allDurableIds },
+      durable_record_ids: allDurableIds,
+      durable_record_candidate_map: allCandidateMap,
+      source_provenance: allDurableIds.length ? sourceProvenance : {} },
+    durable_record_candidate_mappings: allCandidateMap,
+    source_provenance: allDurableIds.length ? sourceProvenance : {},
+    checkpoint_effect: { obligation_leaf_id: pipeline.leafObligationId,
+      checkpoint_eligible_on_commit: !needsRecovery },
   });
   await execution.hooks.provider_completion_journal_updated(journalEntry, {
     await_point: 'canonical_persistence', progress: true,
   });
-  await pipeline.applyProviderCompletion({
-    attempt_id: attempt?.attempt_id, terminal: !needsRecovery,
-    raw_response_reference: { retained: true, journal_attempt_id: attempt?.attempt_id },
-    parser_outcome: { status: explicitNoUpdate ? 'explicit_none'
-      : needsRecovery ? 'partial' : 'accepted',
-      accepted_candidate_ids: candidateIds,
-      rejected_fragment_ids: partition.rejected.map((item) =>
-        `owner-record:${item.record_index ?? 'unknown'}:${item.reason_code}`) },
-    validation_outcome: { status: explicitNoUpdate ? 'validated_no_update'
-      : needsRecovery ? 'partial' : 'accepted',
-      accepted_candidate_ids: candidateIds },
-    persistence_outcome: { status: explicitNoUpdate ? 'not_required' : 'committed',
-      durable_record_ids: allDurableIds,
-      durable_record_candidate_map: allCandidateMap,
-      source_provenance: { source_indices: originalIndices } },
-    ...(needsRecovery ? { recovery_capsule: {
-      private_fragment_payload_available: false,
-      source_backed_regeneration_available: true,
-      recovery_stage: 'missing_owner_coverage_recovery', protocol: request.protocol,
-      owner_coverage: ownerCoverage,
-      rejected_fragment_ids: partition.rejected.map((item) =>
-        `owner-record:${item.record_index ?? 'unknown'}:${item.reason_code}`),
-      durable_record_ids: allDurableIds,
-      durable_record_candidate_map: allCandidateMap,
-    }, reason_code: 'missing_owner_coverage_recovery',
-    next_action: 'recover_missing_owner_coverage' } : {}),
-  });
+  await pipeline.applyProviderCompletion(persistenceCompletionDetails);
   if (needsRecovery) {
     healthFinish({ terminal_health: 'automatic_recovery_pending',
       provider_outcome: 'partial_multi_owner_contract',

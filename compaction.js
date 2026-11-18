@@ -43,6 +43,8 @@ import {
 } from './generate.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
+  from './feature-persistence.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_SHORT, META_KEY } from './constants.js';
 import { buildSummaryPrompt, buildUpdateSummaryPrompt } from './prompts.js';
@@ -497,6 +499,39 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
       for (const char of String(value ?? '')) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
       return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
     };
+    const persistSummaryState = async ({ summary, summaryEnd: nextSummaryEnd,
+      checkpoint = null, operation }) => {
+      const sourceEnd = Math.max(0, Number(nextSummaryEnd) - 1);
+      const record = { id: `shortterm:${sourceFingerprint}:${nextSummaryEnd}`,
+        content: summary, source_message_indices: [0, sourceEnd] };
+      const workflowId = meta.active_catchup_run_id
+        ?? context.chatId ?? context.groupId ?? `interactive-compaction:${sourceFingerprint}`;
+      const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+        feature: 'shortterm', operation, records: [record],
+        source_provenance: { source_indices: [0, sourceEnd], source_fingerprint: sourceFingerprint } });
+      await executeFeaturePersistence({ command,
+        snapshot: () => ({ summary: meta.summary, summaryEnd: meta.summaryEnd,
+          summaryUpdated: meta.summaryUpdated,
+          checkpoint: structuredClone(meta.shortterm_compaction_checkpoint ?? null),
+          identity: structuredClone(meta.shortterm_summary_identity ?? null) }),
+        apply: () => {
+          meta.summary = summary;
+          meta.summaryEnd = nextSummaryEnd;
+          meta.summaryUpdated = Date.now();
+          meta.shortterm_summary_identity = structuredClone(record.candidate_identity);
+          if (checkpoint) meta.shortterm_compaction_checkpoint = checkpoint(meta.summaryUpdated);
+          else delete meta.shortterm_compaction_checkpoint;
+        }, persist: () => saveChatMetadata(context),
+        restore: (before) => {
+          meta.summary = before.summary;
+          meta.summaryEnd = before.summaryEnd;
+          meta.summaryUpdated = before.summaryUpdated;
+          if (before.checkpoint) meta.shortterm_compaction_checkpoint = before.checkpoint;
+          else delete meta.shortterm_compaction_checkpoint;
+          if (before.identity) meta.shortterm_summary_identity = before.identity;
+          else delete meta.shortterm_summary_identity;
+        }, receipt_container: meta });
+    };
     const savedCompactionCheckpoint = meta.shortterm_compaction_checkpoint;
     if (savedCompactionCheckpoint?.schema_version >= 2) {
       const checkpointValid = savedCompactionCheckpoint.commit_status === 'committed'
@@ -518,16 +553,15 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
       const sourceEnd = Math.max(...completedChunk.map((message) => Number(message.__sme_compaction_source_index)).filter(Number.isInteger));
       if (!Number.isInteger(sourceEnd) || sourceEnd < 0) return;
       const summary = capSummaryToBudget(formatSummary(rollingSummary), settings.compaction_response_length ?? 2000);
-      meta.summary = summary;
-      meta.summaryEnd = sourceEnd + 1;
-      meta.summaryUpdated = Date.now();
-      meta.shortterm_compaction_checkpoint = {
+      const nextSummaryEnd = sourceEnd + 1;
+      await persistSummaryState({ summary, summaryEnd: nextSummaryEnd,
+        operation: 'commit_compaction_pass', checkpoint: (updatedAt) => ({
         schema_version: 2,
         completed_passes: Number(meta.shortterm_compaction_checkpoint?.completed_passes ?? 0) + 1,
         source_end: sourceEnd,
-        summary_end: meta.summaryEnd,
-        pending_tail_start: meta.summaryEnd,
-        pending_tail_end: meta.summaryEnd < context.chat.length ? context.chat.length - 1 : null,
+        summary_end: nextSummaryEnd,
+        pending_tail_start: nextSummaryEnd,
+        pending_tail_end: nextSummaryEnd < context.chat.length ? context.chat.length - 1 : null,
         summary_hash: summaryFingerprint(summary),
         source_fingerprint: sourceFingerprint,
         parent_summary_hash: meta.shortterm_compaction_checkpoint?.summary_hash ?? null,
@@ -541,9 +575,8 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         consumed_recovery_plan: passInfo.consumed_recovery_plan ?? null,
         provider_terminal_outcome: passInfo.provider_terminal_outcome ?? null,
         segment_terminal_outcome: passInfo.segment_terminal_outcome ?? null,
-        updated_at: meta.summaryUpdated,
-      };
-      await saveChatMetadata(context);
+        updated_at: updatedAt,
+      }) });
       await onPassCommitted?.(meta.shortterm_compaction_checkpoint);
     } : null;
 
@@ -619,20 +652,18 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
       settings.compaction_response_length ?? 2000,
     );
 
-    context.chatMetadata[META_KEY].summary = summary;
-    context.chatMetadata[META_KEY].summaryUpdated = Date.now();
     // Record how far into the chat this summary covers so the next compaction
     // knows where "new" messages begin. When the trailing AI message was excluded
     // (normal roleplay path), point back one so the next compaction picks it up.
     // When the caller asked for the full chat (Memorize Chat), the last message
     // was included so the boundary is the full length.
     const lastChatMsg = context.chat[context.chat.length - 1];
-    context.chatMetadata[META_KEY].summaryEnd =
+    const finalSummaryEnd =
       !includeLastMessage && lastChatMsg && !lastChatMsg.is_user && !lastChatMsg.is_system
         ? context.chat.length - 1
         : context.chat.length;
-    delete context.chatMetadata[META_KEY].shortterm_compaction_checkpoint;
-    await saveChatMetadata(context);
+    await persistSummaryState({ summary, summaryEnd: finalSummaryEnd,
+      operation: 'commit_final_summary' });
 
     return summary;
   } catch (err) {

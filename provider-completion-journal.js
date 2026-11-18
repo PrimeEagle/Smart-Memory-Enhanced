@@ -1,6 +1,6 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
 
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 6;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 7;
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => value == null ? value : structuredClone(value);
@@ -114,12 +114,22 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
         ? Number(attempt.at ?? now(patch.at)) + Number(attempt.duration_ms ?? 0) : null),
     response_text: patch.response_text ?? prior.response_text ?? null,
     parser_result: clone(patch.parser_result ?? prior.parser_result ?? null),
+    parser_accepted_candidate_ids: [...new Set((patch.parser_accepted_candidate_ids
+      ?? prior.parser_accepted_candidate_ids ?? []).map(String))],
     validation: { status: 'pending', ...(prior.validation ?? {}),
       ...(clone(patch.validation) ?? {}) },
     validated_record_identities: clone(patch.validated_record_identities
       ?? prior.validated_record_identities ?? []),
+    validation_accepted_candidate_ids: [...new Set((patch.validation_accepted_candidate_ids
+      ?? prior.validation_accepted_candidate_ids ?? []).map(String))],
     persistence: { status: 'not_started', durable_record_ids: [],
       ...(prior.persistence ?? {}), ...(clone(patch.persistence) ?? {}) },
+    durable_record_candidate_mappings: clone(
+      patch.durable_record_candidate_mappings
+      ?? patch.persistence?.durable_record_candidate_map
+      ?? prior.durable_record_candidate_mappings ?? {}),
+    source_provenance: clone(patch.source_provenance
+      ?? patch.persistence?.source_provenance ?? prior.source_provenance ?? {}),
     manifest_transition: mergeUnverifiedCallerTransition(
       prior.manifest_transition, patch.manifest_transition),
     ledger_transition: mergeUnverifiedCallerTransition(
@@ -135,6 +145,11 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     logical_completed_at: patch.logical_completed_at ?? prior.logical_completed_at ?? null,
     downstream_cursor: patch.downstream_cursor ?? prior.downstream_cursor ?? null,
     logical_disposition: patch.logical_disposition ?? prior.logical_disposition ?? null,
+    checkpoint_effect: clone(patch.checkpoint_effect ?? prior.checkpoint_effect ?? null),
+    persistence_receipt_id: patch.persistence_receipt_id
+      ?? prior.persistence_receipt_id ?? patch.command_id ?? prior.command_id ?? null,
+    persistence_command_receipt: clone(patch.persistence_command_receipt
+      ?? prior.persistence_command_receipt ?? null),
     replay_count: Number(prior.replay_count ?? 0),
   };
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
@@ -385,11 +400,15 @@ export function exportProviderCompletionJournal(metadata) {
       provider_disposition: entry.provider_disposition,
       private_response_retained: entry.response_text != null,
       parser_status: entry.parser_result?.status ?? null,
+      parser_accepted_candidate_ids: clone(entry.parser_accepted_candidate_ids ?? []),
       parser_accepted_count: Number(entry.parser_result?.accepted_count
         ?? entry.parser_result?.records?.length ?? 0),
       validated_record_identities: clone(entry.validated_record_identities ?? []),
+      validation_accepted_candidate_ids: clone(entry.validation_accepted_candidate_ids ?? []),
       validation: clone(entry.validation),
       persistence: clone(entry.persistence), manifest_transition: clone(entry.manifest_transition),
+      durable_record_candidate_mappings: clone(entry.durable_record_candidate_mappings ?? {}),
+      source_provenance: clone(entry.source_provenance ?? {}),
       ledger_transition: clone(entry.ledger_transition),
       live_health_event_id: entry.live_health_event_id,
       live_health_transition: clone(entry.live_health_transition),
@@ -399,6 +418,9 @@ export function exportProviderCompletionJournal(metadata) {
       downstream_cursor: entry.downstream_cursor
         ?? deriveCurrentCompletionCursor(entry),
       logical_disposition: entry.logical_disposition ?? null,
+      checkpoint_effect: clone(entry.checkpoint_effect ?? null),
+      persistence_receipt_id: entry.persistence_receipt_id ?? null,
+      persistence_command_receipt: clone(entry.persistence_command_receipt ?? null),
     })),
   };
 }

@@ -12,6 +12,7 @@ import {
   recordMemorizeActionReceipt,
   validateMemorizeExecutionAggregate,
 } from '../memorize-execution-kernel.js';
+import { preparePersistenceCommand } from '../persistence-command.js';
 import { applyMemorizeLifecycleEvent } from '../memorize-obligation-ledger.js';
 import {
   createMemorizeRecoveryCapsule,
@@ -39,6 +40,8 @@ import { createMemorizeOutcome } from '../memorize-outcome.js';
 import { createMemorizeRunEngine } from '../memorize-run-engine.js';
 import { deriveMemorizeRecoveryAuthority } from '../memorize-recovery-authority.js';
 import { projectMemorizeKernelDiagnostics } from '../memorize-diagnostic-observer.js';
+import { createTransactionLease, inspectTransactionLease }
+  from '../catchup-transaction-lease.js';
 
 const RUN = 'run-v0986';
 const sourceFingerprint = (messages) => `fp:${messages.map((item) => item.id).join(',')}`;
@@ -67,8 +70,13 @@ function completeCommand({ id, attempt = `attempt:${id}`, start, end, command = 
   candidate = `candidate:${id}`, record = `record:${id}`, terminal = true,
   rejected = [], owner = null, tier = 'session' }) {
   return {
-    command_id: command, logical_run_id: RUN, obligation_leaf_id: id,
+    command_id: command, logical_run_id: RUN, workflow_id: RUN,
+    execution_scope: 'controller_managed', obligation_leaf_id: id,
     root_obligation_id: id, attempt_id: attempt, tier, owner,
+    controller_identity: { instance_id: 'controller-v0986',
+      page_instance_id: 'page-v0986', cancellation_epoch: 0 },
+    transaction_identity: { transaction_id: 'transaction-v0986', generation: 1 },
+    work_item_id: id,
     source_range: { start, end, message_count: end - start + 1 },
     source_fingerprint: `fp:${start}-${end}`,
     raw_response_reference: { retained: false, digest: `digest:${attempt}` },
@@ -79,6 +87,14 @@ function completeCommand({ id, attempt = `attempt:${id}`, start, end, command = 
     persistence_outcome: { status: 'committed', durable_record_ids: [record],
       durable_record_candidate_map: { [record]: candidate },
       source_provenance: { source_indices: [start] } },
+    durable_records: [{ record_id: record, candidate_id: candidate,
+      source_provenance: { source_indices: [start] },
+      idempotency_key: `${command}:record:${record}` }],
+    idempotency_keys: [command, `${command}:record:${record}`],
+    duplicate_no_update_disposition: 'write_validated_records',
+    intended_state_transition: terminal ? 'durably_committed' : 'pending_recovery',
+    checkpoint_effect: { obligation_leaf_id: id,
+      checkpoint_eligible_on_commit: terminal }, journal_receipt_identity: command,
     terminal,
   };
 }
@@ -262,6 +278,107 @@ test('journaled unit of work replays crashes after record persistence without du
   assert.equal(recovered.state.checkpoint.next_source_offset, 20);
 });
 
+test('invalid durable candidate mappings are rejected before storage is invoked', async () => {
+  const aggregate = register(createMemorizeExecutionAggregate(RUN), {
+    id: 'session:0-19', start: 0, end: 19,
+  });
+  const command = completeCommand({ id: 'session:0-19', start: 0, end: 19 });
+  command.persistence_outcome.durable_record_candidate_map = {
+    'record:session:0-19': 'candidate:not-parser-accepted',
+  };
+  let storageCalls = 0;
+  await assert.rejects(() => executeMemorizeUnitOfWork({
+    state: { aggregate }, command,
+    apply_records: async () => { storageCalls += 1; },
+  }), (error) => error.code === 'SME_DURABLE_RECORD_MAPPING_REQUIRED');
+  assert.equal(storageCalls, 0);
+});
+
+test('duplicate durable record ids are rejected before storage is invoked', async () => {
+  const aggregate = register(createMemorizeExecutionAggregate(RUN), {
+    id: 'session:0-19', start: 0, end: 19,
+  });
+  const command = completeCommand({ id: 'session:0-19', start: 0, end: 19 });
+  command.persistence_outcome.durable_record_ids.push(
+    command.persistence_outcome.durable_record_ids[0]);
+  let storageCalls = 0;
+  await assert.rejects(() => executeMemorizeUnitOfWork({
+    state: { aggregate }, command,
+    apply_records: async () => { storageCalls += 1; },
+  }), (error) => error.code === 'SME_PERSISTENCE_COMMAND_DUPLICATE_RECORD_ID');
+  assert.equal(storageCalls, 0);
+});
+
+test('Resume authority cannot skip an invalid earlier leaf for an executable sibling', () => {
+  const aggregate = createMemorizeExecutionAggregate(RUN);
+  register(aggregate, { id: 'session:340-349', start: 340, end: 349 });
+  register(aggregate, { id: 'session:350-359', start: 350, end: 359 });
+  aggregate.obligations['session:340-349'].current_state = 'provider_response_received';
+  aggregate.obligations['session:340-349'].next_eligible_action = null;
+  aggregate.obligations['session:350-359'].next_eligible_action = 'dispatch_provider_request';
+  const authority = deriveMemorizeRecoveryAuthority({
+    ledger: aggregate,
+    checkpoint: { status: 'awaiting_manual_resume', source_message_count: 9434,
+      next_source_offset: 340 },
+    checkpoint_status: 'awaiting_manual_resume', source_message_count: 9434,
+    next_source_offset: 340, provider_audit: { recent_attempts: [], obligations: {} },
+  });
+  assert.equal(authority.base_resume_eligibility.eligible, false);
+  assert.equal(authority.resume_eligible, false);
+  assert.ok(authority.resume_blockers.some((item) =>
+    item.reason_code === authority.base_resume_eligibility.reason_code));
+});
+
+test('prepared provider completion commands are immutable canonical values', () => {
+  const command = preparePersistenceCommand(completeCommand({
+    id: 'session:0-19', start: 0, end: 19,
+  }));
+  assert.equal(Object.isFrozen(command), true);
+  assert.equal(Object.isFrozen(command.persistence_outcome), true);
+  assert.throws(() => { command.persistence_outcome.durable_record_ids.push('other'); });
+});
+
+test('same-owner active transaction leases rebase ordinary revision advancement', () => {
+  const transaction = {
+    transaction_id: 'tx-1', revision: 4, generation: 2, state: 'active',
+    owner: { logical_run_id: RUN, controller_instance_id: 'controller-1' },
+  };
+  const lease = createTransactionLease(transaction);
+  transaction.revision = 5;
+  const result = inspectTransactionLease(transaction, transaction, lease);
+  assert.equal(result.allowed, true);
+  assert.equal(result.disposition, 'same_owner_revision_rebased');
+  assert.equal(result.revision_rebased, true);
+});
+
+test('transaction lease generation and owner changes remain stale rejections', () => {
+  const transaction = {
+    transaction_id: 'tx-1', revision: 4, generation: 2, state: 'active',
+    owner: { logical_run_id: RUN, controller_instance_id: 'controller-1' },
+  };
+  const lease = createTransactionLease(transaction);
+  transaction.generation = 3;
+  const result = inspectTransactionLease(transaction, transaction, lease);
+  assert.equal(result.allowed, false);
+  assert.equal(result.reason_code, 'transaction_lease_generation_mismatch');
+});
+
+test('transaction lease rejects page replacement and cancellation epoch changes', () => {
+  const transaction = {
+    transaction_id: 'tx-1', revision: 4, generation: 2, state: 'active',
+    owner: { logical_run_id: RUN, controller_instance_id: 'controller-1',
+      page_instance_id: 'page-1', cancellation_epoch: 0 },
+  };
+  const lease = createTransactionLease(transaction);
+  transaction.owner.page_instance_id = 'page-2';
+  assert.equal(inspectTransactionLease(transaction, transaction, lease).reason_code,
+    'transaction_lease_page_mismatch');
+  transaction.owner.page_instance_id = 'page-1';
+  transaction.owner.cancellation_epoch = 1;
+  assert.equal(inspectTransactionLease(transaction, transaction, lease).reason_code,
+    'transaction_lease_cancellation_epoch_mismatch');
+});
+
 test('unit of work survives failure after the committed snapshot without duplicating records', async () => {
   const aggregate = register(createMemorizeExecutionAggregate(RUN), {
     id: 'session:0-19', start: 0, end: 19,
@@ -281,12 +398,27 @@ test('unit of work survives failure after the committed snapshot without duplica
       }
     },
   }), /simulated process loss/);
-  assert.equal(persistenceCount, 2);
+  assert.ok(persistenceCount >= 5);
   const replay = replayPreparedMemorizeUnitOfWork(durableState, command.command_id,
     { next_source_offset: 20 });
   assert.equal(replay.status, 'idempotent_duplicate');
   assert.deepEqual(replay.state.aggregate.obligations['session:0-19'].lifecycle
     .durably_persisted_record_ids, ['record:session:0-19']);
+});
+
+test('storage failure persists an exact compensation-required saga state', async () => {
+  const aggregate = register(createMemorizeExecutionAggregate(RUN), {
+    id: 'session:0-19', start: 0, end: 19,
+  });
+  const command = completeCommand({ id: 'session:0-19', start: 0, end: 19 });
+  let durableState = null;
+  await assert.rejects(() => executeMemorizeUnitOfWork({
+    state: { aggregate }, command,
+    apply_records: async () => { throw new Error('simulated storage failure'); },
+    persist: async (state) => { durableState = structuredClone(state); },
+  }), (error) => error.sme_reason_code === 'storage_write_failed_compensation_required');
+  assert.equal(durableState.unit_of_work_journal[0].phase, 'compensation_required');
+  assert.equal(aggregate.obligations['session:0-19'].current_state, 'unattempted');
 });
 
 test('checkpoint advancement cannot cross a nonterminal frontier sibling', () => {
@@ -389,7 +521,9 @@ test('production tier pipeline routes final completion through the atomic kernel
     id: pipelineLeafId, start: 0, end: 19,
   });
   const execution = createMemorizeExecutionContext({
-    controller: { lifecycle_required: true },
+    controller: { lifecycle_required: true, instance_id: 'controller:pipeline',
+      page_instance_id: 'page:pipeline', transaction_id: 'tx:pipeline',
+      transaction_generation: 1 },
     hooks: {
       obligation_event: async () => ({ applied: true,
         obligation: aggregate.obligations[pipelineLeafId] }),
@@ -424,9 +558,9 @@ test('historical identical Session evidence cannot intercept current-run dispatc
   const currentRun = RUN;
   const metadata = {
     active_catchup_run_id: currentRun,
-    provider_completion_journal: { schema_version: 6, entries: {
+    provider_completion_journal: { schema_version: 7, entries: {
       historical: {
-        schema_version: 6, attempt_id: 'historical', logical_run_id: 'prior-run',
+        schema_version: 7, attempt_id: 'historical', logical_run_id: 'prior-run',
         obligation_leaf_id: 'session:chat:160-179:fnv1a-5654f879',
         root_obligation_id: 'session:chat:160-179:fnv1a-5654f879',
         tier: 'session', source_range: { start: 160, end: 179, message_count: 20 },
@@ -483,7 +617,9 @@ function createScriptedControllerHarness(suffix) {
     id, start: 0, end: 19,
   });
   const execution = createMemorizeExecutionContext({
-    controller: { lifecycle_required: true, instance_id: `controller:${suffix}` },
+    controller: { lifecycle_required: true, instance_id: `controller:${suffix}`,
+      page_instance_id: `page:${suffix}`, transaction_id: `tx:${suffix}`,
+      transaction_generation: 1 },
     hooks: {
       obligation_event: async () => ({ applied: true, obligation: aggregate.obligations[id] }),
       get_canonical_obligation: () => aggregate.obligations[id],
@@ -609,13 +745,11 @@ test('production controller path tolerates duplicate, late, and reordered callba
   assert.equal(duplicate.status, 'idempotent_duplicate');
 
   const reorderedHarness = createScriptedControllerHarness('reordered');
-  const current = scriptedControllerCommand(reorderedHarness.id, 'valid_structured_output');
-  current.command_id = 'script:current';
-  current.attempt_id = 'attempt:current';
+  const current = completeCommand({ id: reorderedHarness.id, start: 0, end: 19,
+    command: 'script:current', attempt: 'attempt:current' });
   assert.equal((await reorderedHarness.run(current)).kind, 'completed');
-  const older = scriptedControllerCommand(reorderedHarness.id, 'valid_structured_output');
-  older.command_id = 'script:older';
-  older.attempt_id = 'attempt:older';
+  const older = completeCommand({ id: reorderedHarness.id, start: 0, end: 19,
+    command: 'script:older', attempt: 'attempt:older' });
   const late = await reorderedHarness.pipeline.applyProviderCompletion(older);
   assert.equal(late.status, 'late_callback_ignored');
   assert.equal(reorderedHarness.aggregate().execution_kernel.stale_callbacks.length, 1);
