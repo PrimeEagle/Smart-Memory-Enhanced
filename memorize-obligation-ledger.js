@@ -1,4 +1,5 @@
 import { acknowledgeJournalTransition, requireAppliedLifecycleResult } from './memorize-lifecycle-coordinator.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 /**
  * Authoritative Memorize Chat extraction-obligation lifecycle.
@@ -1560,11 +1561,17 @@ export function projectMemorizeObligationLedger(ledgerValue) {
     chunks: Object.values(chunks),
     controller_exits: ledger.controller_exits,
     last_controller_exit: ledger.controller_exits.at(-1) ?? null,
-    recovery_backlog: structuredClone(ledger.recovery_backlog ?? []),
+    recovery_backlog: cloneSerializableDomain(ledger.recovery_backlog ?? [], {
+      path: '$.obligation_projection.recovery_backlog',
+      stage: 'obligation_projection', operation_type: 'memorize_obligation_projection',
+    }),
     recovery_backlog_count: (ledger.recovery_backlog ?? []).length,
     completion_gate_satisfied: pending.length === 0 && (ledger.recovery_backlog ?? []).length === 0,
-    historical_transition_observations: structuredClone(
-      ledger.historical_transition_observations ?? []),
+    historical_transition_observations: cloneSerializableDomain(
+      ledger.historical_transition_observations ?? [], {
+        path: '$.obligation_projection.historical_transition_observations',
+        stage: 'obligation_projection', operation_type: 'memorize_obligation_projection',
+      }),
     invariants: { valid: violations.length === 0, violations },
   };
 }

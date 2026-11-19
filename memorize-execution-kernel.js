@@ -10,6 +10,7 @@ import {
 } from './memorize-recovery-capsule.js';
 import { preparePersistenceCommand, providerCompletionIdentity }
   from './persistence-command.js';
+import { assertSerializableDomain, cloneSerializableDomain } from './serializable-domain.js';
 
 export const MEMORIZE_EXECUTION_KERNEL_VERSION = 3;
 export const MEMORIZE_ACTION_HANDLER_REVISION = 1;
@@ -51,7 +52,10 @@ const TERMINAL_STATES = new Set(['durably_committed', 'explicit_no_update']);
 const bounded = (items = [], maximum = 512) => items.slice(-maximum);
 
 function clone(value) {
-  return value == null ? value : structuredClone(value);
+  return value == null ? value : cloneSerializableDomain(value, {
+    path: '$.execution_aggregate', stage: 'execution_aggregate_validation',
+    operation_type: 'memorize_execution_kernel', allow_undefined: true,
+  });
 }
 
 
@@ -96,6 +100,10 @@ export function createMemorizeExecutionAggregate(logicalRunId, now = Date.now())
 
 export function ensureMemorizeExecutionAggregate(value, logicalRunId = null) {
   if (value == null) return createMemorizeExecutionAggregate(logicalRunId);
+  assertSerializableDomain(value, {
+    path: '$.execution_aggregate', stage: 'execution_aggregate_validation',
+    operation_type: 'memorize_execution_kernel', allow_undefined: true,
+  });
   const ledger = ensureMemorizeObligationLedger(value, logicalRunId);
   const kernel = ledger.execution_kernel;
   if (!kernel || kernel.schema_version !== MEMORIZE_EXECUTION_KERNEL_VERSION

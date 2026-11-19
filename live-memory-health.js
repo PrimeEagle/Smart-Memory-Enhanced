@@ -6,6 +6,7 @@
  * provider responses, credentials, or unapproved identity labels.
  */
 import { summarizeProviderAttemptAudit } from './provider-attempt-audit.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 2;
 export const LIVE_MEMORY_HEALTH_MAX_EVENTS = 75;
@@ -522,7 +523,7 @@ export function exportLiveMemoryHealth(metadata) {
       };
     })(),
   };
-  return JSON.parse(JSON.stringify({
+  return cloneSerializableDomain({
     schema_version: health.schema_version,
     retention_limit: LIVE_MEMORY_HEALTH_MAX_EVENTS,
     aggregate: health.aggregate,
@@ -534,5 +535,5 @@ export function exportLiveMemoryHealth(metadata) {
     recent_injection_events: health.recent_injection_events,
     last_continuity: health.last_continuity ?? null,
     recent_continuity_events: health.recent_continuity_events,
-  }));
+  }, { path: '$.live_memory_health_projection', stage: 'diagnostic_projection' });
 }

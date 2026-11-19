@@ -1,15 +1,10 @@
 /** Durable, privacy-preserving recovery inputs for one exact obligation leaf. */
 
 export const MEMORIZE_RECOVERY_CAPSULE_SCHEMA_VERSION = 1;
+import { immutableSerializableDomain } from './serializable-domain.js';
 
 const uniqueStrings = (values = []) => [...new Set((Array.isArray(values) ? values : [])
   .map((value) => String(value ?? '').trim()).filter(Boolean))];
-
-const deepFreeze = (value) => {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
-  for (const nested of Object.values(value)) deepFreeze(nested);
-  return Object.freeze(value);
-};
 
 function normalizedRange(value = {}) {
   const start = Number(value.start ?? value.source_start_index);
@@ -28,7 +23,7 @@ export function createMemorizeRecoveryCapsule(input = {}) {
   }
   const privatePayloadAvailable = input.private_fragment_payload_available === true;
   const sourceBackedAvailable = input.source_backed_regeneration_available !== false;
-  return Object.freeze({
+  return immutableSerializableDomain({
     schema_version: MEMORIZE_RECOVERY_CAPSULE_SCHEMA_VERSION,
     logical_run_id: String(input.logical_run_id),
     obligation_leaf_id: String(input.obligation_leaf_id),
@@ -41,7 +36,7 @@ export function createMemorizeRecoveryCapsule(input = {}) {
     durable_record_ids: Object.freeze(uniqueStrings(input.durable_record_ids)),
     durable_record_candidate_map: Object.freeze({ ...(input.durable_record_candidate_map ?? {}) }),
     rejected_fragment_ids: Object.freeze(uniqueStrings(input.rejected_fragment_ids)),
-    owner_coverage: input.owner_coverage ? deepFreeze(structuredClone(input.owner_coverage)) : null,
+    owner_coverage: input.owner_coverage ?? null,
     recovery_stage: input.recovery_stage ?? 'source_backed_regeneration',
     protocol: input.protocol ?? null,
     producing_attempt_id: input.producing_attempt_id ?? null,
@@ -61,7 +56,9 @@ export function createMemorizeRecoveryCapsule(input = {}) {
       verify_source_fingerprint: true,
     }),
     created_at: Number(input.created_at) || Date.now(),
-  });
+  }, { path: '$.memorize_recovery_capsule', stage: 'recovery_capsule_construction',
+    operation_type: input.recovery_stage ?? 'source_backed_regeneration',
+    obligation_id: input.obligation_leaf_id });
 }
 
 export function assessMemorizeRecoveryCapsule(capsule = null) {

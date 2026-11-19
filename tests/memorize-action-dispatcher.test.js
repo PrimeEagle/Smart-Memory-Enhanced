@@ -93,3 +93,17 @@ test('run-level actions do not require a leaf and handler failures retain action
     selected_action: 'stop_blocked', requested_action: 'dispatch_provider_request',
   }), (error) => error.code === 'SME_MEMORIZE_ACTION_MISMATCH');
 });
+
+test('action results reject runtime effects before they enter orchestration state', async () => {
+  await assert.rejects(() => dispatchMemorizeAction({
+    logical_run_id: 'run', obligation_id: 'leaf',
+    selected_action: 'dispatch_provider_request',
+    requested_action: 'dispatch_provider_request',
+    handlers: { dispatch_provider_request: async () => ({ commit: () => {} }) },
+  }), (error) => {
+    assert.equal(error.code, 'SME_NON_SERIALIZABLE_DOMAIN_DATA');
+    assert.equal(error.sme_serialization_path, '$.memorize_action_result.value.commit');
+    assert.equal(error.sme_request_diagnostics.provider_call_required, false);
+    return true;
+  });
+});

@@ -846,7 +846,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /developer_idempotence_check = finalResult/);
   assert.match(settings, /durable_state_hash_before/);
   assert.match(settings, /function snapshotIdempotenceDurableState/);
-  assert.match(settings, /structuredClone\(state\)/);
+  assert.match(settings, /cloneSerializableDomain\(state/);
   assert.match(settings, /durableStateAfterFirstPass = snapshotIdempotenceDurableState\(metadataAfterFirstPass\)/);
   assert.match(settings, /durableStateAfterSecondPass = snapshotIdempotenceDurableState\(metadataAfterSecondPass\)/);
   assert.match(read('ui.js'), /for \(const \[localName, records\] of Object\.entries\(meta\.card_local_memories \?\? \{\}\)\)/);

@@ -4,6 +4,7 @@ import {
   getMemorizeActionContract,
   projectMemorizeObligationLedger,
 } from './memorize-obligation-ledger.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
@@ -14,8 +15,9 @@ const LOCAL_RECONCILIATION_ACTIONS = new Set([
   'reconcile_terminal_attempt_evidence',
 ]);
 
-const clone = (value) => typeof structuredClone === 'function'
-  ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+const clone = (value) => cloneSerializableDomain(value, {
+  path: '$.memorize_authority_projection', stage: 'authority_projection',
+});
 
 function rangeOf(value = {}) {
   const start = Number(value.start ?? value.start_offset ?? value.source_start_index);

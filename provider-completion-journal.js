@@ -1,9 +1,14 @@
 /** Durable write-ahead journal for the provider -> canonical-state boundary. */
+import { assertSerializableDomain, cloneSerializableDomain }
+  from './serializable-domain.js';
 
-export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 7;
+export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 8;
 
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
-const clone = (value) => value == null ? value : structuredClone(value);
+const clone = (value) => cloneSerializableDomain(value, {
+  path: '$.provider_completion_journal_value',
+  stage: 'provider_completion_journal_validation',
+});
 const now = (value) => Number.isFinite(Number(value)) ? Number(value) : Date.now();
 function deriveCurrentCompletionCursor(entry = {}) {
   if (entry.logical_completed_at != null) return 'fully_terminal';
@@ -76,7 +81,7 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
   if (!metadata || !attempt?.attempt_id) return null;
   const journal = container(metadata);
   const prior = journal.entries[attempt.attempt_id] ?? {};
-  const entry = journal.entries[attempt.attempt_id] = {
+  const entry = {
     schema_version: PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
     attempt_id: attempt.attempt_id,
     command_id: patch.command_id ?? prior.command_id ?? null,
@@ -150,6 +155,8 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
       ?? prior.persistence_receipt_id ?? patch.command_id ?? prior.command_id ?? null,
     persistence_command_receipt: clone(patch.persistence_command_receipt
       ?? prior.persistence_command_receipt ?? null),
+    prepared_effect_plans: clone(patch.prepared_effect_plans
+      ?? prior.prepared_effect_plans ?? []),
     replay_count: Number(prior.replay_count ?? 0),
   };
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
@@ -160,6 +167,13 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
   }
   entry.downstream_cursor = deriveCurrentCompletionCursor(entry);
   entry.logical_disposition ??= entry.downstream_cursor;
+  assertSerializableDomain(entry, {
+    path: '$.provider_completion_entry',
+    stage: 'provider_completion_journal_validation',
+    operation_type: attempt.request_kind ?? attempt.tier ?? null,
+    obligation_id: entry.obligation_leaf_id,
+  });
+  journal.entries[attempt.attempt_id] = entry;
   journal.order = [...journal.order.filter((id) => id !== attempt.attempt_id), attempt.attempt_id].slice(-256);
   return entry;
 }
@@ -421,6 +435,9 @@ export function exportProviderCompletionJournal(metadata) {
       checkpoint_effect: clone(entry.checkpoint_effect ?? null),
       persistence_receipt_id: entry.persistence_receipt_id ?? null,
       persistence_command_receipt: clone(entry.persistence_command_receipt ?? null),
+      private_prepared_effect_plans_retained:
+        (entry.prepared_effect_plans?.length ?? 0) > 0,
+      prepared_effect_plan_count: entry.prepared_effect_plans?.length ?? 0,
     })),
   };
 }

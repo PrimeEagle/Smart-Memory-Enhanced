@@ -1,4 +1,10 @@
 import { getMemorizeActionContract } from './memorize-obligation-ledger.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
+
+const cloneActionData = (value) => cloneSerializableDomain(value, {
+  path: '$.action_selection', stage: 'action_selection_projection',
+  operation_type: 'memorize_action_selection', allow_undefined: true,
+});
 
 const TERMINAL_STATES = new Set(['durably_committed', 'explicit_no_update']);
 const BLOCKED_STATES = new Set(['blocked', 'terminal_failed']);
@@ -22,7 +28,7 @@ function selectWithin(ledger, obligation, root) {
     || TERMINAL_STATES.has(obligation.current_state)) return null;
   if (BLOCKED_STATES.has(obligation.current_state)) return Object.freeze({
     kind: 'blocked', reason_code: obligation.exact_reason_code ?? obligation.current_state,
-    obligation: structuredClone(obligation), root_obligation: structuredClone(root),
+    obligation: cloneActionData(obligation), root_obligation: cloneActionData(root),
   });
   const children = orderedChildren(ledger, obligation);
   for (const child of children) {
@@ -31,15 +37,15 @@ function selectWithin(ledger, obligation, root) {
   }
   if (children.length) return Object.freeze({
     kind: 'aggregate_parent', reason_code: 'all_registered_children_terminal',
-    action: 'aggregate_completed_children', obligation: structuredClone(obligation),
-    root_obligation: structuredClone(root), provider_call_required: false,
+    action: 'aggregate_completed_children', obligation: cloneActionData(obligation),
+    root_obligation: cloneActionData(root), provider_call_required: false,
   });
   const action = obligation.next_eligible_action ?? 'dispatch_provider_request';
   const contract = getMemorizeActionContract(action);
   return Object.freeze({
     kind: contract?.provider_call_required === false ? 'local_action' : 'dispatch_leaf',
     reason_code: obligation.exact_reason_code ?? 'canonical_leaf_actionable', action,
-    obligation: structuredClone(obligation), root_obligation: structuredClone(root),
+    obligation: cloneActionData(obligation), root_obligation: cloneActionData(root),
     provider_call_required: contract?.provider_call_required !== false,
   });
 }
@@ -68,12 +74,12 @@ export function selectCanonicalMemorizeAction({ ledger, tier, source_range: sour
   });
   if (root.checkpoint_eligible === true || TERMINAL_STATES.has(root.current_state)) {
     return Object.freeze({ kind: 'complete', reason_code: 'root_obligation_terminal',
-      obligation: structuredClone(root), root_obligation: structuredClone(root),
+      obligation: cloneActionData(root), root_obligation: cloneActionData(root),
       provider_call_required: false });
   }
   return selectWithin(ledger, root, root) ?? Object.freeze({
     kind: 'complete', reason_code: 'root_obligation_terminal',
-    obligation: structuredClone(root), root_obligation: structuredClone(root),
+    obligation: cloneActionData(root), root_obligation: cloneActionData(root),
     provider_call_required: false,
   });
 }

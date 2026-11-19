@@ -1,3 +1,5 @@
+import { cloneSerializableDomain } from './serializable-domain.js';
+
 const TERMINAL_TRANSACTION_STATES = new Set([
   'committed', 'rolled_back', 'commit_failed_with_exact_state',
   'rollback_failed_with_exact_state',
@@ -14,13 +16,19 @@ export function settleMemorizeTransactionCheckpoint(checkpointValue, transaction
     error.sme_origin = 'internal_invariant';
     throw error;
   }
-  const checkpoint = structuredClone(checkpointValue);
+  const checkpoint = cloneSerializableDomain(checkpointValue, {
+    path: '$.checkpoint', stage: 'transaction_checkpoint_settlement',
+    operation_type: 'memorize_transaction_settlement',
+  });
   checkpoint.transaction_lifecycle = {
     schema_version: 2,
     transaction_id: transaction.transaction_id ?? null,
     state: transaction.state,
     terminal_disposition: transaction.terminal_disposition ?? transaction.state,
-    owner: structuredClone(transaction.owner ?? {}),
+    owner: cloneSerializableDomain(transaction.owner ?? {}, {
+      path: '$.transaction.owner', stage: 'transaction_checkpoint_settlement',
+      operation_type: 'memorize_transaction_settlement',
+    }),
     revision: transaction.revision ?? null,
     generation: transaction.generation ?? null,
     started_at: transaction.started_at ?? null,

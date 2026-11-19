@@ -1,4 +1,5 @@
 import { getMemorizeReason, normalizeMemorizeReasonCode } from './memorize-reasons.js';
+import { immutableSerializableDomain } from './serializable-domain.js';
 
 export const MEMORIZE_OUTCOME_KINDS = Object.freeze([
   'completed', 'paused', 'blocked', 'cancelled', 'failed',
@@ -8,7 +9,7 @@ export function createMemorizeOutcome(input = {}) {
   const kind = MEMORIZE_OUTCOME_KINDS.includes(input.kind) ? input.kind : 'failed';
   const reason = getMemorizeReason(input.reason_code ?? (kind === 'completed' ? 'completed' : 'internal_exception'));
   const resumable = input.resumable ?? (kind === 'paused' ? reason.resumable : false);
-  return Object.freeze({
+  return immutableSerializableDomain({
     schema_version: 1,
     kind,
     reason_code: reason.code,
@@ -17,9 +18,10 @@ export function createMemorizeOutcome(input = {}) {
     next_action: input.next_action ?? (resumable ? reason.next_action : null),
     obligation_id: input.obligation_id ?? null,
     provider_call_required: input.provider_call_required === true,
-    evidence: input.evidence == null ? null : structuredClone(input.evidence),
-    value: input.value,
-  });
+    evidence: input.evidence ?? null,
+    value: input.value ?? null,
+  }, { path: '$.memorize_outcome', stage: 'memorize_outcome_construction',
+    obligation_id: input.obligation_id ?? null });
 }
 
 export function isMemorizeOutcome(value) {

@@ -6,6 +6,7 @@ import {
   recordMemorizeControllerExit,
   transitionMemorizeObligation,
 } from './memorize-obligation-ledger.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import {
   beginProviderAttempt,
   beginProviderRecoveryEpoch,
@@ -205,7 +206,10 @@ export function replayExhaustedSessionRecoveryResume({ completeRemainingChat = f
   Object.assign(ledger.obligations[sessionId], { current_state: 'provider_running',
     exact_reason_code: 'provider_request_in_progress', next_eligible_action: null,
     persistence_result: 'not_committed', checkpoint_eligible: false });
-  const beforeRepair = projectMemorizeObligationLedger(structuredClone(ledger));
+  const beforeRepair = projectMemorizeObligationLedger(cloneSerializableDomain(ledger, {
+    path: '$.replay_harness.ledger', stage: 'replay_harness_projection',
+    operation_type: 'memorize_replay_harness',
+  }));
   const repaired = reconcileMemorizeRunningObligations(
     ledger, metadata.live_memory_health.provider_attempt_audit);
   const afterRepair = projectMemorizeObligationLedger(ledger);

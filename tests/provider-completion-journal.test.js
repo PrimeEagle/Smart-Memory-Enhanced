@@ -67,6 +67,22 @@ test('journal export retains structural replay evidence without response bodies'
   assert.equal(Object.hasOwn(exported, 'response_text'), false);
 });
 
+test('prepared effect plans remain private while their replay availability is exported', () => {
+  const metadata = {};
+  recordProviderCompletion(metadata, attempt(), {
+    response_text: '{"records":[]}',
+    prepared_effect_plans: [{ operation_type: 'longterm_owner_replace_v1',
+      plan_id: 'plan-1', owner: 'Alex', durable_memories: [{ id: 'private-memory' }] }],
+  });
+  const privateEntry = metadata.provider_completion_journal.entries['provider-mvzlqkmi-342'];
+  assert.equal(privateEntry.prepared_effect_plans[0].plan_id, 'plan-1');
+  const exported = exportProviderCompletionJournal(metadata).entries[0];
+  assert.equal(exported.private_prepared_effect_plans_retained, true);
+  assert.equal(exported.prepared_effect_plan_count, 1);
+  assert.equal(Object.hasOwn(exported, 'prepared_effect_plans'), false);
+  assert.equal(JSON.stringify(exported).includes('private-memory'), false);
+});
+
 test('provider completion journal rejects non-current persisted schemas', () => {
   const metadata = { provider_completion_journal: {
     schema_version: 4, entries: {}, order: [], reconciliation: null,
@@ -82,7 +98,7 @@ test('provider completion journal rejects non-current persisted schemas', () => 
 
 test('provider completion journal rejects incomplete current-schema containers', () => {
   const metadata = { provider_completion_journal: {
-    schema_version: 7, entries: {}, reconciliation: null,
+    schema_version: 8, entries: {}, reconciliation: null,
   } };
   assert.throws(() => recordProviderCompletion(metadata, attempt()), (error) => {
     assert.equal(error.code, 'SME_MEMORIZE_SCHEMA_UNSUPPORTED');

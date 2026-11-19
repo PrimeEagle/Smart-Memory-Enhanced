@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.93] - 2026-11-19
+
+### Added
+
+- Added a recursive plain-data boundary validator that reports the exact
+  property path, value type, operation, obligation, and stage for callbacks,
+  promises, accessors, class instances, cycles, and other runtime-only values.
+- Added an operation-type effect executor whose runtime adapter registry is
+  separate from immutable plans and which validates a complete plan aggregate
+  before the first effect and every receipt before publication.
+- Added sequential aggregate-effect execution with exact before/effect/after
+  fault stages, completed receipts, pending plan IDs, and cancellation await
+  points between owner writes.
+- Added a production persistence architecture gate covering every durable
+  writer, forbidden JSON-clone fallbacks, private retained plans, local replay,
+  callback-free outcomes, and duplicate root-error prevention.
+
+### Changed
+
+- Multi-owner Long-Term persistence now produces plain owner plans, executes
+  them through the runtime-only adapter registry, and exposes plain owner
+  receipts in tier outcomes instead of returning callback-bearing results.
+- Tier outcomes, run outcomes, persistence commands, provider-completion
+  journal entries, and feature-persistence receipts now enforce the shared
+  serializable-domain contract at their construction boundaries.
+- Memorize authority, provider-attempt, live-health, and reconciliation UI
+  projections now reject invalid runtime values instead of silently dropping
+  them through JSON fallback cloning.
+- Local serialization/programming failures are non-resumable, explicitly
+  provider-independent, and cannot select a provider retry action.
+- Provider journal schema 8 privately retains validated multi-owner effect
+  plans until completion while diagnostics export only their availability and
+  count. Incomplete state from schema 7 intentionally requires Fresh Start.
+- Multi-owner Resume now replays the exact current-run journaled response and
+  reports zero new provider requests before rebuilding and idempotently
+  executing its local plans.
+- Action-dispatch results, unit-of-work state, recovery capsules, diagnostic
+  snapshots, and kernel diagnostics now enforce the same plain-data boundary.
+- The action selector, execution aggregate, obligation projection, provider
+  attempt audit, tier completion receipt, transaction snapshot/settlement,
+  recovery manifest, and deterministic replay harness now validate through
+  that boundary instead of relying on raw `structuredClone` failures.
+
+### Fixed
+
+- Fixed the v0.9.92 `DataCloneError` where a deferred Long-Term `commit`
+  closure survived successful storage and was then passed into
+  `createMemorizeTierOutcome()`.
+- Fixed downstream local failures being recorded as pending provider recovery,
+  which caused Resume to repeat provider work after the provider response had
+  already completed.
+- Fixed Long-Term controller handling adding a derivative “multi-owner recovery
+  failure” after the extraction path had already recorded the root exception.
+
 ## [0.9.92] - 2026-11-17
 
 ### Added

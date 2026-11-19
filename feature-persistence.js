@@ -1,5 +1,6 @@
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
 import { preparePersistenceCommand } from './persistence-command.js';
+import { assertSerializableDomain, immutableSerializableDomain } from './serializable-domain.js';
 
 const fingerprint = (value) => {
   let hash = 2166136261;
@@ -35,6 +36,10 @@ export function prepareFeaturePersistenceCommand({
     new Error('Feature persistence requires workflow and feature identity.'), {
       code: 'SME_FEATURE_PERSISTENCE_IDENTITY_REQUIRED',
     });
+  assertSerializableDomain(records, {
+    path: '$.feature_records', stage: 'feature_record_plan_validation',
+    operation_type: String(operation), obligation_id: `${feature}:${owner ?? 'global'}`,
+  });
   const fallback = fallbackProvenance ?? {
     workflow_id: String(workflowId), feature: String(feature), operation: String(operation),
   };
@@ -90,14 +95,17 @@ export function prepareFeaturePersistenceCommand({
 }
 export function recordFeaturePersistenceReceipt(command, receiptContainer) {
   const prepared = preparePersistenceCommand(command);
-  const receipt = {
+  const receipt = immutableSerializableDomain({
     schema_version: 1, command_id: prepared.command_id,
     journal_receipt_identity: prepared.journal_receipt_identity,
     workflow_id: prepared.workflow_id, feature: prepared.tier,
     owner: prepared.owner ?? null, durable_record_count: prepared.durable_records.length,
     intended_state_transition: prepared.intended_state_transition,
     checkpoint_effect: structuredClone(prepared.checkpoint_effect), committed_at: Date.now(),
-  };
+  }, {
+    path: '$.feature_persistence_receipt', stage: 'feature_receipt_construction',
+    operation_type: prepared.tier, obligation_id: prepared.obligation_leaf_id,
+  });
   if (receiptContainer) {
     receiptContainer.durable_persistence_receipts = [
       ...(receiptContainer.durable_persistence_receipts ?? [])
@@ -118,7 +126,10 @@ export async function executeFeaturePersistence({ command, snapshot, apply, pers
     await apply(prepared);
     const receipt = recordFeaturePersistenceReceipt(prepared, receiptContainer);
     await persist(prepared, receipt);
-    return Object.freeze({ status: 'committed', command: prepared, receipt });
+    return immutableSerializableDomain({ status: 'committed', command: prepared, receipt }, {
+      path: '$.feature_persistence_result', stage: 'feature_result_construction',
+      operation_type: prepared.tier, obligation_id: prepared.obligation_leaf_id,
+    });
   } catch (error) {
     await restore?.(before);
     if (receiptContainer) {

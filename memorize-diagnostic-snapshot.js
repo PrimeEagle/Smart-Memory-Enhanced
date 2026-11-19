@@ -1,3 +1,6 @@
+import { cloneSerializableDomain, freezeDomainTree }
+  from './serializable-domain.js';
+
 const freeze = (value) => {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   for (const nested of Object.values(value)) freeze(nested);
@@ -7,8 +10,13 @@ const freeze = (value) => {
 /** Captures metadata and its matching checkpoint in one synchronous read boundary. */
 export function captureMemorizeDiagnosticSnapshot({ metadata = {}, checkpoint = null,
   at = Date.now() } = {}) {
-  const metadataCopy = structuredClone(metadata ?? {});
-  const checkpointCopy = structuredClone(checkpoint ?? metadataCopy.catch_up_checkpoint ?? null);
+  const metadataCopy = cloneSerializableDomain(metadata ?? {}, {
+    path: '$.diagnostic_snapshot.metadata', stage: 'diagnostic_snapshot',
+  });
+  const checkpointCopy = cloneSerializableDomain(
+    checkpoint ?? metadataCopy.catch_up_checkpoint ?? null, {
+      path: '$.diagnostic_snapshot.checkpoint', stage: 'diagnostic_snapshot',
+    });
   const ledger = checkpointCopy?.run_manifest?.obligation_ledger ?? null;
   const kernel = ledger?.execution_kernel ?? null;
   const identity = {
@@ -24,7 +32,7 @@ export function captureMemorizeDiagnosticSnapshot({ metadata = {}, checkpoint = 
     checkpoint_status: checkpointCopy?.status ?? null,
     checkpoint_updated_at: checkpointCopy?.updated_at ?? null,
   };
-  return freeze({ identity, metadata: metadataCopy, checkpoint: checkpointCopy });
+  return freezeDomainTree({ identity, metadata: metadataCopy, checkpoint: checkpointCopy });
 }
 
 export function validateMemorizeDiagnosticSnapshot(diagnostics = {}, identity = {}) {
@@ -54,5 +62,7 @@ export function validateMemorizeDiagnosticSnapshot(diagnostics = {}, identity = 
     violations.push('rolled_back_transaction_with_in_progress_checkpoint');
   }
   return freeze({ consistent: violations.length === 0, violations,
-    identity: structuredClone(identity) });
+    identity: cloneSerializableDomain(identity, {
+      path: '$.diagnostic_snapshot.identity', stage: 'diagnostic_projection',
+    }) });
 }

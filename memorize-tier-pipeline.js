@@ -7,6 +7,7 @@ import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
 import { assertMemorizeActionSelected, canonicalizeMemorizeAction, dispatchMemorizeAction }
   from './memorize-action-dispatcher.js';
 import { preparePersistenceCommand } from './persistence-command.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 const EXPECTED_EVENT_STATES = Object.freeze({
   obligation_registered: [],
@@ -389,7 +390,11 @@ export function createMemorizeTierPipeline(input) {
         command_id: command.command_id,
         journal_receipt_identity: command.journal_receipt_identity,
         intended_state_transition: command.intended_state_transition,
-        checkpoint_effect: structuredClone(command.checkpoint_effect),
+        checkpoint_effect: cloneSerializableDomain(command.checkpoint_effect, {
+          path: '$.provider_completion_journal.persistence_command_receipt.checkpoint_effect',
+          stage: 'provider_completion_receipt_projection',
+          operation_type: command.tier, obligation_id: command.obligation_leaf_id,
+        }),
         durable_record_count: command.durable_records.length,
       };
     }

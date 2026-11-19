@@ -18,8 +18,9 @@ Memorize Chat has one controller-owned loop:
 4. Session and multi-owner Long-Term construct durable record IDs, candidate
    mappings, provenance, idempotency keys, transition intent, checkpoint
    effect, controller ownership, and transaction generation before storage.
-5. `prepareProviderCompletionCommand()` validates the complete immutable
-   command before the first production record write.
+5. Multi-owner Long-Term produces one plain-data owner persistence plan per
+   applicable owner. The complete plan aggregate and provider-completion
+   command are validated before the first production record write.
 6. The storage adapter writes only the validated record set. The unit-of-work
    journal records `prepared`, `storage_write_started`,
    `storage_write_confirmed`, `canonical_receipt_pending`, and `committed`.
@@ -32,7 +33,7 @@ Memorize Chat has one controller-owned loop:
    exact blocker.
 
 The execution-kernel schema is 3, execution-context schema is 2,
-unit-of-work schema is 2, and provider-completion-journal schema is 7. Older
+unit-of-work schema is 2, and provider-completion-journal schema is 8. Older
 incomplete runs are intentionally unsupported and require **Fresh Start**.
 
 ## Candidate and persistence contracts
@@ -70,6 +71,39 @@ settings-backed stores therefore validate and record the receipt synchronously
 before requesting the host save, while chat-metadata stores use the full
 awaitable rollback path.
 
+## Plain-data and effect boundary
+
+`serializable-domain.js` defines the lifecycle boundary. Plans, commands,
+receipts, outcomes, journals, checkpoints, diagnostics, and UI projections are
+recursively plain data. Functions, promises/thenables, accessors, symbol keys,
+class or DOM instances, non-finite numbers, sparse arrays, and cyclic graphs
+are rejected with the exact property path, observed type, operation type,
+obligation, and stage. A local boundary failure is a programming defect: it is
+not provider-attributed, resumable, or eligible for provider retry.
+
+Runtime effects live only in `runtime-effect-executor.js` handler registries.
+An owner plan selects a handler with a stable `operation_type`; it never
+contains a callback. The executor validates the full aggregate before any
+handler runs and validates the returned receipt before it can cross back into
+domain state. Multi-owner Long-Term outcomes therefore contain owner receipts,
+not the mutation plans or storage adapters.
+
+The same validator is the entry boundary for action selection, execution
+aggregates, obligation projections, provider-attempt state, tier completion
+receipts, transaction snapshots and settlement, crash-recovery manifests, and
+the deterministic replay harness. Raw `structuredClone` is not used as a
+validator in these authoritative paths because it cannot attach the required
+operation, obligation, lifecycle stage, and nested property path.
+
+The provider journal privately retains validated effect plans while an owner
+aggregate is incomplete. Diagnostics expose only the retained-plan count and
+availability. Resume selects `apply_journaled_provider_completion`, reuses the
+exact current-run response, rebuilds the same idempotent plans, and performs no
+provider request. Successful canonical persistence clears the private plans.
+An aggregate failure retains exact completed receipts and pending plan IDs;
+the enclosing catch-up transaction can compensate staged writes without
+losing the local replay boundary.
+
 ## Transaction model
 
 The immutable ownership lease contains logical run, controller, transaction,
@@ -98,8 +132,8 @@ response bodies and memory bodies are not exported.
 
 | Path | Execution owner | Durable state / transaction | Current shared foundations |
 | --- | --- | --- | --- |
-| Memorize multi-owner Long-Term and missing-owner recovery | Canonical action engine | Owner stores inside catch-up transaction | Typed candidates, pre-write command validation, deferred owner commits, kernel receipt, journal v7 |
-| Memorize Session, malformed children, partial fragments, citation repair | Canonical action engine | Session store inside catch-up transaction | Typed candidates, pre-write command validation, kernel receipt, journal v7 |
+| Memorize multi-owner Long-Term and missing-owner recovery | Canonical action engine | Owner stores inside catch-up transaction | Typed candidates, plain owner plans, aggregate pre-write validation, runtime effect registry, plain receipts, kernel receipt, journal v8 |
+| Memorize Session, malformed children, partial fragments, citation repair | Canonical action engine | Session store inside catch-up transaction | Typed candidates, pre-write command validation, kernel receipt, journal v8 |
 | Context-overflow and nested child recovery | Canonical action engine | Obligation children and transaction checkpoint | Same leaf command and receipt path; parents cannot dispatch |
 | Provider attempt, action receipt, coverage and live health | Controller observers | Metadata checkpoint | Evidence only; cannot commit a leaf |
 | Cancellation, page reload, Resume, finalization eligibility | Controller | Checkpoint and ownership lease | One recovery authority and ownership/generation lease |
@@ -159,6 +193,14 @@ and terminal/recovered disposition remain attached to that causal chain.
 ## Release gates
 
 - Invalid mappings/provenance and duplicate durable IDs perform zero writes.
+- A callback, promise, class instance, accessor, or cycle nested anywhere in a
+  domain plan fails at its exact path before the first owner effect.
+- Long-Term owner outcomes remain structured-cloneable after persistence and
+  expose receipts only; the production path contains no deferred `commit`
+  callback.
+- Fault injection before the first effect, during each owner effect, after an
+  owner effect, after all effects, and during receipt construction preserves
+  exact completed/pending accounting and never selects provider retry.
 - Same-owner revision advancement rebases; real ownership/generation changes
   reject.
 - An invalid earlier leaf suppresses Resume even when a later sibling is

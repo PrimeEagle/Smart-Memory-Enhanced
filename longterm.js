@@ -60,6 +60,9 @@ import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
+import { createLongtermOwnerEffectExecutor, createLongtermOwnerPersistencePlan,
+  LONGTERM_OWNER_NOOP_OPERATION, LONGTERM_OWNER_REPLACE_OPERATION }
+  from './longterm-owner-persistence.js';
 import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
   recordFeaturePersistenceReceipt } from './feature-persistence.js';
 import {
@@ -848,21 +851,25 @@ function mergeMemories(existing, incoming, maxTotal) {
 }
 
 /**
- * Persist an already parsed and provenance-mapped Long-Term partition for one
- * owner. This operation performs no provider request and owns no traversal or
- * lifecycle state; the multi-owner adapter commits its aggregate result.
+ * Prepare one already parsed and provenance-mapped Long-Term owner partition.
+ * The returned value is plain data; the multi-owner runtime validates the
+ * complete aggregate before a separate effect executor changes any store.
  */
-export async function persistLongtermOwnerPartition(
+export async function prepareLongtermOwnerPersistencePlan(
   characterName, candidates, recentMessages, {
-    targeted_replay: targetedReplay = false, defer_commit: deferCommit = false,
+    targeted_replay: targetedReplay = false,
   } = {},
 ) {
   const settings = extension_settings[MODULE_NAME];
   const policy = getCharacterMemoryPolicy(characterName);
   if (!characterName || [CHARACTER_MEMORY_POLICIES.DISABLED,
     CHARACTER_MEMORY_POLICIES.READ_ONLY].includes(policy)) {
-    return { owner: characterName, status: 'not_applicable', added: 0,
-      durable_record_ids: [], durable_record_candidate_map: {} };
+    return createLongtermOwnerPersistencePlan({
+      operation_type: LONGTERM_OWNER_NOOP_OPERATION,
+      plan_id: `longterm-owner-noop:${characterName ?? 'missing'}`,
+      owner: characterName ?? null, status: 'not_applicable', added: 0,
+      durable_record_ids: [], durable_record_candidate_map: {}, candidate_ids: [],
+    });
   }
   const existing = loadCharacterMemories(characterName);
   const active = existing.filter((memory) => !memory.superseded_by);
@@ -956,21 +963,30 @@ export async function persistLongtermOwnerPartition(
     delete copy._memorize_candidate_id;
     return copy;
   });
-  const commit = async () => {
-    if (entityRegistry.length) saveCharacterEntityRegistry(characterName, entityRegistry);
-    if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-      await saveChatLocalMemories(characterName, durableMemories);
-    } else saveCharacterMemories(characterName, durableMemories);
-  };
-  if (!deferCommit) await commit();
-  return {
+  const candidateIds = [...new Set(Object.values(durableRecordCandidateMap).filter(Boolean))];
+  const planKey = candidateIds.length ? candidateIds.join('|') : 'verified-no-update';
+  return createLongtermOwnerPersistencePlan({
+    operation_type: LONGTERM_OWNER_REPLACE_OPERATION,
+    plan_id: `longterm-owner:${characterName}:${sourceChatId ?? 'no-chat'}:${planKey}`,
     owner: characterName,
+    storage_scope: policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL
+      ? 'chat_local' : 'character',
     status: durableRecords.length ? 'committed' : 'verified_no_update',
     added: durableRecords.length,
     durable_record_ids: durableRecordIds,
     durable_record_candidate_map: durableRecordCandidateMap,
-    ...(deferCommit ? { commit } : {}),
-  };
+    candidate_ids: candidateIds,
+    durable_memories: durableMemories,
+    entity_registry: entityRegistry,
+  });
+}
+
+export function createLongtermOwnerPersistenceExecutor(adapters = {}) {
+  return createLongtermOwnerEffectExecutor({
+    save_entity_registry: adapters.save_entity_registry ?? saveCharacterEntityRegistry,
+    save_chat_local_memories: adapters.save_chat_local_memories ?? saveChatLocalMemories,
+    save_character_memories: adapters.save_character_memories ?? saveCharacterMemories,
+  });
 }
 
 /**

@@ -131,6 +131,7 @@ import {
 } from './trim-stats.js';
 import { getLiveMemoryHealthSummary } from './live-memory-health.js';
 import { formatDiagnosticIdentifier } from './diagnostic-presentation-utils.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 /** Renders the compact, text-free live-memory health status card. */
 export function updateLiveMemoryHealthUI() {
@@ -1651,8 +1652,9 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
         ?? extension_settings[MODULE_NAME]?.entity_registry
         ?? [],
     };
-    try { return structuredClone(state); }
-    catch { return JSON.parse(JSON.stringify(state)); }
+    return cloneSerializableDomain(state, {
+      path: '$.reconciliation_ui_snapshot', stage: 'ui_projection',
+    });
   };
   const durableStateBeforeReconciliation = snapshotDurableReconciliationState();
   const ltEntities = characterName ? loadCharacterEntityRegistry(characterName) : [];
@@ -1707,10 +1709,9 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   // not survive in an off-screen group member's local registry.
   const meta = context.chatMetadata?.[META_KEY] ?? {};
   const cardLocalWriteRecords = [];
-  const cloneCardLocalRecords = (records) => {
-    try { return structuredClone(records ?? []); }
-    catch { return JSON.parse(JSON.stringify(records ?? [])); }
-  };
+  const cloneCardLocalRecords = (records) => cloneSerializableDomain(records ?? [], {
+    path: '$.card_local_ui_projection', stage: 'ui_projection',
+  });
   const observeCardLocalWrites = (beforeStores, operation, sourceOperation, mutationCounted = false) => {
     const comparison = summarizeCardLocalMemoryChanges(
       { card_local_memories: beforeStores },

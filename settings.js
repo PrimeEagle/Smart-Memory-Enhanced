@@ -257,6 +257,7 @@ import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.j
 import { deriveRunStatus, normalizeRunStatusReport, RUN_STATUS_CLASSIFIER_VERSION } from './run-status-utils.js';
 import { resolveHistoricalGroupParticipants } from './historical-participants-utils.js';
 import { classifyMemorizeErrorRecord } from './memorize-error-origin.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import { smLog } from './logging.js';
 import { captureMemorizeDiagnosticSnapshot, validateMemorizeDiagnosticSnapshot }
   from './memorize-diagnostic-snapshot.js';
@@ -292,8 +293,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.92',
-  build_fingerprint: 'sme-v0.9.92-persistence-command-architecture-r1',
+  extension_version: '0.9.93',
+  build_fingerprint: 'sme-v0.9.93-serializable-effect-boundary-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -344,8 +345,9 @@ function idempotenceDurableState(metadata = {}) {
 // the second pass overwrite the first pass's structural baseline.
 function snapshotIdempotenceDurableState(metadata = {}) {
   const state = idempotenceDurableState(metadata);
-  if (typeof structuredClone === 'function') return structuredClone(state);
-  return JSON.parse(JSON.stringify(state));
+  return cloneSerializableDomain(state, {
+    path: '$.idempotence_durable_state', stage: 'idempotence_projection',
+  });
 }
 
 function buildFinalStateConsistency({ automatic = null, manual = null, currentHash = null } = {}) {
@@ -6714,6 +6716,7 @@ export function bindSettingsUI(ctrl) {
             recordCatchUpError('Long-Term multi-owner extraction error', err, 'long-term');
             return { decision: 'terminal_failure', reason_code: err?.code ?? 'internal_exception',
               outcome: null, attempts_used: 0,
+              root_error_recorded: true,
               maximum_attempts: Math.max(1, Number(settings.provider_max_retries ?? 5) + 1) };
           });
           if (longtermSchedule.decision === 'pause_for_user') {
@@ -6736,7 +6739,8 @@ export function bindSettingsUI(ctrl) {
             };
             recordCatchUpOperationalPause('Long-Term recovery paused', pauseSignal, 'long-term');
           } else if (longtermSchedule.decision === 'stop_blocked'
-            || longtermSchedule.decision === 'terminal_failure') {
+            || (longtermSchedule.decision === 'terminal_failure'
+              && longtermSchedule.root_error_recorded !== true)) {
             const error = new Error('Long-Term recovery cannot continue automatically.');
             error.code = longtermSchedule.reason_code;
             error.sme_origin = 'validation';

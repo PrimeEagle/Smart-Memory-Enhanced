@@ -6,7 +6,7 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
 import { applyDirectProvenance } from './grounding.js';
 import { parseExtractionOutput } from './parsers.js';
 import { buildMultiOwnerLongtermPrompt, dispatchMultiOwnerLongtermBatch,
-  persistMultiOwnerLongtermPartitions }
+  partitionMultiOwnerLongtermResponse, persistMultiOwnerLongtermPartitions }
   from './multi-owner-longterm.js';
 import { buildStructuredMemoryProviderRequest, parseStructuredMemoryResponse }
   from './malformed-output-recovery.js';
@@ -14,17 +14,22 @@ import { sourceRange, sourceWindowFingerprint, makeExtractionPreflight }
   from './extraction-window-utils.js';
 import { providerConfigurationSignature, finishProviderAttempt }
   from './provider-attempt-audit.js';
-import { recordProviderCompletion } from './provider-completion-journal.js';
+import { findCurrentRunProviderCompletion, recordProviderCompletion }
+  from './provider-completion-journal.js';
 import { extendMemorizeExecutionContext, resolveMemorizeExecutionContext }
   from './memorize-execution-context.js';
 import { createMemorizeTierPipeline } from './memorize-tier-pipeline.js';
 import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
 import { attachMemorizeOperationContext, createMemorizeOperationContext }
   from './memorize-operation-context.js';
-import { persistLongtermOwnerPartition } from './longterm.js';
+import { createLongtermOwnerPersistenceExecutor,
+  prepareLongtermOwnerPersistencePlan } from './longterm.js';
 import { projectMultiOwnerCoverage } from './multi-owner-coverage.js';
 import { createMemorizeTierOutcome } from './memorize-tier-outcome.js';
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
+import { executeEffectPlanAggregate, validateEffectPlanAggregate }
+  from './runtime-effect-executor.js';
+import { assertSerializableDomain } from './serializable-domain.js';
 
 const OWNER_SCOPE = '@multi-owner';
 
@@ -124,14 +129,32 @@ export async function extractAndStoreMultiOwnerMemories(
     recovery_intent: 'complete_multi_owner_source_extraction',
     recovery_stage: 'initial_dispatch', owner_scope: owners,
   });
-  const dispatchAction = execution.provider.selected_recovery_action
-    === 'recover_missing_owner_coverage'
-    ? 'recover_missing_owner_coverage' : 'dispatch_provider_request';
+  const canonicalBeforeDispatch = execution.controller.lifecycle_required
+    ? await pipeline.getCanonicalObligation() : null;
+  const replayAttemptId = canonicalBeforeDispatch?.provider_attempt_lineage?.at(-1) ?? null;
+  const journaledCurrentCompletion = replayAttemptId
+    ? findCurrentRunProviderCompletion(metadata, {
+      logical_run_id: pipeline.lifecycleIdentity.logical_run_id,
+      attempt_id: replayAttemptId,
+      obligation_leaf_id: pipeline.leafObligationId,
+      source_fingerprint: sourceFingerprint,
+    }) : null;
+  const journalReplayMode = Boolean(journaledCurrentCompletion?.response_text != null
+    && ['continue_pending_downstream_processing',
+      'replay_terminal_provider_downstream_lifecycle',
+      'reconcile_terminal_attempt_evidence',
+      'apply_journaled_provider_completion']
+      .includes(execution.provider.selected_recovery_action));
+  const physicalProviderRequests = journalReplayMode ? 0 : 1;
+  const dispatchAction = journalReplayMode ? 'apply_journaled_provider_completion'
+    : execution.provider.selected_recovery_action === 'recover_missing_owner_coverage'
+      ? 'recover_missing_owner_coverage' : 'dispatch_provider_request';
   pipeline.requireSelectedAction(dispatchAction);
   await pipeline.recordActionReceipt('action_selected', { action: dispatchAction });
   await pipeline.recordActionReceipt('action_started', { action: dispatchAction });
-  const registration = await pipeline.ingestProviderEvidence('register_new_attempt');
-  if (registration.status === 'operationally_paused') {
+  const registration = journalReplayMode ? null
+    : await pipeline.ingestProviderEvidence('register_new_attempt');
+  if (registration?.status === 'operationally_paused') {
     const evidence = policyPauseEvidence(registration, pipeline.leafObligationId,
       pipeline.rootObligationId);
     healthFinish({ terminal_health: 'policy_paused', provider_outcome: 'not_dispatched',
@@ -141,7 +164,7 @@ export async function extractAndStoreMultiOwnerMemories(
       next_action: evidence.next_eligible_action, provider_call_required: false,
       evidence, value: { root_obligation_id: pipeline.rootObligationId } });
   }
-  if (registration.status !== 'applied') {
+  if (registration && registration.status !== 'applied') {
     const error = new Error('Multi-owner Long-Term provider attempt could not be registered.');
     error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
     error.sme_origin = 'internal_invariant';
@@ -149,44 +172,70 @@ export async function extractAndStoreMultiOwnerMemories(
     error.sme_request_diagnostics = registration;
     throw fail(error);
   }
-  const attempt = registration.attempt;
+  const attempt = journalReplayMode
+    ? [...(metadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
+      .reverse().find((item) => item.attempt_id === replayAttemptId)
+      ?? { ...journaledCurrentCompletion, attempt_id: replayAttemptId,
+        logical_obligation_id: pipeline.rootObligationId,
+        child_obligation_id: pipeline.leafObligationId }
+    : registration.attempt;
   operationContext = createMemorizeOperationContext({
     ...operationContextInput, attempt_id: attempt?.attempt_id,
   });
-  await pipeline.recordActionReceipt('provider_attempt_registered', {
+  if (!journalReplayMode) await pipeline.recordActionReceipt('provider_attempt_registered', {
     action: dispatchAction, attempt_id: attempt?.attempt_id,
   });
   let response;
   let partition;
   try {
-    await execution.hooks.provider_await_point({
-      await_point: 'provider_request', progress: true,
-      active_provider_attempt_id: attempt?.attempt_id,
-      root_obligation_id: pipeline.rootObligationId,
-      child_obligation_id: pipeline.leafObligationId,
-      source_range: range,
-    });
-    await pipeline.recordActionReceipt('provider_request_started', {
-      action: dispatchAction, attempt_id: attempt?.attempt_id,
-    });
-    const batch = await pipeline.executeSelectedAction(dispatchAction,
-      () => dispatchMultiOwnerLongtermBatch({
-        request, owners, source_indices: sourceMessages.map((_, index) => index),
-        dispatch: () => (options.provider ?? generateMemoryExtract)(request.prompt, {
-          responseLength, systemPrompt: request.systemPrompt,
-          providerConstraints: request.providerConstraints,
-        }),
-      }), { attempt_id: attempt?.attempt_id });
-    response = batch.response;
-    partition = batch.partition;
+    if (journalReplayMode) {
+      response = await pipeline.executeSelectedAction(dispatchAction,
+        async () => journaledCurrentCompletion.response_text,
+        { attempt_id: attempt?.attempt_id });
+      partition = partitionMultiOwnerLongtermResponse(response, {
+        allowed_owners: owners,
+        source_indices: sourceMessages.map((_, index) => index),
+      });
+    } else {
+      await execution.hooks.provider_await_point({
+        await_point: 'provider_request', progress: true,
+        active_provider_attempt_id: attempt?.attempt_id,
+        root_obligation_id: pipeline.rootObligationId,
+        child_obligation_id: pipeline.leafObligationId,
+        source_range: range,
+      });
+      await pipeline.recordActionReceipt('provider_request_started', {
+        action: dispatchAction, attempt_id: attempt?.attempt_id,
+      });
+      const batch = await pipeline.executeSelectedAction(dispatchAction,
+        () => dispatchMultiOwnerLongtermBatch({
+          request, owners, source_indices: sourceMessages.map((_, index) => index),
+          dispatch: () => (options.provider ?? generateMemoryExtract)(request.prompt, {
+            responseLength, systemPrompt: request.systemPrompt,
+            providerConstraints: request.providerConstraints,
+          }),
+        }), { attempt_id: attempt?.attempt_id });
+      response = batch.response;
+      partition = batch.partition;
+    }
     await pipeline.recordActionReceipt('provider_response_received', {
       action: dispatchAction, attempt_id: attempt?.attempt_id,
     });
   } catch (error) {
-    error.sme_origin ??= 'provider_transport';
+    error.sme_origin ??= journalReplayMode ? 'internal_invariant' : 'provider_transport';
     error.sme_request_diagnostics ??= {};
-    error.sme_request_diagnostics.transport_started = true;
-    error.sme_request_diagnostics.transport_completed = false;
+    error.sme_request_diagnostics.transport_started = !journalReplayMode;
+    error.sme_request_diagnostics.transport_completed = journalReplayMode;
+    error.sme_request_diagnostics.provider_call_required = !journalReplayMode;
+    if (journalReplayMode) {
+      error.sme_reason_code ??= 'local_completion_replay_failure';
+      error.sme_request_diagnostics.retry_eligible = false;
+      error.sme_request_diagnostics.next_eligible_recovery_action = null;
+      healthFinish({ terminal_health: 'local_replay_failure',
+        provider_outcome: 'previous_response_retained',
+        attention_reason_codes: ['local_completion_replay_failure'] });
+      throw fail(error);
+    }
     finishProviderAttempt(metadata, attempt, { terminal_outcome: 'provider_failure',
       recoverable: true, failure_classification: 'provider_transport_failure' });
     await pipeline.applyProviderCompletion({
@@ -352,7 +401,7 @@ export async function extractAndStoreMultiOwnerMemories(
         return createMemorizeTierOutcome({ kind: 'complete',
           reason_code: 'malformed_multi_owner_repartition_recovered',
           value: { status: 'completed_repartitioned', added: schedule.added,
-            owners: {}, physical_provider_requests: 1 + schedule.executed,
+            owners: {}, physical_provider_requests: physicalProviderRequests + schedule.executed,
             root_obligation_id: pipeline.rootObligationId } });
       }
       return createMemorizeTierOutcome({ kind: 'policy_paused',
@@ -377,12 +426,12 @@ export async function extractAndStoreMultiOwnerMemories(
   }
   const originalIndices = sourceMessages.map((message, index) =>
     Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : index);
-  let ownerResults = {};
+  let ownerPlans = {};
   const allDurableIds = [];
   const allCandidateMap = {};
   const allCandidateIds = [];
   let added = 0;
-  ownerResults = await persistMultiOwnerLongtermPartitions({ owners, partition,
+  ownerPlans = await persistMultiOwnerLongtermPartitions({ owners, partition,
     prepare_records: async (owner, records) => {
       const structured = parseStructuredMemoryResponse(JSON.stringify({ records }), {
         tier: 'longterm', parse: parseExtractionOutput,
@@ -399,23 +448,33 @@ export async function extractAndStoreMultiOwnerMemories(
       return { records: parsed, candidate_ids: candidateIdsForOwner };
     },
     persist_partition: (owner, parsed) =>
-      (options.persistPartition ?? persistLongtermOwnerPartition)(
+      (options.preparePersistencePlan ?? prepareLongtermOwnerPersistencePlan)(
         owner, parsed, sourceMessages, {
           targeted_replay: execution.recovery.targeted_replay,
-          defer_commit: !options.persistPartition,
         }),
   });
-  for (const result of Object.values(ownerResults)) {
-    added += Number(result.added ?? 0);
-    allDurableIds.push(...(result.durable_record_ids ?? []));
-    Object.assign(allCandidateMap, result.durable_record_candidate_map ?? {});
+  const persistenceExecutor = options.persistenceExecutor
+    ?? createLongtermOwnerPersistenceExecutor(options.persistenceAdapters);
+  assertSerializableDomain(ownerPlans, {
+    path: '$.owner_persistence_plans', stage: 'owner_plan_aggregate_validation',
+    operation_type: 'longterm_multi_owner_persistence_v1',
+    obligation_id: pipeline.leafObligationId,
+  });
+  const effectPlans = Object.values(ownerPlans).filter((plan) => plan?.operation_type);
+  validateEffectPlanAggregate(persistenceExecutor, effectPlans, {
+    obligation_id: pipeline.leafObligationId,
+  });
+  for (const plan of Object.values(ownerPlans)) {
+    added += Number(plan.added ?? 0);
+    allDurableIds.push(...(plan.durable_record_ids ?? []));
+    Object.assign(allCandidateMap, plan.durable_record_candidate_map ?? {});
   }
   const ownerCoverage = projectMultiOwnerCoverage({
     required_owners: requiredOwners,
     partitions: partition.partitions,
     no_update_owners: partition.no_update_owners,
     rejected: partition.rejected,
-    owner_results: ownerResults,
+    owner_results: ownerPlans,
     prior: options.priorOwnerCoverage,
   });
   const needsRecovery = !ownerCoverage.complete;
@@ -449,9 +508,99 @@ export async function extractAndStoreMultiOwnerMemories(
   if (pipeline.atomicCompletionEnabled) {
     pipeline.prepareProviderCompletion(persistenceCompletionDetails);
   }
-  // Default production adapters expose deferred commits.  All partitions are
-  // validated as one command before the first owner store is changed.
-  for (const result of Object.values(ownerResults)) await result.commit?.();
+  journalEntry = recordProviderCompletion(metadata, attempt, {
+    child_key: pipeline.leafObligationId,
+    parser_result: { status: explicitNoUpdate ? 'explicit_none'
+      : needsRecovery ? 'partial' : 'accepted',
+    accepted_count: partition.accepted_record_count,
+    rejected_count: partition.rejected.length },
+    parser_accepted_candidate_ids: candidateIds,
+    validation: { status: explicitNoUpdate ? 'validated_no_update'
+      : needsRecovery ? 'partial' : 'accepted', accepted_count: candidateIds.length },
+    validation_accepted_candidate_ids: candidateIds,
+    persistence: { status: 'prepared', durable_record_ids: [],
+      durable_record_candidate_map: {}, source_provenance: {} },
+    prepared_effect_plans: effectPlans,
+  });
+  await execution.hooks.provider_completion_journal_updated(journalEntry, {
+    await_point: 'persistence_plan_prepared', progress: true,
+  });
+  // Plans contain data only. Validate the complete aggregate before allowing
+  // the runtime-only executor to invoke the first storage adapter.
+  const receiptEntries = Object.entries(ownerPlans)
+    .filter(([, plan]) => !plan?.operation_type);
+  try {
+    const aggregateReceipt = await executeEffectPlanAggregate({
+      executor: persistenceExecutor, plans: effectPlans,
+      context: { obligation_id: pipeline.leafObligationId },
+      hooks: { on_boundary: async (event) => {
+        await options.persistenceHooks?.on_boundary?.(event);
+        if (event.stage === 'before_effect') {
+          await execution.hooks.provider_await_point({
+            await_point: 'local_owner_persistence', progress: true,
+            active_provider_attempt_id: attempt?.attempt_id,
+            root_obligation_id: pipeline.rootObligationId,
+            child_obligation_id: pipeline.leafObligationId,
+            source_range: range,
+          });
+        }
+      } },
+    });
+    for (const receipt of aggregateReceipt.receipts) {
+      receiptEntries.push([receipt.owner, receipt]);
+    }
+  } catch (error) {
+      error.sme_origin ??= error?.code === 'SME_NON_SERIALIZABLE_DOMAIN_DATA'
+        ? 'programming_error' : 'persistence';
+      error.sme_reason_code ??= error?.code === 'SME_NON_SERIALIZABLE_DOMAIN_DATA'
+        ? 'non_serializable_domain_data' : 'persistence_failure';
+      error.sme_request_diagnostics = {
+        ...(error.sme_request_diagnostics ?? {}),
+        provider_call_required: false,
+        retry_eligible: false,
+        failure_stage: error.sme_failure_stage ?? 'owner_effect_execution',
+      };
+      finishProviderAttempt(metadata, attempt, {
+        terminal_outcome: 'downstream_failure', recoverable: false,
+        failure_classification: error.sme_origin === 'programming_error'
+          ? 'local_programming_defect' : 'local_persistence_failure',
+      });
+      journalEntry = recordProviderCompletion(metadata, attempt, {
+        child_key: pipeline.leafObligationId,
+        persistence: { status: 'rejected', durable_record_ids: [],
+          durable_record_candidate_map: {}, source_provenance: {} },
+        logical_disposition: 'local_failure_no_provider_retry',
+      });
+      await execution.hooks.provider_completion_journal_updated(journalEntry, {
+        await_point: 'canonical_persistence_failure', progress: false,
+      });
+      const completedReceipts = error.sme_request_diagnostics?.completed_owner_receipts ?? [];
+      const locallyDurableIds = completedReceipts.flatMap((receipt) =>
+        receipt.durable_record_ids ?? []);
+      const locallyDurableMap = Object.assign({}, ...completedReceipts.map((receipt) =>
+        receipt.durable_record_candidate_map ?? {}));
+      try {
+        await pipeline.applyProviderCompletion({
+          ...persistenceCompletionDetails,
+          terminal: false,
+          persistence_outcome: {
+            status: locallyDurableIds.length ? 'committed' : 'rejected',
+            durable_record_ids: locallyDurableIds,
+            durable_record_candidate_map: locallyDurableMap,
+            source_provenance: locallyDurableIds.length ? sourceProvenance : {},
+          },
+          reason_code: 'local_persistence_replay_required',
+          next_action: 'apply_journaled_provider_completion',
+        });
+      } catch (lifecycleError) {
+        error.sme_request_diagnostics.lifecycle_recording_failure = {
+          code: lifecycleError?.code ?? null,
+          reason_code: lifecycleError?.sme_reason_code ?? null,
+        };
+      }
+      throw fail(error);
+  }
+  const ownerResults = Object.freeze(Object.fromEntries(receiptEntries));
   finishProviderAttempt(metadata, attempt, {
     terminal_outcome: needsRecovery ? 'partial_valid_output' : 'completed',
     recoverable: needsRecovery, accepted_record_count: partition.accepted_record_count,
@@ -475,6 +624,7 @@ export async function extractAndStoreMultiOwnerMemories(
     source_provenance: allDurableIds.length ? sourceProvenance : {},
     checkpoint_effect: { obligation_leaf_id: pipeline.leafObligationId,
       checkpoint_eligible_on_commit: !needsRecovery },
+    prepared_effect_plans: [],
   });
   await execution.hooks.provider_completion_journal_updated(journalEntry, {
     await_point: 'canonical_persistence', progress: true,
@@ -496,7 +646,8 @@ export async function extractAndStoreMultiOwnerMemories(
       rejected_owners: ownerCoverage.owners_with_rejected_output,
       durable_receipts: allDurableIds, owner_coverage: ownerCoverage,
       value: { status: 'partial_recoverable', added, owners: ownerResults,
-        physical_provider_requests: 1, root_obligation_id: pipeline.rootObligationId },
+        physical_provider_requests: physicalProviderRequests,
+        root_obligation_id: pipeline.rootObligationId },
       evidence: { rejected_reason_codes:
         [...new Set(partition.rejected.map((item) => item.reason_code))] },
     });
@@ -513,7 +664,8 @@ export async function extractAndStoreMultiOwnerMemories(
     explicit_no_update_owners: ownerCoverage.owners_with_explicit_no_update,
     durable_receipts: allDurableIds, owner_coverage: ownerCoverage,
     value: { status: 'completed', added, owners: ownerResults,
-      physical_provider_requests: 1, explicit_no_update_owners: partition.no_update_owners,
+      physical_provider_requests: physicalProviderRequests,
+      explicit_no_update_owners: partition.no_update_owners,
       owner_coverage: ownerCoverage, root_obligation_id: pipeline.rootObligationId },
   });
 }

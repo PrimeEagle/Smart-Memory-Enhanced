@@ -2,11 +2,14 @@ import { applyProviderCompletion, ensureMemorizeExecutionAggregate,
   observeMemorizeKernelCommit } from './memorize-execution-kernel.js';
 import { preparePersistenceCommand } from './persistence-command.js';
 import { deriveMemorizeSafeResumeOffset } from './memorize-obligation-ledger.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 export const MEMORIZE_UNIT_OF_WORK_SCHEMA_VERSION = 2;
 
 function clone(value) {
-  return value == null ? value : structuredClone(value);
+  return cloneSerializableDomain(value, {
+    path: '$.memorize_unit_of_work', stage: 'unit_of_work_boundary',
+  });
 }
 
 export function prepareMemorizeUnitOfWork(stateValue, command, now = Date.now()) {

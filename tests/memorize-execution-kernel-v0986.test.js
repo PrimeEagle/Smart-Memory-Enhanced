@@ -558,9 +558,9 @@ test('historical identical Session evidence cannot intercept current-run dispatc
   const currentRun = RUN;
   const metadata = {
     active_catchup_run_id: currentRun,
-    provider_completion_journal: { schema_version: 7, entries: {
+    provider_completion_journal: { schema_version: 8, entries: {
       historical: {
-        schema_version: 7, attempt_id: 'historical', logical_run_id: 'prior-run',
+        schema_version: 8, attempt_id: 'historical', logical_run_id: 'prior-run',
         obligation_leaf_id: 'session:chat:160-179:fnv1a-5654f879',
         root_obligation_id: 'session:chat:160-179:fnv1a-5654f879',
         tier: 'session', source_range: { start: 160, end: 179, message_count: 20 },

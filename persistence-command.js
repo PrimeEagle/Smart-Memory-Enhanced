@@ -1,13 +1,14 @@
 export const PERSISTENCE_COMMAND_SCHEMA_VERSION = 1;
+import { cloneSerializableDomain, freezeDomainTree } from './serializable-domain.js';
 
-const clone = (value) => value == null ? value : structuredClone(value);
+const clone = (value) => cloneSerializableDomain(value, {
+  path: '$.persistence_command', stage: 'persistence_command_validation',
+  operation_type: value?.operation_type ?? value?.tier ?? null,
+  obligation_id: value?.obligation_leaf_id ?? null,
+  allow_undefined: true,
+});
 const unique = (items = []) => [...new Set((Array.isArray(items) ? items : [])
   .map((item) => String(item ?? '').trim()).filter(Boolean))];
-const freezeTree = (value) => {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
-  for (const nested of Object.values(value)) freezeTree(nested);
-  return Object.freeze(value);
-};
 
 export function providerCompletionIdentity(command = {}) {
   const commandId = String(command.command_id ?? command.commandId ?? '').trim();
@@ -143,6 +144,11 @@ export function preparePersistenceCommand(commandValue = {}) {
   command.parser_outcome = parser;
   command.validation_outcome = validation;
   command.persistence_outcome = persistence;
-  return freezeTree(command);
+  cloneSerializableDomain(command, {
+    path: '$.persistence_command', stage: 'persistence_command_validation',
+    operation_type: command.tier ?? null,
+    obligation_id: command.obligation_leaf_id ?? null,
+  });
+  return freezeDomainTree(command);
 }
 

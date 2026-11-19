@@ -1,10 +1,14 @@
 import { projectMemorizeKernelStatus, validateMemorizeExecutionAggregate }
   from './memorize-execution-kernel.js';
+import { cloneSerializableDomain, immutableSerializableDomain }
+  from './serializable-domain.js';
 
 /** Compact read-only export. It never retains provider response or record bodies. */
 export function projectMemorizeKernelDiagnostics(aggregateValue, input = {}) {
   if (!aggregateValue?.execution_kernel) return null;
-  const aggregate = structuredClone(aggregateValue);
+  const aggregate = cloneSerializableDomain(aggregateValue, {
+    path: '$.memorize_diagnostic_aggregate', stage: 'diagnostic_projection',
+  });
   const kernel = aggregate.execution_kernel;
   const status = projectMemorizeKernelStatus(aggregate, {
     controller_active: input.controller_active === true,
@@ -50,7 +54,9 @@ export function projectMemorizeKernelDiagnostics(aggregateValue, input = {}) {
     protocol: capsule.protocol,
     rejected_fragment_count: capsule.rejected_fragment_ids?.length ?? 0,
     durable_record_count: capsule.durable_record_ids?.length ?? 0,
-    owner_coverage: capsule.owner_coverage ? structuredClone(capsule.owner_coverage) : null,
+    owner_coverage: capsule.owner_coverage ? cloneSerializableDomain(capsule.owner_coverage, {
+      path: '$.recovery_capsule.owner_coverage', stage: 'diagnostic_projection',
+    }) : null,
     private_fragment_payload_available: capsule.private_fragment_payload_available === true,
     source_backed_regeneration_available: capsule.source_backed_regeneration_available === true,
   }));
@@ -68,21 +74,21 @@ export function projectMemorizeKernelDiagnostics(aggregateValue, input = {}) {
     checkpoint: receipt.checkpoint,
     at: receipt.at,
   }));
-  return Object.freeze({
+  return immutableSerializableDomain({
     schema_version: 1,
     logical_run_id: aggregate.logical_run_id,
     aggregate_revision: kernel.revision,
     current: status,
     tables: { obligations, attempts, recovery_capsules: capsules,
       action_receipts: actionReceipts },
-    semantic_events: structuredClone((kernel.semantic_events ?? []).slice(-256)),
-    stale_callbacks: structuredClone((kernel.stale_callbacks ?? []).slice(-64)),
+    semantic_events: kernel.semantic_events?.slice(-256) ?? [],
+    stale_callbacks: kernel.stale_callbacks?.slice(-64) ?? [],
     invariants: { valid: validation.valid, violations: validation.violations },
     privacy: {
       provider_response_bodies_exported: false,
       memory_record_bodies_exported: false,
       private_payload_availability_reported_structurally: true,
     },
-  });
+  }, { path: '$.memorize_kernel_diagnostics', stage: 'diagnostic_projection' });
 }
 

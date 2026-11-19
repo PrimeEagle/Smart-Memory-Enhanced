@@ -3,6 +3,7 @@ import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malfo
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION } from './recovery-stage-eligibility.js';
 import { recordProviderCompletion } from './provider-completion-journal.js';
 import { ensureMemorizeObligationLedger } from './memorize-obligation-ledger.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import {
   createRecoveryChildManifest,
   markRecoveryChildState,
@@ -1290,7 +1291,10 @@ export function beginProviderRecoveryEpoch(metadata, logicalObligationId, source
   if (activeEpoch && ['initialized_before_dispatch', 'running'].includes(activeEpoch.status)) {
     const activePhysicalAttempt = (audit.recent_attempts ?? []).find((attempt) =>
       attempt.logical_obligation_id === logicalObligationId && attempt.terminal_outcome === 'running');
-    if (activePhysicalAttempt) return { ...structuredClone(activeEpoch), overlap_prevented: true };
+    if (activePhysicalAttempt) return { ...cloneSerializableDomain(activeEpoch, {
+      path: '$.provider_recovery_epoch', stage: 'provider_recovery_epoch_projection',
+      operation_type: 'provider_recovery_epoch',
+    }), overlap_prevented: true };
     activeEpoch.status = 'interrupted_without_running_attempt';
     activeEpoch.completed_at = Date.now();
   }
@@ -1318,8 +1322,11 @@ export function beginProviderRecoveryEpoch(metadata, logicalObligationId, source
     epoch_request_ceiling: Number(details.epoch_request_ceiling ?? 4),
     global_requests_consumed_before_epoch: Number(details.global_requests_consumed_before_epoch
       ?? priorRecoveryRequestCount),
-    global_requests_by_stage_before_epoch: structuredClone(
-      details.global_requests_by_stage_before_epoch ?? priorRecoveryRequestsByStage),
+    global_requests_by_stage_before_epoch: cloneSerializableDomain(
+      details.global_requests_by_stage_before_epoch ?? priorRecoveryRequestsByStage, {
+        path: '$.provider_recovery_epoch.global_requests_by_stage_before_epoch',
+        stage: 'provider_recovery_epoch_projection', operation_type: 'provider_recovery_epoch',
+      }),
     status: 'initialized_before_dispatch',
     started_at: Date.now(),
   };
@@ -1329,7 +1336,10 @@ export function beginProviderRecoveryEpoch(metadata, logicalObligationId, source
   obligation.recovery_intent = epoch.recovery_intent;
   obligation.recovery_stage = epoch.recovery_stage;
   obligation.next_eligible_recovery_action = epoch.recovery_stage;
-  return structuredClone(epoch);
+  return cloneSerializableDomain(epoch, {
+    path: '$.provider_recovery_epoch', stage: 'provider_recovery_epoch_projection',
+    operation_type: 'provider_recovery_epoch',
+  });
 }
 
 /** Marks valid partial records durable without closing their still-pending obligation. */
@@ -1404,7 +1414,11 @@ export function markProviderObligationOperationalPause(metadata, logicalObligati
     recovery_stage: obligation.recovery_stage,
     consumed_requests: count(details.consumed_requests),
     remaining_requests: count(details.remaining_requests),
-    budget_accounting: details.budget_accounting ? structuredClone(details.budget_accounting) : null,
+    budget_accounting: details.budget_accounting ? cloneSerializableDomain(
+      details.budget_accounting, {
+        path: '$.provider_attempt.budget_accounting', stage: 'provider_attempt_registration',
+        operation_type: 'provider_attempt',
+      }) : null,
     fresh_budget_on_resume: details.fresh_budget_on_resume === true,
     paused_at: Date.now(),
   };
@@ -1529,8 +1543,9 @@ export function markProviderRecoveryBudgetPause(metadata, logicalObligationId, d
 
 export function summarizeProviderAttemptAudit(metadata) {
   const sourceAudit = metadata?.live_memory_health?.provider_attempt_audit;
-  const audit = sourceAudit ? (typeof structuredClone === 'function'
-    ? structuredClone(sourceAudit) : JSON.parse(JSON.stringify(sourceAudit))) : null;
+  const audit = sourceAudit ? cloneSerializableDomain(sourceAudit, {
+    path: '$.provider_attempt_audit_projection', stage: 'diagnostic_projection',
+  }) : null;
   if (!audit) return null;
   if (Number(audit.schema_version) !== PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION) {
     return Object.freeze({ schema_version: PROVIDER_ATTEMPT_AUDIT_SCHEMA_VERSION,

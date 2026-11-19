@@ -1,12 +1,12 @@
 {
   "name": "smart-memory",
-  "version": "0.9.92",
+  "version": "0.9.93",
   "type": "module",
   "description": "Smart Memory - SillyTavern extension",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "lint:no-undef": "eslint . --ext .js --ignore-pattern tests --ignore-pattern test-harness.mjs --no-warn-ignored --rule no-undef:error --rule no-useless-escape:off --rule no-constant-condition:off --rule no-unreachable:off",
-    "test:persistence-foundations": "node --check candidate-identity.js && node --check persistence-command.js && node --check feature-persistence.js && node --test tests/candidate-identity.test.js tests/persistence-command.test.js tests/feature-persistence.test.js tests/memorize-execution-kernel-v0986.test.js",
+    "test:persistence-foundations": "node --check serializable-domain.js && node --check runtime-effect-executor.js && node --check longterm-owner-persistence.js && node --check candidate-identity.js && node --check persistence-command.js && node --check feature-persistence.js && node --test tests/serializable-domain.test.js tests/production-persistence-architecture.test.js tests/candidate-identity.test.js tests/persistence-command.test.js tests/feature-persistence.test.js tests/memorize-execution-kernel-v0986.test.js",
     "test:memorize-refactor": "node --check memorize-diagnostic-boundary.js && node --check multi-owner-coverage.js && node --test tests/memorize-refactor-v0989.test.js",
     "test:recovery-orchestration": "node --check memorize-tier-outcome.js && node --check memorize-recovery-scheduler.js && node --check session-tier-runtime.js && node --test tests/memorize-recovery-orchestration-v0990.test.js",
     "test:action-engine": "node --check memorize-action-engine.js && node --test tests/memorize-action-engine-v0991.test.js",

@@ -1,5 +1,6 @@
 import { projectMemorizeObligationLedger } from './memorize-obligation-ledger.js';
 import { ensureMemorizeExecutionAggregate } from './memorize-execution-kernel.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
 export function normalizeCatchUpCheckpoint(checkpoint) {
@@ -420,7 +421,10 @@ export function finalizeCatchUpRunManifest(manifest, { status, reasonCode = null
 
 /** Builds an export-safe, cumulative summary. Ranges use numeric source offsets only. */
 export function summarizeCatchUpRunManifest(manifest) {
-  const next = ensureCatchUpRunManifest({ run_manifest: structuredClone(manifest) });
+  const next = ensureCatchUpRunManifest({ run_manifest: cloneSerializableDomain(manifest, {
+    path: '$.run_manifest', stage: 'run_manifest_projection',
+    operation_type: 'memorize_run_manifest',
+  }) });
   const total = next.source_window.message_count;
   const committed = mergeRanges(next.committed_ranges);
   const gaps = gapsForRanges(committed, total);

@@ -1,6 +1,7 @@
 import {
   canonicalizeMemorizeKernelAction,
 } from './memorize-execution-kernel.js';
+import { immutableSerializableDomain } from './serializable-domain.js';
 
 export function canonicalizeMemorizeAction(action) {
   return canonicalizeMemorizeKernelAction(action);
@@ -44,7 +45,11 @@ export async function dispatchMemorizeAction({
   try {
     const value = await handler({ logical_run_id: logicalRunId,
       obligation_id: obligationId, action: canonicalRequestedAction, detail });
-    return freeze({ status: 'executed', executed: true, action: canonicalRequestedAction, value });
+    return immutableSerializableDomain({ status: 'executed', executed: true,
+      action: canonicalRequestedAction, value: value ?? null }, {
+      path: '$.memorize_action_result', stage: 'action_result_construction',
+      operation_type: canonicalRequestedAction, obligation_id: obligationId,
+    });
   } catch (error) {
     error.sme_action ??= canonicalRequestedAction;
     error.sme_obligation_id ??= obligationId;

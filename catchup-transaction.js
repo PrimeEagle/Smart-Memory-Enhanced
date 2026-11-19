@@ -7,6 +7,11 @@ import { getRequestHeaders, saveChat, saveSettingsDebounced } from '../../../../
 import { extension_settings } from '../../../extensions.js';
 import { MODULE_NAME, META_KEY } from './constants.js';
 import { createTransactionLease, inspectTransactionLease } from './catchup-transaction-lease.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
+
+const cloneTransactionData = (value, path = '$.transaction_state') =>
+  cloneSerializableDomain(value, { path, stage: 'transaction_state_snapshot',
+    operation_type: 'memorize_transaction', allow_undefined: true });
 
 let activeTransaction = null;
 let transactionSequence = 0;
@@ -34,7 +39,7 @@ function terminalSnapshot(transaction) {
     transaction_id: transaction.transaction_id,
     state: transaction.state,
     terminal_disposition: transaction.terminal_disposition ?? null,
-    owner: structuredClone(transaction.owner ?? {}),
+    owner: cloneTransactionData(transaction.owner ?? {}, '$.transaction.owner'),
     metadata_dirty: transaction.metadataDirty === true,
     started_at: transaction.started_at ?? null,
     settled_at: transaction.settled_at ?? null,
@@ -69,8 +74,8 @@ export function beginCatchUpTransaction(context, ownership = {}) {
     settled_at: null,
     context,
     metadataExisted: Object.prototype.hasOwnProperty.call(context.chatMetadata ?? {}, META_KEY),
-    metadataBefore: structuredClone(context.chatMetadata?.[META_KEY] ?? {}),
-    settingsBefore: structuredClone(extension_settings[MODULE_NAME] ?? {}),
+    metadataBefore: cloneTransactionData(context.chatMetadata?.[META_KEY] ?? {}, '$.transaction.metadata_before'),
+    settingsBefore: cloneTransactionData(extension_settings[MODULE_NAME] ?? {}, '$.transaction.settings_before'),
     metadataDirty: false,
     durableCheckpointCount: 0,
   };
@@ -137,7 +142,7 @@ export async function saveChatMetadata(context) {
 
 function restoreObject(target, snapshot) {
   for (const key of Object.keys(target)) delete target[key];
-  Object.assign(target, structuredClone(snapshot));
+  Object.assign(target, cloneTransactionData(snapshot, '$.transaction.restore_snapshot'));
 }
 
 export function rollbackCatchUpTransaction(transaction) {
@@ -146,7 +151,8 @@ export function rollbackCatchUpTransaction(transaction) {
   const { context, metadataExisted, metadataBefore, settingsBefore } = transaction;
   try {
     if (!context.chatMetadata) context.chatMetadata = {};
-    if (metadataExisted) context.chatMetadata[META_KEY] = structuredClone(metadataBefore);
+    if (metadataExisted) context.chatMetadata[META_KEY] = cloneTransactionData(
+      metadataBefore, '$.transaction.metadata_before');
     else delete context.chatMetadata[META_KEY];
     restoreObject(extension_settings[MODULE_NAME], settingsBefore);
     transaction.state = 'rolled_back';
@@ -253,8 +259,10 @@ export async function checkpointCatchUpTransaction(transaction) {
       if (transaction.context.groupId) await saveGroupChatDirect(transaction.context);
       else await saveChat();
     }
-    transaction.metadataBefore = structuredClone(transaction.context.chatMetadata?.[META_KEY] ?? {});
-    transaction.settingsBefore = structuredClone(extension_settings[MODULE_NAME] ?? {});
+    transaction.metadataBefore = cloneTransactionData(
+      transaction.context.chatMetadata?.[META_KEY] ?? {}, '$.transaction.metadata_before');
+    transaction.settingsBefore = cloneTransactionData(
+      extension_settings[MODULE_NAME] ?? {}, '$.transaction.settings_before');
     transaction.metadataDirty = false;
     transaction.durableCheckpointCount++;
   } catch (error) {
