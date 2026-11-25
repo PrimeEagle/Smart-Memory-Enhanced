@@ -274,6 +274,16 @@ test('active Short-Term recovery contains no in-place compatibility migration pa
   assert.match(targetedReplay, /targeted_replay_schema_unsupported/);
 });
 
+test('multi-owner receipt writes do not enter the provider failure branch', () => {
+  const source = read('multi-owner-longterm-runtime.js');
+  const starts = source.indexOf("recordActionReceipt('provider_request_started'");
+  const guard = source.indexOf('if (!journalReplayMode && !transportRejected)');
+  const journal = source.indexOf('provider_completion_journal_updated(entry', guard);
+  const received = source.indexOf("recordActionReceipt('provider_response_received'");
+  assert.ok(starts >= 0 && starts < guard && guard < journal && journal < received);
+  assert.match(source, /catch \(error\) \{\s*transportRejected = true;\s*throw error;/);
+});
+
 test('stored memory entry points validate current schemas instead of invoking migrations', () => {
   const graph = read('graph-migration.js');
   const characterValidator = graph.slice(graph.indexOf('export function ensureCharacterSchemaCurrent'),

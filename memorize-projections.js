@@ -102,8 +102,8 @@ export function selectRecoveryPresentation(input = {}) {
       status_text: `Blocked — recovery change required. ${unresolved} unresolved extraction obligation${unresolved === 1 ? '' : 's'}${affected ? `: ${affected}` : ''}. Safe progress is preserved, but another identical Resume is not useful. Change the provider/model configuration or install an updated build.`,
       auto_resume_eligible: false });
   }
-  const committed = Math.min(Number(checkpoint.next_source_offset) || 0, Number(checkpoint.source_message_count) || 0);
-  const total = Number(checkpoint.source_message_count) || 0;
+  const total = Number(manifest.source_window?.message_count ?? recovery?.source_message_count) || 0;
+  const committed = Math.min(Number(recovery?.safely_committed_offset ?? checkpoint.next_source_offset) || 0, total);
   const attemptText = manifest.attempt_count > 1 ? ` across ${manifest.attempt_count} attempts` : '';
   const rangeText = `${manifest.cumulative_range_count ?? 0} coalesced committed range${manifest.cumulative_range_count === 1 ? '' : 's'}`;
   const traversalCount = Number(manifest.cumulative_committed_count ?? committed) || 0;

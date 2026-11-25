@@ -26,3 +26,19 @@ response bodies. A second test calls the same download handler registered by
 the settings UI with simulated DOM and URL APIs. It verifies the actual JSON
 Blob, filename, and URL cleanup. Live browser wiring and upstream report
 assembly are not covered.
+
+The first two-tier chunk now has a transaction integration test using scripted
+tier completions. It saves Long-Term coverage while leaving the contiguous
+offset at zero, reopens the serialized checkpoint, skips the covered tier, and
+advances the durable offset to 20 after Session completes. This does not
+exercise the actual extraction adapters or the browser handler. A separate
+test now runs the real multi-owner Long-Term adapter with a scripted provider
+and host save. It verifies the saved running state at dispatch, the retained
+reply after receipt failure, and a durable 20-message checkpoint after an
+explicit no-update response passes the real unit-of-work reducer.
+A record-producing case now saves real Long-Term extraction output, reloads
+the serialized group-save payload, selects only Session, and drives the real
+Session extractor through an explicit no-update response. It verifies the
+first two-tier commit at offset 20 and that neither tier is selected again.
+The test invokes both adapters with scripted host callbacks; the full browser
+handler and live SillyTavern server remain unverified.

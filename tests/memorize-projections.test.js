@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemorizeDiagnosticsDownload } from '../memorize-diagnostics-download.js';
+import { selectMemorizeResumePreflight } from '../memorize-recovery-authority.js';
+import { deriveShortTermMissingPlanResumeEligibility } from '../shortterm-recovery-utils.js';
 import { selectDiagnosticsProjection, selectRecoveryPresentation, selectRunOutcomePresentation } from '../memorize-projections.js';
 
 test('run outcome projection is pure and deterministic', () => {
@@ -19,6 +21,29 @@ test('recovery projection distinguishes absent, blocked, and resumable states', 
   assert.equal(blocked.label, 'Recovery Change Required');
   const ready = selectRecoveryPresentation({ checkpoint: { status: 'awaiting_manual_resume', source_message_count: 20, next_source_offset: 10 }, recovery: {}, manifest: {}, resumeEligibility: { eligible: true } });
   assert.equal(ready.disabled, false);
+});
+
+test('source-tier Resume does not require a Short-Term recovery plan', () => {
+  const checkpoint = { status: 'awaiting_manual_resume' };
+  const missingPlan = () => deriveShortTermMissingPlanResumeEligibility({ checkpointStatus: checkpoint.status });
+  const authority = {
+    pending_obligation: { tier: 'longterm', exact_reason_code: 'provider_transport_failure' },
+    resume_eligible: true, next_executable_action: 'dispatch_provider_request', resume_blockers: [],
+  };
+  const resumeEligibility = selectMemorizeResumePreflight(authority,
+    () => assert.fail('must not validate Short-Term while source work is pending'));
+  assert.equal(resumeEligibility.eligible, true);
+  assert.equal(resumeEligibility.decision, 'dispatch_provider_request');
+  const presentation = selectRecoveryPresentation({ checkpoint, resumeEligibility,
+    manifest: { source_window: { message_count: 9434 } }, recovery: { safely_committed_offset: 0 } });
+  assert.equal(presentation.disabled, false);
+  assert.match(presentation.status_text, /contiguous checkpoint 0\/9434/);
+  const blocked = selectMemorizeResumePreflight({
+    ...authority, resume_eligible: false, resume_blockers: [{ reason_code: 'resume_no_progress_same_action' }],
+  }, () => assert.fail('must not override the authority blocker'));
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.reason, 'resume_no_progress_same_action');
+  assert.equal(selectMemorizeResumePreflight(null, missingPlan).reason, 'shortterm_recovery_plan_missing');
 });
 
 test('diagnostics projection returns a new read model without mutating sources', () => {

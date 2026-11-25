@@ -623,3 +623,10 @@ export function createMemorizeTierPipeline(input) {
   });
 }
 
+/** A local receipt failure must not discard a response already saved for replay. */
+export async function retainResponseBeforeReceipt(retainResponse, writeReceipt) {
+  const response = await retainResponse();
+  await writeReceipt();
+  return response;
+}
+

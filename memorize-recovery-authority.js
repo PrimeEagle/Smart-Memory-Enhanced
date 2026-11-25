@@ -6,6 +6,18 @@ import { resumeNoProgressBlockIsCurrent, snapshotMemorizeResumeProgress }
   from './memorize-resume-progress.js';
 import { projectMemorizeKernelStatus } from './memorize-execution-kernel.js';
 
+/** Exact pending work takes precedence over unrelated finalization checks. */
+export function selectMemorizeResumePreflight(authority, evaluateFinalization) {
+  if (!authority?.pending_obligation) return evaluateFinalization();
+  return {
+    eligible: authority.resume_eligible,
+    decision: authority.resume_eligible ? authority.next_executable_action : 'blocked',
+    reason: authority.resume_eligible ? 'exact_recovery_action_available'
+      : authority.resume_blockers[0]?.reason_code,
+    next_eligible_action: authority.next_executable_action,
+  };
+}
+
 const terminalTransactionStates = new Set([
   'committed', 'rolled_back', 'commit_failed_with_exact_state',
   'rollback_failed_with_exact_state',

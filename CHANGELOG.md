@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.95] - 2026-11-25
+
+- Multi-owner Long-Term extraction now records the canonical dispatch transition before calling the provider. A later local receipt failure preserves the saved provider reply and is not classified as a transport failure.
+- Resume now uses the same recovery preflight as the panel and reads source coverage from the current run manifest. Removed the old Short-Term finalization checkpoint repair.
+- Full and compact diagnostics now read the current provider-audit projection. Compact exports include bounded, content-free attempt outcomes and distinguish unavailable transmission evidence from a known unsent attempt.
+- Save the authoritative controller exit with the first diagnostic publication so the original error survives reload without relying on a cleanup save.
+- Added a first-chunk integration gate using both real extraction adapters and a simulated group-save endpoint. It checks that reload selects only the unfinished tier, that the durable offset advances from 0 to 20, and that the saved Long-Term record is not duplicated. Live browser verification remains pending.
+
 ## [0.9.94] - 2026-11-25
 
 - Added scripted host-persistence coverage for saving provider registration before dispatch, rejecting dispatch after a failed save, and reopening the last saved checkpoint without accepting stale callbacks.

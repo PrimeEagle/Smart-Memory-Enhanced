@@ -18,7 +18,7 @@ import { findCurrentRunProviderCompletion, recordProviderCompletion }
   from './provider-completion-journal.js';
 import { extendMemorizeExecutionContext, resolveMemorizeExecutionContext }
   from './memorize-execution-context.js';
-import { createMemorizeTierPipeline } from './memorize-tier-pipeline.js';
+import { createMemorizeTierPipeline, retainResponseBeforeReceipt } from './memorize-tier-pipeline.js';
 import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
 import { attachMemorizeOperationContext, createMemorizeOperationContext }
   from './memorize-operation-context.js';
@@ -183,6 +183,20 @@ export async function extractAndStoreMultiOwnerMemories(
   });
   let response;
   let partition;
+  let transportRejected = false;
+  if (!journalReplayMode) {
+    await execution.hooks.provider_await_point({
+      await_point: 'provider_request', progress: true,
+      active_provider_attempt_id: attempt?.attempt_id,
+      root_obligation_id: pipeline.rootObligationId,
+      child_obligation_id: pipeline.leafObligationId,
+      source_range: range,
+    });
+    await pipeline.recordActionReceipt('provider_request_started', {
+      action: dispatchAction, attempt_id: attempt?.attempt_id,
+    });
+    await pipeline.markProviderDispatchStarted(attempt);
+  }
   try {
     if (journalReplayMode) {
       response = await pipeline.executeSelectedAction(dispatchAction,
@@ -193,31 +207,26 @@ export async function extractAndStoreMultiOwnerMemories(
         source_indices: sourceMessages.map((_, index) => index),
       });
     } else {
-      await execution.hooks.provider_await_point({
-        await_point: 'provider_request', progress: true,
-        active_provider_attempt_id: attempt?.attempt_id,
-        root_obligation_id: pipeline.rootObligationId,
-        child_obligation_id: pipeline.leafObligationId,
-        source_range: range,
-      });
-      await pipeline.recordActionReceipt('provider_request_started', {
-        action: dispatchAction, attempt_id: attempt?.attempt_id,
-      });
       const batch = await pipeline.executeSelectedAction(dispatchAction,
         () => dispatchMultiOwnerLongtermBatch({
           request, owners, source_indices: sourceMessages.map((_, index) => index),
-          dispatch: () => (options.provider ?? generateMemoryExtract)(request.prompt, {
-            responseLength, systemPrompt: request.systemPrompt,
-            providerConstraints: request.providerConstraints,
-          }),
+          dispatch: async () => {
+            try {
+              return await (options.provider ?? generateMemoryExtract)(request.prompt, {
+                responseLength, systemPrompt: request.systemPrompt,
+                providerConstraints: request.providerConstraints,
+              });
+            } catch (error) {
+              transportRejected = true;
+              throw error;
+            }
+          },
         }), { attempt_id: attempt?.attempt_id });
       response = batch.response;
       partition = batch.partition;
     }
-    await pipeline.recordActionReceipt('provider_response_received', {
-      action: dispatchAction, attempt_id: attempt?.attempt_id,
-    });
   } catch (error) {
+    if (!journalReplayMode && !transportRejected) throw fail(error);
     error.sme_origin ??= journalReplayMode ? 'internal_invariant' : 'provider_transport';
     error.sme_request_diagnostics ??= {};
     error.sme_request_diagnostics.transport_started = !journalReplayMode;
@@ -242,13 +251,18 @@ export async function extractAndStoreMultiOwnerMemories(
       attention_reason_codes: ['provider_transport_failure'] });
     throw fail(error);
   }
-  let journalEntry = recordProviderCompletion(metadata, attempt, {
-    child_key: pipeline.leafObligationId, response_text: response,
-    owner_scope: owners,
-  });
-  await execution.hooks.provider_completion_journal_updated(journalEntry, {
-    await_point: 'response_parse', progress: true,
-  });
+  let journalEntry = await retainResponseBeforeReceipt(async () => {
+    const entry = recordProviderCompletion(metadata, attempt, {
+      child_key: pipeline.leafObligationId, response_text: response,
+      owner_scope: owners,
+    });
+    await execution.hooks.provider_completion_journal_updated(entry, {
+      await_point: 'response_parse', progress: true,
+    });
+    return entry;
+  }, () => pipeline.recordActionReceipt('provider_response_received', {
+    action: dispatchAction, attempt_id: attempt?.attempt_id,
+  }));
   const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', { attempt });
   if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
     const error = new Error('Multi-owner response could not enter the lifecycle.');

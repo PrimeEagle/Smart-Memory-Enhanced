@@ -8,6 +8,26 @@ import { cloneSerializableDomain } from './serializable-domain.js';
 
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
+
+/** A completed sibling must not be dispatched again after a reload. */
+export function selectMemorizeSourceTierWork(ledger, range, enabledTiers) {
+  return Object.fromEntries(TIERS.map((tier) => {
+    const obligation = getAuthoritativeTierRangeStatus(ledger, tier, range);
+    return [tier, {
+      obligation,
+      dispatch: enabledTiers.includes(tier) && obligation?.safely_committed !== true
+        && !isAuthoritativeTierRangeSafelyCovered(ledger, tier, range),
+    }];
+  }));
+}
+
+/** Stage manifest and offset from the same ledger projection before the host save. */
+export function stageMemorizeSourceCheckpoint(checkpoint, options) {
+  const projection = rebuildMemorizeManifestProjection(checkpoint.run_manifest, options);
+  checkpoint.run_manifest = projection.manifest;
+  checkpoint.next_source_offset = projection.safe_resume_offset;
+  return projection;
+}
 const LOCAL_RECONCILIATION_ACTIONS = new Set([
   'apply_journaled_provider_completion',
 ]);

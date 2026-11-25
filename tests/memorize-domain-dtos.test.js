@@ -69,9 +69,12 @@ test('compact failure diagnostics distinguish allocation from provider transmiss
     catch_up_recovery: { available: true, resumable: false,
       reason_code: 'non_serializable_domain_data', safely_committed_offset: 0,
       source_message_count: 9434 },
-    provider_attempt_audit: { run_id: 'run', recent_attempts: [{
+    provider_attempt_audit: { run_id: 'run', physical_attempts: 1, retained_attempts: [{
       attempt_id: 'provider-1', logical_obligation_id: 'session:0-19',
       transmission_started: false, state_history: [{ state: 'created' }],
+    }, {
+      attempt_id: 'provider-2', tier: 'session', transmission_started: false,
+      terminal_outcome: 'provider_failure', response_body: 'private body',
     }] },
     controller_exit: { reason_code: 'SME_NON_SERIALIZABLE_DOMAIN_DATA',
       bounded_message: 'number is not finite', failure_stage: 'transaction_state_snapshot',
@@ -79,6 +82,10 @@ test('compact failure diagnostics distinguish allocation from provider transmiss
   }, 100);
   assert.equal(diagnostics.provider_transmission.attempt_allocated, true);
   assert.equal(diagnostics.provider_transmission.occurred, false);
+  assert.equal(diagnostics.provider_transmission.evidence_available, true);
+  assert.equal(diagnostics.provider_attempt_evidence.physical_attempt_count, 1);
+  assert.equal(diagnostics.provider_attempt_evidence.recent[1].terminal_outcome, 'provider_failure');
+  assert.doesNotMatch(JSON.stringify(diagnostics), /private body/);
   assert.equal(diagnostics.root_error.serialization_path, '$.checkpoint.age_ms');
   assert.equal(diagnostics.resume.eligible, false);
   assert.doesNotThrow(() => assertSerializableDomain(diagnostics));
@@ -89,7 +96,7 @@ test('full diagnostics publication validates the complete graph and adds stable 
     status: 'completed', operational_status: 'completed',
     build_identity: { version: '0.9.94', fingerprint: 'test' },
     logical_run: { logical_run_id: 'run-1' },
-    provider_attempt_audit: { recent_attempts: [{
+    provider_attempt_audit: { retained_attempts: [{
       attempt_id: 'attempt-1', transmission_started: true,
       lifecycle_state: 'response_received',
     }] },

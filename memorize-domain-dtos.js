@@ -216,7 +216,7 @@ export function createCompactFailureDiagnostics(current = {}, createdAt = Date.n
   const controllerExit = current.controller_exit ?? ledger.last_controller_exit ?? null;
   const pending = ledger.pending_obligations?.[0]
     ?? recovery.exact_pending_obligation ?? recovery.unresolved_obligations?.[0] ?? null;
-  const attempts = current.provider_attempt_audit?.recent_attempts ?? [];
+  const attempts = current.provider_attempt_audit?.retained_attempts ?? [];
   const attempt = attempts.at(-1) ?? null;
   const rootCode = controllerExit?.code ?? controllerExit?.reason_code ?? recovery.reason_code
     ?? recovery.blocked_reason_code ?? 'incomplete_run';
@@ -291,11 +291,23 @@ export function createCompactFailureDiagnostics(current = {}, createdAt = Date.n
     },
     obligation_state: obligationState,
     provider_transmission: {
+      evidence_available: Boolean(attempt),
       attempt_allocated: Boolean(attempt?.attempt_id),
       attempt_id: nullable(attempt?.attempt_id),
       occurred: attempt?.transmission_started === true,
       lifecycle_state: nullable(attempt?.lifecycle_state
         ?? attempt?.state_history?.at(-1)?.state),
+    },
+    provider_attempt_evidence: {
+      physical_attempt_count: nullableFiniteNumber(current.provider_attempt_audit?.physical_attempts),
+      recent: attempts.slice(-8).map((item) => ({
+        attempt_id: nullable(item.attempt_id),
+        obligation_id: nullable(item.logical_obligation_id),
+        tier: nullable(item.tier),
+        transmission_started: item.transmission_started === true,
+        terminal_outcome: nullable(item.terminal_outcome),
+        malformed_reason: nullable(item.malformed_reason),
+      })),
     },
     committed_coverage: {
       safely_committed_offset: nullableFiniteNumber(recovery.safely_committed_offset
@@ -351,12 +363,12 @@ export function createFullDiagnosticsExport(input = {}, createdAt = Date.now()) 
   'status', 'full_diagnostics_export');
   const logicalRunId = report.logical_run?.logical_run_id
     ?? report.run_id ?? null;
-  const providerAttempts = report.provider_attempt_audit?.recent_attempts ?? [];
+  const providerAttempts = report.provider_attempt_audit?.retained_attempts ?? [];
   const latestAttempt = providerAttempts.at(-1) ?? null;
   const controllerExit = report.controller_exit
     ?? report.authoritative_obligation_ledger?.last_controller_exit ?? null;
   const firstError = report.error_details?.[0] ?? null;
-  const rootErrorSource = controllerExit ?? firstError;
+  const rootErrorSource = controllerExit ?? report.root_error ?? firstError;
 
   report.schema_version = 1;
   report.version = 2;
@@ -376,6 +388,7 @@ export function createFullDiagnosticsExport(input = {}, createdAt = Date.now()) 
   };
   report.root_error = rootErrorSource ? createDiagnosticError(rootErrorSource) : null;
   report.provider_transmission = {
+    evidence_available: Boolean(latestAttempt),
     attempt_allocated: Boolean(latestAttempt?.attempt_id),
     attempt_id: nullable(latestAttempt?.attempt_id),
     occurred: latestAttempt?.transmission_started === true,

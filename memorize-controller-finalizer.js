@@ -60,8 +60,10 @@ export async function finalizeMemorizeController(input = {}) {
           ? 'terminal_failure' : 'blocked_reconciliation_required';
     checkpoint.updated_at = Date.now();
   }
-  if (input.record_exit) await safe('controller_exit_record', () => input.record_exit(exit));
-  if (input.persist_diagnostics) await safe('diagnostic_persistence', input.persist_diagnostics);
+  const recordedExit = input.record_exit
+    ? await safe('controller_exit_record', () => input.record_exit(exit)) : null;
+  if (input.persist_diagnostics) await safe('diagnostic_persistence',
+    () => input.persist_diagnostics({ exit: recordedExit ?? exit, authority }));
   exit.secondary_finalization_failures = secondary;
   return { exit, authority, checkpoint, secondary_failures: secondary };
 }

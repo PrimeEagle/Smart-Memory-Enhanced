@@ -106,7 +106,8 @@ import {
   deriveMemorizeResumeEligibility,
   getCompletedRecoveryChildKeys,
   getAuthoritativeTierRangeStatus,
-  isAuthoritativeTierRangeSafelyCovered,
+  selectMemorizeSourceTierWork,
+  stageMemorizeSourceCheckpoint,
   rebuildMemorizeManifestProjection,
 } from './memorize-authority-model.js';
 import {
@@ -120,7 +121,7 @@ import {
   saveChatMetadata,
 } from './catchup-transaction.js';
 import { finalizeMemorizeController } from './memorize-controller-finalizer.js';
-import { deriveMemorizeRecoveryAuthority } from './memorize-recovery-authority.js';
+import { deriveMemorizeRecoveryAuthority, selectMemorizeResumePreflight } from './memorize-recovery-authority.js';
 import { deriveMemorizeResumeProgress, snapshotMemorizeResumeProgress }
   from './memorize-resume-progress.js';
 import {
@@ -292,8 +293,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.94',
-  build_fingerprint: 'sme-v0.9.94-domain-boundaries-r1',
+  extension_version: '0.9.95',
+  build_fingerprint: 'sme-v0.9.95-first-chunk-recovery-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2236,6 +2237,21 @@ export function bindSettingsUI(ctrl) {
       postCommitMarker: finalization.shortterm_post_commit_recovery_marker });
   };
 
+  const evaluateResumePreflight = (checkpoint, context = getContext()) => {
+    const metadata = context.chatMetadata?.[META_KEY];
+    const authority = deriveMemorizeRecoveryAuthority({
+      checkpoint,
+      ledger: checkpoint.run_manifest?.obligation_ledger,
+      provider_audit: metadata?.live_memory_health?.provider_attempt_audit,
+      provider_completion_journal: metadata?.provider_completion_journal,
+      controller_heartbeat: checkpoint.controller_heartbeat,
+      transaction_lifecycle: checkpoint.transaction_lifecycle,
+      checkpoint_status: checkpoint.status,
+    });
+    return { authority, eligibility: selectMemorizeResumePreflight(authority,
+      () => evaluateShortTermResumeEligibility(checkpoint, context)) };
+  };
+
   const refreshCatchUpRecoveryUI = ({ autoResume = false } = {}) => {
     const rawCheckpoint = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint ?? null;
     const liveMetadata = getContext().chatMetadata?.[META_KEY];
@@ -2381,23 +2397,8 @@ export function bindSettingsUI(ctrl) {
       return;
     }
     const manifest = summarizeCatchUpRunManifest(checkpoint.run_manifest ?? null);
-    const authority = deriveMemorizeRecoveryAuthority({
-      checkpoint,
-      ledger: checkpoint.run_manifest?.obligation_ledger,
-      provider_audit: liveMetadata?.live_memory_health?.provider_attempt_audit,
-      provider_completion_journal: liveMetadata?.provider_completion_journal,
-      controller_heartbeat: checkpoint.controller_heartbeat,
-      transaction_lifecycle: checkpoint.transaction_lifecycle,
-      checkpoint_status: checkpoint.status,
-    });
+    const { authority, eligibility: resumeEligibility } = evaluateResumePreflight(checkpoint);
     checkpointRecovery = { ...checkpointRecovery, authoritative_recovery: authority };
-    const resumeEligibility = authority.pending_obligation ? {
-      eligible: authority.resume_eligible,
-      decision: authority.resume_eligible ? authority.next_executable_action : 'blocked',
-      reason: authority.resume_eligible ? 'exact_recovery_action_available'
-        : authority.resume_blockers[0]?.reason_code,
-      next_eligible_action: authority.next_executable_action,
-    } : evaluateShortTermResumeEligibility(checkpoint);
     const activeTransaction = getActiveCatchUpTransactionSnapshot();
     const transactionLocked = Boolean(activeTransaction);
     const running = Boolean(ctrl.extractionRunning || ctrl.compactionRunning || transactionLocked);
@@ -5060,9 +5061,10 @@ export function bindSettingsUI(ctrl) {
       refreshCatchUpRecoveryUI();
       return;
     }
-    const resumeEligibility = resumableCheckpoint ? evaluateShortTermResumeEligibility(resumableCheckpoint, catchUpContext) : null;
+    const resumeEligibility = resumableCheckpoint
+      ? evaluateResumePreflight(resumableCheckpoint, catchUpContext).eligibility : null;
     if (resumeRequested && resumeEligibility && !resumeEligibility.eligible) {
-      setStatusMessage(`Short-Term Resume blocked: ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}.`);
+      setStatusMessage(`Resume blocked: ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}.`);
       toastr.warning(`Resume was not started (${formatDiagnosticIdentifier(resumeEligibility.decision, 'blocked')}). ${formatDiagnosticIdentifier(resumeEligibility.reason, 'recovery change required')}.`, 'Smart Memory Enhanced', { timeOut: 9000 });
       refreshCatchUpRecoveryUI();
       return;
@@ -5573,16 +5575,6 @@ export function bindSettingsUI(ctrl) {
           active_persona_stable_id_fingerprint: null, active_persona_canonical_name_fingerprint: null,
           context_source: 'live_persona_unavailable', roster_membership_result: null, audited_at: Date.now(),
         };
-      // v0.9.44 could commit this reconciliation after Short-Term had already
-      // failed. Preserve its audit as an intermediate checkpoint, but do not
-      // misrepresent it as the definitive post-generation reconciliation.
-      if (checkpoint.run_manifest?.terminal_reason_code === 'finalization_phase_failed'
-        && checkpoint.finalization.active_phase === 'shortterm_extraction'
-        && checkpoint.finalization.completed_phases?.final_reconciliation) {
-        checkpoint.finalization.completed_phases.post_extraction_reconciliation ??=
-          checkpoint.finalization.completed_phases.final_reconciliation;
-        delete checkpoint.finalization.completed_phases.final_reconciliation;
-      }
       const sourceWindow = {
         message_count: total,
         source_start_index: allMessages[0]?.__sme_original_index ?? null,
@@ -6418,8 +6410,12 @@ export function bindSettingsUI(ctrl) {
           end: currentRange.source_end_index,
         };
         const authoritativeLedger = checkpoint.run_manifest.obligation_ledger;
-        const priorLongtermObligation = getAuthoritativeTierRangeStatus(
-          authoritativeLedger, 'longterm', canonicalSourceRange);
+        const enabledSourceTiers = [
+          ...(longtermEnabledForRun ? ['longterm'] : []),
+          ...(sessionEnabledForRun ? ['session'] : []),
+        ];
+        const tierWork = selectMemorizeSourceTierWork(authoritativeLedger, canonicalSourceRange, enabledSourceTiers);
+        const { obligation: priorLongtermObligation, dispatch: replayLongterm } = tierWork.longterm;
         const priorLongtermCapsule = priorLongtermObligation?.obligation_id
           ? authoritativeLedger.execution_kernel?.recovery_capsules?.[
             priorLongtermObligation.obligation_id] ?? null : null;
@@ -6427,15 +6423,7 @@ export function bindSettingsUI(ctrl) {
           ?.owners_requiring_recovery?.length
           ? [...priorLongtermCapsule.owner_coverage.owners_requiring_recovery]
           : catchUpCharacterNames;
-        const priorSessionObligation = getAuthoritativeTierRangeStatus(
-          authoritativeLedger, 'session', canonicalSourceRange);
-        // A resumed incomplete range may have committed one tier before a
-        // crash or a bounded provider failure.  Replay only its pending tier;
-        // re-running a safely committed tier would duplicate durable records.
-        const replayLongterm = longtermEnabledForRun && priorLongtermObligation?.safely_committed !== true
-          && !isAuthoritativeTierRangeSafelyCovered(authoritativeLedger, 'longterm', canonicalSourceRange);
-        const replaySession = sessionEnabledForRun && priorSessionObligation?.safely_committed !== true
-          && !isAuthoritativeTierRangeSafelyCovered(authoritativeLedger, 'session', canonicalSourceRange);
+        const { obligation: priorSessionObligation, dispatch: replaySession } = tierWork.session;
         updateActivePageMarker(checkpoint, 'source_extraction', 'in_flight');
 
         if (replayLongterm) {
@@ -6746,17 +6734,12 @@ export function bindSettingsUI(ctrl) {
                 .flatMap((tier) => tier?.records ?? []),
             });
           checkpointForCommit.run_manifest.obligation_ledger = lifecycleReconciliation.ledger;
-          const projection = rebuildMemorizeManifestProjection(
-            checkpointForCommit.run_manifest, {
+          const projection = stageMemorizeSourceCheckpoint(checkpointForCommit, {
               source_message_count: total,
               chunk_size: CATCH_UP_CHUNK_SIZE,
               starting_offset: 0,
-              enabled_tiers: [
-                ...(longtermEnabledForRun ? ['longterm'] : []),
-                ...(sessionEnabledForRun ? ['session'] : []),
-              ],
+              enabled_tiers: enabledSourceTiers,
             });
-          checkpointForCommit.run_manifest = projection.manifest;
           const checkpointedRoots = Object.values(
             checkpointForCommit.run_manifest.obligation_ledger?.obligations ?? {})
             .filter((obligation) => !obligation.parent_obligation_id
@@ -6784,7 +6767,6 @@ export function bindSettingsUI(ctrl) {
             retry_count: runResult.retriedRequests,
             provider_failure_count: runResult.providerFailures.length,
           };
-          checkpointForCommit.next_source_offset = projection.safe_resume_offset;
           checkpointForCommit.updated_at = Date.now();
         }
         try {
@@ -10204,7 +10186,7 @@ export function bindSettingsUI(ctrl) {
         ?? (manual ? 'manually_cancelled'
           : unresolvedLocalLifecycleError ? 'downstream_validation_pending'
             : priorExit?.classification ?? null);
-      const finalization = await finalizeMemorizeController({
+      await finalizeMemorizeController({
         primary_error: controllerPrimaryError ?? unresolvedLocalLifecycleError,
         reason_code: provisionalReason,
         classification: provisionalClassification ?? undefined,
@@ -10241,19 +10223,15 @@ export function bindSettingsUI(ctrl) {
             reason_code: provisionalReason,
           }),
         record_exit: recordControllerExit,
-        persist_diagnostics: terminalCheckpoint
-          ? async () => saveChatMetadata(catchUpContext) : null,
+        persist_diagnostics: terminalCheckpoint ? async ({ exit, authority }) => {
+          if (terminalMetadata?.catch_up_diagnostics) {
+            terminalMetadata.catch_up_diagnostics.controller_heartbeat = terminalCheckpoint.controller_heartbeat;
+            terminalMetadata.catch_up_diagnostics.controller_exit = exit;
+            terminalMetadata.catch_up_diagnostics.authoritative_recovery = authority;
+          }
+          await saveChatMetadata(catchUpContext);
+        } : null,
       });
-      if (terminalCheckpoint) {
-        if (terminalMetadata?.catch_up_diagnostics) {
-          terminalMetadata.catch_up_diagnostics.controller_heartbeat
-            = terminalCheckpoint.controller_heartbeat;
-          terminalMetadata.catch_up_diagnostics.controller_exit
-            = finalization.exit;
-          terminalMetadata.catch_up_diagnostics.authoritative_recovery
-            = finalization.authority;
-        }
-      }
       if (resumeRequested) recordRuntimeEvidence('resume_handler_exited', {
         subsystem: 'memorize_chat_resume',
         request_state: controllerRuntime.controller_exit?.classification ?? 'unknown_exit',

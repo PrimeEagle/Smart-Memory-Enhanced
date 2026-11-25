@@ -1890,7 +1890,7 @@ test('resume preserves cumulative coverage and explicit blocked phase dispositio
   const recovery = read('catchup-recovery-utils.js');
   assert.match(settings, /full_cumulative_coverage_confirmed: diagnostics\.logical_run\.full_cumulative_coverage_confirmed/);
   assert.match(settings, /blocked_by_upstream_phase/);
-  assert.match(settings, /post_extraction_reconciliation/);
+  assert.doesNotMatch(settings, /post_extraction_reconciliation/);
   assert.match(recovery, /completed_phase_summaries/);
   assert.match(recovery, /phase_dispositions/);
   assert.match(recovery, /shortterm_recovery/);
