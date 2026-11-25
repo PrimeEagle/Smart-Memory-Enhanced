@@ -104,3 +104,42 @@ test('coverage helper does not duplicate a stable range identity', () => {
   recordTierCoverage(ledger, { range_id: 'one', provider_outcome: 'completed' });
   assert.deepEqual(ledger.records, [{ range_id: 'one', provider_outcome: 'completed' }]);
 });
+
+test('attempt allocation is a validated proposal and cannot mutate authoritative metadata', () => {
+  const metadata = { active_catchup_run_id: 'run-proposal' };
+  const execution = createMemorizeExecutionContext({
+    provider: { root_obligation_id: 'session:chat:0-19:proposal',
+      root_source_range: { start: 0, end: 19, message_count: 20 } },
+  });
+  const pipeline = createMemorizeTierPipeline({
+    tier: 'session', tierLabel: 'Session', execution, metadata,
+    range: { start: 0, end: 19, message_count: 20, source_indices: [0, 1] },
+    rangeId: 'proposal:0-19', coverageLedger: { records: [] },
+    sourceFingerprint: 'proposal-fingerprint', preflight: {}, requestBudget: {},
+    providerConfigSignature: 'proposal-provider', expectedOutputFormat: 'session-v1',
+  });
+  const attempt = pipeline.beginAttempt();
+  assert.ok(attempt.attempt_id);
+  assert.equal(metadata.live_memory_health, undefined);
+  assert.equal(metadata.provider_completion_journal, undefined);
+});
+
+test('invalid registration proposal fails before authoritative metadata mutation', () => {
+  const metadata = { active_catchup_run_id: 'run-invalid-proposal' };
+  const execution = createMemorizeExecutionContext({
+    provider: { root_obligation_id: 'session:chat:0-19:invalid',
+      root_source_range: { start: 0, end: 19, message_count: 20 } },
+  });
+  const pipeline = createMemorizeTierPipeline({
+    tier: 'session', tierLabel: 'Session', execution, metadata,
+    range: { start: 0, end: 19, message_count: 20, source_indices: [0, 1] },
+    rangeId: 'invalid:0-19', coverageLedger: { records: [] },
+    sourceFingerprint: 'invalid-fingerprint',
+    preflight: { configured_context_limit: () => 8192 }, requestBudget: {},
+    providerConfigSignature: 'invalid-provider', expectedOutputFormat: 'session-v1',
+  });
+  assert.throws(() => pipeline.beginAttempt(),
+    { code: 'SME_NON_SERIALIZABLE_DOMAIN_DATA' });
+  assert.equal(metadata.live_memory_health, undefined);
+  assert.equal(metadata.provider_completion_journal, undefined);
+});

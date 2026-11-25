@@ -43,7 +43,7 @@ export function pageRunStorageKey(scope) {
 export function readPageRunMarker(storage, scope) {
   try {
     const marker = JSON.parse(storage?.getItem(pageRunStorageKey(scope)) ?? 'null');
-    return [1, PAGE_RUN_LIFECYCLE_SCHEMA_VERSION].includes(marker?.schema_version) ? marker : null;
+    return marker?.schema_version === PAGE_RUN_LIFECYCLE_SCHEMA_VERSION ? marker : null;
   } catch { return null; }
 }
 

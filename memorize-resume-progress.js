@@ -35,7 +35,7 @@ export function snapshotMemorizeResumeProgress({ checkpoint = null, ledger = nul
     provider_attempt_count: Object.keys(canonicalLedger?.execution_kernel?.attempts ?? {}).length
       || Number(providerAudit?.attempted ?? providerAudit?.recent_attempts?.length ?? 0),
     next_source_offset: Number(checkpoint?.next_source_offset ?? 0),
-    committed_chunk_count: Number(checkpoint?.committed_chunks ?? 0),
+    committed_chunk_count: Number(checkpoint?.run_manifest?.cumulative_chunk_count ?? 0),
     pending_obligation_count: Number(projection.pending_obligation_count ?? 0),
     captured_at: at,
   };

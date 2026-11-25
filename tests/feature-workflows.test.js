@@ -147,7 +147,7 @@ test('catch-up diagnostics report derived arc-summary verification outcomes', ()
   assert.match(settings, /arcResolution: summarizeArcStatusResolution\(loadArcs\(\), runResult\.arcResolution\)/);
   assert.match(settings, /identityResolutionDetails/);
   assert.match(settings, /preverification: \{\}/);
-  assert.match(settings, /legacy_unverified/);
+  assert.doesNotMatch(settings, /legacy_unverified/);
 });
 
 test('final catch-up reconciliation runs inside the staged transaction and quarantines non-resolved summaries', () => {
@@ -232,7 +232,7 @@ test('profiles keep only current, evidence-supported fields', () => {
 
 test('relationship reconciliation merges duplicate canonical pair evidence instead of keeping the first pair only', () => {
   const longterm = read('longterm.js');
-  assert.match(longterm, /source_message_indices: mergeList/);
+  assert.match(longterm, /supporting_source_indices: mergeList/);
   assert.match(longterm, /updatedAt: Math\.max/);
   assert.match(longterm, /Object\.entries\(history\)\.sort/);
   assert.match(longterm, /export function reconcileRelationshipHistoryMap/);
@@ -241,9 +241,11 @@ test('relationship reconciliation merges duplicate canonical pair evidence inste
   assert.match(read('ui.js'), /localRelationshipPairsMerged/);
 });
 
-test('legacy derived summaries are persisted as quarantined on chat load', () => {
-  assert.match(read('arcs.js'), /export async function migrateLegacyArcSummaries/);
-  assert.match(read('index.js'), /await migrateLegacyArcSummaries\(\)/);
+test('obsolete derived-summary records are rejected instead of migrated on chat load', () => {
+  assert.doesNotMatch(read('arcs.js'), /migrateLegacyArcSummaries/);
+  assert.doesNotMatch(read('index.js'), /migrateLegacyArcSummaries/);
+  assert.match(read('arcs.js'), /assertCurrentArcSummaryRecord/);
+  assert.match(read('arcs.js'), /arc_summary_schema_mismatch/);
 });
 
 test('editing a derived arc summary re-verifies it against saved evidence', () => {
@@ -365,7 +367,9 @@ test('late catch-up stages isolate non-critical failures and retain diagnostics'
   assert.match(settings, /runNonfatalPresentationTask/);
   assert.match(settings, /final reconciliation error/);
   assert.match(settings, /reconciliationSnapshot/);
-  assert.match(settings, /latestExportDiagnostics = diagnostics/);
+  assert.match(settings, /createFullDiagnosticsExport/);
+  assert.match(settings, /observeMemorizeDiagnostics/);
+  assert.doesNotMatch(settings, /latestExportDiagnostics\s*=\s*diagnostics\s*;/);
   assert.match(settings, /final_persistence_error/);
   assert.match(settings, /fatal_run_error_count/);
   assert.match(settings, /normalizeRunStatusReport/);
@@ -398,10 +402,10 @@ test('final reconciliation builds a persona-aware roster that includes approved 
   const canonical = read('canonical-entities.js');
   const settings = read('settings.js');
   assert.match(ui, /const context = getContext\(\);/);
-  assert.match(ui, /buildCanonicalCharacterRoster\(context, \{\s*includeChatLocalApproved: true,\s*runtimeSnapshot,\s*\}\)/);
+  assert.match(ui, /buildCanonicalRoster\(context, \{\s*includeChatLocalApproved: true,\s*runtimeSnapshot,\s*\}\)/);
   assert.match(canonical, /export function buildCanonicalRoster/);
   assert.match(canonical, /scope\.activePersona/);
-  assert.match(canonical, /source_type: 'persona'/);
+  assert.match(canonical, /source: 'user-persona'/);
   assert.match(settings, /power_user\.personas/);
   assert.match(settings, /user_avatar/);
   assert.match(settings, /getLivePersonaCaptureContext\(catchUpContext\)/);
@@ -418,7 +422,7 @@ test('final reconciliation builds a persona-aware roster that includes approved 
 test('arc panel refresh has its own canonical roster outside final reconciliation', () => {
   const ui = read('ui.js');
   const renderer = ui.slice(ui.indexOf('export function updateArcsUI()'), ui.indexOf('export function updateProfilesUI'));
-  assert.match(renderer, /const roster = buildCanonicalCharacterRoster\(ctx/);
+  assert.match(renderer, /const roster = buildCanonicalRoster\(ctx/);
   assert.match(renderer, /const arcs = loadArcs\(\{ roster \}\)/);
   assert.doesNotMatch(renderer, /finalizedRoster/);
 });
@@ -459,7 +463,8 @@ test('final diagnostics retain rejected identity candidates and a successful arc
   const settings = read('settings.js');
   const arcs = read('arcs.js');
   const ui = read('ui.js');
-  assert.match(settings, /terminal_outcome is the single canonical \*string\* outcome/);
+  assert.match(settings, /arcExtraction\.terminal_outcome/);
+  assert.doesNotMatch(settings, /arcExtraction\.terminalOutcome/);
   assert.match(arcs, /completed_with_candidates/);
   assert.match(arcs, /completed_no_candidates/);
   assert.match(ui, /rejected_unsafe_merges/);
@@ -482,7 +487,7 @@ test('exact identity reconciliation refuses a different scoped target before any
   assert.match(graph, /Authoritative card self-resolution/);
   assert.match(graph, /Never search neighbouring/);
   assert.match(settings, /Finalize the one canonical arc outcome before evaluating quality/);
-  assert.ok(settings.indexOf('normalizeArcExtractionDiagnostics(runResult.arcExtraction)') < settings.indexOf('const qualityReasons = []'));
+  assert.ok(settings.indexOf('Finalize the one canonical arc outcome before evaluating quality') < settings.indexOf('const qualityReasons = []'));
 });
 
 test('final integrity aggregates logical review patterns and classifies text-link repairs', () => {
@@ -496,7 +501,8 @@ test('final integrity aggregates logical review patterns and classifies text-lin
   assert.match(settings, /makeTerminalObservationKey/);
   assert.match(settings, /missing_terminal_keys/);
   assert.doesNotMatch(settings, /\['no_text_identity_mismatches'/);
-  assert.match(ui, /text_link_repair_counters/);
+  assert.doesNotMatch(ui, /text_link_repair_counters/);
+  assert.match(ui, /entity_link_repairs/);
   assert.match(ui, /structurallySupported/);
   assert.match(ui, /identity_integrity_status = 'repaired'/);
   assert.match(ui, /persona_aliases_already_resolved/);
@@ -509,17 +515,17 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   const ui = read('ui.js');
   const settings = read('settings.js');
   assert.match(ui, /identity_link_repair_audit/);
-  assert.match(ui, /duplicate_repair_events_suppressed/);
-  assert.match(ui, /previously_quarantined_links_seen/);
-  assert.match(ui, /unique_logical_links_repaired/);
-  assert.match(ui, /physical_repair_observations/);
+  assert.match(ui, /duplicate_observations_suppressed/);
+  assert.match(ui, /reobserved_previously_quarantined/);
+  assert.match(ui, /actual_logical_mutations_this_run/);
+  assert.match(ui, /actual_physical_store_mutations_this_run/);
   assert.match(settings, /heuristic_break_candidates/);
   assert.match(settings, /boundary_candidates_evaluated/);
   assert.match(settings, /average_candidates_per_request/);
   assert.match(settings, /detectSceneBreakAIBatch\(aiCandidates/);
   assert.match(settings, /batch_size_target: 12/);
   assert.match(read('scenes.js'), /export async function detectSceneBreakAIBatch/);
-  assert.match(read('scenes.js'), /legacy_indexed_lines/);
+  assert.doesNotMatch(read('scenes.js'), /legacy_indexed_lines|recoveredLegacyLines/);
   assert.match(read('scenes.js'), /recovered_after_smaller_batch_retry/);
   assert.match(read('scenes.js'), /smaller_batch_retries/);
   assert.match(read('scenes.js'), /candidate_dispositions/);
@@ -559,7 +565,8 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /stale_references_after_second_pass/);
   assert.match(settings, /candidate_context_hashes/);
   assert.match(settings, /candidate_context_hash_summary_source/);
-  assert.match(settings, /candidate_context_summary_migration/);
+  assert.match(settings, /candidate_context_summary_consistent/);
+  assert.doesNotMatch(settings, /legacy_candidate_context_hash_summary|candidate_context_summary_migration/);
   assert.match(read('scene-stability-utils.js'), /gate_snapshot_coverage_by_run/);
   assert.match(settings, /request_efficiency_history/);
   assert.match(settings, /prior_request_metric_unavailable/);
@@ -599,17 +606,19 @@ test('repair diagnostics are idempotent and scene boundaries retain their source
   assert.match(settings, /profile_relationship_placeholders_dropped/);
   assert.match(read('ui.js'), /repair_recurrence_source/);
   assert.match(read('scenes.js'), /root_batch_summary/);
-  assert.match(read('scenes.js'), /confidence_outcomes/);
-  assert.match(read('scenes.js'), /confidence_outcomes_scope/);
+  assert.match(read('scenes.js'), /attempt_level_confidence_observations/);
+  assert.match(read('scenes.js'), /terminal_candidate_confidence_outcomes/);
+  assert.doesNotMatch(read('scenes.js'), /confidence_outcomes_scope|terminal_candidate_confidence_outcomes_scope/);
   assert.match(read('scenes.js'), /adaptive_request_summary/);
+  assert.doesNotMatch(read('scenes.js'), /\b(?:adaptive_root_requests|multi_candidate_provider_requests)\b/);
   assert.match(read('scenes.js'), /confidence_invalid/);
   assert.match(read('scenes.js'), /confidence_not_returned/);
   assert.match(settings, /data_quality_status/);
   assert.match(settings, /operational_status/);
   assert.match(settings, /maintenance_actions/);
   assert.match(read('graph-migration.js'), /entity_link_provenance/);
-  assert.match(read('graph-migration.js'), /legacy:\$\{normalized\.id\}/);
-  assert.match(read('graph-migration.js'), /creation_method: 'unknown_legacy'/);
+  assert.doesNotMatch(read('graph-migration.js'), /legacy:\$\{normalized\.id\}/);
+  assert.doesNotMatch(read('graph-migration.js'), /creation_method: 'unknown_legacy'/);
   assert.match(read('graph-migration.js'), /link_created_run_id/);
   assert.match(read('graph-migration.js'), /creation_method/);
   assert.match(read('longterm.js'), /entity_link_stage \?\?= 'longterm_extraction'/);
@@ -708,8 +717,8 @@ test('explicit card-owner family facts retain source provenance and target-relat
   assert.match(profiles, /nearest explicit name supplies the antecedent/);
   assert.match(profiles, /grounded-entity-registry/);
   assert.match(profiles, /relationshipRoster/);
-  assert.match(profiles, /return stored \? migrateProfileRoleDescriptorSeparation/);
-  assert.match(profiles, /const staged =\s*migrateProfileRoleDescriptorSeparation\(profiles\)\.profile/);
+  assert.match(profiles, /return stored \? normalizeProfileRoleDescriptorSeparation/);
+  assert.match(profiles, /const staged =\s*normalizeProfileRoleDescriptorSeparation\(profiles\)\.profile/);
   assert.match(profiles, /prepareFeaturePersistenceCommand/);
   assert.match(profiles, /metadata\.profiles\[characterName\] = staged/);
   assert.match(profiles, /rejected_placeholder/);
@@ -767,7 +776,7 @@ test('entity repair status counts current durable mutations separately from repe
   assert.match(ui, /physical_store_mutations_this_run/);
   assert.match(ui, /const directRewriteKey/);
   assert.match(ui, /entityLinkRepairs\.actual_logical_mutations_this_run\+\+/);
-  assert.match(ui, /automatic_stabilization_second_pass_writes/);
+  assert.match(ui, /reconciliation_write_accounting/);
   assert.match(ui, /summarizeCardLocalMemoryChanges/);
   assert.match(ui, /reobserved_already_repaired/);
   assert.match(ui, /reobserved_previously_quarantined/);
@@ -789,7 +798,7 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', true\)/);
   assert.match(settings, /#sme_run_idempotence_check'\)\.prop\('disabled', false\)/);
   assert.match(settings, /renderIdempotenceResult\(savedResult\);\s*\$\('#sme_export_diagnostics'\)\.prop\('disabled', !getExportableDiagnostics\(\)\);/s);
-  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*const cleanupWarnings = await cleanupMemorizeRuntime\(controllerRuntime/s);
+  assert.match(settings, /ctrl\.extractionRunning = false;\s*ctrl\.compactionRunning = false;\s*catchUpUiRunning = false;\s*ctrl\.catchUpCancelled = false;\s*ctrl\.catchUpStopReason = null;\s*await cleanupMemorizeRuntime\(controllerRuntime/s);
   assert.match(settings, /Every catch-up needs one local stabilization audit/);
   assert.match(settings, /automatic_post_catchup_stabilization/);
   assert.match(settings, /automatic_stabilization_hash_timeline/);
@@ -821,13 +830,15 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /automatic_stabilization_passes/);
   assert.match(settings, /literal_second_pass_logical_mutations/);
   assert.match(settings, /final_verification_pass_logical_mutations/);
-  assert.match(settings, /literal_pass_2_writes_retained_for_legacy_field_name/);
+  assert.doesNotMatch(settings, /second_pass_compatibility_semantics/);
+  assert.doesNotMatch(settings, /automatic_stabilization_second_pass_writes/);
+  assert.match(settings, /literal_pass_2_writes/);
   assert.match(settings, /Automatic stabilization converged on pass/);
   assert.match(settings, /final verification pass produced/);
   assert.match(settings, /stabilization_dependency_trace/);
   assert.match(settings, /post_automatic_manual_maintenance_diff/);
   assert.match(settings, /post_automatic_manual_dependency_trace/);
-  assert.match(settings, /canonical_persona_context = structuredClone\(canonicalRuntimeContext\)/);
+  assert.match(settings, /canonical_persona_context = cloneSerializableDomain\(canonicalRuntimeContext/);
   assert.match(settings, /second_pass_input_hash: finalVerificationComparison\.first_hash/);
   assert.match(settings, /second_pass_output_hash: finalVerificationComparison\.second_hash/);
   assert.match(read('ui.js'), /getFinalizedCanonicalPersonaContext\(context\)/);
@@ -849,11 +860,10 @@ test('developer tooling exposes a provider-free canonical idempotence check', ()
   assert.match(settings, /cloneSerializableDomain\(state/);
   assert.match(settings, /durableStateAfterFirstPass = snapshotIdempotenceDurableState\(metadataAfterFirstPass\)/);
   assert.match(settings, /durableStateAfterSecondPass = snapshotIdempotenceDurableState\(metadataAfterSecondPass\)/);
-  assert.match(read('ui.js'), /for \(const \[localName, records\] of Object\.entries\(meta\.card_local_memories \?\? \{\}\)\)/);
-  assert.match(read('ui.js'), /applyGraphDefaults\(record\)/);
+  assert.doesNotMatch(read('ui.js'), /applyGraphDefaults\(record\)/);
   assert.match(read('ui.js'), /deriveDurableWriteAccounting/);
   assert.match(read('ui.js'), /durable_write_trace/);
-  assert.match(read('ui.js'), /'normalize_graph_defaults', 'applyGraphDefaults', true/);
+  assert.doesNotMatch(read('ui.js'), /normalize_graph_defaults/);
   assert.match(read('idempotence-utils.js'), /metadata_only_changes/);
   assert.match(read('profiles.js'), /profile_relationship_self_targets_rejected/);
   assert.match(read('profiles.js'), /rejected_self_relationship_target/);
@@ -946,7 +956,7 @@ test('final reconciliation uses one cross-store entity merge operation before st
   assert.match(ui, /registry_reconciliation_context_trace/);
   assert.match(ui, /fallback_used_in_mainline: false/);
   assert.match(graph, /memories = \[\], \{ runtimeSnapshot = null \} = \{\}/);
-  assert.match(graph, /buildCanonicalCharacterRoster\(context, \{ runtimeSnapshot \}\)/);
+  assert.match(graph, /buildCanonicalRoster\(context, \{ runtimeSnapshot \}\)/);
   assert.match(read('epistemic.js'), /reconcileEpistemicCanonicalNames\(characterName, \{ runtimeSnapshot = null \} = \{\}\)/);
   assert.match(settings, /persona_reconciliation_input_comparison/);
   assert.match(settings, /registry_reconciliation_context_trace/);
@@ -980,14 +990,15 @@ test('final reconciliation canonicalizes scene and arc participant lists while r
   assert.match(ui, /safety\.reason/);
   assert.match(ui, /historical_persona_alias_records_retained/);
   assert.match(ui, /Imported-chat author recovery deliberately retains its stable/);
-  assert.match(settings, /participantListsRewritten/);
-  assert.match(settings, /personaRosterSize/);
+  assert.match(settings, /participant_lists_rewritten/);
+  assert.match(settings, /persona_roster_size/);
+  assert.doesNotMatch(settings, /participantListsRewritten|personaRosterSize/);
 });
 
 test('automatic reconciliation rebuilds the finalized roster before durable narrative, participant, and profile rewrites', () => {
   const ui = read('ui.js');
   const profiles = read('profiles.js');
-  assert.match(ui, /const finalizedRoster = buildCanonicalCharacterRoster\(context, \{/);
+  assert.match(ui, /const finalizedRoster = buildCanonicalRoster\(context, \{/);
   assert.match(ui, /const finalizedLongtermRewrites = await rewriteFinalizedStoredNarratives/);
   assert.match(ui, /const finalizedSessionRewrites = await rewriteFinalizedStoredNarratives/);
   assert.match(ui, /canonicalizeStructuredParticipants\(original, finalizedRoster\)/);
@@ -996,7 +1007,7 @@ test('automatic reconciliation rebuilds the finalized roster before durable narr
   assert.match(ui, /saveArcs\(arcs, \{ roster: finalizedRoster \}\)/);
   assert.match(ui, /passed_from_outer_finalized_roster/);
   assert.match(profiles, /reconcileProfileCanonicalNames\(characterName, \{ roster = null, runtimeSnapshot = null \} = \{\}\)/);
-  assert.match(profiles, /const canonicalRoster = roster \?\? buildCanonicalCharacterRoster/);
+  assert.match(profiles, /const canonicalRoster = roster \?\? buildCanonicalRoster/);
   assert.match(read('arcs.js'), /export function loadArcs\(\{ roster = null \} = \{\}\)/);
 });
 
@@ -1092,14 +1103,14 @@ test('catch-up metadata writers cannot bypass staged saving', () => {
   }
 });
 
-test('scene archive: retention, injection, provenance, audit, and legacy settings use separate semantics', () => {
+test('scene archive: retention, injection, provenance, and audit use separate current settings', () => {
   const settings = read('settings.js');
   const scenes = read('scenes.js');
   const ui = read('ui.js');
   assert.match(settings, /scene_archive_max: 100/);
   assert.match(settings, /scene_inject_count: 5/);
-  assert.match(settings, /const hadSceneInjectCount/);
-  assert.match(settings, /scene_inject_count = extension_settings\[MODULE_NAME\]\.scene_max_history/);
+  assert.doesNotMatch(settings, /const hadSceneInjectCount/);
+  assert.doesNotMatch(settings, /scene_max_history/);
   assert.match(settings, /Scenes: \$\{sceneAudit\.candidates\} detected/);
   assert.match(scenes, /trimSceneArchive/);
   assert.match(scenes, /selectScenesForInjection\([\s\S]*settings\.scene_inject_count/);
@@ -1167,7 +1178,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(graph, /exact_card_name_assertion_failed/);
   assert.match(ui, /allowed_cross_store_representation/);
   assert.match(ui, /Store-local representations are allowed/);
-  assert.match(ui, /global_legacy_maintenance_warning/);
+  assert.match(ui, /unrelated_store_maintenance_warning/);
   assert.match(read('canonical-entities.js'), /Relationship History represents two individual people/);
   assert.match(longterm, /Relationship display labels conflict with their stored canonical identity IDs/);
   assert.match(read('arcs.js'), /Direct evidence means messages actually supplied to this provider call/);
@@ -1195,7 +1206,7 @@ test('integrity round: secondary evidence promotes entities and canonical reconc
   assert.match(ui, /Rename the source character card or persona instead/);
   assert.match(graph, /off-roster ID as a generic NPC/);
   assert.match(graph, /left\.id && right\.id && left\.id !== right\.id/);
-  assert.match(ui, /global_legacy_integrity/);
+  assert.match(ui, /unrelated_store_integrity/);
   assert.match(ui, /not reconciled as part of this chat's/);
 });
 
@@ -1333,7 +1344,7 @@ test('secondary tiers: relationship history, State Ledger, and canon use approve
   const relationships = read('longterm.js');
   const ledger = read('state-ledger.js');
   const canon = read('canon.js');
-  assert.match(relationships, /relationshipRecord\.source_message_indices/);
+  assert.match(relationships, /relationshipRecord\.supporting_source_indices/);
   assert.match(relationships, /isGeneratedRecordApproved\(state\)/);
   assert.match(ledger, /source_message_indices: sourceMessageIndices/);
   assert.match(ledger, /Object\.entries\(ledger\)\.filter\(\(\[, fields\]\) => isGeneratedRecordApproved\(fields\)\)/);
@@ -1343,19 +1354,21 @@ test('secondary tiers: relationship history, State Ledger, and canon use approve
 
 test('chat-local cleanup: Forget This Chat and Fresh Start remove every chat-local store', () => {
   const settings = read('settings.js');
+  const freshStartState = read('fresh-start-state.js');
   const canon = read('canon.js');
   for (const key of ['card_local_memories', 'card_local_relationships', 'card_local_epistemic', 'card_local_entities', 'card_local_canon']) {
     assert.match(settings, new RegExp(`'${key}'`));
   }
   assert.match(settings, /clearChatLocalCharacterData\(context\);/);
   assert.match(settings, /for \(const memberName of freshStartCharacterNames\)/);
-  assert.match(settings, /'provider_completion_journal'/);
+  assert.match(freshStartState, /'provider_completion_journal'/);
   assert.match(canon, /metadata\?\.\[META_KEY\]\?\.card_local_canon/);
-  assert.match(canon, /metadata\?\.\[MODULE_NAME\]\?\.card_local_canon/);
+  assert.doesNotMatch(canon, /metadata\?\.\[MODULE_NAME\]\?\.card_local_canon/);
 });
 
 test('Fresh Start refreshes cleared personal prompt slots before updating token usage', () => {
   const settings = read('settings.js');
+  const freshStartState = read('fresh-start-state.js');
   const projections = read('memorize-projections.js');
   const freshStart = settings.slice(settings.indexOf("$('#sme_fresh_start_button')"), settings.indexOf('// ---- Embedding deduplication'));
   assert.match(freshStart, /freshStartCharacterNames/);
@@ -1373,12 +1386,12 @@ test('Fresh Start refreshes cleared personal prompt slots before updating token 
   assert.match(freshStart, /sme_export_diagnostics/);
   assert.match(settings, /preRunFreshStartAudit/);
   assert.match(settings, /catch_up_recovery: recovery/);
-  assert.match(projections, /diagnostic_type: current\.catch_up_recovery\?\.available \? 'incomplete_catchup_recovery' : 'pre_run_state_audit'/);
+  assert.match(projections, /createCompactFailureDiagnostics\(current, createdAt\)/);
   assert.match(projections, /provider_calls_during_audit: 0/);
-  assert.match(settings, /'entity_redirects'/);
-  assert.match(settings, /'developer_idempotence_check'/);
-  assert.match(settings, /'live_memory_health'/);
-  assert.match(settings, /'targeted_extraction_replay'/);
+  assert.match(freshStartState, /'entity_redirects'/);
+  assert.match(freshStartState, /'developer_idempotence_check'/);
+  assert.match(freshStartState, /'live_memory_health'/);
+  assert.match(freshStartState, /'targeted_extraction_replay'/);
   assert.match(settings, /removeAttr\('aria-label'\)/);
   assert.match(settings, /\$headerStatus\.removeClass\('sme_status_warning sme_status_error'\)/);
   assert.match(settings, /remainingReviewQueue/);
@@ -1467,8 +1480,8 @@ test('entity safeguards: reconciliation reports decisions, retains review candid
   assert.match(ui, /currentLiveRecordIds/);
   assert.match(ui, /identity_review_impact/);
   assert.match(ui, /ambiguous_short_alias.*live_links_affected === 0/s);
-  assert.match(ui, /legacyGlobalScopeAudit/);
-  assert.match(ui, /legacy_global_scope_audit/);
+  assert.match(ui, /unrelatedStoreScopeAudit/);
+  assert.match(ui, /unrelated_store_scope_audit/);
   const rename = graph.slice(graph.indexOf('export function renameEntityById'), graph.indexOf('export function deleteEntityById'));
   assert.match(rename, /aliases = \[\.\.\.new Set\(\[\.\.\.\(entity\.aliases \?\? \[\]\), oldName\]\)\]/);
   assert.match(rename, /if \(conflict\) return \{ renamed: false/);
@@ -1536,7 +1549,7 @@ test('Prompt Studio offers a read-only live inspector built from current evidenc
   assert.match(settings, /LIVE PROMPT INSPECTOR/);
   assert.match(promptConfig, /export function getLivePromptInspection/);
   assert.match(promptConfig, /applyPromptOverride\(prompt, task, activeCharacter\)/);
-  assert.match(promptConfig, /buildCanonicalCharacterRoster\(context\)/);
+  assert.match(promptConfig, /buildCanonicalRoster\(context\)/);
 });
 
 test('live prompt inspection preserves protected Session, Arc, and Profile contracts after scoped composition', () => {
@@ -1642,6 +1655,7 @@ test('long-chat extraction preflights final prompts and records bounded overflow
   assert.match(settings, /extractAndStoreMultiOwnerMemories/);
   assert.match(settings, /mutateAndCheckpointCatchUpTransaction/);
   assert.match(settings, /createCatchUpTransactionLease/);
+  assert.match(settings, /getCompletedRecoveryChildKeys/);
   assert.match(settings, /completed_child_keys: completedOverflowChildren/);
   assert.match(session, /execution\.recovery\.completed_child_keys/);
   assert.match(longterm, /execution\.recovery\.completed_child_keys/);
@@ -1660,7 +1674,8 @@ test('Memorize Chat checkpoints only committed chunks and exposes guarded recove
   assert.match(settings, /catch_up_checkpoint/);
   assert.match(settings, /validateCatchUpResumeSource/);
   assert.match(settings, /recoveryTraversalPolicy = 'completion_first_traversal'/);
-  assert.match(settings, /checkpointForCommit\.source_traversal_offset = processed/);
+  assert.match(settings, /sourceTraversalOffset = Math\.max\(sourceTraversalOffset, processed\)/);
+  assert.doesNotMatch(settings, /checkpointForCommit\.source_traversal_offset/);
   assert.match(settings, /earliestPendingOffset/);
   assert.match(obligationLedger, /completion_gate_satisfied/);
   assert.match(settings, /rebuildMemorizeManifestProjection/);
@@ -1703,7 +1718,7 @@ test('finalization phases commit independently and resume their saved settings s
   assert.match(settings, /writeCatchUpSettingsStorage/);
   assert.match(settings, /persistSettingsImmediately/);
   assert.match(settings, /run_settings_snapshot/);
-  assert.match(settings, /run_settings_snapshot_updated_at/);
+  assert.doesNotMatch(settings, /run_settings_snapshot_updated_at/);
   assert.match(settings, /recoverySettingsSidecar\?\.settings \?\? resumableCheckpoint\?\.run_settings_snapshot/);
   assert.match(settings, /const commitFinalizationPhase/);
   assert.match(settings, /hasCompletedFinalizationPhase\('shortterm_extraction'\)/);
@@ -1751,13 +1766,13 @@ test('pre-run diagnostics and automatic stabilization share the durable semantic
   assert.match(settings, /buildFinalStateConsistency/);
   assert.match(settings, /DURABLE_SEMANTIC_PROJECTION_VERSION/);
   assert.match(idempotence, /buildCanonicalDurableSemanticState/);
-  assert.match(idempotence, /canonicalizeStoryArc/);
+  assert.match(idempotence, /projectStoryArcSemantic/);
   assert.match(idempotence, /summarizeStoryArcChanges/);
 });
 
 test('final reconciliation revisits card-local relationships after the finalized roster exists', () => {
   const ui = readFileSync(new URL('../ui.js', import.meta.url), 'utf8');
-  const finalizedRoster = ui.indexOf('const finalizedRoster = buildCanonicalCharacterRoster');
+  const finalizedRoster = ui.indexOf('const finalizedRoster = buildCanonicalRoster');
   const postMergeRelationshipPass = ui.indexOf('reconcileRelationshipHistoryMap(history, finalizedRoster)', finalizedRoster);
   const integrityAudit = ui.indexOf('const relationshipPairKeyIssues', postMergeRelationshipPass);
   assert.ok(finalizedRoster >= 0);
@@ -1987,10 +2002,12 @@ test('Memorize Chat exposes blocked recovery and central malformed-recovery diag
   assert.match(settings, /selectRecoveryPresentation/);
   assert.match(settings, /buildCentralMalformedRecoverySummary/);
   assert.match(settings, /malformed_recovery: centralMalformedRecovery/);
-  assert.match(settings, /recovery_blocked = recoveryBlocked/);
-  assert.match(settings, /change_provider_configuration_or_install_updated_build/);
+  assert.doesNotMatch(settings, /checkpointForCommit\.recovery_blocked/);
+  assert.doesNotMatch(settings, /change_provider_configuration_or_install_updated_build/);
+  assert.match(settings, /stop_blocked/);
   assert.match(settings, /reconcileProviderRecoveryWindowsFromLedger/);
   assert.match(settings, /item\.configuration_signature === currentConfigurationSignature\(item\.tier\)/);
-  assert.match(settings, /delete rawCheckpoint\.recovery_blocked/);
-  assert.match(settings, /configuration_signature: obligation\.configuration_signature/);
+  assert.doesNotMatch(settings, /rawCheckpoint\.recovery_blocked|checkpoint\.recovery_blocked/);
+  assert.match(read('memorize-domain-dtos.js'),
+    /configuration_signature: nullable\(item\.configuration_signature\)/);
 });

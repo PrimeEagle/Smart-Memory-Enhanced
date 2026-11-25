@@ -150,6 +150,14 @@ test('marker excludes chat and provider content', () => {
   assert.doesNotMatch(JSON.stringify(marker), /SECRET|raw_chat|provider_response/);
 });
 
+test('old page-run marker schemas are ignored instead of migrated', () => {
+  const local = storage();
+  local.setItem('smart-memory-enhanced:page-run:chat-a', JSON.stringify({
+    schema_version: 1, run_id: 'old-run', page_instance_id: 'old-page',
+  }));
+  assert.equal(readPageRunMarker(local, 'chat-a'), null);
+});
+
 test('same-page runtime resets and safe exception fingerprints remain distinct from page replacement', () => {
   const metadata = {};
   recordRuntimeLifecycleEvent(metadata, 'run-a', { classification: 'run_controller_created', page_instance_id: 'page-1' });

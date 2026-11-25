@@ -1,4 +1,7 @@
 /** Pure read models for UI and diagnostics. These functions never persist or mutate input. */
+import { createCompactFailureDiagnostics, createFullDiagnosticsExport }
+  from './memorize-domain-dtos.js';
+import { observeMemorizeDiagnostics } from './memorize-diagnostic-boundary.js';
 
 const cloneProjectionValue = (value) => {
   if (Array.isArray(value)) return value.map((item) => cloneProjectionValue(item));
@@ -26,7 +29,7 @@ export function selectRunOutcomePresentation(report, { running = false, formatId
     : status.lifecycle_status === 'completed' && status.outcome_status === 'completed_recovered_errors'
       ? status.recovered_error_count > 0
         ? `${status.recovered_error_count} failed extraction obligation${status.recovered_error_count === 1 ? ' was' : 's were'} recovered; none remain unresolved.${noticeSuffix}`
-        : `${status.historical_failure_observation_count} transient failure observation${status.historical_failure_observation_count === 1 ? ' was' : 's were'} recorded; none remain unresolved.${noticeSuffix}`
+        : `${status.physical_failure_observation_count} transient failure observation${status.physical_failure_observation_count === 1 ? ' was' : 's were'} recorded; none remain unresolved.${noticeSuffix}`
       : status.lifecycle_status === 'completed' && status.notice_count > 0
         ? `Processing and finalization completed with ${status.notice_count} safe quality notice${status.notice_count === 1 ? '' : 's'}.`
         : status.lifecycle_status === 'completed'
@@ -112,7 +115,7 @@ export function selectRecoveryPresentation(input = {}) {
     ? ` ${finalization.completed_phase_count} finalization phase${finalization.completed_phase_count === 1 ? '' : 's'} are safely committed${finalization.active_phase ? `; retrying ${formatIdentifier(finalization.active_phase, 'pending phase')}` : ''}.` : '';
   const operatorActionRequired = resumeEligibility.eligible !== true;
   const reconstructing = resumeEligibility.decision === 'reconstruct_successor_from_committed_boundary';
-  const providerText = recovery?.next_eligible_recovery_action === 'single_source_unit_regeneration'
+  const providerText = recovery?.exact_recovery_stage === 'single_source_unit_regeneration'
     ? ' Remaining malformed output will be retried one source message at a time; each validated result is saved before the next message.'
     : recovery?.exact_pending_obligation
       ? ` Pending ${recovery.exact_pending_obligation.tier === 'session' ? 'Session' : 'Long-Term'} obligation ${recovery.exact_pending_obligation.source_range?.start ?? '?'}–${recovery.exact_pending_obligation.source_range?.end ?? '?'}: ${formatIdentifier(recovery.exact_pending_obligation.exact_reason_code, 'pending recovery')}. Next action: ${formatIdentifier(recovery.exact_pending_obligation.next_eligible_action, 'resume exact obligation')}.` : '';
@@ -141,13 +144,35 @@ export function selectRecoveryPresentation(input = {}) {
 
 export function selectDiagnosticsProjection(input = {}) {
   const { completedRun = null, current = {}, createdAt = Date.now() } = input;
-  if (completedRun) return cloneProjectionValue({ ...completedRun, ...current });
+  if (completedRun) {
+    const publication = observeMemorizeDiagnostics(() => createFullDiagnosticsExport(
+      cloneProjectionValue({ ...completedRun, ...current }), createdAt), createdAt);
+    if (publication.ok) return publication.value;
+    const status = completedRun.lifecycle_status ?? completedRun.status;
+    return createCompactFailureDiagnostics({
+      core_workflow_completed: status === 'completed',
+      build_identity: current.build_identity ?? completedRun.build_identity,
+      controller_exit: current.controller_exit ?? completedRun.controller_exit
+        ?? completedRun.root_error ?? completedRun.error_details?.[0] ?? null,
+      provider_attempt_audit: current.provider_attempt_audit ?? completedRun.provider_attempt_audit,
+      catch_up_recovery: {
+        ...(current.catch_up_recovery ?? completedRun.catch_up_recovery),
+        logical_run_id: current.catch_up_recovery?.logical_run_id
+          ?? completedRun.logical_run?.logical_run_id
+          ?? completedRun.logical_run_identity?.logical_run_id,
+        reason_code: current.catch_up_recovery?.reason_code ?? publication.failure.code,
+      },
+    }, createdAt);
+  }
   if (!current.fresh_start_postcondition_audit && !current.manual_idempotence
     && !current.live_memory_health && !current.catch_up_recovery?.available) return null;
+  if (current.catch_up_recovery?.available) {
+    return cloneProjectionValue(createCompactFailureDiagnostics(current, createdAt));
+  }
   return cloneProjectionValue({
-    version: 1,
+    version: 2,
     created_at: createdAt,
-    diagnostic_type: current.catch_up_recovery?.available ? 'incomplete_catchup_recovery' : 'pre_run_state_audit',
+    diagnostic_type: 'pre_run_state_audit',
     status: current.catch_up_recovery?.available ? 'incomplete' : 'not_run',
     operational_status: current.catch_up_recovery?.available ? 'incomplete' : 'not_run',
     automatic_stabilization: null,

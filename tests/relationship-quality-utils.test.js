@@ -32,5 +32,6 @@ test('relationship quality accounts for every quarantined final-audit pair', () 
   assert.equal(summary.unresolved_but_safe_records.count, 4);
   assert.equal(summary.unresolved_but_safe_records.ambiguous_noncanonical_pair_keys, 2);
   assert.equal(summary.ambiguous_noncanonical_pair_keys.quarantined_from_injection, 1);
+  assert.equal(summary.deterministic_pair_key_reconciliation_debt.count, 1);
   assert.equal(summary.accounting_invariant.reconciled, true);
 });

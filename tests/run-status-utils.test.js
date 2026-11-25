@@ -43,7 +43,7 @@ test('recovered transient observations produce warning even without malformed ob
   const result = deriveRunStatus(report);
   assert.equal(result.lifecycle_status, 'completed');
   assert.equal(result.outcome_status, 'completed_recovered_errors');
-  assert.equal(result.historical_failure_observation_count, 3);
+  assert.equal(result.physical_failure_observation_count, 3);
   assert.equal(result.recovered_error_count, 0);
 });
 
@@ -61,7 +61,7 @@ test('supplied-run shape is completed with six errors rather than partial', () =
   });
   const accounting = deriveRunErrorAccounting(report);
   assert.equal(accounting.current_attempt_error_records.count, 5);
-  assert.equal(accounting.historical_failure_observations.count, 116);
+  assert.equal(accounting.physical_failure_observations.count, 116);
   assert.equal(accounting.unique_obligations_ever_failed.count, 100);
   assert.equal(accounting.terminal_unresolved_obligations.count, 6);
   assert.equal(accounting.reconciliation.consistent, true);
@@ -70,7 +70,7 @@ test('supplied-run shape is completed with six errors rather than partial', () =
   assert.equal(normalized.outcome_status, 'completed_with_errors');
   assert.equal(normalized.severity, 'error');
   assert.equal(normalized.run_status.label, 'Completed with 6 errors');
-  assert.equal(normalized.legacy_status_compatibility.original_status, 'partial');
+  assert.equal(normalized.status, normalized.lifecycle_status);
 });
 
 test('incomplete resumable, blocked, fatal, and notice-only states have deterministic precedence', () => {
@@ -137,7 +137,7 @@ test('recovered failures canonically supply a missing historical observation cou
     unique_malformed_obligations: 2, recovered_malformed_obligations: 2,
     terminally_unresolved_malformed_obligations: 0, terminal_unresolved_obligations: [],
   }, logical_run: { ...completed().logical_run, cumulative_request_counters: { provider_failure_count: 0 } } }));
-  assert.equal(corrected.historical_failure_observations.count, 2);
+  assert.equal(corrected.physical_failure_observations.count, 2);
   assert.equal(corrected.reconciliation.recovered_failures_have_historical_observation, true);
   assert.equal(corrected.reconciliation.consistent, true);
 });
@@ -247,18 +247,18 @@ test('all-success and partial targeted repair preserve completed lifecycle with 
   assert.equal(partialRepair.run_status.label, 'Completed with 3 errors');
 });
 
-test('legacy partial, degraded, and quality-debt labels migrate from durable evidence deterministically', () => {
-  for (const legacy of [
+test('reported partial, degraded, and quality-debt labels cannot override durable completion evidence', () => {
+  for (const reported of [
     { status: 'partial', operational_status: 'partial', completion_quality_status: 'partial_state' },
     { status: 'degraded', operational_status: 'degraded', completion_quality_status: 'completed_with_quality_debt' },
     { status: 'completed', operational_status: 'completed', completion_quality_status: 'completed' },
   ]) {
-    const report = completed({ status: legacy.status, operational_status: legacy.operational_status,
-      quality: { final_integrity_status: 'clean', notices: [], completion_quality_status: legacy.completion_quality_status } });
+    const report = completed({ status: reported.status, operational_status: reported.operational_status,
+      quality: { final_integrity_status: 'clean', notices: [], completion_quality_status: reported.completion_quality_status } });
     const once = normalizeRunStatusReport(report);
     const twice = normalizeRunStatusReport(once);
     assert.equal(once.lifecycle_status, 'completed');
     assert.deepEqual(twice.run_status, once.run_status);
-    assert.equal(twice.legacy_status_compatibility.original_status, legacy.status);
+    assert.equal(twice.status, twice.lifecycle_status);
   }
 });

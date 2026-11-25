@@ -4,18 +4,6 @@
   "chunk_size": 20,
   "ranges": [[0, 19], [20, 39], [40, 59]],
   "longterm_owners": ["Alex", "Kayla", "Kyler", "Taylor", "Valerie", "Morgan", "Side Character"],
-  "stale_compatibility": {
-    "committed_ranges": [{"start_offset": 0, "end_offset": 39}],
-    "tier_coverage": {
-      "longterm": {"enabled": true, "committed_ranges": [{"start_offset": 0, "end_offset": 59}]},
-      "session": {"enabled": true, "committed_ranges": [{"start_offset": 0, "end_offset": 39}]}
-    },
-    "tier_obligations": [
-      {"key": "session:0-19", "tier": "session", "start_offset": 0, "end_offset": 19, "safely_committed": true},
-      {"key": "session:20-39", "tier": "session", "start_offset": 20, "end_offset": 39, "safely_committed": true},
-      {"key": "session:40-59", "tier": "session", "start_offset": 40, "end_offset": 59, "safely_committed": false, "reason_code": "unknown_uncommitted_tier_obligation"}
-    ]
-  },
   "candidate_mappings": {
     "9c3d076f-7222-4804-81bb-7837e3e06cf2": "session-candidate:fnv1a-39c6c9f:0:claim-fnv1a-29e7bb5f",
     "ea2a7dd9-a5a4-41e4-831d-025734be07f2": "session-candidate:fnv1a-39c6c9f:1:claim-fnv1a-c0fc3245",

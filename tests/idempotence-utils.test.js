@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  canonicalizeDurableIdempotenceState,
+  buildCanonicalDurableSemanticState,
   compareDurableSemanticStates,
   deriveDurableWriteAccounting,
   deriveIdempotenceResult,
@@ -10,7 +10,7 @@ import {
   summarizeDurableStateChanges,
   summarizeSessionMemoryChanges,
   summarizeStoryArcChanges,
-  normalizeIdempotenceResult,
+  projectIdempotenceResult,
 } from '../idempotence-utils.js';
 
 const stableSecondPass = {
@@ -20,6 +20,8 @@ const stableSecondPass = {
   recreated_after_prior_repair: 0,
   unsafe_merge_candidates_after_second_pass: 0,
   unresolved_integrity_failures_after_second_pass: 0,
+  durable_state_hash_after_first_pass: 'stable-hash',
+  durable_state_hash_after_second_pass: 'stable-hash',
 };
 
 test('page lifecycle diagnostics cannot alter the durable reconciliation hash', () => {
@@ -141,24 +143,37 @@ test('second-pass durable changes require attention', () => {
 });
 
 test('an unaccounted durable hash change requires attention', () => {
-  const result = deriveIdempotenceResult({ ...stableSecondPass, durable_state_changed: true });
+  const result = deriveIdempotenceResult({
+    ...stableSecondPass, durable_state_hash_after_second_pass: 'changed-hash',
+  });
   assert.equal(result.idempotent, false);
   assert.ok(result.attention_reasons.includes('durable_state_hash_changed_without_accounted_mutation'));
 });
 
-test('matching durable hashes override a stale compatibility change flag', () => {
-  const result = normalizeIdempotenceResult({
+test('matching durable hashes override a stale stored verdict', () => {
+  const result = projectIdempotenceResult({
     ...stableSecondPass,
     idempotence_result_schema_version: 2,
     idempotent: false,
-    durable_state_changed: true,
     durable_state_hash_after_first_pass: 'same',
     durable_state_hash_after_second_pass: 'same',
   });
   assert.equal(result.durable_state_changed, false);
   assert.equal(result.idempotent, true);
   assert.equal(result.attention_required, false);
-  assert.equal(result.idempotence_false_negative_detected, true);
+  assert.equal(result.stored_verdict_mismatch, true);
+});
+
+test('missing durable hashes fail closed instead of consulting a boolean fallback', () => {
+  const result = deriveIdempotenceResult({
+    ...stableSecondPass,
+    durable_state_hash_after_first_pass: null,
+    durable_state_hash_after_second_pass: null,
+    durable_state_changed: false,
+  });
+  assert.equal(result.idempotent, false);
+  assert.equal(result.durable_state_changed, null);
+  assert.ok(result.attention_reasons.includes('durable_state_hashes_missing'));
 });
 
 test('first-pass maintenance followed by a stable second pass is idempotent', () => {
@@ -173,16 +188,14 @@ test('stale references and recreated links require attention', () => {
   assert.equal(deriveIdempotenceResult({ ...stableSecondPass, recreated_after_prior_repair: 1 }).idempotent, false);
 });
 
-test('legacy strict full-hash false negatives migrate to the durable result', () => {
-  const result = normalizeIdempotenceResult({ ...stableSecondPass, idempotent: false, first_pass_input_hash: 'a', first_pass_output_hash: 'b' });
-  assert.equal(result.idempotent, true);
-  assert.equal(result.legacy_idempotent_result, false);
-  assert.equal(result.migrated_from_full_hash_semantics, true);
-  assert.equal(result.idempotence_false_negative_detected, true);
+test('old idempotence result schemas fail closed instead of migrating', () => {
+  assert.throws(() => projectIdempotenceResult({ ...stableSecondPass, idempotent: false }),
+    (error) => error.code === 'SME_FRESH_START_REQUIRED'
+      && error.reason_code === 'idempotence_result_schema_mismatch');
 });
 
 test('lifecycle disagreement is an explicit internal inconsistency', () => {
-  const result = normalizeIdempotenceResult({
+  const result = projectIdempotenceResult({
     ...stableSecondPass,
     idempotence_result_schema_version: 2,
     idempotence_result_lifecycle: { runner_result: true, persisted_result: false, values_consistent: false },
@@ -203,7 +216,7 @@ test('durable canonicalizer ignores diagnostics and canonicalizes collection ord
     catch_up_diagnostics: { run_id: 'two' },
     developer_idempotence_check: { idempotent: true },
   };
-  assert.deepEqual(canonicalizeDurableIdempotenceState(first), canonicalizeDurableIdempotenceState(second));
+  assert.deepEqual(buildCanonicalDurableSemanticState(first), buildCanonicalDurableSemanticState(second));
   assert.equal(durableStateHash(first), durableStateHash(second));
 });
 
@@ -224,7 +237,7 @@ test('durable hash and structural diff share exactly one canonical projection', 
 test('durable canonical projection is pure and does not sort or backfill live state', () => {
   const state = { sessionMemories: [{ id: 'b', content: 'B' }, { id: 'a', content: 'A' }], storyArcs: [{ id: 'arc', content: 'Open thread' }] };
   const before = structuredClone(state);
-  canonicalizeDurableIdempotenceState(state);
+  buildCanonicalDurableSemanticState(state);
   assert.deepEqual(state, before);
 });
 
@@ -265,46 +278,20 @@ test('durable-state diagnostics identify changed scene records by a privacy-safe
   assert.equal(JSON.stringify(summary).includes('private after'), false);
 });
 
-test('session-memory canonicalization is stable across legacy default backfill', () => {
-  const legacy = { sessionMemories: [{ type: 'fact', content: 'Private claim', ts: 4, source_message_indices: [2, 1] }] };
-  const normalized = { sessionMemories: [{
-    type: 'fact', content: 'Private claim', ts: 4, source_message_indices: [1, 2],
-    id: 'sme-session-fnv1a-94f5c4bf', consolidated: true, importance: 2, expiration: 'session',
-    confidence: 0.7, persona_relevance: 1, intimacy_relevance: 1, retrieval_count: 0,
-    last_confirmed_ts: 4, source_messages: [], source_chat_id: null, entities: [], time_scope: 'global',
-    valid_from: null, valid_to: null, supersedes: [], superseded_by: null, contradicts: [], unconfirmed_since: 0,
-  }] };
-  // An existing deterministic legacy ID must agree with the pre-backfill
-  // semantic representation.  Use the canonicalizer rather than live state.
-  const canonical = canonicalizeDurableIdempotenceState(legacy).sessionMemories[0];
-  normalized.sessionMemories[0].id = canonical.id;
-  assert.equal(durableStateHash(legacy), durableStateHash(normalized));
+test('durable projection rejects session records without current identity', () => {
+  assert.throws(
+    () => durableStateHash({ sessionMemories: [{ type: 'fact', content: 'Private claim', ts: 4 }] }),
+    (error) => error?.code === 'SME_FRESH_START_REQUIRED'
+      && error?.reason === 'session_memory_projection_schema_mismatch',
+  );
 });
 
-test('session link-provenance legacy backfill does not change durable state', () => {
-  const base = { sessionMemories: [{ id: 'memory-1', type: 'fact', content: 'A fact', entities: ['entity-1'] }] };
-  const backfilled = { sessionMemories: [{
-    ...base.sessionMemories[0],
-    entity_link_provenance: {
-      'entity-1': {
-        link_id: 'legacy:memory-1:entity-1', link_created_run_id: null, link_created_at: null,
-        link_created_stage: null, link_created_store: null, underlying_record_id: 'memory-1',
-        source_candidate_id: null, source_chunk_number: null, source_message_indices: [],
-        source_extraction_type: null, creation_method: 'unknown_legacy', canonical_identity_at_creation: null,
-        entity_registry_id_at_creation: 'entity-1',
-      },
-    },
-  }] };
-  assert.equal(durableStateHash(base), durableStateHash(backfilled));
-});
-
-test('story-arc canonicalization is stable across empty legacy bookkeeping backfill', () => {
-  const legacy = { storyArcs: [{ id: 'arc-1', content: 'A decision remains unresolved.', ts: 4 }] };
-  const normalized = { storyArcs: [{
-    id: 'arc-1', content: 'A decision remains unresolved.', ts: 4,
-    character_participants: [], synthetic_identity_labels_removed: [], identity_rejections: [],
-  }] };
-  assert.equal(durableStateHash(legacy), durableStateHash(normalized));
+test('durable projection rejects Story Arcs without current identity', () => {
+  assert.throws(
+    () => durableStateHash({ storyArcs: [{ content: 'A decision remains unresolved.', ts: 4 }] }),
+    (error) => error?.code === 'SME_FRESH_START_REQUIRED'
+      && error?.reason === 'story_arc_projection_schema_mismatch',
+  );
 });
 
 test('story-arc reconciliation annotations do not alter durable state', () => {

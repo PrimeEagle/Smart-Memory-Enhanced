@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCanonicalCharacterRoster,
   buildCanonicalRoster,
   canonicalizeNarrativeNames,
   resolveCanonicalCharacterName,
@@ -57,7 +56,7 @@ test('finalized chat persona context survives runtime cleanup without merging hi
 });
 import { isEntityRolePlaceholder, isPlausibleEntityName } from '../parsers.js';
 
-const roster = buildCanonicalCharacterRoster({
+const roster = buildCanonicalRoster({
   characters: [
     { id: 'paul', name: 'Paul Schmidt', description: '' },
     { id: 'alissa', name: 'Alissa Kawaguchi', description: '' },
@@ -78,7 +77,7 @@ test('canonical roster: unsupported married surname is rejected but resolved', (
 });
 
 test('canonical roster: family members sharing a surname remain distinct exact identities', () => {
-  const familyRoster = buildCanonicalCharacterRoster({
+  const familyRoster = buildCanonicalRoster({
     characters: [
       { id: 'taylor-card', name: 'Taylor Covington', description: '' },
       { id: 'kyler-card', name: 'Kyler Covington', description: '' },
@@ -138,12 +137,12 @@ test('canonical roster: unknown NPC remains creatable', () => {
 });
 
 test('canonical roster: ambiguous first name is not guessed', () => {
-  const ambiguousRoster = buildCanonicalCharacterRoster({ characters: [{ name: 'Alex Morgan' }, { name: 'Alex Chen' }] });
+  const ambiguousRoster = buildCanonicalRoster({ characters: [{ name: 'Alex Morgan' }, { name: 'Alex Chen' }] });
   assert.equal(resolveCanonicalCharacterName('Alex', ambiguousRoster).status, 'ambiguous');
 });
 
 test('canonical roster: group chat includes only active member cards', () => {
-  const result = buildCanonicalCharacterRoster({
+  const result = buildCanonicalRoster({
     groupId: 'g1',
     groups: [{ id: 'g1', members: ['paul.png'] }],
     characters: [{ name: 'Paul Schmidt', avatar: 'paul.png' }, { name: 'Unrelated Card', avatar: 'other.png' }],
@@ -152,7 +151,7 @@ test('canonical roster: group chat includes only active member cards', () => {
 });
 
 test('canonical roster: active user persona is included alongside group members', () => {
-  const result = buildCanonicalCharacterRoster({
+  const result = buildCanonicalRoster({
     name1: 'Aaron Holland',
     groupId: 'g1',
     groups: [{ id: 'g1', members: ['paul.png'] }],
@@ -163,7 +162,7 @@ test('canonical roster: active user persona is included alongside group members'
 });
 
 test('canonical roster: a unique persona first name resolves without creating a duplicate entity', () => {
-  const personaRoster = buildCanonicalCharacterRoster({ name1: 'Kyle Holland', characters: [] });
+  const personaRoster = buildCanonicalRoster({ name1: 'Kyle Holland', characters: [] });
   const result = resolveCanonicalCharacterName('Kyle', personaRoster);
   assert.equal(result.status, 'resolved');
   assert.equal(result.canonicalName, 'Kyle Holland');
@@ -174,14 +173,14 @@ test('canonical roster: explicit active persona scope survives contexts without 
   const scopedRoster = buildCanonicalRoster({ characters: [] }, {
     activePersona: { id: 'persona-kyle', name: 'Kyle Holland', aliases: ['Kyle'] },
   });
-  assert.equal(scopedRoster.characters[0].canonical_id, 'persona:persona-kyle');
-  assert.equal(scopedRoster.characters[0].source_type, 'persona');
+  assert.equal(scopedRoster.characters[0].id, 'persona:persona-kyle');
+  assert.equal(scopedRoster.characters[0].source, 'user-persona');
   assert.equal(resolveCanonicalCharacterName('Kyle', scopedRoster).canonicalName, 'Kyle Holland');
   assert.equal(resolveCanonicalCharacterName('Kyle Holland', scopedRoster).canonicalName, 'Kyle Holland');
 });
 
 test('canonical roster rewrites a former persona label before prompt construction', () => {
-  const personaRoster = buildCanonicalCharacterRoster({
+  const personaRoster = buildCanonicalRoster({
     name1: 'Kyle Holland',
     persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
     characters: [],
@@ -204,7 +203,7 @@ test('runtime persona snapshot survives imported placeholder headers and carries
   });
   setCanonicalRuntimeContextSnapshot(snapshot);
   try {
-    const runtimeRoster = buildCanonicalCharacterRoster({ name2: 'unused', chat: [], characters: [] });
+    const runtimeRoster = buildCanonicalRoster({ name2: 'unused', chat: [], characters: [] });
     const kyle = resolveCanonicalCharacterName('kyle', runtimeRoster);
     const adam = resolveCanonicalCharacterName('Adam Lawson', runtimeRoster);
     assert.equal(runtimeRoster.characters[0].canonical_persona_id, 'persona-kyle');
@@ -253,7 +252,7 @@ test('runtime persona snapshot rejects placeholder-only inputs instead of fabric
 });
 
 test('stable relationship keys distinguish persona identities from card identities', () => {
-  const personaRoster = buildCanonicalCharacterRoster({
+  const personaRoster = buildCanonicalRoster({
     name2: 'Kyle Holland',
     persona: { id: 'persona-kyle', name: 'Kyle Holland' },
     characters: [{ id: 'alissa-card', name: 'Alissa Kawaguchi' }],
@@ -280,7 +279,7 @@ test('synthetic parenthetical identity labels normalize while legitimate numeric
 });
 
 test('canonical roster: generated prose uses deterministic card-name replacements only', () => {
-  const result = canonicalizeNarrativeNames('Paul Kawaguchi asks Kyle to wait for Sophie.', buildCanonicalCharacterRoster({
+  const result = canonicalizeNarrativeNames('Paul Kawaguchi asks Kyle to wait for Sophie.', buildCanonicalRoster({
     name1: 'Kyle Holland',
     characters: [{ id: 'paul', name: 'Paul Schmidt', description: '' }],
   }));
@@ -289,7 +288,7 @@ test('canonical roster: generated prose uses deterministic card-name replacement
 });
 
 test('one canonical narrative rewrite reaches a fixed point and remains idempotent', () => {
-  const roster = buildCanonicalCharacterRoster({
+  const roster = buildCanonicalRoster({
     name1: 'Kyle Holland',
     characters: [{ id: 'paul', name: 'Paul Schmidt', description: '' }],
   });
@@ -315,7 +314,7 @@ test('structured scene and arc participants use canonical cards but retain unkno
 });
 
 test('synthetic parenthetical labels are removed from generated arc prose only when known synthetic', () => {
-  const roster = buildCanonicalCharacterRoster({
+  const roster = buildCanonicalRoster({
     characters: [{ id: 'sophie', name: 'Sophie', description: '' }, { id: 'alissa', name: 'Alissa Kawaguchi', description: '' }],
   });
   const result = sanitizeSyntheticIdentityLabels('Sophie (Alissa Kawaguchi) still needs to answer the letter. Unit 01 (Prototype) remains offline.', roster);
@@ -345,7 +344,7 @@ test('arc participants add canonical people explicitly named in arc content', ()
 });
 
 test('entity resolver uses the active persona identity and keeps its stable scoped key', () => {
-  const personaRoster = buildCanonicalCharacterRoster({
+  const personaRoster = buildCanonicalRoster({
     name1: 'Kyle Holland',
     persona: { id: 'persona-kyle', name: 'Kyle Holland' },
     characters: [],
@@ -404,7 +403,7 @@ test('stable imported author expands a selected short persona label while retain
   assert.equal(snapshot.active_persona.canonical_name, 'Kyle Holland');
   assert.equal(snapshot.active_persona.stable_persona_id, 'user-default.png');
   assert.equal(snapshot.active_persona.runtime_source, 'stable_user_message_author');
-  assert.equal(roster.characters[0].canonical_id, 'persona:user-default.png');
+  assert.equal(roster.characters[0].id, 'persona:user-default.png');
   assert.equal(resolveCanonicalCharacterName('Kyle', roster).canonicalId, 'persona:user-default.png');
 });
 
@@ -451,7 +450,7 @@ test('imported persona recovery refuses competing user-message authors and never
 });
 
 test('entity resolver applies a source-supported unique full-name typo correction only', () => {
-  const typoRoster = buildCanonicalCharacterRoster({
+  const typoRoster = buildCanonicalRoster({
     characters: [{ id: 'taylor-card', name: 'Taylor Covington' }, { id: 'kyler-card', name: 'Kyler Covington' }],
   });
   const typo = resolveEntityCandidate('Tayor Covington', typoRoster, [], { grounding_status: 'direct', source_message_indices: [12] });
@@ -536,7 +535,7 @@ test('phase 2: relationship and ledger keys use immutable card IDs but retain la
 });
 
 test('scene participant repair promotes only explicit historical card aliases', () => {
-  const personaRoster = buildCanonicalCharacterRoster({
+  const personaRoster = buildCanonicalRoster({
     name2: 'Kyle Holland',
     persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
     characters: [{ id: 'alissa', name: 'Alissa Kawaguchi' }],
@@ -552,8 +551,8 @@ test('scene participant repair promotes only explicit historical card aliases', 
 });
 
 test('scene participant repair retains every explicitly named active family member', () => {
-  const familyRoster = buildCanonicalCharacterRoster({
-    name2: 'Aaron Holland',
+  const familyRoster = buildCanonicalRoster({
+    activePersona: { name: 'Aaron Holland' },
     characters: [
       { id: 'taylor', name: 'Taylor Covington' },
       { id: 'richard', name: 'Richard Covington' },
@@ -567,7 +566,7 @@ test('scene participant repair retains every explicitly named active family memb
   assert.deepEqual(repaired.names, ['Taylor Covington', 'Richard Covington', 'Margaret Covington', 'Aaron Holland']);
 });
 
-test('active persona uses SillyTavern name2 and roster helpers accept object, map, and legacy array shapes', () => {
+test('active persona uses explicit persona state and roster helpers require the current container shape', () => {
   const personaRoster = buildCanonicalRoster({
     name1: 'Alissa Kawaguchi',
     name2: 'Kyle Holland',
@@ -580,12 +579,17 @@ test('active persona uses SillyTavern name2 and roster helpers accept object, ma
   assert.equal(resolveCanonicalCharacterName('Adam', personaRoster).canonicalName, 'Kyle Holland');
   assert.equal(getCanonicalPersonaEntries(personaRoster).length, 1);
   assert.equal(getCanonicalCardEntries(personaRoster).length, 1);
-  assert.equal(getCanonicalRosterPeople({ characters: new Map(personaRoster.characters.map((entry) => [entry.canonical_id, entry])) }).length, 2);
-  assert.equal(getCanonicalRosterPeople(personaRoster.characters).length, 2);
+  assert.equal(getCanonicalRosterPeople(personaRoster).length, 2);
+  assert.throws(() => getCanonicalRosterPeople({ characters: new Map() }), {
+    code: 'SME_CANONICAL_ROSTER_SCHEMA_UNSUPPORTED',
+  });
+  assert.throws(() => getCanonicalRosterPeople(personaRoster.characters), {
+    code: 'SME_CANONICAL_ROSTER_SCHEMA_UNSUPPORTED',
+  });
 });
 
 test('active persona short name is not guessed when a competing Kyle exists', () => {
-  const competingRoster = buildCanonicalCharacterRoster({
+  const competingRoster = buildCanonicalRoster({
     name2: 'Kyle Holland',
     persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
     characters: [{ id: 'other-kyle', name: 'Kyle Renner' }],
@@ -598,7 +602,7 @@ test('active persona short name is not guessed when a competing Kyle exists', ()
 });
 
 test('historical persona short names are not added when a card uses that name', () => {
-  const competingRoster = buildCanonicalCharacterRoster({
+  const competingRoster = buildCanonicalRoster({
     name2: 'Kyle Holland',
     persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
     characters: [{ id: 'adam-card', name: 'Adam Jones' }],

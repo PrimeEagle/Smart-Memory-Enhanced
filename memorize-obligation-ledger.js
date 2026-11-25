@@ -10,8 +10,8 @@ import { cloneSerializableDomain } from './serializable-domain.js';
  * `explicit_no_update` make an obligation checkpoint eligible.
  */
 
-export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 8;
-export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 11;
+export const MEMORIZE_OBLIGATION_LEDGER_SCHEMA_VERSION = 9;
+export const MEMORIZE_OBLIGATION_IMPLEMENTATION_VERSION = 12;
 
 export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
   'parser_accepted_candidate_ids',
@@ -26,7 +26,7 @@ export const MEMORIZE_LIFECYCLE_IDENTITY_FIELDS = Object.freeze([
 ]);
 
 export const MEMORIZE_OBLIGATION_STATES = Object.freeze([
-  'unattempted', 'provider_running', 'provider_response_received',
+  'unattempted', 'provider_registered', 'provider_running', 'provider_response_received',
   'parser_accepted', 'parser_partial', 'parser_rejected',
   'validation_accepted', 'validation_partial', 'validation_rejected', 'staged',
   'partial_records_committed', 'explicit_no_update', 'pending_recovery', 'operationally_paused',
@@ -40,48 +40,20 @@ const nowValue = (value) => Number.isFinite(Number(value)) ? Number(value) : Dat
 // One action contract is shared by the reducer, scheduler, diagnostics, and
 // Resume projection. Unknown actions fail closed instead of being guessed from
 // the obligation state by each consumer.
+export const MEMORIZE_ACTIONS = Object.freeze([
+  'dispatch_provider_request', 'apply_journaled_provider_completion',
+  'recover_missing_owner_coverage', 'aggregate_completed_children',
+  'continue_source_traversal', 'continue_finalization', 'complete_run', 'stop_blocked',
+]);
 export const MEMORIZE_ACTION_CONTRACTS = Object.freeze({
   dispatch_provider_request: Object.freeze({ provider_call_required: true, persistence_required: false }),
   recover_missing_owner_coverage: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  dispatch_registered_provider_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  dispatch_bounded_recovery_attempt: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  compact_response_repair: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  changed_dimension_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  malformed_source_repartition: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  structured_json_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  minimal_record_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  single_source_unit_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  retry_provider_with_backoff: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  recover_exact_unresolved_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  recover_unresolved_partial_output_fragments: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  regenerate_unresolved_from_verified_source: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  resume_changed_dimension_or_single_source_recovery: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  fragment_decision_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  resume_exact_obligation: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  session_validation_repair_or_bounded_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  citation_repair_or_bounded_regeneration: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  dispatch_after_prior_leaf_coverage: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  retry: Object.freeze({ provider_call_required: true, persistence_required: false }),
-  continue_unattempted_recovery_child: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  resume_first_actionable_recovery_leaf: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  derive_parent_child_coverage: Object.freeze({ provider_call_required: false, persistence_required: false }),
   aggregate_completed_children: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  continue_next_incomplete_sibling: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  continue_pending_downstream_processing: Object.freeze({ provider_call_required: false, persistence_required: true }),
-  continue_validation: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  persist_validated_records: Object.freeze({ provider_call_required: false, persistence_required: true }),
-  reconcile_terminal_attempt_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  reconcile_provider_attempt_registration: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  reconcile_downstream_lifecycle_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  settle_terminal_malformed_attempt: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  inspect_or_restore_private_terminal_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  inspect_or_restore_unresolved_fragment_payload: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  inspect_or_restore_committed_partial_record: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  inspect_or_restore_partial_fragment_recovery_evidence: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  change_provider_configuration_or_install_updated_build: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  restore_source_or_private_recovery_payload: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  restore_source_window: Object.freeze({ provider_call_required: false, persistence_required: false }),
-  restore_matching_source_window: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  apply_journaled_provider_completion: Object.freeze({ provider_call_required: false, persistence_required: true }),
+  continue_source_traversal: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  continue_finalization: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  complete_run: Object.freeze({ provider_call_required: false, persistence_required: false }),
+  stop_blocked: Object.freeze({ provider_call_required: false, persistence_required: false }),
 });
 
 export function getMemorizeActionContract(action) {
@@ -120,8 +92,9 @@ export function memorizeObligationStateFingerprint(obligation = null) {
 // This table is intentionally exported: tests and diagnostics use
 // the same lifecycle contract instead of maintaining parallel interpretations.
 export const MEMORIZE_OBLIGATION_TRANSITIONS = Object.freeze({
-  unattempted: ['provider_running', 'provider_response_received', 'parser_accepted', 'parser_partial',
+  unattempted: ['provider_registered', 'provider_response_received', 'parser_accepted', 'parser_partial',
     'pending_recovery', 'blocked', 'explicit_no_update', 'durably_committed'],
+  provider_registered: ['provider_running', 'pending_recovery', 'blocked', 'terminal_failed'],
   provider_running: ['provider_response_received', 'operationally_paused', 'pending_recovery', 'blocked', 'terminal_failed', 'durably_committed', 'explicit_no_update'],
   provider_response_received: ['parser_accepted', 'parser_partial', 'parser_rejected', 'validation_accepted', 'validation_partial', 'validation_rejected', 'pending_recovery', 'blocked'],
   parser_accepted: ['validation_accepted', 'validation_partial', 'validation_rejected', 'explicit_no_update', 'pending_recovery', 'durably_committed'],
@@ -131,10 +104,10 @@ export const MEMORIZE_OBLIGATION_TRANSITIONS = Object.freeze({
   validation_partial: ['staged', 'partial_records_committed', 'pending_recovery'],
   validation_rejected: ['pending_recovery', 'blocked', 'terminal_failed'],
   staged: ['partial_records_committed', 'durably_committed', 'pending_recovery'],
-  partial_records_committed: ['provider_running', 'pending_recovery', 'operationally_paused', 'durably_committed', 'explicit_no_update', 'blocked'],
-  pending_recovery: ['provider_running', 'provider_response_received', 'parser_accepted', 'parser_partial', 'validation_accepted', 'validation_partial', 'partial_records_committed', 'operationally_paused', 'durably_committed', 'explicit_no_update', 'blocked', 'terminal_failed'],
-  operationally_paused: ['provider_running', 'pending_recovery', 'blocked', 'terminal_failed'],
-  blocked: ['pending_recovery', 'provider_running', 'terminal_failed'],
+  partial_records_committed: ['provider_registered', 'pending_recovery', 'operationally_paused', 'durably_committed', 'explicit_no_update', 'blocked'],
+  pending_recovery: ['provider_registered', 'provider_response_received', 'parser_accepted', 'parser_partial', 'validation_accepted', 'validation_partial', 'partial_records_committed', 'operationally_paused', 'durably_committed', 'explicit_no_update', 'blocked', 'terminal_failed'],
+  operationally_paused: ['provider_registered', 'pending_recovery', 'blocked', 'terminal_failed'],
+  blocked: ['pending_recovery', 'provider_registered', 'terminal_failed'],
   terminal_failed: ['pending_recovery'],
   explicit_no_update: [],
   durably_committed: [],
@@ -241,13 +214,14 @@ function stableId(input = {}) {
 
 function defaultNextAction(state, reasonCode) {
   if (state === 'unattempted') return 'dispatch_provider_request';
-  if (state === 'operationally_paused') return 'resume_exact_obligation';
-  if (state === 'blocked') return 'change_provider_configuration_or_install_updated_build';
+  if (state === 'operationally_paused') return 'dispatch_provider_request';
+  if (state === 'blocked') return 'stop_blocked';
   if (state !== 'pending_recovery') return null;
-  if (reasonCode === 'invalid_candidate_shape') return 'session_validation_repair_or_bounded_regeneration';
-  if (reasonCode === 'partial_valid_output_has_unresolved_fragments') return 'recover_unresolved_partial_output_fragments';
-  if (reasonCode === 'missing_provenance') return 'citation_repair_or_bounded_regeneration';
-  return 'resume_exact_obligation';
+  if (reasonCode === 'terminal_provider_attempt_pending_downstream_reconciliation'
+    || reasonCode === 'reconcile_terminal_attempt_evidence') {
+    return 'apply_journaled_provider_completion';
+  }
+  return 'dispatch_provider_request';
 }
 
 export function createMemorizeObligationLedger(logicalRunId = null, now = Date.now()) {
@@ -286,6 +260,10 @@ export function ensureMemorizeObligationLedger(value, logicalRunId = null) {
 
 export function transitionMemorizeObligation(ledgerValue, input = {}, transition = {}) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue, input.logical_run_id);
+  if (transition.next_eligible_action != null
+    && !getMemorizeActionContract(transition.next_eligible_action)) {
+    throw new Error(`Unknown Memorize kernel action: ${transition.next_eligible_action}`);
+  }
   const id = stableId(input);
   const prior = ledger.obligations[id] ?? {};
   let state = transition.current_state ?? input.current_state ?? prior.current_state ?? 'unattempted';
@@ -445,7 +423,8 @@ export function transitionMemorizeObligation(ledgerValue, input = {}, transition
 }
 
 export const MEMORIZE_LIFECYCLE_EVENTS = Object.freeze([
-  'obligation_registered', 'recovery_children_declared', 'provider_attempt_started',
+  'obligation_registered', 'recovery_children_declared', 'provider_attempt_registered',
+  'provider_attempt_started',
   'provider_response_received', 'provider_transport_failed', 'parser_accepted',
   'parser_partially_accepted', 'parser_rejected', 'parser_evidence_enriched', 'validation_accepted',
   'validation_partially_accepted', 'validation_rejected', 'records_staged',
@@ -558,6 +537,12 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
   if (!SEMANTIC_EVENT_SET.has(event.type)) {
     return recordSemanticViolation(ledger, identity, event, 'unknown_memorize_lifecycle_event');
   }
+  const requestedAction = event.next_action ?? event.next_eligible_action ?? null;
+  if (requestedAction != null && !getMemorizeActionContract(requestedAction)) {
+    return recordSemanticViolation(ledger, identity, event, 'unknown_memorize_kernel_action', {
+      missing_evidence: ['canonical_next_action'],
+    });
+  }
   const id = stableId(identity);
   const eventId = semanticEventId(identity, event);
   const existing = ledger.obligations[id];
@@ -573,7 +558,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
     persistence_result: event.persistence_result,
     coverage_result: event.coverage_result,
     exact_reason_code: event.reason_code ?? event.exact_reason_code,
-    next_eligible_action: event.next_action ?? event.next_eligible_action,
+    next_eligible_action: requestedAction,
     recovery_intent: event.recovery_intent,
     recovery_stage: event.recovery_stage,
     recovery_dimension: event.recovery_dimension,
@@ -602,7 +587,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
       }, {
         current_state: SAFE_STATES.has(priorState) ? priorState : 'pending_recovery',
         exact_reason_code: 'recovery_children_pending',
-        next_eligible_action: 'continue_unattempted_recovery_child',
+        next_eligible_action: 'aggregate_completed_children',
         recovery_intent: 'complete_recovery_child_coverage', at: event.at,
       });
       for (const child of check.children) {
@@ -626,17 +611,28 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
       result = { applied: true, obligation: parent };
       break;
     }
-    case 'provider_attempt_started':
+    case 'provider_attempt_registered':
       if (!event.provider_attempt_id) return recordSemanticViolation(ledger, identity, event,
-        'provider_attempt_started_without_attempt_id', { missing_evidence: ['provider_attempt_id'] });
+        'provider_attempt_registered_without_attempt_id', { missing_evidence: ['provider_attempt_id'] });
       if (!['unattempted', 'pending_recovery', 'operationally_paused', 'blocked',
         'partial_records_committed', 'terminal_failed'].includes(priorState)) {
         return recordSemanticViolation(ledger, identity, event,
-          'provider_retry_started_before_prior_attempt_disposition', {
+          'provider_retry_registered_before_prior_attempt_disposition', {
             missing_evidence: ['parser_or_validation_disposition', 'recovery_required'],
             safe_repair_action: 'record_prior_attempt_disposition_then_recovery_required',
           });
       }
+      result = transitionForSemanticEvent(ledger, identity, event, 'provider_registered', {
+        ...details, exact_reason_code: 'provider_attempt_durably_registered',
+      });
+      break;
+    case 'provider_attempt_started':
+      if (!event.provider_attempt_id) return recordSemanticViolation(ledger, identity, event,
+        'provider_attempt_started_without_attempt_id', { missing_evidence: ['provider_attempt_id'] });
+      if (priorState !== 'provider_registered') return recordSemanticViolation(ledger, identity,
+        event, 'provider_dispatch_without_durable_registration', {
+          missing_evidence: ['durably_registered_provider_attempt'],
+        });
       result = transitionForSemanticEvent(ledger, identity, event, 'provider_running', {
         ...details, exact_reason_code: 'provider_request_in_progress',
       });
@@ -658,7 +654,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
     case 'provider_transport_failed':
       result = transitionForSemanticEvent(ledger, identity, event, 'pending_recovery', {
         ...details, exact_reason_code: event.reason_code ?? 'provider_transport_failure',
-        next_eligible_action: event.next_action ?? 'retry_provider_with_backoff',
+        next_eligible_action: event.next_action ?? 'dispatch_provider_request',
       });
       break;
     case 'parser_accepted':
@@ -749,7 +745,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
           exact_reason_code: event.exact_reason_code ?? event.malformed_reason
             ?? 'terminal_malformed_provider_output',
           next_eligible_action: event.next_eligible_action
-            ?? 'dispatch_bounded_recovery_attempt',
+            ?? 'dispatch_provider_request',
           recovery_intent: 'recover_malformed_provider_output',
           recovery_stage: event.recovery_stage ?? 'bounded_malformed_recovery',
         });
@@ -837,7 +833,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         const reconciliable = transitionMemorizeObligation(ledger, identity, {
           current_state: 'pending_recovery',
           exact_reason_code: 'reconcile_terminal_attempt_evidence',
-          next_eligible_action: 'reconcile_terminal_attempt_evidence',
+          next_eligible_action: 'apply_journaled_provider_completion',
           recovery_intent: 'apply_verified_local_terminal_evidence',
           provider_attempt_id: evidence.provider_attempt_id,
           at: event.at,
@@ -911,7 +907,7 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
       if (priorState !== 'pending_recovery') {
         const pending = transitionMemorizeObligation(ledger, identity, {
           current_state: 'pending_recovery', exact_reason_code: 'child_coverage_ready_for_aggregation',
-          next_eligible_action: 'derive_parent_child_coverage', at: event.at,
+          next_eligible_action: 'aggregate_completed_children', at: event.at,
         });
         if (pending.current_state !== 'pending_recovery') return recordSemanticViolation(
           ledger, identity, event, 'parent_aggregation_pending_transition_rejected');
@@ -985,7 +981,7 @@ export function aggregateMemorizeObligationParents(ledgerValue, at = Date.now())
       if (parent.current_state !== 'pending_recovery') {
         const pending = transitionMemorizeObligation(ledger, parent, {
           current_state: 'pending_recovery', exact_reason_code: 'child_coverage_ready_for_aggregation',
-          next_eligible_action: 'derive_parent_child_coverage', at,
+          next_eligible_action: 'aggregate_completed_children', at,
         });
         if (pending.current_state !== 'pending_recovery') continue;
       }
@@ -1115,7 +1111,7 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
           ?? entry.persistence?.reason_code ?? 'terminal_malformed_provider_output',
         exact_reason_code: exactAttempt?.malformed_reason
           ?? entry.persistence?.reason_code ?? 'terminal_malformed_provider_output',
-        next_eligible_action: 'dispatch_bounded_recovery_attempt',
+        next_eligible_action: 'dispatch_provider_request',
         recovery_stage: entry.recovery_stage ?? exactAttempt?.recovery_stage ?? null,
         event_id: `terminal-malformed-settlement:${entry.attempt_id}`,
         at: input.at,
@@ -1321,16 +1317,40 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
   };
 }
 
-/** Repairs persisted running states when no physical provider attempt is active. */
+/** Repairs registered/running states when no physical provider transmission is active. */
 export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit = null) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue);
   const attemptObligationId = (attempt) => attempt?.child_obligation_id
     ?? attempt?.logical_obligation_id ?? attempt?.root_obligation_id ?? null;
   const runningAttempts = new Map((providerAudit?.recent_attempts ?? [])
-    .filter((attempt) => attempt?.terminal_outcome === 'running' && attemptObligationId(attempt))
+    .filter((attempt) => attempt?.terminal_outcome === 'running'
+      && attempt.transmission_started === true && attemptObligationId(attempt))
     .map((attempt) => [attemptObligationId(attempt), attempt]));
   const repairs = [];
   for (const obligation of Object.values(ledger.obligations)) {
+    if (obligation.current_state === 'provider_registered') {
+      const registered = [...(providerAudit?.recent_attempts ?? [])].reverse()
+        .find((attempt) => attemptObligationId(attempt) === obligation.obligation_id
+          && attempt?.terminal_outcome === 'running' && attempt.transmission_started !== true);
+      if (registered) {
+        registered.terminal_outcome = 'cancelled_before_dispatch';
+        registered.registration_state = 'reconciled_not_dispatched';
+        registered.registration_disposition = 'discarded_before_provider_transmission';
+      }
+      obligation.current_state = 'pending_recovery';
+      obligation.checkpoint_eligible = false;
+      obligation.exact_reason_code = 'registered_attempt_not_dispatched';
+      obligation.next_eligible_action = 'dispatch_provider_request';
+      obligation.recovery_intent = 'discard_untransmitted_registration_and_retry';
+      obligation.recovery_stage = 'resume_epoch_initialization';
+      obligation.timestamps ??= {};
+      obligation.timestamps.reconciled_untransmitted_registration_at = Date.now();
+      repairs.push({ obligation_id: obligation.obligation_id,
+        reason_code: obligation.exact_reason_code,
+        provider_transmission_occurred: false,
+        discarded_attempt_id: registered?.attempt_id ?? null });
+      continue;
+    }
     if (obligation.current_state !== 'provider_running') continue;
     const running = runningAttempts.get(obligation.obligation_id);
     if (running) {
@@ -1356,12 +1376,13 @@ export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit =
       : successfulTerminal
         ? 'terminal_provider_attempt_pending_downstream_reconciliation'
       : 'stale_provider_running_without_physical_attempt';
-    obligation.next_eligible_action = Number(obligation.metrics?.unresolved_parser_fragments ?? 0) > 0
+    obligation.next_eligible_action = successfulTerminal
+      ? 'apply_journaled_provider_completion' : 'dispatch_provider_request';
+    obligation.recovery_intent = Number(obligation.metrics?.unresolved_parser_fragments ?? 0) > 0
       ? 'recover_unresolved_partial_output_fragments'
       : malformedTerminal ? 'settle_terminal_malformed_attempt'
         : successfulTerminal ? 'continue_pending_downstream_processing'
-        : obligation.recovery_intent ?? 'resume_exact_obligation';
-    obligation.recovery_intent = obligation.next_eligible_action;
+          : obligation.recovery_intent ?? 'resume_exact_obligation';
     obligation.recovery_stage = 'resume_epoch_initialization';
     if (persisted > 0) {
       obligation.persistence_result = 'partial_records_committed';
@@ -1427,6 +1448,10 @@ export function recordMemorizeControllerExit(ledgerValue, input = {}) {
     checkpoint_after: Number.isFinite(Number(input.checkpoint_after)) ? Number(input.checkpoint_after) : null,
     normalized_exception_class: input.normalized_exception_class ?? null,
     bounded_message: input.bounded_message ?? null,
+    failure_stage: input.failure_stage ?? null,
+    serialization_path: input.serialization_path ?? null,
+    serialization_type: input.serialization_type ?? null,
+    operation_type: input.operation_type ?? null,
     stack_fingerprint: input.stack_fingerprint ?? null,
     next_eligible_action: input.next_eligible_action ?? null,
     detail: input.detail ?? null,
@@ -1579,7 +1604,8 @@ export function projectMemorizeObligationLedger(ledgerValue) {
 export function reconcileMemorizeProviderRuntime(ledgerValue, providerAudit = null) {
   const projection = projectMemorizeObligationLedger(ledgerValue);
   const runningAttempts = (providerAudit?.recent_attempts ?? [])
-    .filter((attempt) => attempt?.terminal_outcome === 'running');
+    .filter((attempt) => attempt?.terminal_outcome === 'running'
+      && attempt.transmission_started === true);
   const runningAttemptByObligation = new Map(runningAttempts
     .filter((attempt) => attempt.logical_obligation_id)
     .map((attempt) => [attempt.logical_obligation_id, attempt]));

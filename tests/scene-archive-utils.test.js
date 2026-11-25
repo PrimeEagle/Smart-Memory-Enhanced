@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from '../scene-archive-utils.js';
+import { assertCurrentSceneRecord, createCurrentSceneRecord, selectScenesForInjection, trimSceneArchive } from '../scene-archive-utils.js';
 
 test('scene archive retains all detected scenes up to the archive cap while injecting only the recent subset', () => {
   const scenes = Array.from({ length: 12 }, (_, index) => ({ id: String(index), summary: `Scene ${index}` }));
@@ -8,15 +8,12 @@ test('scene archive retains all detected scenes up to the archive cap while inje
   assert.deepEqual(selectScenesForInjection(scenes, 5).map((scene) => scene.id), ['7', '8', '9', '10', '11']);
 });
 
-test('legacy scene records remain readable with normalized provenance fields', () => {
-  const scene = normalizeSceneRecord({ summary: 'Old scene', ts: 1, source_memory_ids: [] }, () => 'legacy-1');
-  assert.equal(scene.id, 'legacy-1');
-  assert.equal(scene.grounding_status, 'legacy');
-  assert.equal(scene.source_start_index, null);
+test('scene construction requires an explicit durable identity source', () => {
+  assert.throws(() => createCurrentSceneRecord({ summary: 'A scene', ts: 1 }), TypeError);
 });
 
 test('scene records preserve original source indices despite filtered-message gaps', () => {
-  const scene = normalizeSceneRecord({
+  const scene = createCurrentSceneRecord({
     summary: 'A scene',
     source_message_indices: [8, 3, 8, 5],
     source_memory_ids: [],
@@ -27,16 +24,16 @@ test('scene records preserve original source indices despite filtered-message ga
   assert.equal(scene.grounding_status, 'direct');
 });
 
-test('legacy scenes without IDs normalize to a deterministic durable ID', () => {
-  const legacy = { summary: 'Old scene', ts: 1, source_message_indices: [8, 3, 8] };
-  const first = normalizeSceneRecord(legacy);
-  const second = normalizeSceneRecord(legacy);
-  assert.equal(first.id, second.id);
-  assert.match(first.id, /^legacy-scene-/);
+test('scene reads reject records outside the current schema', () => {
+  assert.throws(
+    () => assertCurrentSceneRecord({ summary: 'Old scene', ts: 1 }),
+    (error) => error?.code === 'SME_FRESH_START_REQUIRED'
+      && error?.reason === 'scene_history_record_schema_mismatch',
+  );
 });
 
-test('scene normalization removes parser artifacts from legacy participants', () => {
-  const scene = normalizeSceneRecord({
+test('scene construction removes parser artifacts from participants', () => {
+  const scene = createCurrentSceneRecord({
     summary: 'A scene',
     character_participants: ['Paul', 'Sources', 'sources=0', 'Unit 01'],
   }, () => 'scene-2');

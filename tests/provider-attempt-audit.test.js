@@ -5,6 +5,7 @@ import {
   beginProviderRecoveryEpoch,
   classifyMalformedProviderOutput,
   finishProviderAttempt,
+  markProviderAttemptDispatched,
   markProviderRejectedFragmentsRecovered,
   markProviderPartialRecordsPersisted,
   markProviderRecoveryBudgetPause,
@@ -17,6 +18,24 @@ import {
   stageProviderRejectedFragments,
   summarizeProviderAttemptAudit,
 } from '../provider-attempt-audit.js';
+
+test('registration is not counted as provider transmission until dispatch starts', () => {
+  const metadata = { active_catchup_run_id: 'run' };
+  const attempt = beginProviderAttempt(metadata, {
+    tier: 'session', logical_obligation_id: 'session:0-19',
+    source_range: { start: 0, end: 19, message_count: 20 }, source_fingerprint: 'fp',
+  });
+  let summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(attempt.transmission_started, false);
+  assert.equal(summary.registered_attempts, 1);
+  assert.equal(summary.physical_attempts, 0);
+  assert.equal(summary.registered_not_dispatched_attempts, 1);
+  markProviderAttemptDispatched(metadata, attempt, { at: 50 });
+  summary = summarizeProviderAttemptAudit(metadata);
+  assert.equal(attempt.transmission_started, true);
+  assert.equal(summary.physical_attempts, 1);
+  assert.equal(summary.running_attempts, 1);
+});
 
 test('incompatible active provider-attempt state requires Fresh Start', () => {
   const metadata = { active_catchup_run_id: 'old-run', live_memory_health: {
@@ -178,7 +197,10 @@ test('malformed classifier distinguishes privacy-safe response-shape failures', 
   assert.equal(classifyMalformedProviderOutput('{"error":{"code":"bad"}}'), 'structured_provider_error_mistaken_for_generated_content');
   assert.equal(classifyMalformedProviderOutput('{"choices":[],"usage":{}}'), 'transport_envelope_mistaken_for_model_content');
   assert.equal(classifyMalformedProviderOutput('{"items":[', { expectedFormat: 'json' }), 'truncated_json');
-  assert.equal(classifyMalformedProviderOutput('Here is the result.'), 'prose_around_structured_output');
+  assert.equal(classifyMalformedProviderOutput('Here is the result.'), 'missing_tagged_records');
+  assert.equal(classifyMalformedProviderOutput('Here is the result.', {
+    expectedFormat: 'generic_structured_output',
+  }), 'prose_around_structured_output');
   assert.equal(classifyMalformedProviderOutput('x', { shapeFailure: 'wrong_field_types' }), 'wrong_field_types');
   assert.equal(classifyMalformedProviderOutput('x', { expectedOwnerCount: 3, observedOwnerCount: 2 }), 'partial_owner_result');
   assert.equal(classifyMalformedProviderOutput('x', { shapeFailure: 'unsupported_schema_fields' }), 'unsupported_schema_fields');
@@ -415,7 +437,8 @@ test('an exhausted minimal stage selects the new unit fallback, whose exhaustion
   });
   let unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
   assert.equal(unresolved.recovery_blocked, false);
-  assert.equal(unresolved.next_eligible_recovery_action, 'single_source_unit_regeneration');
+  assert.equal(unresolved.eligible_recovery_stage, 'single_source_unit_regeneration');
+  assert.equal(unresolved.next_eligible_recovery_action, 'dispatch_provider_request');
 
   const unit = beginProviderAttempt(metadata, {
     ...input, request_kind: 'single_source_unit_regeneration',
@@ -432,7 +455,7 @@ test('an exhausted minimal stage selects the new unit fallback, whose exhaustion
   unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
   assert.equal(unresolved.terminal_signature_repeat_count, 1);
   assert.equal(unresolved.recovery_blocked, true);
-  assert.equal(unresolved.next_eligible_recovery_action, 'change_provider_configuration_or_install_updated_build');
+  assert.equal(unresolved.next_eligible_recovery_action, 'stop_blocked');
   assert.equal(unresolved.retry_replay_count, 0);
   assert.equal(unresolved.last_response_contract.requested_output_format, 'session_single_source_unit_v1');
   assert.deepEqual(unresolved.last_response_contract.rejection_reasons, ['malformed_tag']);
@@ -460,9 +483,11 @@ test('valid partial records can be marked durable without falsely closing covera
     total_candidate_count: 2, accepted_candidate_count: 1, rejected_candidate_count: 1,
     missing_required_results: true,
   });
-  assert.equal(markProviderPartialRecordsPersisted(metadata, 'session:partial', 3), true);
+  assert.equal(markProviderPartialRecordsPersisted(metadata, 'session:partial', null,
+    ['session-memory-1', 'session-memory-2', 'session-memory-3']), true);
   const unresolved = summarizeProviderAttemptAudit(metadata).terminal_unresolved_obligations[0];
-  assert.equal(unresolved.accepted_partial_record_count, 1);
+  assert.equal(unresolved.parser_accepted_candidate_count, 1);
+  assert.equal(unresolved.durable_partial_record_count, 3);
   assert.equal(unresolved.last_response_contract.accepted_partial_output_persisted, true);
   assert.equal(unresolved.last_response_contract.total_candidate_count, 2);
   assert.equal(unresolved.last_response_contract.accepted_candidate_count, 1);
@@ -502,7 +527,8 @@ test('single-source partial records survive restore, deduplicate, and close only
   assert.equal(summary.malformed_recovery_performance.successful_physical_single_source_unit_requests, 1);
   assert.equal(summary.malformed_recovery_performance.successfully_completed_source_units, 1);
   assert.equal(summary.malformed_recovery_performance.fully_recovered_root_obligations, 0);
-  assert.equal(markProviderStagedRecoveryCompleted(metadata, obligationId, sourceFingerprint, 1), true);
+  assert.equal(markProviderStagedRecoveryCompleted(metadata, obligationId, sourceFingerprint,
+    ['longterm-memory-1']), true);
   summary = summarizeProviderAttemptAudit(metadata);
   assert.equal(summary.terminal_unresolved_obligations.length, 0);
   assert.equal(summary.malformed_recovery_performance.fully_recovered_root_obligations, 1);
@@ -527,7 +553,7 @@ test('bounded provider-failure lineage never replaces its exact aggregate', () =
   const summary = summarizeProviderAttemptAudit(metadata);
   assert.equal(summary.provider_failure_lineage.exact_count, 65);
   assert.equal(summary.provider_failure_lineage.retained.length, 64);
-  assert.equal(summary.provider_failure_lineage.details_pruned_or_legacy, true);
+  assert.equal(summary.provider_failure_lineage.details_pruned, true);
   assert.equal(summary.failure_accounting.unique_failed_obligation_count, 1);
   assert.equal(summary.failure_accounting.recovered_failed_obligation_count, 1);
 });

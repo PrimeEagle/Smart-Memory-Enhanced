@@ -54,7 +54,6 @@ export function assertSerializableDomain(value, context = {}) {
       if (!Number.isFinite(current)) throw boundaryError(path, current, context, 'number is not finite');
       return;
     }
-    if (primitive === 'undefined' && context.allow_undefined === true) return;
     if (primitive === 'undefined' || primitive === 'function'
       || primitive === 'symbol' || primitive === 'bigint') {
       throw boundaryError(path, current, context, `${primitive} values are runtime-only`);

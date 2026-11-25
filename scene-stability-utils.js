@@ -1,15 +1,24 @@
 /** Compare bounded, text-free scene-boundary diagnostics from two equivalent runs. */
-// Gate records existed before their result was stored structurally.  Never
-// compare a legacy implementation hash (or an absent placeholder) with a
-// structured result: that produces a false determinism violation.  This
-// deliberately small, privacy-safe representation is the only one used by
-// the determinism audit.
-export function canonicalizeGateOutput(candidate = {}) {
+// This deliberately small, privacy-safe current-schema representation is the
+// only gate result used by the determinism audit.
+export function projectCurrentGateOutput(candidate = {}) {
+  const schemaCurrent = candidate.gate_output_schema_version === 1;
   const gateResult = ['accepted', 'rejected'].includes(candidate.gate_result) ? candidate.gate_result : null;
   const disposition = typeof candidate.terminal_break_disposition === 'string'
     ? candidate.terminal_break_disposition : null;
   const reason = typeof candidate.gate_reason_code === 'string' ? candidate.gate_reason_code : null;
   const explicitlyExecuted = candidate.gate_executed === true || gateResult !== null;
+  if (!schemaCurrent) {
+    return {
+      gate_output_schema_version: candidate.gate_output_schema_version ?? null,
+      gate_executed: explicitlyExecuted,
+      gate_result: gateResult,
+      gate_reason_code: reason,
+      terminal_break_disposition: disposition,
+      classification: 'current_schema_mismatch',
+      canonical_gate_output_hash: null,
+    };
+  }
   if (!explicitlyExecuted) {
     return {
       gate_output_schema_version: 1,
@@ -17,10 +26,7 @@ export function canonicalizeGateOutput(candidate = {}) {
       gate_result: null,
       gate_reason_code: null,
       terminal_break_disposition: null,
-      classification: candidate.gate_output_hash || candidate.gate_result !== undefined
-        ? 'legacy_output_incomplete' : 'gate_not_executed',
-      migration_source_version: candidate.gate_output_schema_version ?? null,
-      migration_terminal_status: 'not_comparable',
+      classification: 'gate_not_executed',
       canonical_gate_output_hash: null,
     };
   }
@@ -31,13 +37,10 @@ export function canonicalizeGateOutput(candidate = {}) {
       gate_result: gateResult,
       gate_reason_code: reason,
       terminal_break_disposition: disposition,
-      classification: 'legacy_output_incomplete',
-      migration_source_version: candidate.gate_output_schema_version ?? null,
-      migration_terminal_status: 'not_comparable',
+      classification: 'current_output_incomplete',
       canonical_gate_output_hash: null,
     };
   }
-  const migrated = candidate.gate_output_schema_version !== 1;
   const canonical = {
     gate_executed: true,
     gate_result: gateResult,
@@ -47,9 +50,7 @@ export function canonicalizeGateOutput(candidate = {}) {
   return {
     gate_output_schema_version: 1,
     ...canonical,
-    classification: migrated ? 'migrated_legacy_output' : 'comparable_canonical_output',
-    migration_source_version: candidate.gate_output_schema_version ?? null,
-    migration_terminal_status: migrated ? 'migrated' : 'current',
+    classification: 'comparable_current_output',
     canonical_gate_output_hash: JSON.stringify(canonical),
   };
 }
@@ -156,9 +157,6 @@ export function compareSceneBoundaryRuns(previous, currentAudit = {}, tolerance 
     post_coalescing_boundaries: compareLayer((candidate) => candidate.terminal_break_disposition === 'accepted_final_break'),
     final_boundaries: compareLayer((candidate) => candidate.terminal_break_disposition === 'accepted_final_break'),
   };
-  // Keep the original field for compatibility while exposing the user-facing
-  // term used by the diagnostics contract.
-  sceneStabilityLayers.provider_decisions = sceneStabilityLayers.raw_ai_decisions;
   const previousContextHashes = new Map((previous.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const currentContextHashes = new Map((currentAudit.candidate_context_hashes ?? []).map((item) => [item.candidate_id, item.context_hash]));
   const marginalRecord = (previousIndex, currentIndex, classification) => {
@@ -246,20 +244,19 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const comparisonContractMatches = (run) => {
    const currentContract = currentAudit?.comparison_contract ?? null;
    const priorContract = run?.comparison_contract ?? null;
-   // Legacy compact records predate the explicit contract. They retain the
-   // original strict signature checks below; new records must agree on every
-   // declared semantic field before a stability comparison is meaningful.
    if (!currentContract && !priorContract) return true;
    if (!currentContract || !priorContract) return false;
    return stableJson(currentContract) === stableJson(priorContract);
  };
- const runSignature = (run) => run?.run_signature ?? run?.scene_detection_run_signature ?? null;
+ const runSignature = (run) => run?.scene_detection_run_signature ?? null;
  const currentSignature = runSignature(currentAudit);
- // Treat the supplied history as prior-only. Some older callers persisted the
- // current audit in history before requesting analysis; retaining it here
- // would give the same run two chances to influence the statistics.
+ // Treat the supplied history as prior-only. A caller may have persisted the
+ // current audit before requesting analysis; retaining it here would give the
+ // same run two chances to influence the statistics.
  const priorRuns = runs.filter(Boolean).filter((run) => !currentAudit?.run_id || String(run?.run_id ?? '') !== String(currentAudit.run_id));
  const isComparable = (run) => Boolean(run)
+   && Boolean(String(run.run_id ?? '').trim())
+   && Array.isArray(run.final_break_indices)
    && runSignature(run) === currentSignature
    && run.prompt_shape_hash === currentAudit.prompt_shape_hash
    && run.model_identifier === currentAudit.model_identifier
@@ -269,37 +266,19 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const compatiblePriorRuns = priorRuns.filter(isComparable);
  const currentRunIncluded = isComparable(currentAudit);
  const compatible = currentRunIncluded ? [...compatiblePriorRuns, currentAudit] : compatiblePriorRuns;
- const deterministicLegacyId = (run, index) => {
-   const seed = JSON.stringify([run?.created_at ?? run?.completed_at ?? null, runSignature(run), run?.final_break_indices ?? [], run?.scene_count ?? run?.generated ?? null, index]);
-   let hash = 2166136261;
-   for (let position = 0; position < seed.length; position++) hash = Math.imul(hash ^ seed.charCodeAt(position), 16777619);
-   return `migrated-scene-run-${(hash >>> 0).toString(16)}`;
- };
- const fingerprint = (run) => {
-   const payload = [
-     runSignature(run), run?.prompt_shape_hash ?? null, run?.model_identifier ?? null,
-     run?.connection_profile_identifier ?? null, stableJson(run?.task_sampling_settings),
-     run?.candidate_context_hash_summary ?? null, run?.final_break_indices ?? [],
-     run?.scene_count ?? run?.generated ?? null, run?.boundary_count ?? null,
-   ];
-   let hash = 2166136261;
-   for (const character of JSON.stringify(payload)) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-   return `scene-run-fingerprint-${(hash >>> 0).toString(16)}`;
- };
  const boundaryNormalizations = [];
  const identifiedRawRuns = compatible.map((run, index) => {
    const rawIndices = (run.final_break_indices ?? []).filter(Number.isInteger);
    const finalBreakIndices = [...new Set(rawIndices)].sort((a, b) => a - b);
-   const runtimeId = Boolean(run.run_id);
    const knownCreatedAt = run.created_at ?? run.completed_at ?? null;
    const normalized = {
      ...run,
-     run_id: runtimeId ? run.run_id : deterministicLegacyId(run, index),
-     run_id_source: runtimeId ? (run.run_id_source ?? 'runtime') : 'migration_generated',
-     record_source: run.record_source ?? (runtimeId ? 'runtime' : 'migration_generated'),
+     run_id: run.run_id,
+     run_id_source: run.run_id_source ?? 'runtime',
+     record_source: run.record_source ?? 'runtime',
      _stable_input_order: index,
      created_at: knownCreatedAt,
-     created_at_source: knownCreatedAt === null ? 'legacy_unknown' : (run.created_at_source ?? 'runtime'),
+     created_at_source: knownCreatedAt === null ? 'unrecorded' : (run.created_at_source ?? 'runtime'),
      final_break_indices: finalBreakIndices,
      boundary_count: Number.isInteger(run.boundary_count) ? run.boundary_count : finalBreakIndices.length,
      scene_count: Number.isInteger(run.scene_count) ? run.scene_count : (Number.isInteger(run.generated) ? run.generated : finalBreakIndices.length + 1),
@@ -314,28 +293,21 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    });
    return normalized;
  });
- // Deduplicate only the comparable input collection. Runtime IDs have the
- // strongest identity, migration records use their stable generated IDs, and
- // legacy compatibility imports fall back to a bounded structural fingerprint.
+ // Deduplicate the comparable input collection by its required durable run ID.
  const seenRunKeys = new Map();
  const duplicateRunRecordDetails = [];
  const duplicateRuntimeRunIds = [];
- const duplicateMigrationRunIds = [];
- const duplicateFingerprintRecords = [];
  const comparableRuns = [];
  for (const run of identifiedRawRuns) {
-   const keyType = run.run_id_source === 'runtime' ? 'runtime_run_id'
-     : run.run_id_source === 'migration_generated' ? 'migration_run_id' : 'record_fingerprint';
-   const key = keyType === 'record_fingerprint' ? fingerprint(run) : String(run.run_id);
+   const keyType = 'runtime_run_id';
+   const key = String(run.run_id);
    if (!seenRunKeys.has(`${keyType}:${key}`)) {
      seenRunKeys.set(`${keyType}:${key}`, run);
      comparableRuns.push(run);
      continue;
    }
    const retained = seenRunKeys.get(`${keyType}:${key}`);
-   if (keyType === 'runtime_run_id') duplicateRuntimeRunIds.push(key);
-   else if (keyType === 'migration_run_id') duplicateMigrationRunIds.push(key);
-   else duplicateFingerprintRecords.push(key);
+   duplicateRuntimeRunIds.push(key);
    duplicateRunRecordDetails.push({
      duplicate_key: key,
      duplicate_key_type: keyType,
@@ -419,9 +391,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    return [...unique.values()];
  };
  const declaredCandidateCount = (run, records) => {
-   // The terminal candidate records are the authoritative declaration when
-   // present. Older exports used `candidates` for scene counts, so never let
-   // that compatibility field undercount a complete stored snapshot.
+   // Terminal candidate records are the authoritative declaration when present.
    if (records.length) return records.length;
    const declared = Number(run?.candidate_count ?? run?.candidate_count_per_run ?? run?.boundary_candidates_evaluated ?? 0);
    return Number.isInteger(declared) && declared >= 0 ? declared : 0;
@@ -442,7 +412,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      const candidateId = String(candidate.candidate_id ?? candidate.message_index ?? '');
      if (!candidateId) continue;
      if (!candidateByRun.has(candidateId)) candidateByRun.set(candidateId, []);
-     const canonicalGateOutput = canonicalizeGateOutput(candidate);
+     const canonicalGateOutput = projectCurrentGateOutput(candidate);
      candidateByRun.get(candidateId).push({
        run_id: run.run_id,
        message_index: candidate.message_index ?? candidate.candidate_id ?? null,
@@ -474,7 +444,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    const finalValues = unique('terminal_break_disposition');
    const contextValues = unique('context_hash');
    const comparableGateDecisions = decisions.filter((item) => item.gate_input_hash
-     && ['comparable_canonical_output', 'migrated_legacy_output'].includes(item.gate_output_classification));
+     && item.gate_output_classification === 'comparable_current_output');
    const inputGroups = new Map();
    for (const decision of comparableGateDecisions) {
      if (!inputGroups.has(decision.gate_input_hash)) inputGroups.set(decision.gate_input_hash, new Set());
@@ -531,7 +501,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const terminalSkipReasons = {
    skipped_missing_candidate_history: 0,
    skipped_missing_gate_input_hash: 0,
-   skipped_incompatible_legacy_gate_output: 0,
+   skipped_gate_output_schema_mismatch: 0,
    skipped_gate_not_executed: 0,
    skipped_context_hash_mismatch: 0,
    skipped_prompt_hash_mismatch: 0,
@@ -542,7 +512,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const secondaryIneligibilityObservations = {
    missing_candidate_history: 0,
    missing_gate_input_hash: 0,
-   incompatible_legacy_gate_output: 0,
+   gate_output_schema_mismatch: 0,
    gate_not_executed: 0,
    context_hash_mismatch: 0,
    prompt_hash_mismatch: 0,
@@ -559,18 +529,18 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    const gateHashMismatch = candidate.gate_input_hash_values.length > 1;
    const observations = candidate.observations ?? [];
    const gateNotExecuted = observations.some((item) => item.gate_output_classification === 'gate_not_executed');
-   const incompatibleOutput = observations.some((item) => !['comparable_canonical_output', 'migrated_legacy_output'].includes(item.gate_output_classification));
+   const incompatibleOutput = observations.some((item) => item.gate_output_classification !== 'comparable_current_output');
    if (missingHistory) secondaryIneligibilityObservations.missing_candidate_history++;
    if (missingGateHash) secondaryIneligibilityObservations.missing_gate_input_hash++;
    if (contextMismatch) secondaryIneligibilityObservations.context_hash_mismatch++;
    if (aiMismatch) secondaryIneligibilityObservations.ai_decision_mismatch++;
    if (gateHashMismatch) secondaryIneligibilityObservations.gate_input_hash_mismatch++;
    if (gateNotExecuted) secondaryIneligibilityObservations.gate_not_executed++;
-   if (incompatibleOutput) secondaryIneligibilityObservations.incompatible_legacy_gate_output++;
+   if (incompatibleOutput) secondaryIneligibilityObservations.gate_output_schema_mismatch++;
    const terminal = missingHistory ? 'skipped_missing_candidate_history'
      : missingGateHash ? 'skipped_missing_gate_input_hash'
        : gateNotExecuted ? 'skipped_gate_not_executed'
-         : incompatibleOutput ? 'skipped_incompatible_legacy_gate_output'
+         : incompatibleOutput ? 'skipped_gate_output_schema_mismatch'
        : contextMismatch ? 'skipped_context_hash_mismatch'
          : aiMismatch ? 'skipped_ai_decision_mismatch'
            : gateHashMismatch ? 'skipped_gate_input_hash_mismatch'
@@ -630,9 +600,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
        : overallResult === 'violations_detected' ? 'violations_detected'
          : overallResult === 'analysis_invalid' ? 'invalid'
            : overallResult === 'analysis_unavailable' ? 'unavailable' : 'insufficient_coverage',
-   // Deprecated compatibility field is now deliberately global in meaning:
-   // consumers cannot mistake an eligible-only conclusion for broad support.
-   result_conclusive: broadlyRepresentative && gateDeterminismViolations.length === 0,
+   representative_result_conclusive: broadlyRepresentative && gateDeterminismViolations.length === 0,
    result_conclusive_scope: broadlyRepresentative ? 'representative_coverage' : 'not_globally_conclusive',
  };
  const candidateHistoryCoverage = {
@@ -657,7 +625,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
  const gateSnapshotCoverageByRun = identifiedRuns.map((run) => {
    const records = candidateRecordsByRun.get(run.run_id) ?? [];
    const executed = records.filter((candidate) => candidate.gate_executed === true || ['accepted', 'rejected'].includes(candidate.gate_result));
-   const canonicalOutputs = executed.filter((candidate) => canonicalizeGateOutput(candidate).canonical_gate_output_hash).length;
+   const canonicalOutputs = executed.filter((candidate) => projectCurrentGateOutput(candidate).canonical_gate_output_hash).length;
    return {
      run_id: run.run_id,
      history_schema_version: run.history_schema_version ?? null,
@@ -668,31 +636,25 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      candidates_with_gate_input_hash: executed.filter((candidate) => candidate.gate_input_hash).length,
      candidates_with_canonical_gate_output: canonicalOutputs,
      candidates_with_complete_gate_snapshot: canonicalOutputs,
-     // Compatibility alias: this reports snapshot completeness only, not
-     // current eligibility for a deterministic comparison.
-     candidates_comparable_in_future: canonicalOutputs,
-     compatibility_field_scope: 'snapshot_completeness_only',
      gate_output_schema_version: run.gate_output_schema_version ?? null,
      candidate_snapshot_schema_version: run.candidate_snapshot_schema_version ?? null,
-     migration_status: canonicalOutputs === records.length ? 'current_or_complete'
-       : canonicalOutputs ? 'partial_or_migrated' : 'legacy_nonmigratable',
+     schema_status: canonicalOutputs === records.length ? 'current_complete'
+       : canonicalOutputs ? 'current_partial' : 'current_incomplete',
      complete_snapshot_count: canonicalOutputs,
      partial_snapshot_count: Math.max(0, records.length - canonicalOutputs),
      noncomparable_snapshot_count: Math.max(0, records.length - canonicalOutputs),
      completeness_ratio: records.length ? (records.filter((candidate) => typeof candidate.decision === 'boolean').length / records.length) : null,
    };
  });
- const gateSchemaMigrationProgress = {
+ const gateSchemaCoverage = {
    total_retained_runs: gateSnapshotCoverageByRun.length,
    current_schema_runs: gateSnapshotCoverageByRun.filter((run) => run.gate_output_schema_version === 1).length,
-   legacy_migratable_runs: gateSnapshotCoverageByRun.filter((run) => run.migration_status === 'partial_or_migrated').length,
-   legacy_nonmigratable_runs: gateSnapshotCoverageByRun.filter((run) => run.migration_status === 'legacy_nonmigratable').length,
+   incomplete_schema_runs: gateSnapshotCoverageByRun.filter((run) => run.schema_status !== 'current_complete').length,
    runs_with_complete_gate_snapshots: gateSnapshotCoverageByRun.filter((run) => run.complete_snapshot_count === run.candidate_count).length,
    runs_with_partial_gate_snapshots: gateSnapshotCoverageByRun.filter((run) => run.partial_snapshot_count > 0 && run.complete_snapshot_count > 0).length,
    candidates_current_schema: gateSnapshotCoverageByRun.filter((run) => run.gate_output_schema_version === 1).reduce((total, run) => total + run.complete_snapshot_count, 0),
-   candidates_migrated: gateSnapshotCoverageByRun.filter((run) => run.migration_status === 'partial_or_migrated').reduce((total, run) => total + run.complete_snapshot_count, 0),
-   candidates_noncomparable_legacy: gateSnapshotCoverageByRun.reduce((total, run) => total + run.noncomparable_snapshot_count, 0),
-   projected_full_coverage_after_history_rollover: gateSnapshotCoverageByRun.every((run) => run.complete_snapshot_count === run.candidate_count),
+   candidates_incomplete: gateSnapshotCoverageByRun.reduce((total, run) => total + run.noncomparable_snapshot_count, 0),
+   full_coverage: gateSnapshotCoverageByRun.every((run) => run.complete_snapshot_count === run.candidate_count),
  };
   const duplicateRunRecordsRemoved = duplicateRunRecordDetails.length;
  const identifiedPriorRuns = identifiedRuns.filter((run) => !run.current_run);
@@ -725,8 +687,6 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
      distinct_total_run_count: runCount,
      duplicate_run_records_removed: duplicateRunRecordsRemoved,
      duplicate_runtime_run_ids: [...new Set(duplicateRuntimeRunIds)],
-     duplicate_migration_run_ids: [...new Set(duplicateMigrationRunIds)],
-   duplicate_fingerprint_records: [...new Set(duplicateFingerprintRecords)],
    },
    duplicate_run_record_details: duplicateRunRecordDetails,
    run_boundary_normalization: boundaryNormalizations,
@@ -748,7 +708,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    ],
    boundary_history_analysis_complete: true,
    candidate_variance_analysis_complete: candidateHistoryComplete,
-   gate_determinism_analysis_complete: gateDeterminismCoverage.result_conclusive,
+   gate_determinism_analysis_complete: gateDeterminismCoverage.representative_result_conclusive,
    // These fields must describe the deduplicated data that was actually
    // analyzed, not the raw compatible input. Otherwise a removed duplicate
    // can still appear as a retained prior run in exported diagnostics.
@@ -778,7 +738,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    })),
    current_run_included: currentRunIncluded,
    retained_prior_run_ids: identifiedPriorRuns.map((run) => run.run_id),
-   current_run_id: currentRunIncluded ? (currentAudit.run_id ?? deterministicLegacyId(currentAudit, compatiblePriorRuns.length)) : null,
+   current_run_id: currentRunIncluded ? currentAudit.run_id : null,
    retained_run_ids: identifiedRuns.map((run) => run.run_id), retained_created_at: identifiedRuns.map((run) => run.created_at ?? run.completed_at ?? null),
    scene_counts: counts, boundary_counts: identifiedRuns.map((run) => (run.final_break_indices ?? []).length),
    scene_count_frequency_by_value: Object.fromEntries([...countFrequency.entries()].sort((a, b) => a[0] - b[0])),
@@ -815,7 +775,7 @@ export function analyzeSceneStabilityHistory(runs = [], currentAudit = {}, toler
    gate_determinism_violations: gateDeterminismViolations,
    gate_determinism_coverage: gateDeterminismCoverage,
    gate_snapshot_coverage_by_run: gateSnapshotCoverageByRun,
-   gate_schema_migration_progress: gateSchemaMigrationProgress,
+   gate_schema_coverage: gateSchemaCoverage,
    pipeline_stable: comparisonAvailable ? pipelinesStable : null,
    scene_count_exactly_stable: comparisonAvailable ? new Set(counts).size <= 1 : null,
    scene_count_materially_stable: comparisonAvailable ? materiallyStable : null,

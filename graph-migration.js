@@ -18,9 +18,9 @@
  */
 
 /**
- * Graph schema migration and entity registry management.
+ * Memory graph and entity registry management.
  *
- * applyGraphDefaults           - non-destructively adds graph fields to a memory object
+ * createGraphMemoryRecord      - constructs a current graph-memory record
  * loadCharacterEntityRegistry  - returns the entity registry for a character from extension_settings
  * saveCharacterEntityRegistry  - persists the entity registry for a character
  * loadSessionEntityRegistry    - returns the session-scoped entity registry from chatMetadata
@@ -33,26 +33,22 @@
  * mergeEntitiesById            - merges a source entity into a target by id across both registries; source id is removed
  * mergeEntitiesByName          - merges a source entity into a target across both registries; source name becomes an alias
  * seedCharacterEntity          - ensures the active character card name exists in the long-term registry on chat load
- * ensureCharacterMigrated      - runs any pending migration steps for a single character's data container
- * ensureChatMigrated           - runs any pending migration steps for the current chat's data container
- *
- * Internal helpers (not exported):
- * assertNonDestructive         - throws if a migration step deleted or overwrote a pre-existing field
- * applyMigrations              - drives the step loop and calls assertNonDestructive after each step
- * migrateCharacter_v8          - adds epistemic_knowledge array and backfills witnessed_by on memories
- * migrateChat_v9               - adds state_ledger map for structured entity state cards
+ * ensureCharacterSchemaCurrent - validates a character data container
+ * ensureChatSchemaCurrent      - validates the current chat data container
  */
 
 import { saveSettingsDebounced } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
-  recordFeaturePersistenceReceipt } from './feature-persistence.js';
+import { executeFeaturePersistence, executeFeaturePersistenceSync,
+  prepareFeaturePersistenceCommand } from './feature-persistence.js';
 import { MODULE_NAME, META_KEY, SCHEMA_VERSION, generateMemoryId } from './constants.js';
 import { smLog } from './logging.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
+import { assertCurrentMemoryStore } from './memory-store-schema.js';
 import { isGrounded } from './grounding.js';
 import { isEntityRolePlaceholder, isPlausibleEntityName } from './parsers.js';
-import { buildCanonicalCharacterRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveCanonicalCharacterName, resolveEntityCandidate, validateExactCanonicalProposal } from './canonical-entities.js';
+import { buildCanonicalRoster, buildIdentityReviewCandidate, remapEntityIdInMemories, resolveEntityCandidate, validateExactCanonicalProposal } from './canonical-entities.js';
 
 function getCharacterMemoryPolicy(characterName) {
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.memory_policy ?? 'full';
@@ -213,8 +209,8 @@ export function recordIdentityReviewCandidate(result, details = {}) {
  * @param {Object} mem - Existing memory object.
  * @returns {Object} New memory object with graph fields applied.
  */
-export function applyGraphDefaults(mem) {
-  const normalized = {
+export function createGraphMemoryRecord(mem) {
+  return {
     ...mem,
     id: mem.id ?? generateMemoryId(),
     source_messages: mem.source_messages ?? [],
@@ -229,28 +225,6 @@ export function applyGraphDefaults(mem) {
     confidence: mem.confidence ?? 1.0,
     unconfirmed_since: mem.unconfirmed_since ?? 0,
   };
-  // Old serialized records can already contain entity IDs but predate
-  // per-link creation provenance. Backfill only an honest, stable legacy
-  // marker: no current-run timestamp or stage is fabricated.
-  if (Array.isArray(normalized.entities) && normalized.entities.length) {
-    const existing = normalized.entity_link_provenance ?? {};
-    normalized.entity_link_provenance = Object.fromEntries(normalized.entities.map((entityId) => [entityId, existing[entityId] ?? {
-      link_id: `legacy:${normalized.id}:${entityId}`,
-      link_created_run_id: null,
-      link_created_at: null,
-      link_created_stage: null,
-      link_created_store: null,
-      underlying_record_id: normalized.id,
-      source_candidate_id: null,
-      source_chunk_number: null,
-      source_message_indices: [],
-      source_extraction_type: null,
-      creation_method: 'unknown_legacy',
-      canonical_identity_at_creation: null,
-      entity_registry_id_at_creation: entityId,
-    }]));
-  }
-  return normalized;
 }
 
 // ---- Entity registry: long-term (extension_settings) -------------------------
@@ -294,10 +268,13 @@ export function saveCharacterEntityRegistry(characterName, entities) {
     feature: 'entity_registry', operation: 'replace_character_registry',
     owner: characterName, records: entities });
   if (policy === 'chat_local') {
-    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    context.chatMetadata ??= {};
+    context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
     const metadata = context.chatMetadata[META_KEY];
     executeFeaturePersistence({ command,
-      snapshot: () => structuredClone(metadata.card_local_entities?.[characterName] ?? []),
+      snapshot: () => cloneSerializableDomain(metadata.card_local_entities?.[characterName] ?? [], {
+        path: '$.feature_snapshot.card_local_entities', stage: 'feature_snapshot', operation_type: 'entity_registry',
+      }),
       apply: () => { (metadata.card_local_entities ??= {})[characterName] = entities; },
       persist: () => saveChatMetadata(context),
       restore: (before) => { (metadata.card_local_entities ??= {})[characterName] = before; },
@@ -308,12 +285,20 @@ export function saveCharacterEntityRegistry(characterName, entities) {
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
-    ...existing,
-    entities,
-  };
-  recordFeaturePersistenceReceipt(command, extension_settings[MODULE_NAME]);
+  const settings = extension_settings[MODULE_NAME];
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => settings.characters[characterName] ?? null,
+    apply: () => {
+      const existing = settings.characters[characterName] ?? {};
+      settings.characters[characterName] = {
+        ...existing, schema_version: SCHEMA_VERSION, entities,
+      };
+    },
+    persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete settings.characters[characterName];
+      else settings.characters[characterName] = before;
+    }, receipt_container: settings });
 }
 
 // ---- Entity registry: session-scoped (chatMetadata) -------------------------
@@ -339,14 +324,18 @@ export function loadSessionEntityRegistry() {
 export async function saveSessionEntityRegistry(entities) {
   const context = getContext();
   if (!context.chatMetadata) context.chatMetadata = {};
-  if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
+  if (!context.chatMetadata[META_KEY]) {
+    context.chatMetadata[META_KEY] = { schema_version: SCHEMA_VERSION };
+  }
   const metadata = context.chatMetadata[META_KEY];
   const workflowId = metadata.active_catchup_run_id
     ?? context.chatId ?? context.groupId ?? 'session-entity-registry';
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'entity_registry', operation: 'replace_session_registry', records: entities });
   await executeFeaturePersistence({ command,
-    snapshot: () => structuredClone(metadata.sessionEntities ?? []),
+    snapshot: () => cloneSerializableDomain(metadata.sessionEntities ?? [], {
+      path: '$.feature_snapshot.session_entities', stage: 'feature_snapshot', operation_type: 'entity_registry',
+    }),
     apply: () => { metadata.sessionEntities = entities; },
     persist: () => saveChatMetadata(context),
     restore: (before) => { metadata.sessionEntities = before; },
@@ -359,11 +348,7 @@ export async function saveSessionEntityRegistry(entities) {
  * refer to memories that no longer exist after a chat clear.
  */
 export async function clearSessionEntityRegistry() {
-  const context = getContext();
-  if (context.chatMetadata?.[META_KEY]) {
-    context.chatMetadata[META_KEY].sessionEntities = [];
-    await saveChatMetadata(context);
-  }
+  await saveSessionEntityRegistry([]);
 }
 
 // ---- Entity normalizer ------------------------------------------------------
@@ -520,7 +505,7 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     return;
   }
 
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const ids = rawNames
     .filter((n) => n && isPlausibleEntityName(n))
     .flatMap((token) => {
@@ -570,12 +555,12 @@ export function resolveEntityNames(mem, rawNames, messageIndex, registry) {
     });
 
   mem.entities = ids;
-  // Keep durable per-link provenance beside the legacy `entities` ID array.
-  // Existing links remain compatible; only links created by this resolver gain
-  // creation metadata. Later mirrors and redirects retain this map unchanged.
+  // Keep durable per-link provenance beside the canonical entity-ID array.
+  // Existing links retain their original creation evidence; new links receive
+  // creation metadata at the exact resolution boundary.
   const sourceIndices = [...new Set([...(mem.source_message_indices ?? []).filter(Number.isInteger), ...(Number.isInteger(messageIndex) ? [messageIndex] : [])])];
   const requestedCreationMethod = mem.entity_creation_method ?? 'structured_entity_output';
-  const creationMethod = ['structured_entity_output', 'free_text_name_inference', 'scene_participant', 'arc_participant', 'relationship_promotion', 'profile_relationship', 'perspective_subject', 'state_ledger_subject', 'migration', 'manual_user_action', 'store_mirror', 'unknown_legacy'].includes(requestedCreationMethod)
+  const creationMethod = ['structured_entity_output', 'free_text_name_inference', 'scene_participant', 'arc_participant', 'relationship_promotion', 'profile_relationship', 'perspective_subject', 'state_ledger_subject', 'manual_user_action', 'store_mirror'].includes(requestedCreationMethod)
     ? requestedCreationMethod
     : 'structured_entity_output';
   const existingLinks = mem.entity_link_provenance ?? {};
@@ -603,7 +588,7 @@ export function reconcileCanonicalEntityRegistry(registry, context = getContext(
   // caller's finalized persona snapshot rather than rebuilding a roster from
   // transient/imported context fields, which could otherwise defer persona
   // links until a later manual Developer check.
-  const roster = buildCanonicalCharacterRoster(context, { runtimeSnapshot });
+  const roster = buildCanonicalRoster(context, { runtimeSnapshot });
   const report = {
     changed: false, matched: [], merged: [], skipped: [], unmatched: [], outcomes: [],
     rejected_unsafe_merges: [], unsafe_merge_candidates: 0,
@@ -1229,7 +1214,7 @@ export function mergeEntitiesById(
   options = {},
 ) {
   if (sourceId === targetId) return { merged: false, reason: 'Source and target are identical.' };
-  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
+  const roster = buildCanonicalRoster(getContext(), { includeChatLocalApproved: true });
   const sources = [ltRegistry, sessionRegistry].flat().filter((entity) => entity?.id === sourceId);
   const targets = [ltRegistry, sessionRegistry].flat().filter((entity) => entity?.id === targetId);
   for (const source of sources) for (const target of targets) {
@@ -1340,7 +1325,7 @@ export function mergeCanonicalEntityAcrossStores(sourceId, targetId, context = g
   if (!target) return { merged: false, referencesRedirected: 0 };
   const sources = registries.flat().filter((entity) => entity?.id === sourceId);
   if (!sources.length) return { merged: false, referencesRedirected: 0 };
-  const roster = buildCanonicalCharacterRoster(context, { includeChatLocalApproved: true });
+  const roster = buildCanonicalRoster(context, { includeChatLocalApproved: true });
   for (const source of sources) {
     const safety = safeCanonicalMerge(source, target, roster);
     if (!safety.allowed) return { merged: false, referencesRedirected: 0, unsafe: true, reason: safety.reason };
@@ -1484,7 +1469,7 @@ export function mergeEntitiesByName(
   const sLower = sourceName.toLowerCase().trim();
   const tLower = targetName.toLowerCase().trim();
   if (sLower === tLower) return { merged: 0, skipped: [] }; // nothing to do
-  const roster = buildCanonicalCharacterRoster(getContext(), { includeChatLocalApproved: true });
+  const roster = buildCanonicalRoster(getContext(), { includeChatLocalApproved: true });
   const report = { merged: 0, skipped: [] };
 
   for (const [registry, memories] of [
@@ -1564,312 +1549,23 @@ export function seedCharacterEntity(characterName, registry) {
   });
 }
 
-// ---- Per-container schema migration ----------------------------------------
+// ---- Current-schema validation --------------------------------------------
 //
-// Each container (character store, chat block) carries its own schema_version
-// field. On load, the stored version is compared against SCHEMA_VERSION and any
-// missing steps are applied in sequence. Steps are never removed - old chats
-// may be opened at any point in the future.
-//
-// Adding a new migration:
-//   1. Increment SCHEMA_VERSION in constants.js.
-//   2. Add a new numbered entry to CHARACTER_MIGRATIONS and/or CHAT_MIGRATIONS
-//      below (whichever containers are affected).
-//   3. Do not remove any existing entries.
-//
-// Version 0 is the implicit starting state for all data written by v1.3.0 or
-// earlier (before this versioning system existed).
-
-// ---- Step definitions -------------------------------------------------------
-
-/**
- * CHARACTER migration: version 0 -> 1
- *
- * Adds graph fields to every long-term memory and initialises the entity
- * registry. This covers all data written by v1.3.0 and earlier, which shipped
- * without any graph schema fields.
- *
- * @param {Object} charData - Character data object { memories, entities, ... }
- * @returns {Object} Updated character data with schema_version NOT yet set
- *                   (the runner sets it after all steps complete).
- */
-function migrateCharacter_v1(charData) {
-  const memories = (charData.memories ?? []).map(applyGraphDefaults);
-  const entities = Array.isArray(charData.entities) ? charData.entities : [];
-  return { ...charData, memories, entities };
-}
-
-/**
- * CHAT migration: version 0 -> 1
- *
- * Adds graph fields to every session memory and initialises the session entity
- * registry. Covers all chat data written by v1.3.0 and earlier.
- *
- * @param {Object} chatMeta - chatMetadata[META_KEY] block.
- * @returns {Object} Updated chat meta block with schema_version NOT yet set.
- */
-function migrateChat_v1(chatMeta) {
-  const sessionMemories = (chatMeta.sessionMemories ?? []).map(applyGraphDefaults);
-  // Write to entities for now; migrateChat_v5 renames entities -> sessionEntities.
-  const entities = Array.isArray(chatMeta.entities) ? chatMeta.entities : [];
-  return { ...chatMeta, sessionMemories, entities };
-}
-
-/**
- * CHARACTER migration: version 1 -> 2
- *
- * Adds confidence decay fields (confidence, unconfirmed_since) to every
- * long-term memory. These fields are used by the per-memory confidence decay
- * system introduced in v1.4.0.
- *
- * v1 guarantees that every memory already has an `id` field (added by
- * migrateCharacter_v1 via applyGraphDefaults), so id-based operations are
- * safe from this version onward without a null-guard.
- *
- * @param {Object} charData - Character data object.
- * @returns {Object} Updated character data with schema_version NOT yet set.
- */
-function migrateCharacter_v2(charData) {
-  const memories = (charData.memories ?? []).map(applyGraphDefaults);
-  return { ...charData, memories };
-}
-
-/**
- * CHAT migration: version 1 -> 2
- *
- * Adds confidence decay fields (confidence, unconfirmed_since) to every
- * session memory.
- *
- * @param {Object} chatMeta - chatMetadata[META_KEY] block.
- * @returns {Object} Updated chat meta block with schema_version NOT yet set.
- */
-function migrateChat_v2(chatMeta) {
-  const sessionMemories = (chatMeta.sessionMemories ?? []).map(applyGraphDefaults);
-  return { ...chatMeta, sessionMemories };
-}
-
-// v3: profiles are now stored per-character as profiles[characterName].
-// Old flat profiles objects (identifiable by having character_state directly)
-// are a regenerable cache - drop them so they regenerate in the new structure.
-function migrateChat_v3(chatMeta) {
-  if (chatMeta.profiles && typeof chatMeta.profiles.character_state === 'string') {
-    const updated = { ...chatMeta };
-    delete updated.profiles;
-    return updated;
-  }
-  return chatMeta;
-}
-
-/**
- * CHARACTER migration: version 3 -> 4
- *
- * Adds persistent_arcs array to character data. Persistent arcs are story
- * threads the user has pinned to carry forward into future chats with this
- * character.
- *
- * @param {Object} charData - Character data object.
- * @returns {Object} Updated character data with schema_version NOT yet set.
- */
-function migrateCharacter_v4(charData) {
-  return { ...charData, persistent_arcs: charData.persistent_arcs ?? [] };
-}
-
-/**
- * CHAT migration: version 4 -> 5
- *
- * Renames the session-scoped entity registry from `entities` to
- * `sessionEntities` to match the naming convention used by sessionMemories
- * and to distinguish it clearly from the character-level `entities` field
- * in extension_settings.
- *
- * @param {Object} chatMeta - chatMetadata[META_KEY] block.
- * @returns {Object} Updated chat meta block with schema_version NOT yet set.
- */
-function migrateChat_v5(chatMeta) {
-  const sessionEntities = Array.isArray(chatMeta.sessionEntities)
-    ? chatMeta.sessionEntities
-    : Array.isArray(chatMeta.entities)
-      ? chatMeta.entities
-      : [];
-  const updated = { ...chatMeta, sessionEntities };
-  delete updated.entities;
-  return updated;
-}
-
-/**
- * CHARACTER migration: version 5 -> 6
- *
- * Adds a `triggers` array to every long-term memory. Triggers are short
- * keyword strings derived from the memory content at extraction time. When
- * any trigger appears in the current chat turn, the memory gets a score
- * bonus in hybridScore and is also injected into the secondary
- * PROMPT_KEY_TRIGGERED slot closer to the prompt.
- *
- * Existing memories receive an empty array here; triggers are derived from
- * content on the next extraction pass via deriveTriggers in memory-utils.js.
- *
- * @param {Object} charData - Character data object.
- * @returns {Object} Updated character data with schema_version NOT yet set.
- */
-function migrateCharacter_v6(charData) {
-  const memories = (charData.memories ?? []).map((m) =>
-    Object.prototype.hasOwnProperty.call(m, 'triggers') ? m : { ...m, triggers: [] },
-  );
-  return { ...charData, memories };
-}
-
-function migrateCharacter_v7(charData) {
-  // Add relationship_history map if absent. Keys are "subject→target" strings.
-  // Old-format entries (descriptors: string[]) are normalized at read time by
-  // loadRelationshipHistory, so no data conversion is needed here.
-  if (Object.prototype.hasOwnProperty.call(charData, 'relationship_history')) return charData;
-  return { ...charData, relationship_history: {} };
-}
-
-/**
- * CHARACTER migration: version 7 -> 8
- *
- * Adds the epistemic_knowledge array for the Perspectives & Secrets subsystem.
- * Also backfills witnessed_by: [] onto every existing long-term memory that
- * lacks the field. An empty array means "unknown witnesses" - the injection
- * filter treats these as unfiltered (inject as normal) so old memories are
- * unaffected until the next extraction pass tags them properly.
- *
- * @param {Object} charData - Character data object.
- * @returns {Object} Updated character data with schema_version NOT yet set.
- */
-function migrateCharacter_v8(charData) {
-  if (Object.prototype.hasOwnProperty.call(charData, 'epistemic_knowledge')) return charData;
-  const memories = (charData.memories ?? []).map((m) =>
-    Object.prototype.hasOwnProperty.call(m, 'witnessed_by') ? m : { ...m, witnessed_by: [] },
-  );
-  return { ...charData, epistemic_knowledge: [], memories };
-}
-
-function migrateChat_v9(chatMeta) {
-  if (Object.prototype.hasOwnProperty.call(chatMeta, 'state_ledger')) return chatMeta;
-  return { ...chatMeta, state_ledger: {} };
-}
-
-// ---- Step registries --------------------------------------------------------
-// Map<version, stepFn | { fn, deletePaths }> - add new entries here when
-// SCHEMA_VERSION is bumped. Use { fn, deletePaths } only when a step
-// intentionally drops regenerable cache (not user-authored data).
-
-const CHARACTER_MIGRATIONS = new Map([
-  [1, migrateCharacter_v1],
-  [2, migrateCharacter_v2],
-  [4, migrateCharacter_v4],
-  [6, migrateCharacter_v6],
-  [7, migrateCharacter_v7],
-  [8, migrateCharacter_v8],
-]);
-
-const CHAT_MIGRATIONS = new Map([
-  [1, migrateChat_v1],
-  [2, migrateChat_v2],
-  // v3 drops the old flat profiles cache - regenerable, not user data.
-  [3, { fn: migrateChat_v3, deletePaths: ['profiles'] }],
-  // v5 renames entities -> sessionEntities.
-  [5, { fn: migrateChat_v5, deletePaths: ['entities'] }],
-  [9, migrateChat_v9],
-]);
-
-// ---- Migration runner -------------------------------------------------------
-
-/**
- * Recursively verifies that a migration step did not overwrite or delete any
- * field that existed in the container before the step ran.
- *
- * For every key present in `before`, the corresponding key must exist in
- * `after` with the same value. Primitive mismatches and missing keys both
- * throw. New keys in `after` are permitted (that is the point of a migration).
- * Arrays are checked element-by-element at the same indices so that existing
- * memory objects cannot have their content silently cleared.
- *
- * Paths listed in `allowDelete` are exempt from the deletion check - use this
- * only for regenerable cache that a step is intentionally dropping.
- *
- * @param {Object|Array} before       - Container snapshot before the step ran.
- * @param {Object|Array} after        - Container returned by the step.
- * @param {number} stepVersion        - Step version number, for error messages.
- * @param {string} [_path]            - Internal recursion path prefix.
- * @param {Set<string>} [allowDelete] - Top-level paths exempt from deletion check.
- */
-function assertNonDestructive(before, after, stepVersion, _path = '', allowDelete = new Set()) {
-  const keys = Array.isArray(before) ? [...before.keys()] : Object.keys(before);
-  for (const key of keys) {
-    const path = _path ? `${_path}.${key}` : String(key);
-    if (after == null || !(key in after)) {
-      if (allowDelete.has(path)) continue;
-      throw new Error(`[Smart Memory Enhanced] Migration v${stepVersion} deleted field "${path}".`);
-    }
-    const bVal = before[key];
-    const aVal = after[key];
-    if (bVal !== null && typeof bVal === 'object' && aVal !== null && typeof aVal === 'object') {
-      assertNonDestructive(bVal, aVal, stepVersion, path, allowDelete);
-    } else if (bVal !== aVal) {
-      throw new Error(
-        `[Smart Memory Enhanced] Migration v${stepVersion} overwrote field "${path}": was ${JSON.stringify(bVal)}, now ${JSON.stringify(aVal)}.`,
-      );
-    }
-  }
-}
-
-/**
- * Applies all pending migration steps to a data container, returning the
- * updated container. If the container is already at SCHEMA_VERSION the
- * original object is returned unchanged.
- *
- * After each step, assertNonDestructive verifies that no pre-existing field
- * was deleted or overwritten. This enforces the CLAUDE.md rule structurally
- * so a future migration cannot silently corrupt stored data.
- *
- * @param {Object} container - Data object with an optional schema_version field.
- * @param {Map<number, Function>} steps - Ordered map of version -> migration fn.
- * @returns {Object} Container with all pending steps applied and schema_version set.
- */
-function applyMigrations(container, steps) {
-  let version = container.schema_version ?? 0;
-  if (version >= SCHEMA_VERSION) return container;
-
-  let current = container;
-  while (version < SCHEMA_VERSION) {
-    const entry = steps.get(version + 1);
-    if (entry) {
-      const stepFn = typeof entry === 'function' ? entry : entry.fn;
-      const allowDelete = new Set(typeof entry === 'function' ? [] : (entry.deletePaths ?? []));
-      // Deep-clone before the step so assertNonDestructive can detect in-place
-      // mutations on nested objects, not just shallow key deletions.
-      const before = structuredClone(current);
-      current = stepFn(current);
-      assertNonDestructive(before, current, version + 1, '', allowDelete);
-      smLog(`[Smart Memory Enhanced] Applied migration step v${version + 1}.`);
-    } else {
-      // A missing step is normal when one registry has no change for a given
-      // version (e.g. CHAT_MIGRATIONS has v3 but CHARACTER_MIGRATIONS does not).
-    }
-    version++;
-  }
-  return { ...current, schema_version: SCHEMA_VERSION };
-}
-
+// This project deliberately does not migrate older persisted test stores.
+// The public entry points below validate the current schema and perform only
+// current-schema integrity maintenance.
 // ---- Public API -------------------------------------------------------------
 
 /**
- * Ensures the stored data for a single character is at the current schema
- * version, running any pending migration steps if not.
+ * Validates that stored character data uses the current schema.
  *
  * Safe to call on every chat load for the active character - it is a fast
  * no-op when the container is already up to date.
  *
- * Writes the updated container back to extension_settings and calls
- * saveSettingsDebounced() only when migration actually ran.
- *
  * @param {string} characterName
- * @returns {boolean} True if migration ran, false if already up to date.
+ * @returns {boolean} True when current-schema integrity cleanup changed data.
  */
-export function ensureCharacterMigrated(characterName) {
+export function ensureCharacterSchemaCurrent(characterName) {
   if (!characterName) return false;
   const settings = extension_settings[MODULE_NAME];
   if (!settings) return false;
@@ -1877,16 +1573,11 @@ export function ensureCharacterMigrated(characterName) {
   const charData = settings.characters?.[characterName];
   if (!charData) return false;
 
-  const needsMigration = (charData.schema_version ?? 0) < SCHEMA_VERSION;
-  if (needsMigration) smLog(`[Smart Memory Enhanced] Migrating character "${characterName}" to schema v${SCHEMA_VERSION}...`);
-  const migrated = needsMigration ? applyMigrations(charData, CHARACTER_MIGRATIONS) : charData;
-  const cleanup = sanitizeParserDebrisEntities(migrated.entities, migrated.memories);
-  if (!needsMigration && !cleanup.changed) return false;
-  if (!settings.characters) settings.characters = {};
-  settings.characters[characterName] = migrated;
+  assertCurrentMemoryStore(charData, 'character');
+  const cleanup = sanitizeParserDebrisEntities(charData.entities, charData.memories);
+  if (!cleanup.changed) return false;
   saveSettingsDebounced();
 
-  if (needsMigration) smLog(`[Smart Memory Enhanced] Character "${characterName}" migration complete.`);
   if (cleanup.changed) {
     smLog(`[Smart Memory Enhanced] Removed ${cleanup.removed.length} parser-debris character entit${cleanup.removed.length === 1 ? 'y' : 'ies'} and scrubbed ${cleanup.scrubbedReferences} memory reference(s).`);
   }
@@ -1894,30 +1585,24 @@ export function ensureCharacterMigrated(characterName) {
 }
 
 /**
- * Ensures the chatMetadata block for the current chat is at the current schema
- * version, running any pending migration steps if not.
+ * Validates that the current chat data uses the current schema.
  *
  * Safe to call on every chat load - it is a fast no-op when the container is
  * already up to date or when no chat is loaded.
  *
- * Writes the updated block back to chatMetadata and calls saveMetadata() only
- * when migration actually ran.
- *
- * @returns {Promise<boolean>} True if migration ran, false if already up to date.
+ * @returns {Promise<boolean>} True when current-schema integrity cleanup changed data.
  */
-export async function ensureChatMigrated() {
+export async function ensureChatSchemaCurrent() {
   const context = getContext();
   if (!context.chatMetadata) return false;
 
   const meta = context.chatMetadata[META_KEY];
   if (!meta) return false;
 
-  const needsMigration = (meta.schema_version ?? 0) < SCHEMA_VERSION;
-  if (needsMigration) smLog(`[Smart Memory Enhanced] Migrating chat data to schema v${SCHEMA_VERSION}...`);
-  const migrated = needsMigration ? applyMigrations(meta, CHAT_MIGRATIONS) : meta;
-  const reports = [sanitizeParserDebrisEntities(migrated.sessionEntities, migrated.sessionMemories)];
-  for (const [characterName, registry] of Object.entries(migrated.card_local_entities ?? {})) {
-    reports.push(sanitizeParserDebrisEntities(registry, migrated.card_local_memories?.[characterName] ?? []));
+  assertCurrentMemoryStore(meta, 'chat');
+  const reports = [sanitizeParserDebrisEntities(meta.sessionEntities, meta.sessionMemories)];
+  for (const [characterName, registry] of Object.entries(meta.card_local_entities ?? {})) {
+    reports.push(sanitizeParserDebrisEntities(registry, meta.card_local_memories?.[characterName] ?? []));
   }
   const cleanup = {
     removed: reports.reduce((count, report) => count + report.removed.length, 0),
@@ -1925,20 +1610,18 @@ export async function ensureChatMigrated() {
   };
   const reviewRemoved = sanitizeIdentityReviewQueue(extension_settings[MODULE_NAME]?.identity_review_queue);
 
-  if (!needsMigration && cleanup.removed === 0 && reviewRemoved === 0) return false;
+  if (cleanup.removed === 0 && reviewRemoved === 0) return false;
   if (cleanup.removed > 0 || reviewRemoved > 0) {
-    migrated.parser_debris_cleanup = {
+    meta.parser_debris_cleanup = {
       completed_at: Date.now(),
       removed_entities: cleanup.removed,
       removed_review_candidates: reviewRemoved,
       scrubbed_memory_references: cleanup.references,
     };
   }
-  context.chatMetadata[META_KEY] = migrated;
   await saveChatMetadata(context);
   if (reviewRemoved > 0) saveSettingsDebounced();
 
-  if (needsMigration) smLog('[Smart Memory Enhanced] Chat data migration complete.');
   if (cleanup.removed > 0 || reviewRemoved > 0) {
     smLog(`[Smart Memory Enhanced] Parser-debris cleanup removed ${cleanup.removed + reviewRemoved} invalid candidate(s) and scrubbed ${cleanup.references} memory reference(s).`);
   }

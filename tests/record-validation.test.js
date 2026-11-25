@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { flattenConsolidationProvenance, isGeneratedRecordApproved, isRecordApprovedForPropagation, normalizeMemoryProvenance, prepareRecordForValidation, sanitizeStructuredModelOutput, validateGeneratedRecord, validateMemoryAncestry } from '../record-validation.js';
 
-test('provenance normalization expands legacy ranges without false missing-source errors', () => {
-  const memory = { source_messages: [[2001, 2003]], source_message_indices: [] };
+test('provenance normalization derives ranges only from authoritative source indices', () => {
+  const memory = { source_messages: [[7, 9]], source_message_indices: [2001, 2002, 2003] };
   const result = normalizeMemoryProvenance(memory, { chatLength: 3000 });
   assert.deepEqual(result.indices, [2001, 2002, 2003]);
   assert.deepEqual(memory.source_messages, [[2001, 2003]]);

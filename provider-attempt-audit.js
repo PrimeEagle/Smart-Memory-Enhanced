@@ -104,9 +104,6 @@ function ensureRecoveryWindows(audit) {
     window.last_terminal_outcome = event.terminal_outcome;
     window.last_malformed_reason = event.malformed_reason ?? window.last_malformed_reason ?? null;
     window.parser_accepted_candidate_count = Math.max(count(window.parser_accepted_candidate_count), count(event.accepted_candidate_count));
-    // Compatibility projection only. This is parser history, never durable
-    // persistence truth (which is identity-backed below).
-    window.accepted_partial_record_count = window.parser_accepted_candidate_count;
     const candidateRejections = [...(window.candidate_rejections ?? []),
       ...(event.candidate_rejections ?? []).map((item) => ({ ...item, attempt_id: event.attempt_id }))];
     window.candidate_rejections = [...new Map(candidateRejections.map((item) => [
@@ -186,6 +183,8 @@ function ensure(metadata, runId = null) {
       run_id: runId,
       sequence: 0,
       attempted: 0,
+      registered_count: 0,
+      transmitted_count: 0,
       terminal_counts: {},
       malformed_reason_counts: {},
       request_kind_counts: {},
@@ -278,9 +277,7 @@ export function classifyMalformedProviderOutput(response, {
     const reason = classifyTaggedResponseFailure(response, {
       tier, finishReason, requestedOutputTokens, reportedOutputTokens,
     });
-    // Preserve the established public compatibility label while the recovery
-    // ladder records the more precise missing-tag reason on physical attempts.
-    return reason === 'missing_tagged_records' ? 'prose_around_structured_output' : reason;
+    return reason;
   }
   const normalizedShapeFailure = String(shapeFailure ?? '').trim().toLowerCase();
   const supportedShapeFailures = new Set([
@@ -322,7 +319,7 @@ export function beginProviderAttempt(metadata, input = {}) {
   const audit = ensure(metadata, input.run_id ?? metadata.active_catchup_run_id ?? null);
   audit.sequence++;
   audit.attempted++;
-  audit.running_count++;
+  audit.registered_count = count(audit.registered_count) + 1;
   const obligationId = input.logical_obligation_id ?? fingerprint([
     input.tier, input.owner, input.root_source_fingerprint ?? input.source_fingerprint,
     input.root_source_start, input.root_source_end,
@@ -369,7 +366,7 @@ export function beginProviderAttempt(metadata, input = {}) {
     obligation.last_terminal_signature = null;
     obligation.terminal_signature_repeat_count = 0;
     obligation.recovery_blocked = false;
-    obligation.next_eligible_recovery_action = 'changed_configuration_retry';
+    obligation.next_eligible_recovery_action = 'dispatch_provider_request';
   } else obligation.configuration_signature ??= input.configuration_signature ?? null;
   obligation.chat_id ??= input.chat_id ?? null;
   if (isNewObligation) audit.logical_obligation_count = count(audit.logical_obligation_count) + 1;
@@ -434,7 +431,8 @@ export function beginProviderAttempt(metadata, input = {}) {
       recovery_stages_attempted: [...new Set(recoveryWindow.recovery_stages_attempted ?? [])],
       exhausted_stages: [...new Set(recoveryWindow.exhausted_stages ?? [])],
       completed_source_units: [...new Set(recoveryWindow.completed_source_units ?? [])],
-      accepted_partial_record_count: count(recoveryWindow.accepted_partial_record_count),
+      parser_accepted_candidate_count: count(recoveryWindow.parser_accepted_candidate_count),
+      durable_partial_record_count: [...new Set(recoveryWindow.durably_persisted_record_ids ?? [])].length,
       last_malformed_reason: recoveryWindow.last_malformed_reason ?? null,
       recovery_implementation_version: recoveryWindow.recovery_implementation_version,
       implementation_version_changed: implementationVersionChanged,
@@ -459,7 +457,9 @@ export function beginProviderAttempt(metadata, input = {}) {
     recovery_intent: input.recovery_intent
       ?? (input.request_kind === 'original' ? 'extract_root_obligation'
         : 'recover_unresolved_partial_output_fragments'),
-    recovery_stage: input.recovery_stage ?? (input.request_kind === 'original' ? 'strict_generation' : input.request_kind),
+    recovery_stage: input.recovery_stage
+      ?? ((input.request_kind ?? 'original') === 'original'
+        ? 'strict_generation' : (input.request_kind ?? 'original')),
     expected_output_format: input.expected_output_format ?? `${input.tier ?? 'unknown'}_tagged_lines_v1`,
     configured_context_limit: input.configured_context_limit ?? null,
     effective_context_limit: input.effective_context_limit ?? null,
@@ -471,25 +471,21 @@ export function beginProviderAttempt(metadata, input = {}) {
     estimated_input_tokens: input.estimated_input_tokens ?? null,
     estimated_final_request_tokens: input.estimated_final_request_tokens ?? null,
     terminal_outcome: 'running',
+    registration_state: 'registered',
+    transmission_started: false,
+    transmission_started_at: null,
     controller_instance_id: input.controller_instance_id ?? null,
     transaction_id: input.transaction_id ?? null,
     transaction_revision: input.transaction_revision ?? null,
     transaction_generation: input.transaction_generation ?? null,
   };
   transitionProviderAttemptState(event, 'created', input, event.at);
-  transitionProviderAttemptState(event, 'dispatched', input, event.at);
-  transitionProviderAttemptState(event, 'awaiting_response', input, event.at);
   if (recoveryWindow.active_recovery_epoch
     && recoveryWindow.active_recovery_epoch.status === 'initialized_before_dispatch') {
     recoveryWindow.active_recovery_epoch.status = 'running';
     recoveryWindow.active_recovery_epoch.provider_attempt_id = event.attempt_id;
     recoveryWindow.active_recovery_epoch.dispatched_at = event.at;
   }
-  Object.defineProperty(event.prior_window_recovery_state, 'staged_partial_records', {
-    value: (recoveryWindow.staged_partial_records ?? [])
-      .filter((item) => item.state === 'staged').map((item) => item.record).filter(Boolean),
-    enumerable: false,
-  });
   if (event.resumed_pending_obligation || unresolvedObligationReplay) {
     obligation.retry_replay_count = count(obligation.retry_replay_count) + 1;
     event.recovery_replay_count = obligation.retry_replay_count;
@@ -531,13 +527,41 @@ export function beginProviderAttempt(metadata, input = {}) {
     child_obligation_id: input.child_obligation_id ?? input.source_unit_key ?? null,
     request_kind: event.request_kind,
     recovery_stage: event.recovery_stage,
-    provider_disposition: 'running',
+    provider_disposition: 'registered_not_dispatched',
   });
+  return event;
+}
+
+/** Marks the exact boundary at which a durably registered request may leave. */
+export function markProviderAttemptDispatched(metadata, event, patch = {}) {
+  if (!metadata || !event || event.transmission_started === true) return event;
+  const audit = ensure(metadata, event.run_id ?? metadata.active_catchup_run_id ?? null);
+  event.transmission_started = true;
+  event.transmission_started_at = patch.at ?? Date.now();
+  event.registration_state = 'durably_registered_and_dispatched';
+  audit.transmitted_count = count(audit.transmitted_count) + 1;
+  audit.running_count = count(audit.running_count) + 1;
+  transitionProviderAttemptState(event, 'dispatched', patch, event.transmission_started_at);
+  transitionProviderAttemptState(event, 'awaiting_response', patch, event.transmission_started_at);
+  const journal = metadata.provider_completion_journal;
+  const entry = Array.isArray(journal?.entries)
+    ? journal.entries.find((item) => item?.attempt_id === event.attempt_id)
+    : journal?.entries?.[event.attempt_id];
+  if (entry) {
+    entry.provider_disposition = 'running';
+    entry.provider_transmission_started = true;
+    entry.provider_transmission_started_at = event.transmission_started_at;
+    entry.updated_at = event.transmission_started_at;
+  }
   return event;
 }
 
 export function finishProviderAttempt(metadata, event, patch = {}) {
   if (!metadata || !event || event.terminal_outcome !== 'running') return event;
+  // A terminal provider response/failure is itself conclusive evidence that
+  // transmission occurred. This also keeps independent non-controller paths
+  // on the same accounting model.
+  if (event.transmission_started !== true) markProviderAttemptDispatched(metadata, event, patch);
   const audit = ensure(metadata, event.run_id ?? metadata.active_catchup_run_id ?? null);
   event.terminal_outcome = patch.terminal_outcome ?? 'internal_failure';
   const terminalState = event.terminal_outcome === 'interrupted_completion_unknown'
@@ -675,7 +699,6 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
     recoveryWindow.last_malformed_reason = event.malformed_reason ?? recoveryWindow.last_malformed_reason ?? null;
     recoveryWindow.parser_accepted_candidate_count = Math.max(count(recoveryWindow.parser_accepted_candidate_count),
       count(event.accepted_candidate_count));
-    recoveryWindow.accepted_partial_record_count = recoveryWindow.parser_accepted_candidate_count;
     recoveryWindow.rejected_fragment_count = count(recoveryWindow.rejected_fragment_count)
       + count(event.rejected_candidate_count);
     const candidateRejections = [...(recoveryWindow.candidate_rejections ?? []),
@@ -715,7 +738,6 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
     }
     obligation.parser_accepted_candidate_count = Math.max(count(obligation.parser_accepted_candidate_count),
       count(event.accepted_candidate_count));
-    obligation.accepted_partial_record_count = obligation.parser_accepted_candidate_count;
     obligation.rejected_fragment_count = count(obligation.rejected_fragment_count)
       + count(event.rejected_candidate_count);
     obligation.provider_contract_violation_count = count(obligation.provider_contract_violation_count)
@@ -780,14 +802,15 @@ export function finishProviderAttempt(metadata, event, patch = {}) {
       const eligibility = deriveRecoveryStageEligibility({
         attempted_stages: recoveryWindow.recovery_stages_attempted,
         exhausted_stages: recoveryWindow.exhausted_stages,
-        accepted_partial_record_count: recoveryWindow.accepted_partial_record_count,
+        durable_partial_record_count: (recoveryWindow.durably_persisted_record_ids ?? []).length,
         unresolved_semantic_units: recoveryWindow.unresolved_semantic_units ?? [],
         implementation_version_changed: event.implementation_version_changed === true,
       });
       obligation.recovery_eligibility = eligibility;
       obligation.recovery_blocked = eligibility.blocked;
-      obligation.next_eligible_recovery_action = eligibility.eligible_action
-        ?? 'change_provider_configuration_or_install_updated_build';
+      obligation.eligible_recovery_stage = eligibility.eligible_action ?? null;
+      obligation.next_eligible_recovery_action = eligibility.blocked
+        ? 'stop_blocked' : 'dispatch_provider_request';
     } else if (SUCCESSFUL_TERMINAL_OUTCOMES.has(event.terminal_outcome)) {
       obligation.recovery_blocked = false;
       obligation.next_eligible_recovery_action = null;
@@ -1038,8 +1061,7 @@ export function markProviderDownstreamOutcome(metadata, logicalObligationId, det
   obligation.checkpoint_eligible = safelyComplete;
   obligation.recovery_blocked = details.blocked === true;
   obligation.next_eligible_recovery_action = safelyComplete ? null
-    : details.next_eligible_action ?? (reasonCode === 'invalid_candidate_shape'
-      ? 'session_validation_repair_or_bounded_regeneration' : 'resume_exact_obligation');
+    : details.next_eligible_action ?? 'dispatch_provider_request';
   if (!safelyComplete) {
     obligation.validation_failure_count = count(obligation.validation_failure_count) + 1;
     obligation.produced_no_update = false;
@@ -1088,7 +1110,6 @@ export function stageProviderPartialRecovery(metadata, logicalObligationId, sour
   window.completed_source_units = [...new Set([...(window.completed_source_units ?? []), unitKey])].slice(-128);
   window.parser_accepted_candidate_count = Math.max(count(window.parser_accepted_candidate_count),
     window.staged_partial_records.length);
-  window.accepted_partial_record_count = window.parser_accepted_candidate_count;
   if (Array.isArray(details.unresolved_semantic_units)) {
     window.unresolved_semantic_units = [...new Set(details.unresolved_semantic_units.map(String))].slice(-128);
   }
@@ -1195,16 +1216,9 @@ export function readProviderRecoveryWindowState(metadata, logicalObligationId, s
     recovery_implementation_version: Number(window.recovery_implementation_version ?? 1),
     implementation_version_changed: Number(window.recovery_implementation_version ?? 1)
       < RECOVERY_IMPLEMENTATION_VERSION,
-    accepted_partial_record_count: count(window.parser_accepted_candidate_count
-      ?? window.accepted_partial_record_count),
-    parser_accepted_candidate_count: count(window.parser_accepted_candidate_count
-      ?? window.accepted_partial_record_count),
-    durable_partial_record_count: [...new Set(window.durably_persisted_record_ids
-      ?? window.accepted_record_ids ?? [])].length,
-    accepted_record_ids: [...new Set(window.durably_persisted_record_ids
-      ?? window.accepted_record_ids ?? [])],
-    durably_persisted_record_ids: [...new Set(window.durably_persisted_record_ids
-      ?? window.accepted_record_ids ?? [])],
+    parser_accepted_candidate_count: count(window.parser_accepted_candidate_count),
+    durable_partial_record_count: [...new Set(window.durably_persisted_record_ids ?? [])].length,
+    durably_persisted_record_ids: [...new Set(window.durably_persisted_record_ids ?? [])],
     unresolved_semantic_units: [...new Set(window.unresolved_semantic_units ?? [])],
     last_malformed_reason: window.last_malformed_reason ?? null,
     prior_attempt_id: obligation?.last_attempt_id ?? null,
@@ -1237,8 +1251,7 @@ export function reconcileProviderRecoveryWindowsFromLedger(metadata, ledgerValue
       window.retired_at = at;
       window.retirement_reason = 'canonical_obligation_safely_committed';
       window.retained_historical_attempts = true;
-      window.retained_durable_record_ids = [...new Set(window.durably_persisted_record_ids
-        ?? window.accepted_record_ids ?? [])];
+      window.retained_durable_record_ids = [...new Set(window.durably_persisted_record_ids ?? [])];
       for (const fragment of window.unresolved_fragments ?? []) {
         if (fragment.state === 'pending') {
           fragment.state = 'superseded_by_canonical_commit';
@@ -1317,7 +1330,7 @@ export function beginProviderRecoveryEpoch(metadata, logicalObligationId, source
     recovery_stage: details.recovery_stage ?? 'fragment_decision_regeneration',
     unresolved_fragment_ids: [...new Set(details.unresolved_fragment_ids ?? window.unresolved_semantic_units ?? [])],
     accepted_records_preserved: Number(details.accepted_records_preserved
-      ?? (window.durably_persisted_record_ids ?? window.accepted_record_ids ?? []).length),
+      ?? (window.durably_persisted_record_ids ?? []).length),
     global_request_ceiling: Number(details.global_request_ceiling ?? 20),
     epoch_request_ceiling: Number(details.epoch_request_ceiling ?? 4),
     global_requests_consumed_before_epoch: Number(details.global_requests_consumed_before_epoch
@@ -1335,7 +1348,7 @@ export function beginProviderRecoveryEpoch(metadata, logicalObligationId, source
   window.active_recovery_epoch = epoch;
   obligation.recovery_intent = epoch.recovery_intent;
   obligation.recovery_stage = epoch.recovery_stage;
-  obligation.next_eligible_recovery_action = epoch.recovery_stage;
+  obligation.next_eligible_recovery_action = 'dispatch_provider_request';
   return cloneSerializableDomain(epoch, {
     path: '$.provider_recovery_epoch', stage: 'provider_recovery_epoch_projection',
     operation_type: 'provider_recovery_epoch',
@@ -1343,8 +1356,8 @@ export function beginProviderRecoveryEpoch(metadata, logicalObligationId, source
 }
 
 /** Marks valid partial records durable without closing their still-pending obligation. */
-export function markProviderPartialRecordsPersisted(metadata, logicalObligationId, acceptedCount = 0, sourceFingerprint = null,
-  acceptedRecordIds = []) {
+export function markProviderPartialRecordsPersisted(metadata, logicalObligationId, sourceFingerprint = null,
+  durableRecordIds = []) {
   if (!metadata || !logicalObligationId) return false;
   const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
   const obligation = audit.obligations?.[logicalObligationId];
@@ -1353,21 +1366,12 @@ export function markProviderPartialRecordsPersisted(metadata, logicalObligationI
   const windows = sourceFingerprint
     ? [obligation.recovery_windows?.[sourceFingerprint]].filter(Boolean)
     : Object.values(obligation.recovery_windows ?? {});
-  const durableIds = acceptedRecordIds.filter(Boolean).map(String);
-  if (durableIds.length === 0 && count(acceptedCount) > 0) {
-    // Compatibility for pre-identity callers. These IDs are explicitly
-    // scoped placeholders and cannot be used to verify canonical storage;
-    // current Session persistence always supplies real durable record IDs.
-    for (let index = 0; index < count(acceptedCount); index++) {
-      durableIds.push(`legacy-durable:${logicalObligationId}:${index + 1}`);
-    }
-  }
+  const durableIds = durableRecordIds.filter(Boolean).map(String);
   for (const window of windows) {
     window.durably_persisted_record_ids = [...new Set([
-      ...(window.durably_persisted_record_ids ?? window.accepted_record_ids ?? []),
+      ...(window.durably_persisted_record_ids ?? []),
       ...durableIds,
     ])].slice(-128);
-    window.accepted_record_ids = [...window.durably_persisted_record_ids];
     window.durable_partial_record_count = window.durably_persisted_record_ids.length;
     for (const item of window.staged_partial_records ?? []) {
       if (item.state === 'staged') { item.state = 'committed'; item.committed_at = Date.now(); }
@@ -1403,8 +1407,8 @@ export function markProviderObligationOperationalPause(metadata, logicalObligati
   obligation.final_disposition = details.reason_code
     ?? 'recovery_request_budget_reached_with_pending_children';
   obligation.recovery_blocked = false;
-  obligation.next_eligible_recovery_action = details.recovery_intent
-    ?? details.next_eligible_action ?? 'resume_exact_obligation';
+  obligation.next_eligible_recovery_action = details.next_eligible_action
+    ?? 'dispatch_provider_request';
   obligation.recovery_intent = details.recovery_intent
     ?? obligation.next_eligible_recovery_action;
   obligation.recovery_stage = details.recovery_stage ?? null;
@@ -1437,7 +1441,7 @@ export function markProviderObligationRecoveryInProgress(metadata, logicalObliga
   obligation.recovery_intent = details.recovery_intent
     ?? 'recover_unresolved_partial_output_fragments';
   obligation.recovery_stage = details.recovery_stage ?? 'compact_response_repair';
-  obligation.next_eligible_recovery_action = obligation.recovery_stage;
+  obligation.next_eligible_recovery_action = 'dispatch_provider_request';
   obligation.automatic_recovery = {
     unresolved_fragment_count: count(details.unresolved_fragment_count),
     accepted_records_preserved: count(details.accepted_records_preserved),
@@ -1449,8 +1453,8 @@ export function markProviderObligationRecoveryInProgress(metadata, logicalObliga
 }
 
 /** Closes an obligation only after all staged source units reach durable canonical storage. */
-export function markProviderStagedRecoveryCompleted(metadata, logicalObligationId, sourceFingerprint, acceptedCount = 0) {
-  if (!markProviderPartialRecordsPersisted(metadata, logicalObligationId, acceptedCount, sourceFingerprint)) return false;
+export function markProviderStagedRecoveryCompleted(metadata, logicalObligationId, sourceFingerprint, acceptedRecordIds = []) {
+  if (!markProviderPartialRecordsPersisted(metadata, logicalObligationId, sourceFingerprint, acceptedRecordIds)) return false;
   const audit = ensure(metadata, metadata.active_catchup_run_id ?? null);
   const obligation = audit.obligations?.[logicalObligationId];
   const window = obligation?.recovery_windows?.[sourceFingerprint];
@@ -1461,13 +1465,13 @@ export function markProviderStagedRecoveryCompleted(metadata, logicalObligationI
   window.missing_required_results = false;
   window.completed_at = Date.now();
   obligation.terminal_outcome = childCoverageComplete
-    ? acceptedCount > 0 ? 'completed' : 'completed_no_candidates'
+    ? acceptedRecordIds.length > 0 ? 'completed' : 'completed_no_candidates'
     : 'partial_output_pending';
   obligation.final_disposition = childCoverageComplete
     ? 'completed_after_single_source_unit_recovery'
     : 'child_completed_parent_coverage_pending';
   obligation.final_recovery_stage = 'single_source_unit_regeneration';
-  obligation.produced_no_update = childCoverageComplete && acceptedCount === 0;
+  obligation.produced_no_update = childCoverageComplete && acceptedRecordIds.length === 0;
   obligation.recovery_blocked = false;
   obligation.next_eligible_recovery_action = null;
   obligation.recovery_eligibility = null;
@@ -1502,8 +1506,7 @@ export function registerProviderRecoveryChildPlan(metadata, logicalObligationId,
     obligation.terminal_outcome = 'partial_output_pending';
     obligation.final_disposition = 'repartition_child_coverage_pending';
     obligation.recovery_blocked = false;
-    obligation.next_eligible_recovery_action = obligation.child_coverage_manifest.coverage
-      ?.unattempted_child_keys?.[0] ?? obligation.child_coverage_manifest.coverage?.pending_child_keys?.[0] ?? null;
+    obligation.next_eligible_recovery_action = 'dispatch_provider_request';
   }
   return summarizeRecoveryChildManifest(obligation.child_coverage_manifest);
 }
@@ -1516,7 +1519,9 @@ export function markProviderRecoveryChildCompleted(metadata, logicalObligationId
   markRecoveryChildState(obligation.child_coverage_manifest, childKey,
     details.explicit_none === true ? 'validated_no_update' : 'completed', details);
   if (recoveryChildManifestComplete(obligation.child_coverage_manifest)) {
-    obligation.terminal_outcome = Number(obligation.accepted_partial_record_count ?? 0) > 0
+    const durableRecordCount = [...new Set(Object.values(obligation.recovery_windows ?? {})
+      .flatMap((window) => window.durably_persisted_record_ids ?? []))].length;
+    obligation.terminal_outcome = durableRecordCount > 0
       ? 'completed_repartitioned' : 'completed_no_candidates';
     obligation.final_disposition = 'completed_after_full_child_coverage';
     obligation.recovery_blocked = false;
@@ -1537,7 +1542,7 @@ export function markProviderRecoveryBudgetPause(metadata, logicalObligationId, d
   obligation.final_disposition = details.reason_code
     ?? 'recovery_request_budget_reached_with_pending_children';
   obligation.recovery_blocked = false;
-  obligation.next_eligible_recovery_action = details.next_child_key ?? null;
+  obligation.next_eligible_recovery_action = 'dispatch_provider_request';
   return summarizeRecoveryChildManifest(obligation.child_coverage_manifest);
 }
 
@@ -1599,7 +1604,6 @@ export function summarizeProviderAttemptAudit(metadata) {
       .filter((item) => failedObligations.includes(item)).map(failedId).filter(Boolean),
     terminal_unresolved: unresolved
       .filter((item) => failedObligations.includes(item)).map(failedId).filter(Boolean),
-    superseded_or_migrated: [],
     archived_identity_count_unavailable: count(archived.ever_failed),
     archived_identity_limitation: count(archived.ever_failed) > 0
       ? 'Archived obligation scalars are exact, but pruned obligation identities cannot be reconstructed.'
@@ -1641,7 +1645,8 @@ export function summarizeProviderAttemptAudit(metadata) {
       affected_obligation_ids: [...new Set(affected.filter(Boolean))],
     });
   };
-  addViolation(terminalTotal === count(audit.attempted) && count(audit.running_count) === 0,
+  const transmittedCount = count(audit.transmitted_count);
+  addViolation(terminalTotal === transmittedCount && count(audit.running_count) === 0,
     'provider_attempt_terminal_accounting', recentAttempts
       .filter((item) => item.terminal_outcome === 'running').map((item) => item.logical_obligation_id));
   addViolation(attemptsWithoutRootObligation === 0, 'physical_attempt_root_obligation_identity', recentAttempts
@@ -1667,10 +1672,13 @@ export function summarizeProviderAttemptAudit(metadata) {
       repartition_child: 'a smaller source window linked to one root obligation',
       repair_request: 'a request that changes format/schema instructions without repeating extraction intent',
     },
-    physical_attempts: audit.attempted,
+    physical_attempts: transmittedCount,
+    registered_attempts: count(audit.registered_count ?? audit.attempted),
+    registered_not_dispatched_attempts: Math.max(0,
+      count(audit.registered_count ?? audit.attempted) - count(audit.transmitted_count)),
     terminal_attempts: terminalTotal,
     running_attempts: audit.running_count,
-    accounting_reconciled: terminalTotal + count(audit.running_count) === count(audit.attempted),
+    accounting_reconciled: terminalTotal + count(audit.running_count) === transmittedCount,
     terminal_counts: { ...audit.terminal_counts },
     operational_pauses: operationalPauses.map((item) => ({
       root_obligation_id: item.logical_obligation_id,
@@ -1718,7 +1726,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       exact_count: providerTransportFailureCount,
       retained: [...(audit.provider_failure_lineage ?? [])],
       retained_detail_limit: 64,
-      details_pruned_or_legacy: providerTransportFailureCount > (audit.provider_failure_lineage ?? []).length,
+      details_pruned: providerTransportFailureCount > (audit.provider_failure_lineage ?? []).length,
       limitation: providerTransportFailureCount > (audit.provider_failure_lineage ?? []).length
         ? 'bounded lineage detail does not replace the exact scalar' : null,
     },
@@ -1791,8 +1799,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       const eligibility = deriveRecoveryStageEligibility({
         attempted_stages: recoveryWindow?.recovery_stages_attempted ?? [],
         exhausted_stages: recoveryWindow?.exhausted_stages ?? [],
-        durable_partial_record_count: (recoveryWindow?.durably_persisted_record_ids
-          ?? recoveryWindow?.accepted_record_ids ?? []).length,
+        durable_partial_record_count: (recoveryWindow?.durably_persisted_record_ids ?? []).length,
         unresolved_semantic_units: recoveryWindow?.unresolved_semantic_units ?? [],
         implementation_version_changed: implementationVersionChanged,
         unit_outcomes: Object.values(recoveryWindow?.unit_obligations ?? {}),
@@ -1818,14 +1825,9 @@ export function summarizeProviderAttemptAudit(metadata) {
         exhausted_recovery_stages: recoveryWindow?.exhausted_stages ?? [],
         final_recovery_stage: item.final_recovery_stage ?? null,
         retry_replay_count: count(item.retry_replay_count),
-        accepted_partial_record_count: count(recoveryWindow?.parser_accepted_candidate_count
-          ?? recoveryWindow?.accepted_partial_record_count),
-        parser_accepted_candidate_count: count(recoveryWindow?.parser_accepted_candidate_count
-          ?? recoveryWindow?.accepted_partial_record_count),
-        durable_partial_record_count: (recoveryWindow?.durably_persisted_record_ids
-          ?? recoveryWindow?.accepted_record_ids ?? []).length,
-        durably_persisted_record_ids: [...new Set(recoveryWindow?.durably_persisted_record_ids
-          ?? recoveryWindow?.accepted_record_ids ?? [])],
+        parser_accepted_candidate_count: count(recoveryWindow?.parser_accepted_candidate_count),
+        durable_partial_record_count: (recoveryWindow?.durably_persisted_record_ids ?? []).length,
+        durably_persisted_record_ids: [...new Set(recoveryWindow?.durably_persisted_record_ids ?? [])],
         completed_source_units: [...(recoveryWindow?.completed_source_units ?? [])],
         validated_no_update_source_units: [...(recoveryWindow?.explicit_none_source_units ?? [])],
         blocked_source_units: unitOutcomes
@@ -1844,8 +1846,9 @@ export function summarizeProviderAttemptAudit(metadata) {
         terminal_signature_repeat_count: count(item.terminal_signature_repeat_count),
         recovery_blocked: eligibility.blocked,
         recovery_eligibility: eligibility,
-        next_eligible_recovery_action: eligibility.eligible_action
-          ?? 'change_provider_configuration_or_install_updated_build',
+        eligible_recovery_stage: eligibility.eligible_action ?? null,
+        next_eligible_recovery_action: eligibility.blocked
+          ? 'stop_blocked' : 'dispatch_provider_request',
         total_attempts: item.total_attempts ?? item.physical_attempt_count ?? 0,
         attempt_lineage_available: Boolean(item.original_attempt_id || retainedAttempts.length),
       };
@@ -1883,8 +1886,6 @@ export function summarizeProviderAttemptAudit(metadata) {
         applicability_decision_counts: applicabilityDecisionCounts,
         contract_enforcement_requests:
           count(audit.recovery_stage_request_counts?.single_source_contract_enforcement),
-        legacy_single_source_unit_regeneration_successes_meaning:
-          'fully_recovered_root_obligations_by_terminal_stage',
         single_source_unit_regeneration_successes:
           count(audit.recoveries_by_stage?.single_source_unit_regeneration),
         obligations_recovered_by_stage: obligationsRecoveredByStage,
@@ -1951,7 +1952,7 @@ export function summarizeProviderAttemptAudit(metadata) {
         ? 'native_json_schema_observed'
         : recentAttempts.some((attempt) => attempt.provider_capability_path)
           ? 'role_or_bounded_envelope_fallback_observed'
-          : 'not_observed_or_legacy_attempts',
+          : 'not_observed',
       avoidable_overhead_estimate: {
         request_count: count(audit.request_kind_counts?.format_repair) + unexplainedEquivalentRequests,
         definition: 'format-repair and unchanged-equivalent retries; diagnostic estimate only',
@@ -1974,7 +1975,8 @@ export function summarizeProviderAttemptAudit(metadata) {
     obligation_history_truncated: obligationHistoryTruncated,
     archived_obligation_counts: { ...archived },
     reconciliation: {
-      every_provider_attempt_has_one_terminal_category: terminalTotal === count(audit.attempted) && count(audit.running_count) === 0,
+      every_provider_attempt_has_one_terminal_category:
+        terminalTotal === transmittedCount && count(audit.running_count) === 0,
       running_attempts: count(audit.running_count),
       repartition_children_without_parent_lineage: recentAttempts.filter((item) => item.request_kind === 'repartition_child'
         && !item.parent_attempt_id && !item.repartition_parent_id).length,
@@ -2024,7 +2026,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       unresolved_count_consistent: Math.min(unresolved.length, 64) === unresolved.slice(-64).length,
       source_traversal_coverage_scope: 'checkpointed_source_ranges',
       valid_generation_coverage_scope: 'logical_obligations_with_valid_terminal_output',
-      consistent: terminalTotal === count(audit.attempted) && count(audit.running_count) === 0
+      consistent: terminalTotal === transmittedCount && count(audit.running_count) === 0
         && attemptsWithoutRootObligation === 0
         && unexplainedEquivalentRequests === 0 && totalEquivalentRequests === permittedEquivalentRequests
         && physicalFailureObservationCount >= uniqueFailedObligations
@@ -2037,7 +2039,7 @@ export function summarizeProviderAttemptAudit(metadata) {
       limitation: obligationHistoryTruncated
         ? aggregateCountsExact
           ? 'obligation detail retention is bounded; archived cumulative counters remain authoritative'
-          : 'legacy obligation detail retention was bounded before exact archive counters were available'
+          : 'obligation detail retention is bounded and exact archive counters are unavailable'
         : null,
     },
     coverage: {

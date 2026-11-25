@@ -106,7 +106,7 @@ import { loadCanon } from './canon.js';
 import { deriveDurableWriteAccounting, summarizeCardLocalMemoryChanges } from './idempotence-utils.js';
 import { loadProfiles, reconcileProfileCanonicalNames, remapProfileEntity } from './profiles.js';
 import {
-  applyGraphDefaults,
+  createGraphMemoryRecord,
   loadCharacterEntityRegistry,
   loadSessionEntityRegistry,
   saveCharacterEntityRegistry,
@@ -119,7 +119,7 @@ import {
   reconcileCanonicalEntityRegistry,
 } from './graph-migration.js';
 import { validateFinalizedEntityRedirects } from './entity-redirect-utils.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeRelationshipPair, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, getFinalizedCanonicalPersonaContext, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, summarizeCanonicalPersonaContext } from './canonical-entities.js';
+import { buildCanonicalRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, getCanonicalRuntimeContextSnapshot, getFinalizedCanonicalPersonaContext, normalizeSyntheticIdentityQualifier, reconcileCanonicalLedger, resolveCanonicalCharacterName, summarizeCanonicalPersonaContext } from './canonical-entities.js';
 import { getUnifiedTierBreakdown } from './unified-inject.js';
 import { hasEmbeddingFailed } from './embeddings.js';
 import {
@@ -197,7 +197,7 @@ import {
   getStateCard,
   setStateCard,
   deleteStateCard,
-  migrateStateLedgerKey,
+  rekeyStateLedgerCard,
   renameStateLedgerEntity,
   isStateLedgerEnabled,
   injectStateLedger,
@@ -1310,7 +1310,7 @@ export function updateSessionUI() {
     const content = $addForm.find('.sme_add_memory_input').val().trim();
     if (!content) return;
     const memories = loadSessionMemories();
-    memories.push({
+    memories.push(createGraphMemoryRecord({
       type,
       content,
       importance: 2,
@@ -1322,7 +1322,7 @@ export function updateSessionUI() {
       intimacy_relevance: 1,
       retrieval_count: 0,
       last_confirmed_ts: Date.now(),
-    });
+    }));
     await saveSessionMemories(memories);
     await injectSessionMemories();
     updateSessionUI();
@@ -1362,7 +1362,7 @@ export function updateArcsUI() {
   // that workflow's run-scoped roster (which is not in scope when
   // Fresh Start or a chat load refreshes the Arc panel).
   const ctx = getContext();
-  const roster = buildCanonicalCharacterRoster(ctx, {
+  const roster = buildCanonicalRoster(ctx, {
     includeChatLocalApproved: true,
     runtimeSnapshot: getFinalizedCanonicalPersonaContext(ctx),
   });
@@ -1681,7 +1681,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   };
   // Final reconciliation needs the active persona plus approved chat-local
   // characters in the same authoritative roster used for every store.
-  const roster = buildCanonicalCharacterRoster(context, {
+  const roster = buildCanonicalRoster(context, {
     includeChatLocalApproved: true,
     runtimeSnapshot,
   });
@@ -1741,16 +1741,6 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   const localReports = [];
   let localRewrites = 0;
   let localRelationshipPairsMerged = 0;
-  const beforeGraphDefaultNormalization = snapshotCardLocalStores();
-  // Manual checks normalize the selected card through `applyGraphDefaults`.
-  // Do the equivalent for every chat-local scope before automatic reference
-  // repair so a save/reload cannot expose a deferred legacy-provenance change.
-  for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) {
-    await yieldEvery();
-    const normalized = (records ?? []).map((record) => applyGraphDefaults(record));
-    if (JSON.stringify(records) !== JSON.stringify(normalized)) meta.card_local_memories[localName] = normalized;
-  }
-  observeCardLocalWrites(beforeGraphDefaultNormalization, 'normalize_graph_defaults', 'applyGraphDefaults', true);
   const beforeNarrativeNormalization = snapshotCardLocalStores();
   for (const [localName, localRegistry] of Object.entries(meta.card_local_entities ?? {})) {
     await yieldEvery();
@@ -1898,7 +1888,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   // rewriting durable narratives, participant lists, profiles, and review
   // decisions.  This keeps automatic catch-up and a following manual check
   // on the exact same canonical inputs.
-  const finalizedRoster = buildCanonicalCharacterRoster(context, {
+  const finalizedRoster = buildCanonicalRoster(context, {
     includeChatLocalApproved: true,
     runtimeSnapshot,
   });
@@ -2096,22 +2086,21 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   // roster. Other installed cards remain a maintenance concern, not a reason
   // to degrade an unrelated chat run.
   const structuredStoreNames = [...new Set([characterName, ...rosterCharacterNames].filter(Boolean))];
-  const globalLegacyStoreNames = Object.keys(extension_settings[MODULE_NAME]?.characters ?? {})
+  const unrelatedStoreNames = Object.keys(extension_settings[MODULE_NAME]?.characters ?? {})
     .filter((name) => !structuredStoreNames.includes(name));
-  const globalLegacyIntegrity = globalLegacyStoreNames.map((name) => ({
+  const unrelatedStoreIntegrity = unrelatedStoreNames.map((name) => ({
     character: name,
     relationship_pairs: Object.keys(loadRelationshipHistory(name)).length,
     epistemic_records: loadEpistemicKnowledge(name).length,
   })).filter((entry) => entry.relationship_pairs || entry.epistemic_records);
-  const legacyGlobalScopeAudit = {
-    total_legacy_records: globalLegacyIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
+  const unrelatedStoreScopeAudit = {
+    total_records: unrelatedStoreIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
     current_chat_reachable: 0,
-    current_chat_unreachable: globalLegacyIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
+    current_chat_unreachable: unrelatedStoreIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
     malformed: 0,
-    migration_eligible: 0,
-    informational_only: globalLegacyIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
+    informational_only: unrelatedStoreIntegrity.reduce((total, entry) => total + entry.relationship_pairs + entry.epistemic_records, 0),
     quality_degrading: 0,
-    affected_characters: globalLegacyIntegrity.map((entry) => entry.character),
+    affected_characters: unrelatedStoreIntegrity.map((entry) => entry.character),
   };
   let relationshipStoresReconciled = 0;
   let persistentRelationshipPairsMerged = 0;
@@ -2189,22 +2178,8 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   let referenceRewriteRevision = 0;
   let indexRebuildRevision = 0;
   const textIdentityMismatches = [];
-  const textLinkRepairCounters = {
-    identity_links_removed_deterministically: 0,
-    records_repaired_cleanly: 0,
-    records_quarantined_for_review: 0,
-    records_left_ambiguous: 0,
-    new_invalid_links_created_this_run: 0,
-    legacy_invalid_links_repaired: 0,
-    previously_quarantined_links_seen: 0,
-    duplicate_repair_events_suppressed: 0,
-    physical_repair_observations: 0,
-    unique_logical_links_repaired: 0,
-    unique_records_affected: 0,
-  };
-  // Canonical current-run accounting. The legacy counters above are retained
-  // in exports for compatibility, but this object answers the user-facing
-  // question: what durable metadata actually changed in this run?
+  // One canonical repair account answers what durable metadata changed in this
+  // run and which observations were repetitions rather than mutations.
   const entityLinkRepairs = {
     actual_logical_mutations_this_run: 0,
     physical_store_mutations_this_run: 0,
@@ -2240,7 +2215,6 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     entityLinkRepairs.actual_physical_store_mutations_this_run++;
   }
   const logicalRepairKeys = new Set();
-  const repairedRecordIds = new Set();
   const entityById = new Map(registryGroups.flat().filter((entity) => entity?.id).map((entity) => [entity.id, entity]));
   const canonicalPeople = (roster.characters ?? []).map((entry) => String(entry.canonicalName ?? '').trim()).filter(Boolean);
   const stableRepairIdentity = (entity) => {
@@ -2282,7 +2256,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
           const stale = {
             store, record_id: record?.id ?? null, reference_field_path: `${field}[${entryIndex}]`,
             actual_entity_id: entityId, actual_entity_name: linkedName || null, actual_entity_store: entity ? store : null,
-            expected_canonical_identity_id: target?.canonical_id ?? target?.id ?? null, expected_entity_id: target?.id ?? null,
+            expected_canonical_identity_id: target?.id ?? null, expected_entity_id: target?.id ?? null,
             stale_reason_code: entity ? 'wrong_scope_reference' : redirectLifecycleDiagnostic?.invalid_reason ? 'invalid_redirect_target' : 'missing_registry_record', repair_attempted: Boolean(target), repair_result: target ? 'rewritten' : 'not_safe_to_infer',
             redirect_invariant_failure: redirectLifecycleDiagnostic?.invalid_reason ?? null,
             resolution_strategies_attempted: ['registry_redirect', 'exact_canonical_roster_name', 'unique_text_name'], selected_strategy: redirectTarget ? 'registry_redirect' : target ? 'unique_text_name' : null,
@@ -2304,11 +2278,11 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
               entityLinkRepairs.invalid_links_repaired_final_stage++;
             }
           } else {
-            // The memory text remains valid even when an old entity ID no
+            // The memory text remains valid even when an entity ID no
             // longer has an authoritative registry record. Never leave that
             // dangling ID in the finalized graph and never guess among the
             // competing identities. Preserve only bounded, privacy-safe
-            // provenance so a future uniquely authoritative migration can
+            // provenance so a future uniquely authoritative reconciliation can
             // reconsider the withheld link.
             const linkProvenance = record?.entity_link_provenance?.[entityId] ?? {};
             unsafeIds.push(entityId);
@@ -2323,7 +2297,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
               source_chunk_number: linkProvenance.source_chunk_number ?? record?.source_chunk ?? null,
               run_id: linkProvenance.link_created_run_id ?? record?.link_created_run_id ?? null,
               page_instance_id: linkProvenance.page_instance_id ?? record?.page_instance_id ?? null,
-              creation_method: linkProvenance.creation_method ?? record?.entity_creation_method ?? 'unknown_legacy',
+              creation_method: linkProvenance.creation_method ?? record?.entity_creation_method ?? 'unrecorded',
               replay_state: linkProvenance.replay_state ?? record?.replay_state ?? 'unknown',
             };
             record.withheld_entity_links = [
@@ -2339,7 +2313,6 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
             entityLinkRepairs.actual_physical_store_mutations_this_run++;
             if (!logicalRepairKeys.has(withholdingKey)) {
               logicalRepairKeys.add(withholdingKey);
-              repairedRecordIds.add(record?.id ?? 'unknown');
               entityLinkRepairs.actual_logical_mutations_this_run++;
               entityLinkRepairs.invalid_links_repaired_final_stage++;
             }
@@ -2382,7 +2355,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
             source_candidate_id: linkProvenance.source_candidate_id ?? record?.source_candidate_id ?? null,
             source_chunk: linkProvenance.source_chunk_number ?? record?.source_chunk ?? null,
             source_extraction_type: linkProvenance.source_extraction_type ?? record?.source_extraction_type ?? null,
-            creation_method: linkProvenance.creation_method ?? record?.entity_creation_method ?? 'unknown_legacy',
+            creation_method: linkProvenance.creation_method ?? record?.entity_creation_method ?? 'unrecorded',
             entity_registry_id: linkProvenance.entity_registry_id_at_creation ?? entityId,
             same_run_creation: createdThisRun,
             detected_invalid_reason: 'text_contradicted',
@@ -2397,20 +2370,14 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
             origin_classification: originClassification,
             previously_quarantined: Boolean(priorRepair),
           };
-          textLinkRepairCounters.physical_repair_observations++;
           if (priorRepair || logicalRepairKeys.has(logicalRepairKey)) {
-            textLinkRepairCounters.previously_quarantined_links_seen++;
-            textLinkRepairCounters.duplicate_repair_events_suppressed++;
             entityLinkRepairs.reobserved_already_repaired++;
             if (priorRepair) entityLinkRepairs.reobserved_previously_quarantined++;
             entityLinkRepairs.duplicate_observations_suppressed++;
             entityLinkRepairs.duplicate_wrapper_observations++;
           } else {
             logicalRepairKeys.add(logicalRepairKey);
-            repairedRecordIds.add(record?.id ?? 'unknown');
             textIdentityMismatches.push(repair);
-            textLinkRepairCounters.legacy_invalid_links_repaired++;
-            textLinkRepairCounters.unique_logical_links_repaired++;
             record.identity_link_repair_audit = [...(record.identity_link_repair_audit ?? []), { ...repair, repaired_at: Date.now() }];
           }
           // The unsupported link is still present in this durable record, so
@@ -2438,9 +2405,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       }
       if (unsafeIds.length) {
         record[field] = record[field].filter((entry) => !unsafeIds.includes(typeof entry === 'string' ? entry : entry?.entity_id));
-        textLinkRepairCounters.identity_links_removed_deterministically += unsafeIds.length;
         record.identity_integrity_status = 'repaired';
-        textLinkRepairCounters.records_repaired_cleanly++;
         record.identity_integrity_issues = [...new Set([...(record.identity_integrity_issues ?? []), 'Suppressed an entity link that lacked a finalized authoritative registry target.'])];
       }
     }
@@ -2465,7 +2430,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
   // The audit mutates the same durable arrays used by long-term, session, and
   // card-local storage. Persist after the final mutation pass, not only before
   // it, so subsequent injection and diagnostics observe the repaired state.
-  if (referenceRewriteRevision || textLinkRepairCounters.identity_links_removed_deterministically) {
+  if (referenceRewriteRevision || entityLinkRepairs.actual_physical_store_mutations_this_run) {
     saveCharacterMemories(characterName, longtermMemories);
     await saveSessionMemories(sessionMemories);
     for (const [localName, records] of Object.entries(meta.card_local_memories ?? {})) {
@@ -2473,7 +2438,6 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     }
     indexRebuildRevision = referenceRewriteRevision;
   }
-  textLinkRepairCounters.unique_records_affected = repairedRecordIds.size;
   // State Ledger cards use a single canonical card link rather than the
   // memory-style `entities` list.  Check it separately so the audit covers
   // every structured store without treating free-form state-card text as an
@@ -2568,8 +2532,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     await yieldEvery();
     for (const [key, state] of Object.entries(loadRelationshipHistory(storeName))) {
       try {
-        const labels = getRelationshipHistoryPairDisplay(key, state);
-        // The storage reconciler intentionally preserves an unresolved legacy
+        // The storage reconciler intentionally preserves an unresolved
         // pair rather than assigning an invented name-based identity.  Audit
         // only pairs whose two participants are both safe stable identities;
         // report the remainder as informational maintenance, not a degraded
@@ -2583,7 +2546,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
             reason: safety.reason,
             persisted_unchanged: true,
             excluded_from_injection: state?.excluded_from_injection === true,
-            propagation_status: state?.propagation_status ?? 'legacy_unquarantined',
+            propagation_status: state?.propagation_status ?? 'preexisting_unquarantined',
           });
           continue;
         }
@@ -2653,22 +2616,22 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
         : 'clean';
   const repairOriginSummary = textIdentityMismatches.reduce((summary, repair) => {
     if (repair.origin_classification === 'created_current_run') summary.current_run_generated++;
-    else if (repair.origin_classification === 'preexisting_confirmed') summary.known_legacy++;
+    else if (repair.origin_classification === 'preexisting_confirmed') summary.preexisting_confirmed++;
     else if (repair.origin_classification === 'preexisting_origin_unknown') summary.preexisting_origin_unknown++;
     else if (repair.origin_classification === 'previously_quarantined') summary.reobserved_no_mutation++;
     return summary;
   }, {
     current_run_generated: 0,
     preexisting_origin_unknown: 0,
-    known_legacy: 0,
+    preexisting_confirmed: 0,
     new_records_same_logical_issue: 0,
     reobserved_no_mutation: entityLinkRepairs.reobserved_already_repaired,
     cross_store_only_mutations: 0,
   });
   const repairRecurrenceGroups = Object.values(textIdentityMismatches.reduce((groups, repair) => {
     const key = [repair.canonical_entity_identity, repair.store, repair.reference_field_path ?? 'entities', repair.detected_invalid_reason, repair.link_created_stage ?? 'unknown'].join('|');
-    const recurrenceSource = repair.previously_quarantined ? 'migration_replay'
-      : repair.same_run_creation ? 'regenerated_legacy_record'
+    const recurrenceSource = repair.previously_quarantined ? 'previously_quarantined_reobserved'
+      : repair.same_run_creation ? 'same_run_regeneration'
         : String(repair.store ?? '').startsWith('card-local:') ? 'cross_store_mirror'
           : repair.record_id ? 'same_record' : 'unknown';
     const group = groups[key] ?? { recurrence_key: key, canonical_entity_identity: repair.canonical_entity_identity, record_type: repair.store, reference_field_path: repair.reference_field_path ?? 'entities', repair_reason: repair.detected_invalid_reason, source_creation_stage: repair.link_created_stage ?? 'unknown', repair_recurrence_source: recurrenceSource, repair_count: 0, record_ids: [] };
@@ -2734,7 +2697,6 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     repaired_stale_entity_references: repairedStaleEntityReferences,
     withheld_entity_references: withheldEntityReferences,
     text_identity_mismatches: textIdentityMismatches,
-    text_link_repair_counters: textLinkRepairCounters,
     entity_link_repairs: entityLinkRepairs,
     durable_write_accounting: {
       ...durableWriteAccounting,
@@ -2743,7 +2705,7 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
       accounted_physical_mutations: entityLinkRepairs.actual_physical_store_mutations_this_run,
     },
     durable_write_trace: durableWriteTrace,
-    automatic_stabilization_second_pass_writes: {
+    reconciliation_write_accounting: {
       total: accountedCardLocalWriteRecords.length,
       records: accountedCardLocalWriteRecords,
       semantic_uncounted_writes: accountedCardLocalWriteRecords.filter((record) => !record.mutation_counted).length,
@@ -2795,10 +2757,10 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     persona_aliases,
     // These records are intentionally not reconciled as part of this chat's
     // transaction. Surface them for maintenance diagnostics without allowing
-    // an unrelated legacy card to make the active run look degraded.
-    global_legacy_integrity: globalLegacyIntegrity,
-    global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
-    legacy_global_scope_audit: legacyGlobalScopeAudit,
+    // an unrelated card to make the active run look degraded.
+    unrelated_store_integrity: unrelatedStoreIntegrity,
+    unrelated_store_maintenance_warning: unrelatedStoreIntegrity.length > 0,
+    unrelated_store_scope_audit: unrelatedStoreScopeAudit,
     identity_review_items: activeReviewQueue.length,
     identity_review_categories: identityReviewCategories,
     identity_review_outcomes: identityReviewOutcomes,
@@ -2846,8 +2808,8 @@ export async function reconcileCanonicalEntities(characterName, { reconciliation
     profiles_reconciled: profilesReconciled,
     relationship_stores_reconciled: relationshipStoresReconciled,
     epistemic_stores_reconciled: epistemicStoresReconciled,
-    global_legacy_store_count: globalLegacyIntegrity.length,
-    global_legacy_maintenance_warning: globalLegacyIntegrity.length > 0,
+    unrelated_store_count: unrelatedStoreIntegrity.length,
+    unrelated_store_maintenance_warning: unrelatedStoreIntegrity.length > 0,
     performance: {
       reconciliation_work_items: reconciliationWorkIndex,
       reconciliation_yields: reconciliationYieldCount,
@@ -3140,8 +3102,8 @@ export function updateEntityPanel(characterName) {
           const sessReg = loadSessionEntityRegistry();
           setEntityType(entity.id, t, ltReg);
           setEntityType(entity.id, t, sessReg);
-          // Migrate state card to the new key so it stays coupled to the entity.
-          if (t !== entity.type) await migrateStateLedgerKey(entity.name, entity.type, t);
+          // Rekey the state card so it stays coupled to the entity.
+          if (t !== entity.type) await rekeyStateLedgerCard(entity.name, entity.type, t);
           await persistAndRefresh();
         });
         $picker.append($opt);

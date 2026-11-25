@@ -28,7 +28,7 @@ export async function executeSessionTier(messages, abortCheck = null, options = 
       return createMemorizeTierOutcome({ kind: 'blocked',
         reason_code: error?.sme_reason_code ?? error?.code ?? 'recovery_change_required',
         next_action: error?.sme_request_diagnostics?.next_eligible_recovery_action
-          ?? 'change_provider_configuration_or_install_updated_build',
+          ?? 'stop_blocked',
         provider_call_required: false, evidence: error?.sme_request_diagnostics,
         value: { obligation_id: error?.sme_obligation_id ?? null },
       });
@@ -37,7 +37,7 @@ export async function executeSessionTier(messages, abortCheck = null, options = 
       || (error?.transport_started === true && error?.transport_completed === false)) {
       return createMemorizeTierOutcome({ kind: 'transport_retryable',
         reason_code: error?.code ?? 'provider_transport_failure',
-        next_action: 'retry_provider_with_backoff', provider_call_required: true,
+        next_action: 'dispatch_provider_request', provider_call_required: true,
         recovery_dimension: 'provider_transport_retry',
         evidence: error?.sme_request_diagnostics ?? null,
         value: { obligation_id: error?.sme_obligation_id ?? null },
@@ -50,7 +50,7 @@ export async function executeSessionTier(messages, abortCheck = null, options = 
       return createMemorizeTierOutcome({ kind: 'malformed_recoverable',
         reason_code: 'canonical_recovery_children_declared',
         next_action: evidence.next_eligible_recovery_action
-          ?? 'resume_first_actionable_recovery_leaf',
+          ?? 'dispatch_provider_request',
         provider_call_required: true,
         recovery_dimension: `canonical-child:${error?.sme_obligation_id ?? 'unknown'}`,
         evidence, value: { obligation_id: error?.sme_obligation_id ?? null },
@@ -63,7 +63,7 @@ export async function executeSessionTier(messages, abortCheck = null, options = 
         reason_code: error?.sme_reason_code ?? evidence.pause_reason
           ?? error?.code ?? 'session_recovery_paused',
         next_action: evidence.next_eligible_recovery_action
-          ?? evidence.recovery_intent ?? 'resume_exact_obligation',
+          ?? 'dispatch_provider_request',
         provider_call_required: evidence.provider_call_required === true,
         evidence, value: { obligation_id: error?.sme_obligation_id ?? null,
           partial_records_persisted: error?.sme_partial_records_persisted === true },

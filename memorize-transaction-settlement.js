@@ -1,4 +1,5 @@
 import { cloneSerializableDomain } from './serializable-domain.js';
+import { createTransactionSnapshot } from './memorize-domain-dtos.js';
 
 const TERMINAL_TRANSACTION_STATES = new Set([
   'committed', 'rolled_back', 'commit_failed_with_exact_state',
@@ -20,8 +21,7 @@ export function settleMemorizeTransactionCheckpoint(checkpointValue, transaction
     path: '$.checkpoint', stage: 'transaction_checkpoint_settlement',
     operation_type: 'memorize_transaction_settlement',
   });
-  checkpoint.transaction_lifecycle = {
-    schema_version: 2,
+  checkpoint.transaction_lifecycle = createTransactionSnapshot({
     transaction_id: transaction.transaction_id ?? null,
     state: transaction.state,
     terminal_disposition: transaction.terminal_disposition ?? transaction.state,
@@ -33,13 +33,12 @@ export function settleMemorizeTransactionCheckpoint(checkpointValue, transaction
     generation: transaction.generation ?? null,
     started_at: transaction.started_at ?? null,
     settled_at: transaction.settled_at ?? at,
-    updated_at: at,
     exact_reason_code: transaction.exact_reason_code ?? reasonCode,
     durable_checkpoint_count: Number(transaction.durable_checkpoint_count ?? 0),
     saga_disposition: transaction.saga_disposition
       ?? transaction.terminal_disposition ?? transaction.state,
     durable_subwrites_preserved: transaction.durable_subwrites_preserved === true,
-  };
+  }, at);
   checkpoint.status = transaction.state === 'rolled_back'
     ? 'awaiting_manual_resume'
     : transaction.state === 'committed' ? checkpoint.status

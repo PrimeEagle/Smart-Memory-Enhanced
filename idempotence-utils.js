@@ -56,69 +56,14 @@ function fingerprint(value) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-// Session records predate several graph fields.  Their normalized form must
-// be identical before and after a reconciliation pass, even when a later
-// writer persists the one-time schema backfill.  This function is deliberately
-// pure: hashing or auditing never edits the live chat metadata.
-function deterministicLegacySessionId(record = {}) {
-  const identity = {
-    type: record.type ?? 'session',
-    content: record.content ?? '',
-    ts: record.ts ?? 0,
-    source_message_indices: [...new Set((record.source_message_indices ?? []).map(Number).filter(Number.isInteger))].sort((a, b) => a - b),
-    source_messages: [...new Set((record.source_messages ?? []).map(String))].sort(),
-  };
-  return `sme-session-${fingerprint(JSON.stringify(identity))}`;
-}
-
-function canonicalizeSessionMemory(record = {}) {
-  const value = record && typeof record === 'object' ? record : {};
-  const id = value.id ?? deterministicLegacySessionId(value);
-  const entities = value.entities ?? [];
-  // `applyGraphDefaults` backfills this exact stable legacy object during
-  // ordinary reconciliation. Treat an omitted legacy entry and its later
-  // deterministic backfill as the same durable state; otherwise an automatic
-  // second pass can false-fail solely because it serialized default metadata.
-  const existingLinkProvenance = value.entity_link_provenance ?? {};
-  const entityLinkProvenance = Object.fromEntries(entities.map((entityId) => [entityId, {
-    link_id: `legacy:${id}:${entityId}`,
-    link_created_run_id: null,
-    link_created_at: null,
-    link_created_stage: null,
-    link_created_store: null,
-    underlying_record_id: id,
-    source_candidate_id: null,
-    source_chunk_number: null,
-    source_message_indices: [],
-    source_extraction_type: null,
-    creation_method: 'unknown_legacy',
-    canonical_identity_at_creation: null,
-    entity_registry_id_at_creation: entityId,
-    ...(existingLinkProvenance[entityId] ?? {}),
-  }]));
-  return {
-    ...value,
-    id,
-    consolidated: value.consolidated ?? true,
-    importance: value.importance ?? 2,
-    expiration: value.expiration ?? 'session',
-    confidence: value.confidence ?? 0.7,
-    persona_relevance: value.persona_relevance ?? (value.type === 'development' ? 2 : 1),
-    intimacy_relevance: value.intimacy_relevance ?? (value.type === 'development' ? 2 : 1),
-    retrieval_count: value.retrieval_count ?? 0,
-    last_confirmed_ts: value.last_confirmed_ts ?? value.ts ?? 0,
-    source_messages: value.source_messages ?? [],
-    source_chat_id: value.source_chat_id ?? null,
-    entities,
-    entity_link_provenance: entityLinkProvenance,
-    time_scope: value.time_scope ?? 'global',
-    valid_from: value.valid_from ?? null,
-    valid_to: value.valid_to ?? null,
-    supersedes: value.supersedes ?? [],
-    superseded_by: value.superseded_by ?? null,
-    contradicts: value.contradicts ?? [],
-    unconfirmed_since: value.unconfirmed_since ?? 0,
-  };
+function projectCurrentSessionMemory(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record) || !String(record.id ?? '').trim()) {
+    const error = new Error('Session memory is not a current-schema record. Run Fresh Start before reconciliation.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.reason = 'session_memory_projection_schema_mismatch';
+    throw error;
+  }
+  return record;
 }
 
 // Story Arc records contain both the actual open-thread state and an expanding
@@ -126,8 +71,14 @@ function canonicalizeSessionMemory(record = {}) {
 // belongs in the durable-state hash.  In particular, a refreshed status trace,
 // verification timestamp, or display-only participant explanation must not
 // make an otherwise stable second reconciliation pass appear non-idempotent.
-function canonicalizeStoryArc(record = {}) {
-  const value = record && typeof record === 'object' ? record : {};
+function projectStoryArcSemantic(record = {}) {
+  if (!record || typeof record !== 'object' || Array.isArray(record) || !String(record.id ?? '').trim()) {
+    const error = new Error('Story Arc is not a current-schema record. Run Fresh Start before reconciliation.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.reason = 'story_arc_projection_schema_mismatch';
+    throw error;
+  }
+  const value = record;
   return {
     id: value.id ?? null,
     content: value.content ?? '',
@@ -212,17 +163,12 @@ export function buildCanonicalDurableSemanticState(metadata = {}) {
     .filter((key) => DURABLE_KEYS.has(key))
     .map((key) => [key,
       key === 'sceneHistory' ? splitSceneHistory(source[key]).semantic
-        : key === 'sessionMemories' ? (Array.isArray(source[key]) ? source[key].map(canonicalizeSessionMemory) : [])
-          : key === 'storyArcs' ? (Array.isArray(source[key]) ? source[key].map(canonicalizeStoryArc) : [])
+        : key === 'sessionMemories' ? (Array.isArray(source[key]) ? source[key].map(projectCurrentSessionMemory) : [])
+          : key === 'storyArcs' ? (Array.isArray(source[key]) ? source[key].map(projectStoryArcSemantic) : [])
             : source[key],
     ]));
   return canonicalize(selected);
 }
-
-// Backward-compatible export name. All callers should use the named semantic
-// projection above so automatic, manual, UI, and export hashes share one
-// explicit contract.
-export const canonicalizeDurableIdempotenceState = buildCanonicalDurableSemanticState;
 
 export function durableStateHash(metadata = {}) {
   return fingerprint(JSON.stringify(buildCanonicalDurableSemanticState(metadata)));
@@ -480,11 +426,11 @@ export function deriveDurableWriteAccounting(before = {}, after = {}, counts = {
  */
 export function summarizeSessionMemoryChanges(before = {}, after = {}, limit = 32) {
   const beforeRecords = new Map((before?.sessionMemories ?? []).map((record) => {
-    const normalized = canonicalizeSessionMemory(record);
+    const normalized = projectCurrentSessionMemory(record);
     return [normalized.id, canonicalize(normalized)];
   }));
   const afterRecords = new Map((after?.sessionMemories ?? []).map((record) => {
-    const normalized = canonicalizeSessionMemory(record);
+    const normalized = projectCurrentSessionMemory(record);
     return [normalized.id, canonicalize(normalized)];
   }));
   const added = [...afterRecords.keys()].filter((id) => !beforeRecords.has(id)).sort();
@@ -521,7 +467,7 @@ export function summarizeSessionMemoryChanges(before = {}, after = {}, limit = 3
     added_record_ids: added.slice(0, limit), removed_record_ids: removed.slice(0, limit),
     changed_record_ids: changedRecordIds.slice(0, limit),
     reordered_only: !added.length && !removed.length && !changedRecordIds.length
-      && JSON.stringify((before?.sessionMemories ?? []).map((record) => canonicalizeSessionMemory(record).id)) !== JSON.stringify((after?.sessionMemories ?? []).map((record) => canonicalizeSessionMemory(record).id)),
+      && JSON.stringify((before?.sessionMemories ?? []).map((record) => projectCurrentSessionMemory(record).id)) !== JSON.stringify((after?.sessionMemories ?? []).map((record) => projectCurrentSessionMemory(record).id)),
     changed_path_count: changedPaths.length, changed_paths: changedPaths, changes_by_category: categories,
     accounted_mutation_count: 0, unaccounted_mutation_count: changedPaths.length,
     truncated: changedPaths.length >= limit || added.length > limit || removed.length > limit || changedRecordIds.length > limit,
@@ -531,12 +477,12 @@ export function summarizeSessionMemoryChanges(before = {}, after = {}, limit = 3
 /**
  * Privacy-safe Story Arc diff for automatic-stabilization diagnostics. Arc
  * content is deliberately never exported; only stable record labels and field
- * paths are retained so a legacy normalizer can be diagnosed precisely.
+ * paths are retained so a current-schema writer can be diagnosed precisely.
  */
 export function summarizeStoryArcChanges(before = {}, after = {}, limit = 32) {
-  const recordId = (record, index) => String(record?.id ?? `legacy-arc:${record?.ts ?? 0}:${fingerprint(record?.content ?? '').slice(-8)}:${index}`);
-  const beforeRecords = new Map((before?.storyArcs ?? []).map((record, index) => [recordId(record, index), canonicalize(canonicalizeStoryArc(record))]));
-  const afterRecords = new Map((after?.storyArcs ?? []).map((record, index) => [recordId(record, index), canonicalize(canonicalizeStoryArc(record))]));
+  const recordId = (record) => String(projectStoryArcSemantic(record).id);
+  const beforeRecords = new Map((before?.storyArcs ?? []).map((record) => [recordId(record), canonicalize(projectStoryArcSemantic(record))]));
+  const afterRecords = new Map((after?.storyArcs ?? []).map((record) => [recordId(record), canonicalize(projectStoryArcSemantic(record))]));
   const added = [...afterRecords.keys()].filter((id) => !beforeRecords.has(id)).sort();
   const removed = [...beforeRecords.keys()].filter((id) => !afterRecords.has(id)).sort();
   const changedRecordIds = [];
@@ -639,15 +585,12 @@ export function deriveIdempotenceResult(data = {}) {
   const unsafe = numeric(data.unsafe_merge_candidates_after_second_pass);
   const unresolved = numeric(data.unresolved_integrity_failures_after_second_pass);
   const unaccounted = numeric(data.unaccounted_mutations_after_second_pass);
-  // Persisted legacy/compatibility fields have previously disagreed with the
-  // actual durable hashes.  Whenever both hashes are present, the hashes are
-  // authoritative; only fall back to the older boolean for incomplete data.
   const durableHashesAvailable = typeof data.durable_state_hash_after_first_pass === 'string'
     && typeof data.durable_state_hash_after_second_pass === 'string';
   const durableChanged = durableHashesAvailable
-    ? data.durable_state_hash_after_first_pass !== data.durable_state_hash_after_second_pass
-    : data.durable_state_changed === true;
+    ? data.durable_state_hash_after_first_pass !== data.durable_state_hash_after_second_pass : null;
   const attentionReasons = [];
+  if (!durableHashesAvailable) attentionReasons.push('durable_state_hashes_missing');
   if (data.check_failed) attentionReasons.push('check_failed');
   if (secondLogical) attentionReasons.push('second_pass_logical_mutations_nonzero');
   if (secondPhysical) attentionReasons.push('second_pass_physical_mutations_nonzero');
@@ -656,11 +599,12 @@ export function deriveIdempotenceResult(data = {}) {
   if (unsafe) attentionReasons.push('unsafe_merge_candidate_remaining');
   if (unresolved) attentionReasons.push('unresolved_integrity_failure');
   if (unaccounted) attentionReasons.push('unaccounted_durable_mutation');
-  if (durableChanged && !secondLogical && !secondPhysical) attentionReasons.push('durable_state_hash_changed_without_accounted_mutation');
+  if (durableChanged === true && !secondLogical && !secondPhysical) attentionReasons.push('durable_state_hash_changed_without_accounted_mutation');
   if (data.result_internally_inconsistent) attentionReasons.push('result_internally_inconsistent');
   const idempotent = attentionReasons.length === 0;
   const firstPassMaintenance = numeric(data.first_pass_logical_mutations) > 0 || numeric(data.first_pass_physical_mutations) > 0;
-  const metadataOnlyChanges = !durableChanged && (data.diagnostic_metadata_changed === true || data.revision_metadata_changed === true);
+  const metadataOnlyChanges = durableChanged === false
+    && (data.diagnostic_metadata_changed === true || data.revision_metadata_changed === true);
   return {
     ...data,
     idempotence_result_schema_version: 2,
@@ -686,9 +630,12 @@ export function deriveIdempotenceResult(data = {}) {
   };
 }
 
-/** Normalize legacy strict-full-hash results without losing their original value. */
-export function normalizeIdempotenceResult(result = {}) {
-  const legacy = result.idempotence_result_schema_version !== 2;
+/** Projects one current-schema result through the authoritative verdict rules. */
+export function projectIdempotenceResult(result = {}) {
+  if (result.idempotence_result_schema_version !== 2) throw Object.assign(
+    new Error('Stored idempotence results use an unsupported schema. Run a new check.'), {
+      code: 'SME_FRESH_START_REQUIRED', reason_code: 'idempotence_result_schema_mismatch',
+    });
   const initial = deriveIdempotenceResult(result);
   const lifecycle = result.idempotence_result_lifecycle;
   const lifecycleValues = lifecycle && typeof lifecycle === 'object'
@@ -701,11 +648,11 @@ export function normalizeIdempotenceResult(result = {}) {
   const normalized = lifecycleMismatch
     ? deriveIdempotenceResult({ ...result, result_internally_inconsistent: true })
     : initial;
-  const falseNegative = result.idempotent === false && normalized.idempotent === true;
+  const storedVerdictMismatch = typeof result.idempotent === 'boolean'
+    && result.idempotent !== normalized.idempotent;
   return {
     ...normalized,
-    ...(legacy ? { legacy_idempotent_result: result.idempotent, migrated_from_full_hash_semantics: falseNegative } : {}),
-    idempotence_false_negative_detected: falseNegative,
+    stored_verdict_mismatch: storedVerdictMismatch,
     idempotence_result_lifecycle_mismatch: lifecycleMismatch,
   };
 }

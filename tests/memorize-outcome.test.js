@@ -17,7 +17,7 @@ test('canonical outcomes carry one stable reason and next action', () => {
   });
   assert.equal(isMemorizeOutcome(outcome), true);
   assert.equal(outcome.resumable, true);
-  assert.equal(outcome.next_action, 'resume_exact_obligation');
+  assert.equal(outcome.next_action, 'dispatch_provider_request');
   assert.equal(outcome.obligation_id, 'session:1-20');
   assert.equal(Object.isFrozen(outcome), true);
 });

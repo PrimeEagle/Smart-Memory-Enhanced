@@ -106,7 +106,7 @@ export function buildAutomaticRecoveryFullChatReplay(messageCount = 9434, chunkS
     events.push({ obligation_id, current_state: 'partial_records_committed',
       downstream_validation_result: 'accepted_partial_records', persistence_result: 'partial_records_committed',
       coverage_result: 'pending', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-      next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      next_eligible_action: 'dispatch_provider_request',
       recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair' });
     events.push({ obligation_id, current_state: 'durably_committed', parser_result: 'recovered_fragment',
       downstream_validation_result: 'accepted', persistence_result: 'committed_without_duplicate_partial_records',
@@ -175,7 +175,7 @@ export function replayExhaustedSessionRecoveryResume({ completeRemainingChat = f
     current_state: 'pending_recovery', parser_result: 'one accepted, two rejected',
     downstream_validation_result: 'accepted_partial_records', persistence_result: 'partial_records_committed',
     coverage_result: 'pending', exact_reason_code: 'automatic_partial_recovery_exhausted',
-    next_eligible_action: 'recover_unresolved_partial_output_fragments',
+    next_eligible_action: 'dispatch_provider_request',
     recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'bounded_recovery_exhausted',
     provider_attempt_lineage: ['provider-188', 'provider-189', 'provider-190', 'provider-191', 'provider-192'],
     metrics: { parser_accepted_records: 1, persisted_records: 1, parser_rejected_fragments: 2,
@@ -188,7 +188,7 @@ export function replayExhaustedSessionRecoveryResume({ completeRemainingChat = f
   const original = beginProviderAttempt(metadata, { logical_obligation_id: sessionId, tier: 'session',
     request_kind: 'original', source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint });
   finishProviderAttempt(metadata, original, { terminal_outcome: 'completed', notice_reason: 'partial_valid_output' });
-  markProviderPartialRecordsPersisted(metadata, sessionId, 1, fingerprint, [acceptedRecordId]);
+  markProviderPartialRecordsPersisted(metadata, sessionId, fingerprint, [acceptedRecordId]);
   stageProviderRejectedFragments(metadata, sessionId, fingerprint, fragmentIds.map((fragment_id, index) => ({
     fragment_id, raw: `sanitized-malformed-fragment-${index + 1}`,
     reason_codes: [index ? 'multiple_assignment_delimiters' : 'malformed_entity_type_pair'],
@@ -210,8 +210,7 @@ export function replayExhaustedSessionRecoveryResume({ completeRemainingChat = f
     path: '$.replay_harness.ledger', stage: 'replay_harness_projection',
     operation_type: 'memorize_replay_harness',
   }));
-  const repaired = reconcileMemorizeRunningObligations(
-    ledger, metadata.live_memory_health.provider_attempt_audit);
+  reconcileMemorizeRunningObligations(ledger, metadata.live_memory_health.provider_attempt_audit);
   const afterRepair = projectMemorizeObligationLedger(ledger);
   const runtimeAfterRepair = reconcileMemorizeProviderRuntime(
     ledger, metadata.live_memory_health.provider_attempt_audit);
@@ -224,6 +223,11 @@ export function replayExhaustedSessionRecoveryResume({ completeRemainingChat = f
     request_kind: 'fragment_decision_regeneration', recovery_stage: 'fragment_decision_regeneration',
     recovery_of_attempt_id: original.attempt_id, resumed_pending_obligation: true,
     source_range: { start: 100, end: 119 }, source_fingerprint: fingerprint });
+  transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
+    current_state: 'provider_registered', provider_attempt_id: focused.attempt_id,
+    exact_reason_code: 'provider_attempt_durably_registered',
+    persistence_result: 'not_committed', metrics: { persisted_records: 1 },
+  });
   transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
     current_state: 'provider_running', provider_attempt_id: focused.attempt_id,
     exact_reason_code: 'provider_request_in_progress', recovery_stage: 'fragment_decision_regeneration',
@@ -282,8 +286,9 @@ export async function replayPartialSessionResume({
   const sessionId = 'session:chat:0-19:fnv1a-39c6c9f';
   const owners = ['Alex Mercer', 'Aster Graves', 'Lillian Kraft', 'Lisette Dumont', 'Nyx Watson', 'Valerie Erikssen'];
   const ledger = createMemorizeObligationLedger(logicalRunId, 1);
-  const checkpoint = { next_source_offset: 0, source_message_count: 9434, operational_pause: null,
-    run_manifest: { logical_run_id: logicalRunId, total_attempt_count: 1, obligation_ledger: ledger } };
+  const checkpoint = { next_source_offset: 0, operational_pause: null,
+    run_manifest: { logical_run_id: logicalRunId, total_attempt_count: 1,
+      source_window: { message_count: 9434 }, obligation_ledger: ledger } };
   const persisted = new Set();
   const providerRequests = [];
   const transactionHistory = [];
@@ -336,7 +341,7 @@ export async function replayPartialSessionResume({
       current_state: 'pending_recovery', downstream_validation_result: 'accepted_partial_records',
       persistence_result: 'partial_records_committed', coverage_result: 'pending',
       exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-      next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      next_eligible_action: 'dispatch_provider_request',
       lifecycle: {
         downstream_accepted_candidate_ids: ['candidate:one', 'candidate:two', 'candidate:three'],
         durably_persisted_record_ids: ['session:one', 'session:two', 'session:three'],
@@ -349,12 +354,12 @@ export async function replayPartialSessionResume({
     const pauseError = Object.assign(new Error('partial output pending'), {
       code: 'SME_DOWNSTREAM_VALIDATION_PENDING',
       sme_request_diagnostics: { pause_reason: 'partial_valid_output_has_unresolved_fragments',
-        next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments' },
+        next_eligible_recovery_action: 'dispatch_provider_request' },
     });
     recordMemorizeOperationalPause(runtime, { operationalPauses: [] }, 'Session downstream validation pending', pauseError, 'session');
     recordMemorizeControllerExit(ledger, buildMemorizeControllerExit(runtime, {
       reason_code: 'partial_valid_output_has_unresolved_fragments', classification: 'downstream_validation_pending',
-      resumable: true, obligation_id: sessionId, next_eligible_action: 'recover_unresolved_partial_output_fragments', at: 5,
+      resumable: true, obligation_id: sessionId, next_eligible_action: 'dispatch_provider_request', at: 5,
     }));
   } catch (error) {
     captureMemorizePrimaryFailure(runtime, error);
@@ -388,7 +393,7 @@ export async function replayPartialSessionResume({
       captureMemorizePrimaryFailure(resumeRuntime, Object.assign(new Error('scripted commit failure'), { code: 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED' }));
       recordMemorizeControllerExit(ledger, buildMemorizeControllerExit(resumeRuntime, {
         reason_code: 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED', classification: 'transaction_commit_failure', resumable: true,
-        obligation_id: sessionId, next_eligible_action: 'recover_unresolved_partial_output_fragments', at: 7,
+        obligation_id: sessionId, next_eligible_action: 'dispatch_provider_request', at: 7,
       }));
     } else {
       transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
@@ -432,8 +437,9 @@ export async function replayAutomaticPartialSessionRecovery({
   const sessionId = 'session:chat:20-39:fnv1a-eeb22053';
   const owners = ['Alex Mercer', 'Aster Graves', 'Lillian Kraft', 'Lisette Dumont', 'Nyx Watson', 'Valerie Erikssen'];
   const ledger = createMemorizeObligationLedger(logicalRunId, 1);
-  const checkpoint = { next_source_offset: 20, source_message_count: 9434,
-    run_manifest: { logical_run_id: logicalRunId, total_attempt_count: 1, obligation_ledger: ledger } };
+  const checkpoint = { next_source_offset: 20,
+    run_manifest: { logical_run_id: logicalRunId, total_attempt_count: 1,
+      source_window: { message_count: 9434 }, obligation_ledger: ledger } };
   const records = new Set(['session:20-39:one', 'session:20-39:two', 'session:20-39:three']);
   const providerRequests = [];
   const transaction = { transaction_id: 'automatic-tx', state: 'active', terminal_disposition: null };
@@ -451,7 +457,7 @@ export async function replayAutomaticPartialSessionRecovery({
   }, { current_state: 'pending_recovery', parser_result: 'partial',
     downstream_validation_result: 'accepted_partial_records', persistence_result: 'partial_records_committed',
     coverage_result: 'pending', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-    next_eligible_action: 'recover_unresolved_partial_output_fragments',
+    next_eligible_action: 'dispatch_provider_request',
     recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair',
     metrics: { parser_accepted_records: 3, parser_rejected_fragments: 1,
       persisted_records: 3, unresolved_fragment_ids: ['session-fragment-3-fnv1a-replay'] }, at: 3 });
@@ -464,7 +470,7 @@ export async function replayAutomaticPartialSessionRecovery({
     transaction.terminal_disposition = 'rolled_back';
     recordMemorizeControllerExit(ledger, buildMemorizeControllerExit(runtime, {
       classification: 'page_interrupted', reason_code: 'page_interrupted_during_automatic_recovery',
-      resumable: true, obligation_id: sessionId, next_eligible_action: 'recover_unresolved_partial_output_fragments', at: 4,
+      resumable: true, obligation_id: sessionId, next_eligible_action: 'dispatch_provider_request', at: 4,
     }));
     return { checkpoint, ledger, transaction, records: [...records], providerRequests,
       projection: projectMemorizeObligationLedger(ledger), interrupted: true, nextChunkStarted: false };
@@ -496,7 +502,7 @@ export async function replayAutomaticPartialSessionRecovery({
       : manualCancel ? 'manual_cancel' : 'automatic_partial_recovery_exhausted';
     transitionMemorizeObligation(ledger, ledger.obligations[sessionId], {
       current_state: manualCancel ? 'pending_recovery' : 'operationally_paused',
-      exact_reason_code: reason, next_eligible_action: 'recover_unresolved_partial_output_fragments',
+      exact_reason_code: reason, next_eligible_action: 'dispatch_provider_request',
       recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: stage, at: 5,
     });
     checkpoint.automatic_recovery = { ...checkpoint.automatic_recovery,
@@ -515,7 +521,7 @@ export async function replayAutomaticPartialSessionRecovery({
     reason_code: nextChunkStarted ? 'automatic_partial_recovery_completed'
       : checkpoint.automatic_recovery.pause_reason,
     resumable: !nextChunkStarted && !manualCancel, obligation_id: nextChunkStarted ? null : sessionId,
-    next_eligible_action: nextChunkStarted ? null : 'recover_unresolved_partial_output_fragments', at: 6,
+    next_eligible_action: nextChunkStarted ? null : 'dispatch_provider_request', at: 6,
   }));
   return { checkpoint, ledger, transaction, records: [...records], providerRequests,
     projection: projectMemorizeObligationLedger(ledger), interrupted: false, nextChunkStarted,

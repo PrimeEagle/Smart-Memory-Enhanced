@@ -54,31 +54,14 @@ export async function finalizeMemorizeController(input = {}) {
     repair,
   };
   if (checkpoint) {
-    checkpoint.authoritative_recovery = authority;
-    checkpoint.resume_eligibility = {
-      schema_version: 2,
-      eligible: authority.resume_eligible,
-      mode: authority.resume_eligible ? 'provider_resume' : 'blocked',
-      reason_code: authority.resume_eligible ? 'exact_recovery_action_available'
-        : authority.resume_blockers[0]?.reason_code ?? 'no_executable_recovery_action',
-      next_eligible_action: authority.next_executable_action,
-      obligation_id: authority.pending_obligation?.obligation_id ?? null,
-      provider_call_required: authority.provider_call_permitted,
-      evaluated_at: Date.now(),
-    };
     checkpoint.status = authority.resume_eligible
       ? 'awaiting_manual_resume' : authority.state === 'completed'
         ? 'completed' : authority.state === 'terminal_failure'
           ? 'terminal_failure' : 'blocked_reconciliation_required';
-    checkpoint.controller_failure ??= primary ? { schema_version: 1, ...primary,
-      recorded_at: Date.now() } : null;
-    checkpoint.secondary_finalization_failures = secondary.slice(-16);
     checkpoint.updated_at = Date.now();
   }
   if (input.record_exit) await safe('controller_exit_record', () => input.record_exit(exit));
-  if (checkpoint) checkpoint.secondary_finalization_failures = secondary.slice(-16);
   if (input.persist_diagnostics) await safe('diagnostic_persistence', input.persist_diagnostics);
-  if (checkpoint) checkpoint.secondary_finalization_failures = secondary.slice(-16);
   exit.secondary_finalization_failures = secondary;
   return { exit, authority, checkpoint, secondary_failures: secondary };
 }

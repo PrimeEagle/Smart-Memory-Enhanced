@@ -1,15 +1,18 @@
 import { projectMemorizeObligationLedger } from './memorize-obligation-ledger.js';
 import { ensureMemorizeExecutionAggregate } from './memorize-execution-kernel.js';
 import { cloneSerializableDomain } from './serializable-domain.js';
+import { createUnresolvedObligationSummary } from './memorize-domain-dtos.js';
+
+export const CATCH_UP_RUN_MANIFEST_SCHEMA_VERSION = 3;
 
 /** Pure validation for durable, crash-safe Memorize Chat checkpoints. */
 export function normalizeCatchUpCheckpoint(checkpoint) {
   if (!checkpoint || !['in_progress', 'awaiting_manual_resume', 'blocked_recovery_change_required']
     .includes(checkpoint.status)) return null;
-  const total = Number(checkpoint.source_message_count);
+  const total = Number(checkpoint.run_manifest?.source_window?.message_count);
   const offset = Number(checkpoint.next_source_offset);
   if (!Number.isInteger(total) || total < 0 || !Number.isInteger(offset) || offset < 0 || offset > total) return null;
-  return { ...checkpoint, source_message_count: total, next_source_offset: offset };
+  return { ...checkpoint, next_source_offset: offset };
 }
 
 /**
@@ -20,18 +23,19 @@ export function normalizeCatchUpCheckpoint(checkpoint) {
 export function validateCatchUpResumeSource(checkpoint, messages = []) {
   const normalized = normalizeCatchUpCheckpoint(checkpoint);
   if (!normalized) return { valid: false, reason: 'missing_or_invalid_checkpoint' };
-  if (messages.length < normalized.source_message_count) {
+  const sourceMessageCount = normalized.run_manifest.source_window.message_count;
+  if (messages.length < sourceMessageCount) {
     return { valid: false, reason: 'source_window_shorter_than_checkpoint' };
   }
-  if (normalized.source_message_count > 0) {
-    const boundary = messages[normalized.source_message_count - 1];
-    if (boundary?.__sme_original_index !== normalized.source_last_original_index) {
+  if (sourceMessageCount > 0) {
+    const boundary = messages[sourceMessageCount - 1];
+    if (boundary?.__sme_original_index !== normalized.run_manifest.source_window.source_end_index) {
       return { valid: false, reason: 'source_window_boundary_changed' };
     }
   }
   return {
     valid: true,
-    source_message_count: normalized.source_message_count,
+    source_message_count: sourceMessageCount,
     resume_offset: normalized.next_source_offset,
   };
 }
@@ -48,7 +52,7 @@ export function invalidatePrematureFinalization(checkpoint) {
   }
   const summary = summarizeCatchUpRunManifest(checkpoint.run_manifest);
   const sourceIncomplete = Number(checkpoint.next_source_offset ?? 0)
-    < Number(checkpoint.source_message_count ?? 0);
+    < Number(checkpoint.run_manifest?.source_window?.message_count ?? 0);
   const tierIncomplete = Object.values(summary.cumulative_tier_coverage ?? {})
     .some((tier) => tier.enabled === true && tier.coverage_complete !== true);
   if (!sourceIncomplete && !tierIncomplete) return { invalidated: false, phase_keys: [] };
@@ -81,8 +85,6 @@ export function invalidatePrematureFinalization(checkpoint) {
 const MAX_CATCH_UP_ATTEMPTS = 8;
 const MAX_COMMITTED_RANGES = 512;
 const MAX_COMMITTED_CHUNK_DETAILS = 512;
-const MAX_TIER_OBLIGATIONS = 1024;
-const MAX_OWNER_OBLIGATIONS = 4096;
 
 function number(value, fallback = 0) {
   const parsed = Number(value);
@@ -127,106 +129,6 @@ function gapsForRanges(ranges, total) {
   return gaps;
 }
 
-function sameChunk(left, right) {
-  return left?.start_offset === right?.start_offset
-    && left?.end_offset === right?.end_offset
-    && left?.source_start_index === right?.source_start_index
-    && left?.source_end_index === right?.source_end_index;
-}
-
-function terminalTierOutcome(outcome = {}) {
-  return outcome.safely_committed === true || outcome.complete === true
-    || outcome.not_applicable === true || outcome.alternative_resolved === true;
-}
-
-function obligationKey(tier, range) {
-  return `${tier}:${range.start_offset}-${range.end_offset}`;
-}
-
-function ownerObligationKey(owner, range) {
-  return `longterm:${String(owner ?? '').trim().toLowerCase()}:${range.start_offset}-${range.end_offset}`;
-}
-
-/** Returns one safely committed Long-Term owner/range obligation. */
-export function getCatchUpOwnerRangeStatus(manifest, owner, range) {
-  const normalized = normalizeRange(range);
-  if (!normalized || !String(owner ?? '').trim()) return null;
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
-  return next.owner_obligations.find((entry) => entry.key === ownerObligationKey(owner, normalized)) ?? null;
-}
-
-/** Records one owner result; callers persist it with the enclosing transaction. */
-export function recordCatchUpOwnerRange(manifest, owner, range, {
-  safelyCommitted = false,
-  sourceFingerprint = null,
-  terminalOutcome = safelyCommitted ? 'safely_committed' : 'pending',
-  now = Date.now(),
-} = {}) {
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
-  const normalized = normalizeRange(range);
-  if (!normalized || !String(owner ?? '').trim()) return next;
-  const key = ownerObligationKey(owner, normalized);
-  const prior = next.owner_obligations.find((entry) => entry.key === key);
-  const entry = {
-    key,
-    tier: 'longterm',
-    owner: String(owner),
-    ...normalized,
-    source_fingerprint: sourceFingerprint ?? prior?.source_fingerprint ?? null,
-    safely_committed: safelyCommitted || prior?.safely_committed === true,
-    terminal_outcome: safelyCommitted ? 'safely_committed' : terminalOutcome,
-    updated_at: now,
-  };
-  next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
-    .slice(-MAX_OWNER_OBLIGATIONS);
-  // Compatibility presentation only. Canonical lifecycle mutations are owned
-  // by the Memorize lifecycle coordinator and never flow back from this array.
-  return next;
-}
-
-/**
- * Revokes a legacy owner completion only when newer durable provider evidence
- * proves that the same owner/range still has a terminal unresolved obligation.
- */
-export function invalidateCatchUpOwnerRange(manifest, owner, range, {
-  reasonCode = 'terminal_provider_obligation_unresolved', now = Date.now(),
-} = {}) {
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
-  const normalized = normalizeRange(range);
-  if (!normalized || !String(owner ?? '').trim()) return next;
-  const key = ownerObligationKey(owner, normalized);
-  const prior = next.owner_obligations.find((entry) => entry.key === key);
-  if (!prior) return next;
-  const entry = {
-    ...prior,
-    safely_committed: false,
-    terminal_outcome: 'pending',
-    reason_code: reasonCode,
-    updated_at: now,
-  };
-  next.owner_obligations = [...next.owner_obligations.filter((item) => item.key !== key), entry]
-    .slice(-MAX_OWNER_OBLIGATIONS);
-  // Compatibility presentation only. Revocation cannot mutate canonical truth.
-  return next;
-}
-
-/** Returns the durable state of one tier/range without exposing source text. */
-export function getCatchUpTierRangeStatus(manifest, tier, range) {
-  const normalized = normalizeRange(range);
-  if (!normalized || !['longterm', 'session'].includes(tier)) return null;
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
-  return next.tier_obligations.find((entry) => entry.key === obligationKey(tier, normalized)) ?? null;
-}
-
-/** True when an older range-only manifest already covers the entire range. */
-export function isCatchUpTierRangeSafelyCovered(manifest, tier, range) {
-  const normalized = normalizeRange(range);
-  if (!normalized || !['longterm', 'session'].includes(tier)) return false;
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
-  return mergeRanges(next.tier_coverage?.[tier]?.committed_ranges ?? [])
-    .some((covered) => covered.start_offset <= normalized.start_offset && covered.end_offset >= normalized.end_offset);
-}
-
 function normalizeAttempt(attempt) {
   const ranges = mergeRanges(attempt?.current_attempt_ranges ?? []);
   const chunksAvailable = Array.isArray(attempt?.current_attempt_chunks);
@@ -240,29 +142,38 @@ function normalizeAttempt(attempt) {
     current_attempt_chunks: chunks,
     current_attempt_chunk_count: chunksAvailable ? Number(attempt?.current_attempt_chunk_count ?? chunks.length) : null,
     current_attempt_chunk_count_available: chunksAvailable,
-    current_attempt_chunk_count_reason: chunksAvailable ? null : 'legacy_chunk_detail_unavailable',
+    current_attempt_chunk_count_reason: chunksAvailable ? null : 'committed_chunk_detail_unavailable',
   };
 }
 
 /** Creates or normalizes the bounded, privacy-safe manifest for one logical Memorize Chat run. */
 export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
-  const prior = checkpoint?.run_manifest && typeof checkpoint.run_manifest === 'object' ? checkpoint.run_manifest : {};
-  const sourceMessageCount = number(sourceWindow.source_message_count ?? prior.source_window?.message_count ?? checkpoint?.source_message_count, 0);
+  const priorValue = checkpoint?.run_manifest;
+  if (priorValue && typeof priorValue === 'object'
+    && Object.keys(priorValue).length > 0
+    && priorValue.schema_version !== CATCH_UP_RUN_MANIFEST_SCHEMA_VERSION) {
+    const error = new Error('Memorize Chat run manifest does not use the current schema. Use Fresh Start.');
+    error.code = 'SME_CATCH_UP_RUN_MANIFEST_SCHEMA_UNSUPPORTED';
+    throw error;
+  }
+  const prior = priorValue && typeof priorValue === 'object' ? priorValue : {};
+  const sourceMessageCount = number(sourceWindow.message_count
+    ?? prior.source_window?.message_count, 0);
   const manifest = {
-    schema_version: 3,
+    schema_version: CATCH_UP_RUN_MANIFEST_SCHEMA_VERSION,
     logical_run_id: prior.logical_run_id ?? checkpoint?.run_id ?? null,
     source_window: {
       message_count: sourceMessageCount,
       source_start_index: Number.isInteger(Number(sourceWindow.source_start_index)) ? Number(sourceWindow.source_start_index) : (prior.source_window?.source_start_index ?? null),
-      source_end_index: Number.isInteger(Number(sourceWindow.source_end_index)) ? Number(sourceWindow.source_end_index) : (prior.source_window?.source_end_index ?? checkpoint?.source_last_original_index ?? null),
+      source_end_index: Number.isInteger(Number(sourceWindow.source_end_index)) ? Number(sourceWindow.source_end_index) : (prior.source_window?.source_end_index ?? null),
       fingerprint: sourceWindow.fingerprint ?? prior.source_window?.fingerprint ?? null,
     },
     attempts: Array.isArray(prior.attempts) ? prior.attempts.map(normalizeAttempt).slice(-MAX_CATCH_UP_ATTEMPTS) : [],
     total_attempt_count: Math.max(number(prior.total_attempt_count), Array.isArray(prior.attempts) ? prior.attempts.length : 0),
     total_resumption_count: Math.max(number(prior.total_resumption_count), Math.max(0, (Array.isArray(prior.attempts) ? prior.attempts.length : 0) - 1)),
     committed_ranges: mergeRanges(prior.committed_ranges ?? []).slice(-MAX_COMMITTED_RANGES),
-    // Schema v1 retained only coalesced coverage ranges. Those ranges cannot
-    // be reverse-engineered into real extraction chunks, so never relabel them.
+    // Coalesced coverage ranges cannot be reverse-engineered into extraction
+    // chunks, so unavailable chunk detail remains explicit.
     committed_chunks: Array.isArray(prior.committed_chunks)
       ? prior.committed_chunks.map(normalizeRange).filter(Boolean).slice(-MAX_COMMITTED_CHUNK_DETAILS)
       : [],
@@ -270,39 +181,11 @@ export function ensureCatchUpRunManifest(checkpoint, sourceWindow = {}) {
       ? Number(prior.cumulative_chunk_count ?? prior.committed_chunks.length)
       : null,
     cumulative_chunk_count_available: Array.isArray(prior.committed_chunks),
-    cumulative_chunk_count_reason: Array.isArray(prior.committed_chunks) ? null : 'legacy_chunk_detail_unavailable',
+    cumulative_chunk_count_reason: Array.isArray(prior.committed_chunks) ? null : 'committed_chunk_detail_unavailable',
     tier_coverage: Object.fromEntries(['longterm', 'session'].map((tier) => [tier, {
       enabled: prior.tier_coverage?.[tier]?.enabled ?? null,
       committed_ranges: mergeRanges(prior.tier_coverage?.[tier]?.committed_ranges ?? []).slice(-MAX_COMMITTED_RANGES),
     }])),
-    tier_obligations: Array.isArray(prior.tier_obligations) ? prior.tier_obligations
-      .map((entry) => {
-        const range = normalizeRange(entry);
-        if (!range || !['longterm', 'session'].includes(entry?.tier)) return null;
-        return {
-          key: obligationKey(entry.tier, range), tier: entry.tier, ...range,
-          enabled: entry.enabled !== false, applicable: entry.applicable !== false,
-          safely_committed: entry.safely_committed === true,
-          terminal_outcome: entry.terminal_outcome ?? (entry.safely_committed ? 'safely_committed' : 'pending'),
-          reason_code: entry.reason_code ?? null,
-          retry_replay_count: number(entry.retry_replay_count),
-          attempt_number: number(entry.attempt_number) || null,
-          checkpoint_boundary: number(entry.checkpoint_boundary) || null,
-        };
-      }).filter(Boolean).slice(-MAX_TIER_OBLIGATIONS) : [],
-    owner_obligations: Array.isArray(prior.owner_obligations) ? prior.owner_obligations
-      .map((entry) => {
-        const range = normalizeRange(entry);
-        if (!range || entry?.tier !== 'longterm' || !String(entry?.owner ?? '').trim()) return null;
-        return {
-          key: ownerObligationKey(entry.owner, range), tier: 'longterm', owner: String(entry.owner), ...range,
-          source_fingerprint: entry.source_fingerprint ?? null,
-          safely_committed: entry.safely_committed === true,
-          terminal_outcome: entry.terminal_outcome ?? (entry.safely_committed ? 'safely_committed' : 'pending'),
-          reason_code: entry.reason_code ?? null,
-          updated_at: number(entry.updated_at) || null,
-        };
-      }).filter(Boolean).slice(-MAX_OWNER_OBLIGATIONS) : [],
     checkpoint_transitions: Array.isArray(prior.checkpoint_transitions) ? prior.checkpoint_transitions.slice(-24) : [],
     terminal_status: prior.terminal_status ?? 'in_progress',
     terminal_reason_code: prior.terminal_reason_code ?? null,
@@ -345,63 +228,6 @@ export function beginCatchUpAttempt(manifest, { type = 'initial', resumeOffset =
   return next;
 }
 
-/** Records a chunk only after its transaction has committed durably. */
-export function recordCommittedCatchUpRange(manifest, range, { now = Date.now(), tierOutcomes = {}, attemptMetrics = {} } = {}) {
-  const next = ensureCatchUpRunManifest({ run_manifest: manifest });
-  const normalized = normalizeRange(range);
-  if (!normalized) return next;
-  const enabledOutcomes = Object.values(tierOutcomes).filter((outcome) => outcome?.enabled === true && outcome?.applicable !== false);
-  const sourceSafelyCommitted = enabledOutcomes.every(terminalTierOutcome);
-  if (sourceSafelyCommitted) next.committed_ranges = mergeRanges([...next.committed_ranges, normalized]).slice(-MAX_COMMITTED_RANGES);
-  const attempt = next.attempts.at(-1);
-  if (attempt && sourceSafelyCommitted) {
-    attempt.current_attempt_ranges = mergeRanges([...(attempt.current_attempt_ranges ?? []), normalized]).slice(-MAX_COMMITTED_RANGES);
-    attempt.current_attempt_range_count = attempt.current_attempt_ranges.length;
-    if (Array.isArray(attempt.current_attempt_chunks)) {
-      const isNewChunk = !attempt.current_attempt_chunks.some((chunk) => sameChunk(chunk, normalized));
-      if (isNewChunk) attempt.current_attempt_chunks = [...attempt.current_attempt_chunks, normalized].slice(-MAX_COMMITTED_CHUNK_DETAILS);
-      if (isNewChunk) attempt.current_attempt_chunk_count = Number(attempt.current_attempt_chunk_count ?? 0) + 1;
-    }
-    attempt.request_counters = {
-      retry_count: Number(attemptMetrics.retry_count ?? attempt.request_counters?.retry_count ?? 0),
-      provider_failure_count: Number(attemptMetrics.provider_failure_count ?? attempt.request_counters?.provider_failure_count ?? 0),
-    };
-    attempt.updated_at = now;
-  }
-  if (next.cumulative_chunk_count_available && sourceSafelyCommitted) {
-    const isNewChunk = !next.committed_chunks.some((chunk) => sameChunk(chunk, normalized));
-    if (isNewChunk) next.committed_chunks = [...next.committed_chunks, normalized].slice(-MAX_COMMITTED_CHUNK_DETAILS);
-    if (isNewChunk) next.cumulative_chunk_count = Number(next.cumulative_chunk_count ?? 0) + 1;
-  }
-  for (const tier of ['longterm', 'session']) {
-    const outcome = tierOutcomes[tier];
-    if (!outcome) continue;
-    next.tier_coverage[tier].enabled = Boolean(outcome.enabled);
-    const safelyCommitted = terminalTierOutcome(outcome);
-    const key = obligationKey(tier, normalized);
-    const prior = next.tier_obligations.find((entry) => entry.key === key);
-    const record = {
-      key, tier, ...normalized, enabled: Boolean(outcome.enabled), applicable: outcome.applicable !== false,
-      safely_committed: safelyCommitted,
-      terminal_outcome: outcome.not_applicable ? 'not_applicable' : outcome.alternative_resolved ? 'alternative_resolved' : safelyCommitted ? 'safely_committed' : 'pending',
-      reason_code: outcome.reason_code ?? (safelyCommitted ? null : 'not_safely_committed'),
-      retry_replay_count: Number(prior?.retry_replay_count ?? 0) + (prior ? 1 : 0),
-      attempt_number: attempt?.attempt_number ?? null,
-      checkpoint_boundary: normalized.end_offset,
-    };
-    next.tier_obligations = [...next.tier_obligations.filter((entry) => entry.key !== key), record].slice(-MAX_TIER_OBLIGATIONS);
-    // Compatibility presentation only. This function must not create or
-    // settle authoritative obligations from projected tier outcomes.
-    if (safelyCommitted && outcome.enabled) {
-      next.tier_coverage[tier].committed_ranges = mergeRanges([
-        ...next.tier_coverage[tier].committed_ranges,
-        normalized,
-      ]).slice(-MAX_COMMITTED_RANGES);
-    }
-  }
-  return next;
-}
-
 export function finalizeCatchUpRunManifest(manifest, { status, reasonCode = null, now = Date.now(), attemptMetrics = {} } = {}) {
   const next = ensureCatchUpRunManifest({ run_manifest: manifest });
   const attempt = next.attempts.at(-1);
@@ -433,15 +259,13 @@ export function summarizeCatchUpRunManifest(manifest) {
     const coverage = next.tier_coverage?.[tier] ?? {};
     const ranges = mergeRanges(coverage.committed_ranges ?? []);
     const tierGaps = coverage.enabled ? gapsForRanges(ranges, total) : [];
-    const obligations = next.tier_obligations.filter((entry) => entry.tier === tier && entry.enabled && entry.applicable);
-    const pendingObligations = obligations.filter((entry) => !entry.safely_committed);
     return [tier, {
       enabled: coverage.enabled,
       committed_ranges: ranges,
       committed_count: ranges.reduce((sum, range) => sum + range.message_count, 0),
       coverage_complete: coverage.enabled === false ? null : tierGaps.length === 0,
       remaining_gaps: tierGaps,
-      pending_obligations: pendingObligations,
+      pending_obligations: [],
     }];
   }));
   const attemptStartTransitions = next.checkpoint_transitions.filter((entry) => entry?.state === 'in_progress');
@@ -449,15 +273,11 @@ export function summarizeCatchUpRunManifest(manifest) {
     const normalized = normalizeAttempt(attempt);
     const matchingTransitionIndex = next.checkpoint_transitions.findIndex((entry) => entry === attemptStartTransitions[attemptIndex]);
     const precedingReason = matchingTransitionIndex > 0 ? next.checkpoint_transitions[matchingTransitionIndex - 1]?.reason_code : null;
-    const legacyMisclassifiedPhaseResume = normalized.type === 'resumed_after_manual_cancel'
-      && precedingReason === 'finalization_phase_failed';
     const started = Number(normalized.started_at);
     const ended = Number(normalized.ended_at);
     return {
       ...normalized,
-      type: legacyMisclassifiedPhaseResume ? 'resumed_after_phase_failure' : normalized.type,
-      legacy_attempt_type: legacyMisclassifiedPhaseResume ? normalized.type : null,
-      attempt_type_migrated: legacyMisclassifiedPhaseResume,
+      type: normalized.type,
       preceding_terminal_reason: precedingReason,
       timing_scope: 'current_attempt',
       duration_ms: Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : null,
@@ -517,8 +337,6 @@ export function summarizeCatchUpRunManifest(manifest) {
     } : null,
     cumulative_request_counters_available: allRequestCountersAvailable,
     cumulative_tier_coverage: tierCoverage,
-    longterm_owner_obligations: next.owner_obligations,
-    longterm_owner_obligation_count: next.owner_obligations.length,
     all_original_source_messages_covered: total === 0 ? true : gaps.length === 0,
     full_cumulative_coverage_confirmed: (total === 0 ? true : gaps.length === 0)
       && Object.values(tierCoverage).every((tier) => tier.enabled !== true || tier.coverage_complete === true),
@@ -535,15 +353,16 @@ export function summarizeCatchUpRunManifest(manifest) {
 export function summarizeCatchUpCheckpoint(checkpoint) {
   if (!checkpoint || typeof checkpoint !== 'object') return { available: false, resumable: false, reason_code: 'no_checkpoint' };
   const normalized = normalizeCatchUpCheckpoint(checkpoint);
-  const explicitlyBlocked = checkpoint.recovery_blocked?.blocked === true;
   const obligationProjection = projectMemorizeObligationLedger(
     checkpoint.run_manifest?.obligation_ledger);
-  const authoritativeObligationsAvailable = obligationProjection.obligation_count > 0;
-  const projectedPendingCount = authoritativeObligationsAvailable
-    ? obligationProjection.pending_obligation_count
-    : Number(checkpoint.recovery_blocked?.unresolved_obligation_count ?? 0);
+  const projectedPendingCount = obligationProjection.pending_obligation_count;
   const exactPending = obligationProjection.next_eligible_obligation;
-  const sourceMessageCount = Number(checkpoint.source_message_count ?? 0);
+  const blockedObligations = obligationProjection.pending_obligations
+    .filter((item) => ['blocked', 'terminal_failed'].includes(item.current_state)
+      || !item.next_eligible_action)
+    .slice(-16)
+    .map(createUnresolvedObligationSummary);
+  const sourceMessageCount = Number(checkpoint.run_manifest?.source_window?.message_count ?? 0);
   const safeOffset = Number(checkpoint.next_source_offset ?? 0);
   const traversalAction = projectedPendingCount === 0 && safeOffset < sourceMessageCount
     ? 'continue_source_traversal'
@@ -551,25 +370,29 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       ? 'continue_finalization' : null;
   const pendingWithoutAction = projectedPendingCount > 0
     && !exactPending?.next_eligible_action;
-  const resumeEligibility = checkpoint.resume_eligibility ?? null;
-  const authoritativeResumeDecision = resumeEligibility
-    && ['awaiting_manual_resume', 'blocked_recovery_change_required']
-      .includes(checkpoint.status);
-  const blocked = explicitlyBlocked || pendingWithoutAction
-    || (authoritativeResumeDecision && resumeEligibility.eligible === false);
-  const authoritativeRecovery = checkpoint.authoritative_recovery ?? null;
-  const resumeCanMakeProgress = authoritativeRecovery
-    ? authoritativeRecovery.resume_eligible === true
-    : Boolean(normalized) && !blocked
+  const statusBlocked = ['blocked_recovery_change_required',
+    'blocked_reconciliation_required', 'terminal_failure'].includes(checkpoint.status);
+  const blocked = pendingWithoutAction || statusBlocked;
+  const blockedReasonCode = exactPending?.exact_reason_code
+    ?? blockedObligations[0]?.exact_reason_code
+    ?? (statusBlocked ? 'recovery_change_required' : null);
+  const operationalPause = exactPending?.current_state === 'operationally_paused' ? {
+    obligation_id: exactPending.obligation_id,
+    tier: exactPending.tier ?? null,
+    reason_code: exactPending.exact_reason_code ?? null,
+    next_eligible_recovery_action: exactPending.next_eligible_action ?? null,
+    recovery_intent: exactPending.recovery_intent ?? null,
+    recovery_stage: exactPending.recovery_stage ?? null,
+    projection_source: 'authoritative_obligation_ledger',
+  } : null;
+  const resumeCanMakeProgress = Boolean(normalized) && !blocked
     && (projectedPendingCount === 0
-      || Boolean(exactPending?.next_eligible_action))
-    && (!authoritativeResumeDecision || resumeEligibility.eligible === true);
+      || Boolean(exactPending?.next_eligible_action));
   return {
     available: true,
     resumable: resumeCanMakeProgress,
-    blocked: authoritativeRecovery ? authoritativeRecovery.resume_eligible !== true : blocked,
-    blocked_reason_code: authoritativeRecovery?.resume_blockers?.[0]?.reason_code
-      ?? checkpoint.recovery_blocked?.reason_code ?? null,
+    blocked,
+    blocked_reason_code: blockedReasonCode,
     unresolved_obligation_count: projectedPendingCount,
     pending_obligation_count: projectedPendingCount,
     actionable_pending_obligation_count: obligationProjection.actionable_pending_obligation_count,
@@ -580,51 +403,28 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       : obligationProjection.blocked_obligation_count,
     running_obligation_count: obligationProjection.running_obligation_count,
     terminal_failed_obligation_count: obligationProjection.terminal_failed_obligation_count,
-    blocked_obligations: (checkpoint.recovery_blocked?.obligations ?? []).slice(-16),
-    safe_progress_preserved: checkpoint.recovery_blocked?.safe_progress_preserved
-      ?? (obligationProjection.safely_committed_obligation_count > 0
-        || Number(checkpoint.next_source_offset ?? 0) > 0),
-    next_eligible_recovery_action: authoritativeRecovery?.next_executable_action
-      ?? checkpoint.recovery_blocked?.next_eligible_recovery_action
-      ?? exactPending?.next_eligible_action ?? traversalAction,
+    blocked_obligations: blockedObligations,
+    safe_progress_preserved: obligationProjection.safely_committed_obligation_count > 0
+      || Number(checkpoint.next_source_offset ?? 0) > 0,
+    next_eligible_recovery_action: exactPending?.next_eligible_action ?? traversalAction,
     recovery_intent: exactPending?.recovery_intent
       ?? exactPending?.next_eligible_action ?? traversalAction,
-    recovery_stage: authoritativeRecovery?.exact_recovery_stage
-      ?? exactPending?.recovery_stage ?? null,
-    resume_mode: resumeEligibility?.mode ?? null,
-    provider_call_required_on_resume: resumeEligibility?.provider_call_required ?? null,
-    resume_eligibility: resumeEligibility,
+    recovery_stage: exactPending?.recovery_stage ?? null,
     status: checkpoint.status ?? 'unknown',
-    reason_code: checkpoint.recovery_blocked?.reason_code
-      ?? resumeEligibility?.reason_code
-      ?? (String(checkpoint.status ?? '').startsWith('invalidated')
+    reason_code: (String(checkpoint.status ?? '').startsWith('invalidated')
         ? checkpoint.run_manifest?.terminal_reason_code : null)
       ?? exactPending?.exact_reason_code
+      ?? blockedReasonCode
       ?? (traversalAction === 'continue_source_traversal' ? 'source_traversal_incomplete'
         : checkpoint.run_manifest?.terminal_reason_code ?? null),
     source_message_count: sourceMessageCount,
     safely_committed_offset: safeOffset,
-    operational_pause: checkpoint.operational_pause ?? null,
-    operational_pause_count: checkpoint.operational_pause ? 1 : 0,
+    operational_pause: operationalPause,
+    operational_pause_count: operationalPause ? 1 : 0,
     transaction_lifecycle: checkpoint.transaction_lifecycle ?? null,
-    controller_failure: checkpoint.controller_failure ?? null,
-    secondary_finalization_failures: (checkpoint.secondary_finalization_failures ?? []).slice(-16),
-    stale_lease_callbacks: (checkpoint.stale_lease_callbacks ?? []).slice(-32),
-    authoritative_recovery: authoritativeRecovery,
-    cleanup_warnings: (checkpoint.cleanup_warnings ?? []).slice(-16),
     authoritative_obligation_ledger: obligationProjection,
     exact_pending_obligation: exactPending ?? null,
     resume_can_make_progress: resumeCanMakeProgress,
-    recovery_child_manifests: {
-      schema_version: Number(checkpoint.recovery_child_manifests?.schema_version ?? 0) || null,
-      roots: Object.values(checkpoint.recovery_child_manifests?.roots ?? {}).slice(-64),
-      root_count: Object.keys(checkpoint.recovery_child_manifests?.roots ?? {}).length,
-    },
-    context_overflow_recovery: {
-      schema_version: Number(checkpoint.context_overflow_recovery?.schema_version ?? 0) || null,
-      completed_child_count: checkpoint.context_overflow_recovery?.completed_children?.length ?? 0,
-      completed_children: (checkpoint.context_overflow_recovery?.completed_children ?? []).slice(-2048),
-    },
     finalization: {
       schema_version: Number(checkpoint.finalization?.schema_version ?? 0) || null,
       active_phase: checkpoint.finalization?.active_phase ?? null,
@@ -639,7 +439,6 @@ export function summarizeCatchUpCheckpoint(checkpoint) {
       }])),
       phase_dispositions: checkpoint.finalization?.phase_dispositions ?? {},
       shortterm_recovery: checkpoint.finalization?.shortterm_failure_state ?? null,
-      shortterm_recovery_migration: checkpoint.finalization?.shortterm_recovery_migration ?? null,
       shortterm_post_commit_recovery_marker: checkpoint.finalization?.shortterm_post_commit_recovery_marker ?? null,
       shortterm_recovery_plan: checkpoint.finalization?.shortterm_recovery_plan ? {
         schema_version: checkpoint.finalization.shortterm_recovery_plan.schema_version ?? null,
@@ -704,17 +503,8 @@ export function reconcileCatchUpRecoverySummary(checkpointSummary, providerSumma
     ...base,
     unresolved_obligation_count: unresolved.length,
     blocked_obligation_count: blocked.length,
-    blocked_obligations: blocked.map((item) => ({
-      root_obligation_id: item.root_obligation_id, tier: item.tier, owner: item.owner,
-      source_range: item.source_range, source_fingerprint: item.source_fingerprint,
-      configuration_signature: item.configuration_signature,
-      recovery_stages_attempted: item.recovery_stages_attempted,
-      exhausted_recovery_stages: item.exhausted_recovery_stages,
-      terminal_signature: item.last_terminal_signature,
-      terminal_signature_repeat_count: item.terminal_signature_repeat_count,
-      next_eligible_recovery_action: item.next_eligible_recovery_action,
-    })),
-    unresolved_obligations: unresolved,
+    blocked_obligations: blocked.map(createUnresolvedObligationSummary),
+    unresolved_obligations: unresolved.map(createUnresolvedObligationSummary),
     blocked: blocked.length > 0 && resumable.length === 0,
     resumable: Boolean(base.available) && resumable.length > 0,
     resume_can_make_progress: resumable.length > 0,

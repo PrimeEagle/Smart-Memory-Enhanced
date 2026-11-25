@@ -1,5 +1,8 @@
 /** Pure, privacy-safe helpers for Continuity Check selection and repairs. */
 
+import { createContinuityEvidenceSet, projectContinuityEvidenceSelection }
+  from './continuity-evidence.js';
+
 export const CONTINUITY_MAX_REPAIR_CHARS = 1200;
 export const CONTINUITY_MAX_REPAIR_TOKENS = 250;
 
@@ -9,9 +12,10 @@ export const CONTINUITY_MAX_REPAIR_TOKENS = 250;
  * source remains interpretable and deterministic.
  */
 export function selectContinuityFactBlocks(blocks, { buildPrompt, estimateTokens, preflight }) {
+  const canonicalBlocks = createContinuityEvidenceSet(blocks);
   const selected = [];
   const excluded = [];
-  for (const block of blocks) {
+  for (const block of canonicalBlocks) {
     const candidate = [...selected, block];
     if (preflight(buildPrompt(candidate.map((item) => item.text).join('\n\n'))).fits) selected.push(block);
     else excluded.push(block);
@@ -21,8 +25,8 @@ export function selectContinuityFactBlocks(blocks, { buildPrompt, estimateTokens
   return {
     facts,
     preflight: result,
-    selected: selected.map((block) => ({ source: block.source, count: block.count, estimated_tokens: estimateTokens(block.text) })),
-    excluded: excluded.map((block) => ({ source: block.source, count: block.count, estimated_tokens: estimateTokens(block.text) })),
+    selected: projectContinuityEvidenceSelection(selected, estimateTokens),
+    excluded: projectContinuityEvidenceSelection(excluded, estimateTokens),
   };
 }
 

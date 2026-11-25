@@ -1,4 +1,5 @@
 import { sourceWindowFingerprint } from './extraction-window-utils.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 export const TARGETED_REPLAY_SCHEMA_VERSION = 3;
 
@@ -23,6 +24,7 @@ export function buildTargetedReplayCandidates(providerSummary, {
     const actualFingerprint = sourceMessages.length ? sourceWindowFingerprint(sourceMessages) : null;
     const reasons = [];
     if (!['longterm', 'session'].includes(obligation?.tier)) reasons.push('unsupported_tier');
+    if (!String(obligation?.root_obligation_id ?? '').trim()) reasons.push('root_obligation_id_missing');
     if (!obligation?.targeted_replay_eligible) reasons.push('obligation_not_replay_eligible');
     if (obligation?.tier === 'longterm' && !owner) reasons.push('owner_missing');
     if (obligation?.tier === 'longterm' && allowedOwners && !allowedOwners.includes(owner)) reasons.push('owner_not_in_current_chat_scope');
@@ -34,6 +36,8 @@ export function buildTargetedReplayCandidates(providerSummary, {
     if (actualFingerprint && obligation?.source_fingerprint !== actualFingerprint) reasons.push('source_fingerprint_mismatch');
     if (!chatId) reasons.push('chat_identity_missing');
     if (obligation?.chat_id && chatId && obligation.chat_id !== chatId) reasons.push('chat_identity_mismatch');
+    if (!obligation?.configuration_signature) reasons.push('configuration_signature_missing');
+    if (!currentConfigurationSignature) reasons.push('current_configuration_signature_missing');
     if (obligation?.configuration_signature && currentConfigurationSignature
       && obligation.configuration_signature !== currentConfigurationSignature) reasons.push('provider_configuration_changed');
     return {
@@ -49,8 +53,9 @@ export function buildTargetedReplayCandidates(providerSummary, {
       chat_id: chatId,
       configuration_signature: currentConfigurationSignature,
       original_configuration_signature: obligation?.configuration_signature ?? null,
-      configuration_validation: obligation?.configuration_signature
-        ? 'matched_current_configuration' : 'unavailable_for_legacy_obligation',
+      configuration_validation: obligation?.configuration_signature && currentConfigurationSignature
+        && obligation.configuration_signature === currentConfigurationSignature
+        ? 'matched_current_configuration' : 'configuration_not_verified',
       eligible: reasons.length === 0,
       rejection_reasons: reasons,
       source_messages: sourceMessages,
@@ -68,12 +73,19 @@ export function createTargetedReplayCheckpoint(candidates, {
   prior = null, selectionReason = 'operator_selected_terminal_malformed_obligations',
   originalRunId = null, statusClassificationBefore = null,
 } = {}) {
+  if (prior != null && prior.schema_version !== TARGETED_REPLAY_SCHEMA_VERSION) {
+    const error = new Error('Targeted replay checkpoint uses an unsupported schema; Fresh Start is required.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.sme_reason_code = 'targeted_replay_schema_unsupported';
+    error.sme_failure_stage = 'targeted_replay_restore';
+    throw error;
+  }
   const canResume = prior?.status === 'in_progress'
     && prior?.chat_id === chatId
     && prior?.configuration_signature === configurationSignature;
   const priorTargets = new Map((canResume ? prior.targets : []).map((target) => [target.root_obligation_id, target]));
   const replayRunId = canResume ? prior.replay_run_id : runId ?? `targeted-replay-${now}`;
-  return {
+  return cloneSerializableDomain({
     schema_version: TARGETED_REPLAY_SCHEMA_VERSION,
     replay_run_id: replayRunId,
     invocation_id: `${replayRunId}-invocation-${Number(prior?.invocation_count ?? 0) + 1}`,
@@ -107,24 +119,40 @@ export function createTargetedReplayCheckpoint(candidates, {
         persistence_outcome: previous?.persistence_outcome ?? 'not_started',
       };
     }),
-  };
+  }, { path: '$.targeted_replay_checkpoint', stage: 'targeted_replay_checkpoint_creation',
+    operation_type: 'targeted_replay' });
 }
 
 export function updateTargetedReplayCheckpoint(checkpoint, rootObligationId, patch = {}, now = Date.now()) {
-  return {
+  if (checkpoint?.schema_version !== TARGETED_REPLAY_SCHEMA_VERSION) {
+    const error = new Error('Targeted replay checkpoint uses an unsupported schema; Fresh Start is required.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.sme_reason_code = 'targeted_replay_schema_unsupported';
+    throw error;
+  }
+  const { attempted = false, ...canonicalPatch } = patch;
+  return cloneSerializableDomain({
     ...checkpoint,
     updated_at: now,
     targets: (checkpoint?.targets ?? []).map((target) => target.root_obligation_id === rootObligationId
-      ? { ...target, ...patch, attempts: Number(target.attempts ?? 0) + (patch.attempted ? 1 : 0), attempted: undefined }
+      ? { ...target, ...canonicalPatch,
+        attempts: Number(target.attempts ?? 0) + (attempted ? 1 : 0) }
       : target),
-  };
+  }, { path: '$.targeted_replay_checkpoint', stage: 'targeted_replay_checkpoint_update',
+    operation_type: 'targeted_replay' });
 }
 
 export function summarizeTargetedReplayCheckpoint(checkpoint) {
+  if (checkpoint != null && checkpoint.schema_version !== TARGETED_REPLAY_SCHEMA_VERSION) {
+    const error = new Error('Targeted replay checkpoint uses an unsupported schema; Fresh Start is required.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.sme_reason_code = 'targeted_replay_schema_unsupported';
+    throw error;
+  }
   const targets = checkpoint?.targets ?? [];
   const count = (outcome) => targets.filter((target) => target.terminal_outcome === outcome).length;
   return {
-    schema_version: checkpoint?.schema_version ?? TARGETED_REPLAY_SCHEMA_VERSION,
+    schema_version: TARGETED_REPLAY_SCHEMA_VERSION,
     replay_run_id: checkpoint?.replay_run_id ?? null,
     invocation_id: checkpoint?.invocation_id ?? null,
     invocation_count: checkpoint?.invocation_count ?? 0,

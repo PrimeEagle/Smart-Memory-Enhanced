@@ -2,6 +2,7 @@ import {
   applyMemorizeLifecycleEvent,
   ensureMemorizeObligationLedger,
   getCanonicalMemorizeObligation,
+  MEMORIZE_ACTIONS,
   projectMemorizeObligationLedger,
 } from './memorize-obligation-ledger.js';
 import {
@@ -14,34 +15,9 @@ import { assertSerializableDomain, cloneSerializableDomain } from './serializabl
 
 export const MEMORIZE_EXECUTION_KERNEL_VERSION = 3;
 export const MEMORIZE_ACTION_HANDLER_REVISION = 1;
-export const MEMORIZE_ACTIONS = Object.freeze([
-  'dispatch_provider_request', 'apply_journaled_provider_completion',
-  'recover_missing_owner_coverage',
-  'recover_from_source_window', 'continue_next_frontier_obligation',
-  'continue_source_traversal', 'continue_finalization', 'complete_run', 'stop_blocked',
-]);
-const PROVIDER_DISPATCH_ACTION_ALIASES = new Set([
-  'dispatch_registered_provider_attempt', 'dispatch_bounded_recovery_attempt',
-  'compact_response_repair', 'changed_dimension_regeneration',
-  'malformed_source_repartition', 'structured_json_regeneration',
-  'minimal_record_regeneration', 'single_source_unit_regeneration',
-  'retry_provider_with_backoff', 'recover_exact_unresolved_fragments',
-  'recover_unresolved_partial_output_fragments',
-  'regenerate_unresolved_from_verified_source',
-  'resume_changed_dimension_or_single_source_recovery',
-  'fragment_decision_regeneration', 'resume_exact_obligation',
-  'session_validation_repair_or_bounded_regeneration',
-  'citation_repair_or_bounded_regeneration', 'dispatch_after_prior_leaf_coverage', 'retry',
-]);
+export { MEMORIZE_ACTIONS };
 export function canonicalizeMemorizeKernelAction(action) {
-  if (MEMORIZE_ACTIONS.includes(action)) return action;
-  if (PROVIDER_DISPATCH_ACTION_ALIASES.has(action)) return 'dispatch_provider_request';
-  if (['continue_pending_downstream_processing',
-    'replay_terminal_provider_downstream_lifecycle',
-    'reconcile_terminal_attempt_evidence'].includes(action)) {
-    return 'apply_journaled_provider_completion';
-  }
-  return null;
+  return MEMORIZE_ACTIONS.includes(action) ? action : null;
 }
 export const MEMORIZE_ACTION_RECEIPT_PHASES = Object.freeze([
   'action_selected', 'action_started', 'provider_attempt_registered',
@@ -54,7 +30,7 @@ const bounded = (items = [], maximum = 512) => items.slice(-maximum);
 function clone(value) {
   return value == null ? value : cloneSerializableDomain(value, {
     path: '$.execution_aggregate', stage: 'execution_aggregate_validation',
-    operation_type: 'memorize_execution_kernel', allow_undefined: true,
+    operation_type: 'memorize_execution_kernel',
   });
 }
 
@@ -102,7 +78,7 @@ export function ensureMemorizeExecutionAggregate(value, logicalRunId = null) {
   if (value == null) return createMemorizeExecutionAggregate(logicalRunId);
   assertSerializableDomain(value, {
     path: '$.execution_aggregate', stage: 'execution_aggregate_validation',
-    operation_type: 'memorize_execution_kernel', allow_undefined: true,
+    operation_type: 'memorize_execution_kernel',
   });
   const ledger = ensureMemorizeObligationLedger(value, logicalRunId);
   const kernel = ledger.execution_kernel;
@@ -272,6 +248,10 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
   let current = getCanonicalMemorizeObligation(aggregate, leafId, logicalRunId);
   if (!current.provider_attempt_lineage?.includes(attemptId)) {
     applyRequiredEvent(aggregate, identity, {
+      type: 'provider_attempt_registered', provider_attempt_id: attemptId,
+      event_id: `${commandId}:registration`, at: now,
+    }, 'provider_registered');
+    applyRequiredEvent(aggregate, identity, {
       type: 'provider_attempt_started', provider_attempt_id: attemptId,
       event_id: `${commandId}:attempt`, at: now,
     }, 'provider_running');
@@ -280,7 +260,7 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
     applyRequiredEvent(aggregate, identity, {
       type: 'provider_transport_failed', provider_attempt_id: attemptId,
       reason_code: command.reason_code ?? 'provider_transport_failure',
-      next_action: command.next_action ?? 'retry_provider_with_backoff',
+      next_action: command.next_action ?? 'dispatch_provider_request',
       event_id: `${commandId}:transport`, at: now,
     }, 'pending_recovery');
   } else {
@@ -306,7 +286,7 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
       applyRequiredEvent(aggregate, identity, {
         type: 'recovery_required', provider_attempt_id: attemptId,
         reason_code: parser.reason_code ?? 'malformed_provider_output',
-        next_action: command.next_action ?? 'dispatch_bounded_recovery_attempt',
+        next_action: command.next_action ?? 'dispatch_provider_request',
         event_id: `${commandId}:recovery`, at: now,
       }, 'pending_recovery');
     } else {
@@ -330,7 +310,7 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
         applyRequiredEvent(aggregate, identity, {
           type: 'recovery_required', provider_attempt_id: attemptId,
           reason_code: validation.reason_code ?? 'provider_output_validation_rejected',
-          next_action: command.next_action ?? 'dispatch_bounded_recovery_attempt',
+          next_action: command.next_action ?? 'dispatch_provider_request',
           event_id: `${commandId}:recovery`, at: now,
         }, 'pending_recovery');
       } else if (persistence.durable_record_ids.length) {
@@ -342,7 +322,7 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
           applyRequiredEvent(aggregate, identity, {
             type: 'recovery_required', provider_attempt_id: attemptId,
             reason_code: command.reason_code ?? 'partial_valid_output_has_unresolved_fragments',
-            next_action: command.next_action ?? 'regenerate_unresolved_from_verified_source',
+            next_action: command.next_action ?? 'dispatch_provider_request',
             lifecycle: {
               durably_persisted_record_ids: persistence.durable_record_ids,
               durable_record_candidate_map: persistence.durable_record_candidate_map,
@@ -366,7 +346,7 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
         applyRequiredEvent(aggregate, identity, {
           type: 'recovery_required', provider_attempt_id: attemptId,
           reason_code: command.reason_code ?? 'partial_output_pending',
-          next_action: command.next_action ?? 'regenerate_unresolved_from_verified_source',
+          next_action: command.next_action ?? 'dispatch_provider_request',
           lifecycle: { unresolved_fragment_ids: parser.rejected_fragment_ids },
           event_id: `${commandId}:recovery`, at: now,
         }, 'pending_recovery');

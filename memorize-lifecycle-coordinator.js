@@ -174,7 +174,7 @@ function ingressResult(status, input, patch = {}) {
 function rejectedIngress(input, reasonCode, details = {}) {
   return ingressResult(details.status ?? 'rejected', input, {
     reason_code: reasonCode,
-    next_action: details.next_action ?? 'reconcile_terminal_attempt_evidence',
+    next_action: details.next_action ?? 'apply_journaled_provider_completion',
     provider_call_required: details.provider_call_required === true,
     persistence_required: details.persistence_required === true,
     missing_evidence: details.missing_evidence ?? [],
@@ -204,22 +204,14 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
   const emit = input.emit_lifecycle_event;
   if (typeof emit !== 'function') return rejectedIngress(input,
     'provider_evidence_ingress_missing_lifecycle_reducer');
-  const invokeLifecycle = async (type, details) => {
-    try {
-      return await emit(type, details);
-    } catch (error) {
-      return {
-        status: 'rejected', resulting_state: null, checkpoint_eligible: false,
-        error_code: error?.code ?? 'lifecycle_reducer_exception',
-        reason_code: error?.sme_reason_code ?? error?.code ?? 'lifecycle_reducer_exception',
-        lifecycle_receipt: error?.lifecycle_receipt ?? null,
-      };
-    }
-  };
+  // Exceptions from the authoritative reducer retain their original identity
+  // and cause chain. Callers may add context, but must not turn a local schema
+  // defect into a generic provider-registration failure.
+  const invokeLifecycle = async (type, details) => emit(type, details);
 
   if (['register_new_attempt', 'dispatch_exact_recovery_attempt'].includes(input.operation)) {
     if (input.attempt?.attempt_id) {
-      const receipt = await invokeLifecycle('provider_attempt_started', {
+      const receipt = await invokeLifecycle('provider_attempt_registered', {
         provider_attempt_id: input.attempt.attempt_id,
         exact_reason_code: 'provider_request_in_progress',
         recovery_intent: input.attempt.recovery_intent,
@@ -234,7 +226,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
         attempt: input.attempt, receipt, physical_attempt_id: input.attempt.attempt_id,
         resulting_state: receipt.resulting_state,
         reason_code: 'provider_attempt_registered',
-        next_action: 'dispatch_registered_provider_attempt', provider_call_required: true,
+        next_action: 'dispatch_provider_request', provider_call_required: true,
       });
     }
     if (typeof input.begin_registered_attempt !== 'function') return rejectedIngress(input,
@@ -247,22 +239,19 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
         return ingressResult('operationally_paused', { ...input, identity }, {
           reason_code: error.sme_reason_code ?? error.code ?? 'provider_policy_pause',
           next_action: error.sme_request_diagnostics?.next_eligible_action
-            ?? 'resume_exact_obligation',
+            ?? 'dispatch_provider_request',
           provider_call_required: false,
           policy_outcome: error.sme_request_diagnostics ?? null,
         });
       }
-      return rejectedIngress(input, error?.sme_reason_code ?? error?.code
-        ?? 'provider_attempt_registration_failed', {
-        next_action: 'reconcile_provider_attempt_registration', provider_call_required: false,
-      });
+      throw error;
     }
     if (!attempt?.attempt_id) return rejectedIngress(input, 'provider_attempt_registration_failed', {
       next_action: 'reconcile_provider_attempt_registration', provider_call_required: false,
     });
     return ingressResult('applied', { ...input, identity, attempt }, {
-      attempt, physical_attempt_id: attempt.attempt_id, resulting_state: 'provider_running',
-      reason_code: 'provider_attempt_registered', next_action: 'dispatch_registered_provider_attempt',
+      attempt, physical_attempt_id: attempt.attempt_id, resulting_state: 'provider_registered',
+      reason_code: 'provider_attempt_registered', next_action: 'dispatch_provider_request',
       provider_call_required: true,
     });
   }
@@ -281,8 +270,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       checkpoint_eligible: receipt?.checkpoint_eligible === true,
       reason_code: receipt?.status === 'rejected' ? 'provider_response_transition_rejected'
         : 'provider_response_recorded',
-      next_action: receipt?.status === 'rejected' ? 'reconcile_terminal_attempt_evidence'
-        : 'continue_pending_downstream_processing',
+      next_action: 'apply_journaled_provider_completion',
       persistence_required: true,
     });
   }
@@ -327,8 +315,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       reason_code: input.details?.exact_reason_code ?? `${semanticEventType}_recorded`,
       next_action: checkpointEligible ? null
         : input.details?.next_eligible_action ?? input.details?.next_action
-          ?? (semanticEventType === 'records_staged'
-            ? 'persist_staged_records' : 'continue_pending_downstream_processing'),
+          ?? 'apply_journaled_provider_completion',
       provider_call_required: false,
       persistence_required: semanticEventType === 'records_staged',
     });
@@ -347,7 +334,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       checkpoint_eligible: receipt.checkpoint_eligible === true,
       reason_code: 'parser_evidence_enriched',
       next_action: input.details?.next_eligible_action
-        ?? 'continue_pending_downstream_processing',
+        ?? 'apply_journaled_provider_completion',
     });
   }
 
@@ -363,7 +350,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
     malformed_reason: evidence.malformed_reason ?? evidence.failure_classification ?? null,
     exact_reason_code: input.reason_code ?? evidence.malformed_reason
       ?? 'terminal_malformed_provider_output',
-    next_eligible_action: input.next_action ?? 'dispatch_bounded_recovery_attempt',
+    next_eligible_action: input.next_action ?? 'dispatch_provider_request',
     recovery_stage: input.recovery_stage ?? evidence.recovery_stage ?? null,
     operationally_paused: input.operationally_paused === true,
   });
@@ -378,7 +365,7 @@ export async function coordinateProviderEvidenceIngress(input = {}) {
       resulting_state: receipt.resulting_state,
       reason_code: input.reason_code ?? evidence.malformed_reason
         ?? 'terminal_malformed_provider_output',
-      next_action: input.next_action ?? 'dispatch_bounded_recovery_attempt',
+      next_action: input.next_action ?? 'dispatch_provider_request',
       provider_call_required: false, persistence_required: false,
     });
 }

@@ -187,19 +187,18 @@ test('terminal provider attempt plus unattempted child and provider_running ledg
     ledger: { obligations: { root: {
       obligation_id: 'longterm:lisette:220-239:root', current_state: 'provider_running',
       provider_attempt_lineage: ['provider-mvzlqkmi-342'],
-    } } },
-    child_manifests: { roots: { root: {
-      root_obligation_id: 'longterm:lisette:220-239:root', children: { child: {
-        key: 'longterm:lisette:225-229:child', source_fingerprint: 'fnv1a-629e21dd',
-        source_range: { start: 225, end: 229 }, state: 'unattempted',
-      } },
+    }, child: {
+      obligation_id: 'longterm:lisette:225-229:child',
+      parent_obligation_id: 'longterm:lisette:220-239:root',
+      source_fingerprint: 'fnv1a-629e21dd', source_range: { start: 225, end: 229 },
+      current_state: 'unattempted',
     } } },
     live_health: { recent_extraction_events: [] },
   });
   assert.equal(result.consistent, false);
   assert.ok(result.violations.some((item) => item.code === 'terminal_attempt_left_obligation_provider_running'
     && item.attempt_id === 'provider-mvzlqkmi-342'));
-  assert.ok(result.violations.some((item) => item.code === 'completed_attempt_has_unattempted_manifest_child'
+  assert.ok(result.violations.some((item) => item.code === 'completed_attempt_has_unattempted_ledger_child'
     && item.source_range.start === 225));
 });
 

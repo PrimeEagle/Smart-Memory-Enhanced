@@ -8,7 +8,7 @@
  */
 
 import { getContext, extension_settings } from '../../../extensions.js';
-import { META_KEY, MODULE_NAME } from './constants.js';
+import { META_KEY, MODULE_NAME, SCHEMA_VERSION } from './constants.js';
 import {
   buildSummaryPrompt,
   RECAP_PROMPT,
@@ -26,7 +26,7 @@ import {
   buildEpistemicExtractionPrompt,
   buildStateCardPrompt,
 } from './prompts.js';
-import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt } from './canonical-entities.js';
+import { buildCanonicalRoster, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 import { createTaskMap, resolveProfileAssignment } from './prompt-profile-utils.js';
 
 export const PROMPT_TASKS = Object.freeze({
@@ -135,13 +135,13 @@ function assignmentStore(scope, characterName = null, create = true) {
     const settings = extension_settings[MODULE_NAME];
     if (create) settings.characters ??= {};
     if (!settings.characters?.[characterName] && !create) return null;
-    if (create) settings.characters[characterName] ??= {};
+    if (create) settings.characters[characterName] ??= { schema_version: SCHEMA_VERSION };
     return settings.characters?.[characterName] ?? null;
   }
   const context = getContext();
   if (!context.chatMetadata && !create) return null;
   if (create) context.chatMetadata ??= {};
-  if (create) context.chatMetadata[META_KEY] ??= {};
+  if (create) context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
   return context.chatMetadata?.[META_KEY] ?? null;
 }
 
@@ -275,7 +275,7 @@ export function getLivePromptInspection(task, characterName = null) {
   const meta = context?.chatMetadata?.[META_KEY] ?? {};
   const activeCharacter = characterName || context?.name2 || '';
   const chat = formatLiveChat(context);
-  const roster = formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(context));
+  const roster = formatCanonicalRosterForPrompt(buildCanonicalRoster(context));
   const characterSettings = extension_settings[MODULE_NAME]?.characters?.[activeCharacter] ?? {};
   const longterm = formatLiveMemories(characterSettings.memory_policy === 'chat_local'
     ? meta.card_local_memories?.[activeCharacter]
@@ -456,7 +456,7 @@ function characterStore(characterName, create = true) {
   if (create) settings.characters ??= {};
   const character = settings.characters?.[characterName];
   if (!character && !create) return null;
-  if (create) settings.characters[characterName] ??= {};
+  if (create) settings.characters[characterName] ??= { schema_version: SCHEMA_VERSION };
   const target = settings.characters[characterName];
   if (create) target.prompt_overrides ??= {};
   return target.prompt_overrides ?? null;
@@ -466,7 +466,7 @@ function chatStore(create = true) {
   const context = getContext();
   if (!context.chatMetadata && !create) return null;
   if (create) context.chatMetadata ??= {};
-  if (create) context.chatMetadata[META_KEY] ??= {};
+  if (create) context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
   const memory = context.chatMetadata?.[META_KEY];
   if (create) memory.prompt_overrides ??= {};
   return memory?.prompt_overrides ?? null;

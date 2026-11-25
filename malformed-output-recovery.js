@@ -857,14 +857,9 @@ export async function recoverMalformedTaggedOutput({
     await pendingAttemptSettlement;
     return onAttemptRegistered?.(attempt, details);
   };
-  const effectiveResumeState = resumeState ?? originalAttempt?.prior_window_recovery_state
-    ?? (originalAttempt?.resumed_pending_obligation === true
-    && (originalAttempt?.prior_recovery_stages_attempted ?? []).length
-    ? {
-      resume_unresolved_obligation: true,
-      recovery_stages_attempted: originalAttempt.prior_recovery_stages_attempted,
-      last_malformed_reason: originalAttempt.repair_reason ?? null,
-    } : null);
+  // Recovery state is an explicit canonical input. Bounded attempt-audit
+  // records are evidence only and cannot silently become execution state.
+  const effectiveResumeState = resumeState;
   const reportedPriorStages = [...new Set(effectiveResumeState?.recovery_stages_attempted ?? [])];
   const furthestPriorStage = reportedPriorStages.reduce((maximum, stage) =>
     Math.max(maximum, RECOVERY_STAGE_ORDER.indexOf(stage)), -1);
@@ -915,8 +910,10 @@ export async function recoverMalformedTaggedOutput({
   let lastProviderError = null;
   let acceptedPartialRecords = [...(effectiveResumeState?.staged_partial_records ?? [])];
   const restoredStagedPartialCount = acceptedPartialRecords.length;
-  const restoredDurablePartialCount = Number(effectiveResumeState?.durable_partial_record_count
-    ?? effectiveResumeState?.accepted_partial_record_count ?? 0) || 0;
+  const restoredDurablePartialRecordIds = [...new Set(
+    effectiveResumeState?.durably_persisted_record_ids ?? [],
+  )];
+  const restoredDurablePartialCount = restoredDurablePartialRecordIds.length;
   const durablePartialRecordCount = () => restoredDurablePartialCount
     + Math.max(0, acceptedPartialRecords.length - restoredStagedPartialCount);
   const stagedCompletedUnitKeys = new Set(effectiveResumeState?.completed_source_units ?? []);
@@ -1337,7 +1334,7 @@ export async function recoverMalformedTaggedOutput({
   const eligibility = deriveRecoveryStageEligibility({
     attempted_stages: [...priorStages, ...(minimalBudget.allowed ? ['minimal_record_regeneration'] : [])],
     exhausted_stages: [...priorStages, ...(minimalBudget.allowed ? ['minimal_record_regeneration'] : [])],
-    accepted_partial_record_count: acceptedPartialRecords.length,
+    durable_partial_record_count: durablePartialRecordCount(),
     unresolved_semantic_units: unresolvedUnits.map((unit) => String(unit.unit_key)),
     implementation_version_changed: effectiveResumeState?.implementation_version_changed === true,
     unit_outcomes: effectiveResumeState?.unit_outcomes ?? [],
@@ -1668,6 +1665,7 @@ export async function recoverMalformedTaggedOutput({
         logical_obligation_id: originalAttempt?.logical_obligation_id ?? null,
         staged_partial_record_count: acceptedPartialRecords.length,
         durable_partial_record_count: durablePartialRecordCount(),
+        durably_persisted_record_ids: restoredDurablePartialRecordIds,
         completed_source_units: [...completedUnitKeys],
         validated_no_update_source_units: [...noUpdateUnitKeys],
         blocked_source_units: [], unit_outcomes: unitOutcomes };
@@ -1679,7 +1677,7 @@ export async function recoverMalformedTaggedOutput({
     exhausted_stages: [...priorStages, 'minimal_record_regeneration', 'single_source_unit_regeneration'],
     unresolved_semantic_units: (sourceUnits ?? []).filter((unit) => !completedUnitKeys.has(String(unit.unit_key)))
       .map((unit) => String(unit.unit_key)),
-    accepted_partial_record_count: acceptedPartialRecords.length,
+    durable_partial_record_count: durablePartialRecordCount(),
     unit_outcomes: unitOutcomes,
   }).blocked;
   if (terminal.sme_recovery_blocked) terminal.code = 'SME_RECOVERY_PATH_EXHAUSTED';
@@ -1694,6 +1692,7 @@ export async function recoverMalformedTaggedOutput({
       original_reason: originalReason, partial_unresolved: true, terminal_error: terminal,
       logical_obligation_id: lastFailedAttempt?.logical_obligation_id ?? originalAttempt?.logical_obligation_id ?? null,
       durable_partial_record_count: durablePartialRecordCount(),
+      durably_persisted_record_ids: restoredDurablePartialRecordIds,
       completed_source_units: [...completedUnitKeys],
       validated_no_update_source_units: [...noUpdateUnitKeys],
       blocked_source_units: [...blockedUnitKeys], unit_outcomes: unitOutcomes };

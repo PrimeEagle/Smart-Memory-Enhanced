@@ -49,6 +49,7 @@ import { saveChatMetadata } from './catchup-transaction.js';
 import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
   from './feature-persistence.js';
 import { assignCandidateIdentity } from './candidate-identity.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_SCENES } from './constants.js';
 import { buildSceneDetectPrompt, buildSceneDetectBatchPrompt, buildSceneDetectBatchRepairPrompt, buildSceneSummaryPrompt } from './prompts.js';
 import { detectSceneBreakHeuristic, parseSceneSummaryOutput } from './parsers.js';
@@ -57,13 +58,13 @@ import { getEmbeddingBatch, cosineSimilarity } from './embeddings.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
-import { normalizeSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
+import { assertCurrentSceneRecord, createCurrentSceneRecord, selectScenesForInjection, trimSceneArchive } from './scene-archive-utils.js';
 import { deriveSceneContinuitySignals } from './scene-gate-utils.js';
 import { evaluateSceneCandidateAdmission } from './scene-candidate-utils.js';
 import { describePartialProviderOmission, describeTargetedProviderRecovery } from './scene-batch-recovery-utils.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, findCanonicalParticipantsInText, formatCanonicalRosterForPrompt } from './canonical-entities.js';
+import { buildCanonicalRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, findCanonicalParticipantsInText, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 
 // Re-export so index.js can import directly from scenes.js as before.
 export { detectSceneBreakHeuristic };
@@ -317,7 +318,9 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     ceiling_history: [batchSize],
   };
   const lineage = options.lineage ?? { next_attempt_id: 1 };
-  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, confidence_outcomes: { confidence_available: 0, confidence_not_returned: 0, confidence_invalid: 0, confidence_removed_during_repair: 0 }, partial_response_recovery: { provider_omissions: [], local_normalization: [], targeted_recoveries: [] }, batch_attempts: [], candidate_dispositions: [] };
+  const diagnostics = { requests_sent: 0, batched_requests: 0, malformed_batches: 0, retried_batches: 0, repair_requests_sent: 0, repair_requests_succeeded: 0, repair_failures: 0, smaller_batch_retries: 0, fallback_boundaries: 0, initial_batch_requests: 0, partial_retry_requests: 0, single_candidate_retry_requests: 0, format_repair_requests: 0, total_provider_requests: 0, multi_candidate_requests: 0, adaptive_batch_adjustments: [], boundary_confidences: {}, attempt_level_confidence_observations: { available: 0, not_returned: 0, invalid: 0 }, partial_response_recovery: { provider_omissions: [], local_normalization: [], targeted_recoveries: [] }, batch_attempts: [], candidate_dispositions: [] };
+  const confidenceBucket = (status) => status === 'confidence_available' ? 'available'
+    : status === 'confidence_invalid' ? 'invalid' : 'not_returned';
   const requestSceneBatch = options.request ?? generateMemoryExtract;
   const describeResponseStructure = (raw, parsed = null) => {
     const text = String(raw ?? '');
@@ -350,18 +353,10 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     const first = normalized.search(/[\[{]/); const last = Math.max(normalized.lastIndexOf('}'), normalized.lastIndexOf(']'));
     const leading = first > 0; const trailing = last >= 0 && last < normalized.length - 1; if (first >= 0 && last >= first) normalized = normalized.slice(first, last + 1);
     let value;
-    let recoveredLegacyLines = false;
     try {
       value = JSON.parse(normalized);
     } catch {
-      // Some local models follow the former line-oriented contract despite the
-      // JSON instruction. Recover only fully-addressed, confidence-bearing
-      // decisions; everything else remains candidate-local fallback below.
-      const legacy = [...original.matchAll(/^\s*\[\s*(\d+)\s*\]\s*[:\-]?\s*(YES|NO|TRUE|FALSE)\b[^\n]*?\b(?:confidence|conf)\s*[=:]?\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*$/gim)]
-        .map((match) => ({ candidate_id: Number(match[1]), break: /^(?:YES|TRUE)$/i.test(match[2]), confidence: Number(match[3]) }));
-      if (!legacy.length) return { ok: false, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: ['trim', leading ? 'strip_preamble' : 'direct_json'], parse_error_code: 'invalid_json', top_level_shape: 'unrecognized', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: [] };
-      value = { decisions: legacy };
-      recoveredLegacyLines = true;
+      return { ok: false, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: ['trim', leading ? 'strip_preamble' : 'direct_json'], parse_error_code: 'invalid_json', top_level_shape: 'unrecognized', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: [] };
     }
     const decisions = Array.isArray(value) ? value : value?.decisions;
     if (!Array.isArray(decisions)) return { ok: false, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: ['json'], parse_error_code: 'missing_decisions_array', top_level_shape: Array.isArray(value) ? 'array' : value && typeof value === 'object' ? 'object' : typeof value, code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: value && typeof value === 'object' ? Object.keys(value).slice(0, 5) : [] };
@@ -382,7 +377,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       });
     }
     const missing = requestedIds.filter((id) => !valid.has(id));
-    return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [recoveredLegacyLines ? 'legacy_indexed_lines' : leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, invalid_confidence_count: invalidConfidence, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: recoveredLegacyLines ? 'legacy_lines' : Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
+    return { ok: true, valid, raw_output_length: original.length, normalized_output_length: normalized.length, parser_path: [leading ? 'strip_preamble' : 'direct_json', Array.isArray(value) ? 'wrap_array' : 'canonical_object'], candidate_ids_returned: decisions.map((item) => item?.candidate_id ?? item?.id ?? null), valid_decision_count: valid.size, invalid_decision_count: invalid, invalid_confidence_count: invalidConfidence, missing_candidate_ids: missing, duplicate_candidate_ids: duplicates, unknown_candidate_ids: unknown, reordered_ids: JSON.stringify([...valid.keys()]) !== JSON.stringify(requestedIds.filter((id) => valid.has(id))), truncated_output_suspected: missing.length > 0 && original.length > 20, top_level_shape: Array.isArray(value) ? 'array' : 'object', code_fence_present: codeFencePresent, leading_text_present: leading, trailing_text_present: trailing, first_keys: decisions[0] && typeof decisions[0] === 'object' ? Object.keys(decisions[0]).slice(0, 5) : [] };
   };
   let adaptiveBatchSize = Math.min(batchSize, adaptiveState.effective_batch_ceiling);
   let consecutiveFullBatches = 0;
@@ -476,8 +471,8 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
         }));
         for (const key of ['requests_sent', 'batched_requests', 'malformed_batches', 'retried_batches', 'repair_requests_sent', 'repair_requests_succeeded', 'repair_failures', 'smaller_batch_retries', 'fallback_boundaries', 'initial_batch_requests', 'partial_retry_requests', 'single_candidate_retry_requests', 'format_repair_requests', 'total_provider_requests', 'multi_candidate_requests']) diagnostics[key] += smallerRetry.diagnostics[key] ?? 0;
         Object.assign(diagnostics.boundary_confidences, smallerRetry.diagnostics.boundary_confidences);
-        for (const [confidenceStatus, count] of Object.entries(smallerRetry.diagnostics.confidence_outcomes ?? {})) {
-          diagnostics.confidence_outcomes[confidenceStatus] = (diagnostics.confidence_outcomes[confidenceStatus] ?? 0) + Number(count ?? 0);
+        for (const [confidenceStatus, count] of Object.entries(smallerRetry.diagnostics.attempt_level_confidence_observations ?? {})) {
+          diagnostics.attempt_level_confidence_observations[confidenceStatus] = (diagnostics.attempt_level_confidence_observations[confidenceStatus] ?? 0) + Number(count ?? 0);
         }
         diagnostics.batch_attempts.push(...smallerRetry.diagnostics.batch_attempts);
         diagnostics.adaptive_batch_adjustments.push(...(smallerRetry.diagnostics.adaptive_batch_adjustments ?? []).map((adjustment) => ({
@@ -488,10 +483,11 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
       }
       for (const candidate of batch) {
         const decision = parsed.valid.get(candidate.candidate_index);
-        if (decision) { const retryDisposition = smallerRetry?.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidate.candidate_index); const source = decision.retried ? (retryDisposition?.source === 'heuristic-fallback' ? 'heuristic-fallback' : 'ai-batch-recovered') : 'ai-batch'; const confidenceStatus = decision.confidence_status ?? retryDisposition?.confidence_status ?? 'confidence_not_returned'; result.set(candidate.candidate_index, decision.decision); if (decision.confidence !== null) diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; diagnostics.confidence_outcomes[confidenceStatus] = (diagnostics.confidence_outcomes[confidenceStatus] ?? 0) + 1; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source, ai_confidence: decision.confidence, confidence_missing: decision.confidence_missing ?? (decision.confidence === null), confidence_status: confidenceStatus, heuristic_score: retryDisposition?.heuristic_score ?? null, ai_result_disposition: retryDisposition?.ai_result_disposition ?? null, batch_number: attempt.batch_number, terminal_disposition: source === 'heuristic-fallback' ? (decision.decision ? 'fallback_break' : 'fallback_no_break') : decision.decision ? 'ai_break' : 'ai_no_break' }); }
+        // Child observations were merged above; adopting a child decision is not a new observation.
+        if (decision) { const retryDisposition = smallerRetry?.diagnostics.candidate_dispositions.find((item) => item.candidate_id === candidate.candidate_index); const source = decision.retried ? (retryDisposition?.source === 'heuristic-fallback' ? 'heuristic-fallback' : 'ai-batch-recovered') : 'ai-batch'; const confidenceStatus = decision.confidence_status ?? retryDisposition?.confidence_status ?? 'confidence_not_returned'; const confidenceObservation = confidenceBucket(confidenceStatus); result.set(candidate.candidate_index, decision.decision); if (decision.confidence !== null) diagnostics.boundary_confidences[candidate.candidate_index] = decision.confidence; if (!decision.retried) diagnostics.attempt_level_confidence_observations[confidenceObservation]++; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: decision.decision, source, ai_confidence: decision.confidence, confidence_missing: decision.confidence_missing ?? (decision.confidence === null), confidence_status: confidenceStatus, heuristic_score: retryDisposition?.heuristic_score ?? null, ai_result_disposition: retryDisposition?.ai_result_disposition ?? null, batch_number: attempt.batch_number, terminal_disposition: source === 'heuristic-fallback' ? (decision.decision ? 'fallback_break' : 'fallback_no_break') : decision.decision ? 'ai_break' : 'ai_no_break' }); }
         else { const fallback = detectSceneBreakHeuristic(candidate.message); const missing = parsed.missing_candidate_ids.includes(candidate.candidate_index); result.set(candidate.candidate_index, fallback); diagnostics.fallback_boundaries++; diagnostics.candidate_dispositions.push({ candidate_id: candidate.candidate_index, decision: fallback, source: 'heuristic-fallback', ai_confidence: null, heuristic_score: null, ai_result_disposition: missing ? 'missing_ai_decision' : 'invalid_ai_decision', batch_number: attempt.batch_number, terminal_disposition: fallback ? 'fallback_break' : 'fallback_no_break' }); }
       }
-      attempt.terminal_outcome = smallerRetry ? 'recovered_after_smaller_batch_retry' : attempt.format_repair_succeeded ? 'recovered_after_repair_request' : parsed.parser_path?.includes('legacy_indexed_lines') ? 'recovered_after_normalization' : parsed.missing_candidate_ids.length ? 'parsed_partial' : 'parsed_full';
+      attempt.terminal_outcome = smallerRetry ? 'recovered_after_smaller_batch_retry' : attempt.format_repair_succeeded ? 'recovered_after_repair_request' : parsed.missing_candidate_ids.length ? 'parsed_partial' : 'parsed_full';
     } catch (error) {
       if (!attempt.provider_error && !attempt.returned_none) diagnostics.malformed_batches++;
       attempt.provider_error = attempt.request_completed ? null : String(error?.message ?? error);
@@ -734,29 +730,12 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
     invalid: 0,
   };
   for (const disposition of terminalByCandidate.values()) {
-    const key = disposition.confidence_status === 'confidence_available'
-      ? 'available'
-      : disposition.confidence_status === 'confidence_invalid'
-        ? 'invalid'
-        : 'not_returned';
-    diagnostics.terminal_candidate_confidence_outcomes[key]++;
+    diagnostics.terminal_candidate_confidence_outcomes[confidenceBucket(disposition.confidence_status)]++;
   }
-  diagnostics.attempt_level_confidence_observations = {
-    available: diagnostics.confidence_outcomes.confidence_available ?? 0,
-    not_returned: diagnostics.confidence_outcomes.confidence_not_returned ?? 0,
-    invalid: diagnostics.confidence_outcomes.confidence_invalid ?? 0,
-    removed_during_repair: diagnostics.confidence_outcomes.confidence_removed_during_repair ?? 0,
-  };
-  // Retain the older name for compatibility, but make its non-terminal scope
-  // explicit so consumers do not compare it directly to candidate totals.
-  diagnostics.confidence_outcomes_scope = 'attempt_level_observations';
-  diagnostics.terminal_candidate_confidence_outcomes_scope = 'terminal_candidate_outcomes';
   diagnostics.terminal_confidence_reconciled = [...terminalByCandidate.keys()].length === candidates.length
     && Object.values(diagnostics.terminal_candidate_confidence_outcomes).reduce((total, count) => total + count, 0) === candidates.length;
-  diagnostics.adaptive_root_requests = diagnostics.initial_batch_requests;
-  diagnostics.multi_candidate_provider_requests = diagnostics.multi_candidate_requests;
   diagnostics.adaptive_request_summary = {
-    adaptive_root_requests: diagnostics.adaptive_root_requests,
+    initial_batch_requests: diagnostics.initial_batch_requests,
     root_requests_full_first_try: diagnostics.full_root_batches,
     root_requests_partial: diagnostics.partial_root_batches,
     root_requests_format_repaired: diagnostics.format_repaired_root_batches,
@@ -783,7 +762,7 @@ export async function detectSceneBreakAIBatch(candidates, options = {}) {
  */
 export function loadSceneHistory() {
   const context = getContext();
-  return (context.chatMetadata?.[META_KEY]?.sceneHistory ?? []).map((scene) => normalizeSceneRecord(scene));
+  return (context.chatMetadata?.[META_KEY]?.sceneHistory ?? []).map((scene) => assertCurrentSceneRecord(scene));
 }
 
 /**
@@ -793,7 +772,7 @@ export function loadSceneHistory() {
  */
 export function createSceneRecord(summary, messages = [], details = {}) {
   const context = getContext();
-  const roster = buildCanonicalCharacterRoster(context);
+  const roster = buildCanonicalRoster(context);
   const sourceMessageIndices = messages
     .map((message) => Number.isInteger(message.__sme_original_index)
       ? message.__sme_original_index
@@ -810,7 +789,7 @@ export function createSceneRecord(summary, messages = [], details = {}) {
   const participantReferences = [...participantResolution.references, ...narrativeParticipants.references]
     .filter((reference, index, entries) => entries.findIndex((candidate) => candidate.entity_id === reference.entity_id && candidate.display_name_at_time === reference.display_name_at_time) === index);
   const narrativeResolution = canonicalizeNarrativeNames(summary, roster, { preserveHistoricalPersonaNames: true });
-  const record = normalizeSceneRecord({
+  const record = createCurrentSceneRecord({
     id: generateMemoryId(),
     summary: narrativeResolution.text,
     ts: Date.now(),
@@ -847,16 +826,18 @@ export async function saveSceneHistory(scenes) {
   const metadata = context.chatMetadata[META_KEY];
   const previous = metadata.sceneHistory;
   const staged = trimSceneArchive(scenes.map((scene) => {
-    const normalized = normalizeSceneRecord(scene);
-    if (normalized.detected_by !== 'legacy') validateGeneratedRecord(normalized);
-    return normalized;
+    const current = assertCurrentSceneRecord(scene);
+    validateGeneratedRecord(current);
+    return current;
   }), max);
   const workflowId = metadata.active_catchup_run_id
     ?? context.chatId ?? context.groupId ?? 'interactive-scenes';
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'scenes', operation: 'replace_scene_history', records: staged,
     source_provenance: { validation: 'grounded_scene_records' } });
-  await executeFeaturePersistence({ command, snapshot: () => structuredClone(previous),
+  await executeFeaturePersistence({ command, snapshot: () => cloneSerializableDomain(previous, {
+    path: '$.feature_snapshot.scenes', stage: 'feature_snapshot', operation_type: 'scenes',
+  }),
     apply: () => { metadata.sceneHistory = staged; },
     persist: () => saveChatMetadata(context),
     restore: (before) => { metadata.sceneHistory = before; },
@@ -913,7 +894,7 @@ export async function summarizeScene(sceneMessages) {
     if (!sceneText.trim()) return null;
 
     // Truncate to 2000 chars to keep the prompt cost reasonable on local hardware.
-    const roster = buildCanonicalCharacterRoster(getContext());
+    const roster = buildCanonicalRoster(getContext());
     const prompt = buildSceneSummaryPrompt(sceneText.slice(0, 2000), formatCanonicalRosterForPrompt(roster));
 
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.SCENE_SUMMARY), {
@@ -976,7 +957,7 @@ export async function processSceneBreak(
   const sceneResult = await summarizeScene(recentMessages);
   if (!sceneResult?.summary) return false;
   const { summary, characterParticipants } = sceneResult;
-  const participantResolution = canonicalizeStructuredParticipants(characterParticipants, buildCanonicalCharacterRoster(getContext()));
+  const participantResolution = canonicalizeStructuredParticipants(characterParticipants, buildCanonicalRoster(getContext()));
 
   const history = loadSceneHistory();
 

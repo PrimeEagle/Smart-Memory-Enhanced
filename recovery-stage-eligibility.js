@@ -29,8 +29,7 @@ export function deriveRecoveryStageEligibility(state = {}) {
     return outcome && String(outcome.disposition ?? '').startsWith('blocked_')
       && Number(outcome.recovery_implementation_version ?? 3) < RECOVERY_IMPLEMENTATION_VERSION;
   });
-  const acceptedPartialCount = Number(state.durable_partial_record_count
-    ?? state.accepted_partial_record_count ?? 0) || 0;
+  const durablePartialRecordCount = Number(state.durable_partial_record_count ?? 0) || 0;
   // Fragment-decision recovery is meaningful only when the durable recovery
   // window still contains exact rejected fragment identities.  Do not insert
   // it into older Long-Term/unit ladders merely because the implementation
@@ -61,7 +60,7 @@ export function deriveRecoveryStageEligibility(state = {}) {
       replay_permission: 'changed_recovery_dimension',
       attempted_stages: attemptedStages,
       exhausted_stages: exhaustedStages,
-      accepted_partial_record_count: acceptedPartialCount,
+      durable_partial_record_count: durablePartialRecordCount,
       unresolved_semantic_units: unresolvedUnits,
     };
   }
@@ -81,7 +80,7 @@ export function deriveRecoveryStageEligibility(state = {}) {
       replay_permission: 'updated_implementation_changed_recovery_dimension',
       attempted_stages: attemptedStages,
       exhausted_stages: exhaustedStages,
-      accepted_partial_record_count: acceptedPartialCount,
+      durable_partial_record_count: durablePartialRecordCount,
       unresolved_semantic_units: unresolvedUnits,
       implementation_upgrade_source_units: unitsRequiringImplementationUpgrade.length
         ? unitsRequiringImplementationUpgrade : unresolvedUnits,
@@ -103,7 +102,7 @@ export function deriveRecoveryStageEligibility(state = {}) {
       replay_permission: 'per_unit_obligation_not_attempted',
       attempted_stages: attemptedStages,
       exhausted_stages: exhaustedStages,
-      accepted_partial_record_count: acceptedPartialCount,
+      durable_partial_record_count: durablePartialRecordCount,
       unresolved_semantic_units: unresolvedUnits,
       unattempted_semantic_units: unattemptedUnits,
     };
@@ -118,7 +117,7 @@ export function deriveRecoveryStageEligibility(state = {}) {
     replay_permission: 'prohibited_duplicate',
     attempted_stages: attemptedStages,
     exhausted_stages: exhaustedStages,
-    accepted_partial_record_count: acceptedPartialCount,
+    durable_partial_record_count: durablePartialRecordCount,
     unresolved_semantic_units: unresolvedUnits,
   };
 }

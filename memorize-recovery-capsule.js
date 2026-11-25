@@ -74,7 +74,7 @@ export function assessMemorizeRecoveryCapsule(capsule = null) {
   if (capsule.private_fragment_payload_available === true) return Object.freeze({
     executable: true,
     reason_code: 'private_fragment_payload_available',
-    next_action: 'recover_unresolved_partial_output_fragments',
+    next_action: 'dispatch_provider_request',
     provider_call_required: true,
   });
   if (capsule.source_backed_regeneration_available === true
@@ -82,13 +82,13 @@ export function assessMemorizeRecoveryCapsule(capsule = null) {
     && capsule.source_range && capsule.source_fingerprint) return Object.freeze({
     executable: true,
     reason_code: 'private_payload_missing_source_backed_regeneration_available',
-    next_action: 'regenerate_unresolved_from_verified_source',
+    next_action: 'dispatch_provider_request',
     provider_call_required: true,
   });
   return Object.freeze({
     executable: false,
     reason_code: 'private_payload_and_verified_source_unavailable',
-    next_action: 'restore_source_or_private_recovery_payload',
+    next_action: 'stop_blocked',
     provider_call_required: false,
   });
 }
@@ -101,22 +101,22 @@ export function assessMemorizeRecoveryCapsule(capsule = null) {
 export async function materializeSourceBackedRecovery(capsule, loadSourceWindow,
   fingerprintSourceWindow) {
   const assessment = assessMemorizeRecoveryCapsule(capsule);
-  if (!assessment.executable || assessment.next_action !== 'regenerate_unresolved_from_verified_source') {
+  if (!assessment.executable || assessment.next_action !== 'dispatch_provider_request') {
     return Object.freeze({ status: 'blocked', ...assessment });
   }
   const messages = await loadSourceWindow(capsule.source_range);
   if (!Array.isArray(messages) || messages.length !== capsule.source_range.message_count) {
     return Object.freeze({ status: 'blocked', executable: false,
-      reason_code: 'verified_source_window_unavailable', next_action: 'restore_source_window' });
+      reason_code: 'verified_source_window_unavailable', next_action: 'stop_blocked' });
   }
   const fingerprint = await fingerprintSourceWindow(messages);
   if (fingerprint !== capsule.source_fingerprint) return Object.freeze({
     status: 'blocked', executable: false,
-    reason_code: 'source_window_fingerprint_mismatch', next_action: 'restore_matching_source_window',
+    reason_code: 'source_window_fingerprint_mismatch', next_action: 'stop_blocked',
   });
   return Object.freeze({
     status: 'ready', executable: true,
-    next_action: 'regenerate_unresolved_from_verified_source',
+    next_action: 'dispatch_provider_request',
     source_messages: Object.freeze([...messages]),
     source_range: capsule.source_range,
     source_fingerprint: fingerprint,

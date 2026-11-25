@@ -325,15 +325,15 @@ test('partial tagged output from JSON rescue preserves valid records and retries
 test('resume skips exhausted intermediate recovery stages and selects the new minimal contract', async () => {
   const audit = auditHarness();
   const prompts = [];
-  const original = {
-    attempt_id: 'original', resumed_pending_obligation: true,
-    prior_recovery_stages_attempted: ['strict_generation', 'changed_dimension_regeneration', 'structured_json_regeneration'],
-  };
+  const stages = ['strict_generation', 'changed_dimension_regeneration',
+    'structured_json_regeneration'];
   const result = await recoverMalformedTaggedOutput({
     response: 'bad', tier: 'longterm', parse: parseExtractionOutput,
     generate: async (prompt) => { prompts.push(prompt); return validLongterm; },
     originalPrompt: 'numbered source', responseLength: 100,
-    originalAttempt: original, beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    originalAttempt: { attempt_id: 'original' },
+    resumeState: { recovery_stages_attempted: stages },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
     splitWindow: async () => ({ completed: false }),
   });
   assert.equal(result.stage, 'minimal_record_regeneration');
@@ -349,9 +349,9 @@ test('resume never repeats an already exhausted minimum-record recovery stage', 
     response: 'same malformed replay response', tier: 'longterm', parse: parseExtractionOutput,
     generate: async () => { providerCalls += 1; return validLongterm; },
     originalPrompt: 'numbered source', responseLength: 100,
-    originalAttempt: {
-      attempt_id: 'original', resumed_pending_obligation: true,
-      prior_recovery_stages_attempted: [
+    originalAttempt: { attempt_id: 'original' },
+    resumeState: {
+      recovery_stages_attempted: [
         'strict_generation', 'changed_dimension_regeneration',
         'structured_json_regeneration', 'minimal_record_regeneration',
       ],
@@ -377,10 +377,8 @@ test('sanitized v0.9.61 replay shape selects only the unresolved minimum-window 
       response: 'malformed replay response', tier: obligation.tier, parse,
       generate: async (prompt) => { prompts.push(prompt); return valid; },
       originalPrompt: 'sanitized numbered messages 38-39', responseLength: 100,
-      originalAttempt: {
-        attempt_id: `${obligation.tier}-resume`, resumed_pending_obligation: true,
-        prior_recovery_stages_attempted: obligation.stages,
-      },
+      originalAttempt: { attempt_id: `${obligation.tier}-resume` },
+      resumeState: { recovery_stages_attempted: obligation.stages },
       beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
       splitWindow: async () => ({ completed: false }),
     });
@@ -489,15 +487,15 @@ test('sanitized v0.9.62 Nyx window ignores sibling partials and advances beyond 
   const eligibility = deriveRecoveryStageEligibility({
     recovery_stages_attempted: fixture.recovery_stages_attempted,
     exhausted_stages: fixture.exhausted_stages,
-    accepted_partial_record_count: fixture.accepted_partial_record_count_for_child,
+    durable_partial_record_count: fixture.durable_partial_record_count_for_child,
     unresolved_semantic_units: ['65', '66', '67', '68', '69'],
   });
   assert.equal(fixture.root_obligation_id, 'longterm:nyx watson:60-79:fnv1a-11a50c71');
   assert.equal(fixture.child_source_fingerprint, 'fnv1a-5fba3507');
   assert.equal(eligibility.eligible_action, 'single_source_unit_regeneration');
-  assert.equal(eligibility.accepted_partial_record_count, 0);
-  assert.notEqual(eligibility.accepted_partial_record_count,
-    fixture.successful_sibling_range.accepted_partial_record_count);
+  assert.equal(eligibility.durable_partial_record_count, 0);
+  assert.notEqual(eligibility.durable_partial_record_count,
+    fixture.successful_sibling_range.durable_partial_record_count);
 });
 
 test('single-source fallback stages one valid record and one explicit NONE without replaying minimal', async () => {
@@ -546,7 +544,7 @@ test('single-source fallback skips already staged units and records actionable r
       recovery_stages_attempted: ['minimal_record_regeneration'],
       exhausted_stages: ['minimal_record_regeneration'],
       staged_partial_records: [parseExtractionOutput(validLongterm)[0]],
-      completed_source_units: ['65'], accepted_partial_record_count: 1,
+      completed_source_units: ['65'], durable_partial_record_count: 1,
     },
     sourceUnits: [
       { unit_key: '65', citation_index: 0, text: 'Nyx: Prior staged unit.' },
@@ -570,6 +568,24 @@ test('single-source prompt is owner-scoped and contains no neighboring messages'
   assert.doesNotMatch(prompt, /message 64|message 66/i);
   assert.ok(prompt.indexOf('Nyx: One bounded message.') < prompt.indexOf('FINAL OUTPUT CONTRACT'));
   assert.match(prompt, /Do not output brackets, modifiers, JSON, markdown, analysis, prose, or multiple records\.$/);
+});
+
+test('attempt audit evidence cannot substitute for explicit canonical recovery state', async () => {
+  const audit = auditHarness();
+  let calls = 0;
+  await recoverMalformedTaggedOutput({
+    response: null, tier: 'longterm', parse: parseExtractionOutput,
+    generate: async () => { calls++; return 'NONE'; },
+    originalPrompt: 'source', responseLength: 100,
+    originalAttempt: { attempt_id: 'prior', logical_obligation_id: 'root',
+      prior_window_recovery_state: {
+        recovery_stages_attempted: ['single_source_unit_regeneration'],
+        exhausted_stages: ['single_source_unit_regeneration'],
+      } },
+    beginAttempt: audit.beginAttempt, finishAttempt: audit.finishAttempt,
+    sourceUnits: [{ unit_key: '1', citation_index: 0, text: 'A bounded message.' }],
+  });
+  assert.ok(calls > 0, 'audit-only state must not suppress canonical recovery work');
 });
 
 test('single-source pipe contract reconstructs canonical records locally', () => {
@@ -637,7 +653,7 @@ test('v0.9.66 Lillian replay reopens only unresolved units and preserves staged 
       exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
       recovery_implementation_version: 3, implementation_version_changed: true,
       staged_partial_records: [priorOne, priorTwo], completed_source_units: ['171', '173'],
-      accepted_partial_record_count: 2, unresolved_semantic_units: ['170', '172', '174'],
+      durable_partial_record_count: 2, unresolved_semantic_units: ['170', '172', '174'],
       unit_outcomes: [
         { source_unit_key: '170', disposition: 'blocked_validation', recovery_implementation_version: 3 },
         { source_unit_key: '171', disposition: 'record_staged', recovery_implementation_version: 3 },
@@ -676,7 +692,8 @@ test('committed sibling unit records remain counted without duplicate re-persist
       recovery_stages_attempted: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
       exhausted_stages: ['minimal_record_regeneration', 'single_source_unit_regeneration'],
       implementation_version_changed: true, staged_partial_records: [],
-      completed_source_units: ['171', '173'], accepted_partial_record_count: 2,
+      completed_source_units: ['171', '173'],
+      durably_persisted_record_ids: ['longterm-171', 'longterm-173'],
       unit_outcomes: [
         { source_unit_key: '170', disposition: 'blocked_validation', recovery_implementation_version: 3 },
         { source_unit_key: '171', disposition: 'record_staged', recovery_implementation_version: 3 },
@@ -690,6 +707,7 @@ test('committed sibling unit records remain counted without duplicate re-persist
   assert.equal(result.explicit_none, true);
   assert.equal(result.records.length, 0);
   assert.equal(result.durable_partial_record_count, 2);
+  assert.deepEqual(result.durably_persisted_record_ids, ['longterm-171', 'longterm-173']);
   assert.equal(staged.every((item) => item.records.length === 0), true);
   assert.equal(audit.events.length, 0);
 });

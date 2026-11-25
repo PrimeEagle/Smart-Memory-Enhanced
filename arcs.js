@@ -58,11 +58,13 @@ import { generateMemoryExtract, getMemoryInputBudget, retryTransientMemoryOperat
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
-  recordFeaturePersistenceReceipt }
+import { executeFeaturePersistence, executeFeaturePersistenceSync,
+  prepareFeaturePersistenceCommand }
   from './feature-persistence.js';
 import { assignCandidateIdentity } from './candidate-identity.js';
-import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS } from './constants.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
+import { estimateTokens, generateMemoryId, MODULE_NAME, META_KEY, PROMPT_KEY_ARCS,
+  SCHEMA_VERSION } from './constants.js';
 import { buildArcExtractionPrompt, buildArcResolutionClassifierPrompt, buildArcSummaryPrompt, buildArcSummaryVerificationPrompt } from './prompts.js';
 import { parseArcOutput, stripOuterGeneratedWrapper } from './parsers.js';
 import { loadSceneHistory } from './scenes.js';
@@ -74,7 +76,7 @@ import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 import { loadCharacterEntityRegistry, recordIdentityReviewCandidate, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, sanitizeSyntheticIdentityLabels, validateArcParticipants } from './canonical-entities.js';
+import { buildCanonicalRoster, canonicalizeNarrativeNames, canonicalizeStructuredParticipants, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, sanitizeSyntheticIdentityLabels, validateArcParticipants } from './canonical-entities.js';
 import { preverifyArcSummary } from './arc-summary-validation.js';
 
 // ---- Deduplication ------------------------------------------------------
@@ -331,7 +333,7 @@ async function deduplicateArcs(arcs) {
 // ---- Storage ------------------------------------------------------------
 
 function normalizeArcRecord(arc, context = getContext(), roster = null) {
-  const canonicalRoster = roster ?? buildCanonicalCharacterRoster(context);
+  const canonicalRoster = roster ?? buildCanonicalRoster(context);
   const sanitized = sanitizeSyntheticIdentityLabels(arc?.content, canonicalRoster);
   const participantResolution = canonicalizeStructuredParticipants(
     arc?.character_participants,
@@ -371,7 +373,9 @@ export async function saveArcs(arcs, { roster = null } = {}) {
     feature: 'story_arcs', operation: 'replace_arcs', records: staged,
     source_provenance: { validation: 'grounded_arc_records' } });
   await executeFeaturePersistence({ command,
-    snapshot: () => structuredClone(metadata.storyArcs ?? []),
+    snapshot: () => cloneSerializableDomain(metadata.storyArcs ?? [], {
+      path: '$.feature_snapshot.story_arcs', stage: 'feature_snapshot', operation_type: 'story_arcs',
+    }),
     apply: () => { metadata.storyArcs = staged; }, persist: () => saveChatMetadata(context),
     restore: (before) => { metadata.storyArcs = before; }, receipt_container: metadata });
 }
@@ -407,11 +411,7 @@ export async function deleteArc(index, characterName = null) {
  * Empties all story arcs for the current chat.
  */
 export async function clearArcs() {
-  const context = getContext();
-  if (context.chatMetadata?.[META_KEY]) {
-    context.chatMetadata[META_KEY].storyArcs = [];
-    await saveChatMetadata(context);
-  }
+  await saveArcs([]);
 }
 
 // ---- Arc summary storage ------------------------------------------------
@@ -424,32 +424,25 @@ export async function clearArcs() {
  */
 export function loadArcSummaries() {
   const context = getContext();
-  return (context.chatMetadata?.[META_KEY]?.arcSummaries ?? []).map(normalizeArcSummaryRecord);
+  return (context.chatMetadata?.[META_KEY]?.arcSummaries ?? []).map(assertCurrentArcSummaryRecord);
 }
 
 /**
- * Legacy resolved summaries were trusted solely because they inherited source
- * indices. They are derived prose, so retain them but quarantine them until a
- * verifier explicitly confirms semantic support.
+ * Arc summaries are derived evidence and must already carry the current
+ * identity and verification contract before they enter storage or injection.
  */
-export function normalizeArcSummaryRecord(summary) {
-  if (!summary || typeof summary !== 'object') return summary;
-  const legacyId = `arc-summary-${summary.ts ?? 0}-${stableSummaryFingerprint(summary.arc ?? summary.summary ?? '')}`;
-  if (summary.semantic_support) return { ...summary, id: summary.id ?? legacyId };
-  return {
-    ...summary,
-    id: summary.id ?? legacyId,
-    grounding_status: 'derived',
-    validation_status: 'needs_review',
-    semantic_support: 'not_checked',
-    verification_state: 'legacy_unverified',
-  };
-}
-
-function stableSummaryFingerprint(value) {
-  let hash = 0;
-  for (const character of String(value)) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
-  return Math.abs(hash).toString(36);
+export function assertCurrentArcSummaryRecord(summary) {
+  const validSupport = ['supported', 'unsupported', 'ambiguous', 'user_approved'];
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)
+    || !String(summary.id ?? '').trim()
+    || !String(summary.summary ?? '').trim()
+    || !validSupport.includes(summary.semantic_support)
+    || !String(summary.validation_status ?? '').trim()
+    || !String(summary.verification_state ?? '').trim()) throw Object.assign(
+    new Error('Arc summary does not satisfy the current verified-record schema. Run Fresh Start.'), {
+      code: 'SME_FRESH_START_REQUIRED', reason_code: 'arc_summary_schema_mismatch',
+    });
+  return summary;
 }
 
 /**
@@ -461,14 +454,16 @@ export async function saveArcSummaries(summaries) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   const metadata = context.chatMetadata[META_KEY];
-  const staged = summaries.map(normalizeArcSummaryRecord);
+  const staged = summaries.map(assertCurrentArcSummaryRecord);
   const workflowId = metadata.active_catchup_run_id
     ?? context.chatId ?? context.groupId ?? 'interactive-arc-summaries';
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'arc_summaries', operation: 'replace_arc_summaries', records: staged,
     source_provenance: { validation: 'verified_derived_arc_summaries' } });
   await executeFeaturePersistence({ command,
-    snapshot: () => structuredClone(metadata.arcSummaries ?? []),
+    snapshot: () => cloneSerializableDomain(metadata.arcSummaries ?? [], {
+      path: '$.feature_snapshot.arc_summaries', stage: 'feature_snapshot', operation_type: 'arc_summaries',
+    }),
     apply: () => { metadata.arcSummaries = staged; },
     persist: () => saveChatMetadata(context),
     restore: (before) => { metadata.arcSummaries = before; }, receipt_container: metadata });
@@ -478,11 +473,7 @@ export async function saveArcSummaries(summaries) {
  * Empties all arc summaries for the current chat.
  */
 export async function clearArcSummaries() {
-  const context = getContext();
-  if (context.chatMetadata?.[META_KEY]) {
-    context.chatMetadata[META_KEY].arcSummaries = [];
-    await saveChatMetadata(context);
-  }
+  await saveArcSummaries([]);
 }
 
 // ---- Persistent arcs (cross-chat) ----------------------------------------
@@ -508,8 +499,6 @@ export function savePersistentArcs(characterName, arcs) {
   if (!characterName) return;
   if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
   if (!extension_settings[MODULE_NAME].characters) extension_settings[MODULE_NAME].characters = {};
-  if (!extension_settings[MODULE_NAME].characters[characterName])
-    extension_settings[MODULE_NAME].characters[characterName] = {};
   const settings = extension_settings[MODULE_NAME];
   const context = getContext();
   const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
@@ -517,9 +506,18 @@ export function savePersistentArcs(characterName, arcs) {
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'persistent_arcs', operation: 'replace_character_arcs',
     owner: characterName, records: arcs });
-  settings.characters[characterName].persistent_arcs = arcs;
-  recordFeaturePersistenceReceipt(command, settings);
-  saveSettingsDebounced();
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => settings.characters[characterName] ?? null,
+    apply: () => {
+      settings.characters[characterName] = {
+        ...(settings.characters[characterName] ?? {}),
+        schema_version: SCHEMA_VERSION, persistent_arcs: arcs,
+      };
+    }, persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete settings.characters[characterName];
+      else settings.characters[characterName] = before;
+    }, receipt_container: settings });
 }
 
 /**
@@ -550,9 +548,14 @@ export function saveGroupPersistentArcs(groupId, arcs) {
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'persistent_arcs', operation: 'replace_group_arcs',
     owner: groupId, records: arcs });
-  settings.group_arcs[groupId] = arcs;
-  recordFeaturePersistenceReceipt(command, settings);
-  saveSettingsDebounced();
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => settings.group_arcs[groupId] ?? null,
+    apply: () => { settings.group_arcs[groupId] = arcs; },
+    persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete settings.group_arcs[groupId];
+      else settings.group_arcs[groupId] = before;
+    }, receipt_container: settings });
 }
 
 /**
@@ -880,7 +883,7 @@ async function verifyArcSummarySemantics(candidate, evidence) {
 
 /** Classifies an arc before it may be removed from the active store. */
 export async function classifyArcResolution(arc, messages = []) {
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
   const indexed = messages.map((message) => ({ message, index: Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message) }));
   const sourceSet = new Set(arc?.source_message_indices ?? []);
@@ -906,7 +909,7 @@ export async function classifyArcResolution(arc, messages = []) {
 
 /** Rechecks an edited derived summary against its stored arc evidence. */
 export async function reverifyArcSummary(summary) {
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
   const sceneIds = new Set(summary.source_scene_ids ?? []);
   const scenes = loadSceneHistory().filter((scene) => sceneIds.has(scene.ts));
@@ -930,28 +933,6 @@ export async function reverifyArcSummary(summary) {
   summary.validation_issues = semanticVerification.reason ? [semanticVerification.reason] : [];
   summary.verification_state = 'reverified_after_edit';
   return summary;
-}
-
-/** Persists the derived-summary safety fields for legacy chat data once. */
-export async function migrateLegacyArcSummaries() {
-  const context = getContext();
-  const summaries = context.chatMetadata?.[META_KEY]?.arcSummaries;
-  if (!Array.isArray(summaries) || summaries.length === 0) return 0;
-  const normalized = summaries.map(normalizeArcSummaryRecord);
-  const changed = normalized.reduce((count, item, index) => {
-    const original = summaries[index] ?? {};
-    return count + Number(
-      original.id !== item.id ||
-      original.grounding_status !== item.grounding_status ||
-      original.validation_status !== item.validation_status ||
-      original.semantic_support !== item.semantic_support ||
-      original.verification_state !== item.verification_state,
-    );
-  }, 0);
-  if (changed === 0) return 0;
-  context.chatMetadata[META_KEY].arcSummaries = normalized;
-  await saveChatMetadata(context);
-  return changed;
 }
 
 /**
@@ -992,7 +973,7 @@ export async function generateArcSummary(resolvedArc, messages = []) {
     : messages.slice(-6)
     .map((message) => Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : getContext().chat.indexOf(message))
     .filter((index) => Number.isInteger(index) && index >= 0));
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const canonicalParticipants = (roster.characters ?? []).map((entry) => entry.canonicalName).join('\n');
   const prompt = buildArcSummaryPrompt(arcContent, sceneSummaries, memoriesText, canonicalParticipants);
   const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.ARC_EXTRACTION), {
@@ -1126,7 +1107,7 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
     // should be invisible to extraction to prevent duplicate resolutions.
     const activeExisting = existing.filter((a) => !a.resolved);
     const existingText = activeExisting.map((a) => `[arc] ${a.content}`).join('\n');
-    const roster = buildCanonicalCharacterRoster(getContext());
+    const roster = buildCanonicalRoster(getContext());
     const responses = [];
     for (const window of extractionWindows) {
       if (abortCheck?.()) return 0;
@@ -1158,8 +1139,6 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
 
     if (!response || response.trim().toUpperCase() === 'NONE') {
       if (arcExtraction) {
-        arcExtraction.completed = (arcExtraction.completed ?? 0) + 1;
-        arcExtraction.returned_none = (arcExtraction.returned_none ?? 0) + 1;
         arcExtraction.request_completed = (arcExtraction.request_completed ?? 0) + 1;
         arcExtraction.returned_none = (arcExtraction.returned_none ?? 0) + 1;
         arcExtraction.terminal_outcome = 'returned_none';
@@ -1556,7 +1535,6 @@ export async function extractArcs(messages, characterName = null, abortCheck = n
   } catch (err) {
     if (arcExtraction) {
       const status = Number(err?.sme_request_diagnostics?.http_status ?? err?.status);
-      arcExtraction.provider_error = (arcExtraction.provider_error ?? 0) + 1;
       arcExtraction.provider_error = (arcExtraction.provider_error ?? 0) + 1;
       arcExtraction.http_status = Number.isFinite(status) ? status : null;
       arcExtraction.error_class = status === 400 ? 'bad_request' : 'provider_error';

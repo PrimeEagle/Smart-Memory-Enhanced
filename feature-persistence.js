@@ -1,6 +1,7 @@
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
 import { preparePersistenceCommand } from './persistence-command.js';
-import { assertSerializableDomain, immutableSerializableDomain } from './serializable-domain.js';
+import { assertSerializableDomain, cloneSerializableDomain,
+  immutableSerializableDomain } from './serializable-domain.js';
 
 const fingerprint = (value) => {
   let hash = 2166136261;
@@ -79,7 +80,11 @@ export function prepareFeaturePersistenceCommand({
       accepted_candidate_ids: candidateIds },
     validation_outcome: { status: records.length ? 'accepted' : 'validated_no_update',
       accepted_candidate_ids: candidateIds },
-    persistence_outcome: { status: records.length ? 'committed' : 'not_required',
+    // Replacing a domain snapshot with an empty collection is still a durable
+    // mutation (a clear), not an explicit no-update outcome.  Feature commands
+    // are effect requests by construction; callers that have no effect should
+    // not dispatch a command.
+    persistence_outcome: { status: 'committed',
       durable_record_ids: durableIds, durable_record_candidate_map: candidateMap,
       source_provenance: fallback },
     durable_records: descriptors.map((record) => ({ ...record,
@@ -87,8 +92,8 @@ export function prepareFeaturePersistenceCommand({
     idempotency_keys: [id, ...descriptors.map((record) =>
       `${id}:record:${record.record_id}`)],
     duplicate_no_update_disposition: records.length
-      ? 'replace_validated_domain_snapshot' : 'verified_empty_snapshot',
-    intended_state_transition: records.length ? 'durably_committed' : 'explicit_no_update',
+      ? 'replace_validated_domain_snapshot' : 'clear_validated_domain_snapshot',
+    intended_state_transition: 'durably_committed',
     checkpoint_effect: { feature, operation, checkpoint_eligible_on_commit: true },
     journal_receipt_identity: id,
   });
@@ -101,7 +106,10 @@ export function recordFeaturePersistenceReceipt(command, receiptContainer) {
     workflow_id: prepared.workflow_id, feature: prepared.tier,
     owner: prepared.owner ?? null, durable_record_count: prepared.durable_records.length,
     intended_state_transition: prepared.intended_state_transition,
-    checkpoint_effect: structuredClone(prepared.checkpoint_effect), committed_at: Date.now(),
+    checkpoint_effect: cloneSerializableDomain(prepared.checkpoint_effect, {
+      path: '$.feature_persistence_receipt.checkpoint_effect',
+      stage: 'feature_receipt_construction', operation_type: prepared.tier,
+    }), committed_at: Date.now(),
   }, {
     path: '$.feature_persistence_receipt', stage: 'feature_receipt_construction',
     operation_type: prepared.tier, obligation_id: prepared.obligation_leaf_id,
@@ -121,7 +129,10 @@ export async function executeFeaturePersistence({ command, snapshot, apply, pers
   const prepared = preparePersistenceCommand(command);
   const before = snapshot?.();
   const priorReceipts = receiptContainer
-    ? structuredClone(receiptContainer.durable_persistence_receipts ?? []) : null;
+    ? cloneSerializableDomain(receiptContainer.durable_persistence_receipts ?? [], {
+      path: '$.feature_persistence.prior_receipts', stage: 'feature_receipt_snapshot',
+      operation_type: prepared.tier,
+    }) : null;
   try {
     await apply(prepared);
     const receipt = recordFeaturePersistenceReceipt(prepared, receiptContainer);
@@ -132,6 +143,44 @@ export async function executeFeaturePersistence({ command, snapshot, apply, pers
     });
   } catch (error) {
     await restore?.(before);
+    if (receiptContainer) {
+      if (priorReceipts.length) receiptContainer.durable_persistence_receipts = priorReceipts;
+      else delete receiptContainer.durable_persistence_receipts;
+    }
+    error.sme_failure_stage ??= 'storage_write';
+    error.sme_reason_code ??= 'feature_persistence_storage_failure';
+    error.sme_persistence_command_id = prepared.command_id;
+    throw error;
+  }
+}
+
+/**
+ * Synchronous form for SillyTavern's extension-settings store. The same
+ * validated command, receipt, snapshot, and rollback rules apply; callers may
+ * not publish a receipt by mutating the settings object directly.
+ */
+export function executeFeaturePersistenceSync({ command, snapshot, apply, persist,
+  restore, receipt_container: receiptContainer = null } = {}) {
+  const prepared = preparePersistenceCommand(command);
+  const before = cloneSerializableDomain(snapshot?.(), {
+    path: '$.feature_persistence.snapshot', stage: 'feature_snapshot',
+    operation_type: prepared.tier,
+  });
+  const priorReceipts = receiptContainer
+    ? cloneSerializableDomain(receiptContainer.durable_persistence_receipts ?? [], {
+      path: '$.feature_persistence.prior_receipts', stage: 'feature_receipt_snapshot',
+      operation_type: prepared.tier,
+    }) : null;
+  try {
+    apply(prepared);
+    const receipt = recordFeaturePersistenceReceipt(prepared, receiptContainer);
+    persist(prepared, receipt);
+    return immutableSerializableDomain({ status: 'committed', command: prepared, receipt }, {
+      path: '$.feature_persistence_result', stage: 'feature_result_construction',
+      operation_type: prepared.tier, obligation_id: prepared.obligation_leaf_id,
+    });
+  } catch (error) {
+    restore?.(before);
     if (receiptContainer) {
       if (priorReceipts.length) receiptContainer.durable_persistence_receipts = priorReceipts;
       else delete receiptContainer.durable_persistence_receipts;

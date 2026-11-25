@@ -25,6 +25,16 @@ const identity = (id = 'session:chat:0-19:test') => ({
   source_range: { start: 0, end: 19 }, source_fingerprint: 'test',
 });
 
+function registerAndStart(ledger, id, attemptId) {
+  const registered = applyMemorizeLifecycleEvent(ledger, id, {
+    type: 'provider_attempt_registered', provider_attempt_id: attemptId,
+  });
+  if (registered.applied !== true) return registered;
+  return applyMemorizeLifecycleEvent(ledger, id, {
+    type: 'provider_attempt_started', provider_attempt_id: attemptId,
+  });
+}
+
 function completeLeaf(ledger, item) {
   return applyMemorizeLifecycleEvent(ledger, {
     obligation_id: item.obligation_id, logical_run_id: fixture.logical_run_id,
@@ -49,9 +59,7 @@ function staleFixtureLedger() {
     if (item.state === 'durably_committed') completeLeaf(ledger, item);
     else {
       const attempt = `fixture:${item.range.join('-')}`;
-      applyMemorizeLifecycleEvent(ledger, current, {
-        type: 'provider_attempt_started', provider_attempt_id: attempt,
-      });
+      registerAndStart(ledger, current, attempt);
       applyMemorizeLifecycleEvent(ledger, current, {
         type: 'provider_response_received', provider_attempt_id: attempt,
       });
@@ -81,7 +89,7 @@ function staleFixtureLedger() {
 function normalSuccess() {
   const ledger = createMemorizeObligationLedger('run', 1);
   const id = identity();
-  applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: 'a1' });
+  registerAndStart(ledger, id, 'a1');
   applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_response_received', provider_attempt_id: 'a1' });
   applyMemorizeLifecycleEvent(ledger, id, { type: 'parser_accepted', provider_attempt_id: 'a1' });
   applyMemorizeLifecycleEvent(ledger, id, { type: 'validation_accepted', provider_attempt_id: 'a1' });
@@ -96,7 +104,7 @@ test('1 original Session response succeeds through semantic events', () => {
 test('2 provider response is recorded before parser acceptance', () => {
   const { ledger } = normalSuccess();
   assert.deepEqual(ledger.obligations[identity().obligation_id].transition_history.slice(0, 3)
-    .map((item) => item.to), ['provider_running', 'provider_response_received', 'parser_accepted']);
+    .map((item) => item.to), ['provider_registered', 'provider_running', 'provider_response_received']);
 });
 test('3 parser acceptance without response is rejected fail closed', () => {
   const ledger = createMemorizeObligationLedger('run');
@@ -107,27 +115,31 @@ test('3 parser acceptance without response is rejected fail closed', () => {
 test('4 retry requires a pending recovery disposition', () => {
   const ledger = createMemorizeObligationLedger('run');
   const id = identity();
-  applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: 'a1' });
+  registerAndStart(ledger, id, 'a1');
   applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_response_received', provider_attempt_id: 'a1' });
-  const result = applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: 'a2' });
-  assert.equal(result.violation.code, 'provider_retry_started_before_prior_attempt_disposition');
+  const result = applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_registered', provider_attempt_id: 'a2' });
+  assert.equal(result.violation.code, 'provider_retry_registered_before_prior_attempt_disposition');
 });
 test('5 retry follows response parser rejection pending then running', () => {
   const ledger = createMemorizeObligationLedger('run'); const id = identity();
   for (const event of [
+    { type: 'provider_attempt_registered', provider_attempt_id: 'a1' },
     { type: 'provider_attempt_started', provider_attempt_id: 'a1' },
     { type: 'provider_response_received', provider_attempt_id: 'a1' },
     { type: 'parser_rejected', provider_attempt_id: 'a1' },
-    { type: 'recovery_required', reason_code: 'malformed', next_action: 'retry' },
+    { type: 'recovery_required', reason_code: 'malformed', next_action: 'dispatch_provider_request' },
+    { type: 'provider_attempt_registered', provider_attempt_id: 'a2' },
     { type: 'provider_attempt_started', provider_attempt_id: 'a2' },
   ]) assert.equal(applyMemorizeLifecycleEvent(ledger, id, event).applied, true);
   assert.equal(ledger.obligations[id.obligation_id].current_state, 'provider_running');
 });
 test('6 physical retries remain in attempt lineage', () => {
   const ledger = createMemorizeObligationLedger('run'); const id = identity();
-  for (const event of [{ type: 'provider_attempt_started', provider_attempt_id: 'a1' },
+  for (const event of [{ type: 'provider_attempt_registered', provider_attempt_id: 'a1' },
+    { type: 'provider_attempt_started', provider_attempt_id: 'a1' },
     { type: 'provider_response_received', provider_attempt_id: 'a1' }, { type: 'parser_rejected' },
-    { type: 'recovery_required', reason_code: 'bad', next_action: 'retry' },
+    { type: 'recovery_required', reason_code: 'bad', next_action: 'dispatch_provider_request' },
+    { type: 'provider_attempt_registered', provider_attempt_id: 'a2' },
     { type: 'provider_attempt_started', provider_attempt_id: 'a2' }]) applyMemorizeLifecycleEvent(ledger, id, event);
   assert.deepEqual(ledger.obligations[id.obligation_id].provider_attempt_lineage, ['a1', 'a2']);
 });
@@ -176,9 +188,9 @@ test('12 parent aggregation makes no provider call', () => {
 test('13 journal replay closes a crash-stranded leaf', () => {
   const ledger = createMemorizeObligationLedger(fixture.logical_run_id);
   const entry = fixture.journal[0]; const item = fixture.obligations[3];
-  applyMemorizeLifecycleEvent(ledger, { obligation_id: item.obligation_id, tier: 'session',
+  registerAndStart(ledger, { obligation_id: item.obligation_id, tier: 'session',
     source_range: { start: 50, end: 54 }, source_fingerprint: item.fingerprint },
-  { type: 'provider_attempt_started', provider_attempt_id: entry.attempt_id });
+  entry.attempt_id);
   const result = reconcileMemorizeLifecycleFromJournal(ledger, { journal: [entry], coverage_records: [] });
   assert.equal(result.ledger.obligations[item.obligation_id].current_state, 'durably_committed');
 });
@@ -277,12 +289,14 @@ test('28 unactionable pending obligation still fails the invariant', () => {
 });
 test('29 genuine unresolved recovery has typed action', () => {
   const ledger = createMemorizeObligationLedger('run'); const id = identity();
-  applyMemorizeLifecycleEvent(ledger, id, { type: 'recovery_required', reason_code: 'bad', next_action: 'retry' });
-  assert.equal(ledger.obligations[id.obligation_id].next_eligible_action, 'retry');
+  applyMemorizeLifecycleEvent(ledger, id, {
+    type: 'recovery_required', reason_code: 'bad', next_action: 'dispatch_provider_request',
+  });
+  assert.equal(ledger.obligations[id.obligation_id].next_eligible_action, 'dispatch_provider_request');
 });
 test('30 terminal states remain monotonic', () => {
   const { ledger, id } = normalSuccess();
-  const result = applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: 'late' });
+  const result = applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_registered', provider_attempt_id: 'late' });
   assert.equal(result.applied, false);
   assert.equal(ledger.obligations[id.obligation_id].current_state, 'durably_committed');
 });
@@ -294,7 +308,7 @@ test('31 serialized resume uses the same semantic event history', () => {
 });
 test('32 interruption boundaries reconcile running attempts to actionable recovery', () => {
   const ledger = createMemorizeObligationLedger('run'); const id = identity();
-  applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: 'a1' });
+  registerAndStart(ledger, id, 'a1');
   reconcileMemorizeRunningObligations(ledger, { recent_attempts: [{ attempt_id: 'a1',
     logical_obligation_id: id.obligation_id, terminal_outcome: 'provider_response_malformed' }] });
   assert.ok(ledger.obligations[id.obligation_id].next_eligible_action);
@@ -323,7 +337,7 @@ for (const [index, parser, validation] of [
   ['rejected', 'parser_rejected', null],
 ]) test(`property lifecycle combination ${index} remains canonical`, () => {
   const ledger = createMemorizeObligationLedger('run'); const id = identity(`property:${index}`);
-  applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_attempt_started', provider_attempt_id: `a:${index}` });
+  registerAndStart(ledger, id, `a:${index}`);
   applyMemorizeLifecycleEvent(ledger, id, { type: 'provider_response_received', provider_attempt_id: `a:${index}` });
   assert.equal(applyMemorizeLifecycleEvent(ledger, id, { type: parser }).applied, true);
   if (validation) assert.equal(applyMemorizeLifecycleEvent(ledger, id, { type: validation }).applied, true);

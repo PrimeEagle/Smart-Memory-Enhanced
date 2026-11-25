@@ -131,7 +131,7 @@ test('Session controller boundary returns typed expected outcomes and preserves 
     sme_reason_code: 'recovery_stage_ladder_exhausted',
     sme_obligation_id: 'session:40-59',
     sme_request_diagnostics: {
-      next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments',
+      next_eligible_recovery_action: 'dispatch_provider_request',
       consumed_requests: 2, remaining_requests: 0,
     },
   });

@@ -5,7 +5,6 @@ const clone = (value) => cloneSerializableDomain(value, {
   path: '$.persistence_command', stage: 'persistence_command_validation',
   operation_type: value?.operation_type ?? value?.tier ?? null,
   obligation_id: value?.obligation_leaf_id ?? null,
-  allow_undefined: true,
 });
 const unique = (items = []) => [...new Set((Array.isArray(items) ? items : [])
   .map((item) => String(item ?? '').trim()).filter(Boolean))];
@@ -69,17 +68,25 @@ function validateDurableMappings(parser, persistence) {
 
 /** Domain-neutral, immutable validation boundary used by every provider writer. */
 export function preparePersistenceCommand(commandValue = {}) {
-  const command = clone(commandValue);
-  command.schema_version = PERSISTENCE_COMMAND_SCHEMA_VERSION;
-  providerCompletionIdentity(command);
-  const parser = normalizedParserOutcome(command.parser_outcome);
-  const validation = normalizedValidationOutcome(command.validation_outcome);
-  const rawDurableIds = (command.persistence_outcome?.durable_record_ids ?? [])
+  const rawDurableIds = (commandValue.persistence_outcome?.durable_record_ids ?? [])
     .map((value) => String(value ?? '').trim()).filter(Boolean);
   if (new Set(rawDurableIds).size !== rawDurableIds.length) throw Object.assign(
     new Error('A persistence command cannot contain duplicate durable record IDs.'), {
       code: 'SME_PERSISTENCE_COMMAND_DUPLICATE_RECORD_ID',
     });
+  // Normalize the three optional outcome sub-schemas before the strict clone.
+  // A transport failure legitimately has no parser result; representing that
+  // state is the command builder's responsibility, not the clone boundary's.
+  const command = clone({
+    ...commandValue,
+    parser_outcome: normalizedParserOutcome(commandValue.parser_outcome ?? {}),
+    validation_outcome: normalizedValidationOutcome(commandValue.validation_outcome ?? {}),
+    persistence_outcome: normalizedPersistence(commandValue.persistence_outcome ?? {}),
+  });
+  command.schema_version = PERSISTENCE_COMMAND_SCHEMA_VERSION;
+  providerCompletionIdentity(command);
+  const parser = normalizedParserOutcome(command.parser_outcome);
+  const validation = normalizedValidationOutcome(command.validation_outcome);
   const persistence = normalizedPersistence(command.persistence_outcome);
   const required = {
     workflow_id: command.workflow_id,

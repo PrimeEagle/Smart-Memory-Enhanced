@@ -67,7 +67,7 @@ export function validateFinalizedEntityRedirects(redirects = {}, finalizedRegist
       finalized_registry_scope: 'finalized_reconciliation_registry',
       finalized_registry_membership: Boolean(result.terminal),
       live_reference_count_before_repair: liveBefore,
-      created_stage: redirect.created_stage ?? redirect.originating_stage ?? 'legacy_unknown',
+      created_stage: redirect.created_stage ?? redirect.originating_stage ?? 'unrecorded',
       validation_stage: 'finalized_redirect_validation',
     };
     if (!result.terminal) {

@@ -45,6 +45,9 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { annotatePreTransmissionFailure } from './provider-dispatch-boundary.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
+import { assertCurrentMemoryRecord } from './memory-store-schema.js';
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
 import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
   from './feature-persistence.js';
@@ -59,7 +62,6 @@ import {
   MAX_RETIRED_POOL,
 } from './constants.js';
 import {
-  applyGraphDefaults,
   loadSessionEntityRegistry,
   saveSessionEntityRegistry,
   resolveEntityNames,
@@ -79,7 +81,7 @@ import {
   getHardwareProfile,
 } from './embeddings.js';
 import { loadCharacterMemories, formatMemoriesForPrompt } from './longterm.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt } from './canonical-entities.js';
+import { buildCanonicalRoster, canonicalizeNarrativeNames, formatCanonicalRosterForPrompt } from './canonical-entities.js';
 import {
   buildCurrentSceneStateBlock,
   prioritizeMemories,
@@ -220,28 +222,6 @@ async function verifySessionCandidates(candidates, existing) {
 
 // ---- Storage (chatMetadata) ---------------------------------------------
 
-/**
- * Legacy session records sometimes predate graph IDs.  A random ID created on
- * every read made an otherwise no-op reconciliation look like a durable graph
- * change.  Derive the legacy ID from stable record identity instead; the next
- * ordinary save persists it once without changing its future value.
- */
-function deterministicLegacySessionMemoryId(memory = {}) {
-  const identity = JSON.stringify({
-    type: memory.type ?? 'session',
-    content: memory.content ?? '',
-    ts: memory.ts ?? 0,
-    source_message_indices: [...new Set((memory.source_message_indices ?? []).map(Number).filter(Number.isInteger))].sort((a, b) => a - b),
-    source_messages: [...new Set((memory.source_messages ?? []).map(String))].sort(),
-  });
-  let hash = 2166136261;
-  for (const char of identity) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `sme-session-fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
-}
-
 // Privacy-safe and stable across harmless whitespace changes.  It is used
 // only to associate a citation-repair response with an already extracted
 // candidate; the provider's returned claim text is never persisted.
@@ -257,34 +237,26 @@ function stableCitationClaimHash(candidate = {}) {
 
 /**
  * Returns the session memory array for the current chat.
- * Migrates legacy entries (no consolidated flag) to consolidated: true on load
- * so existing memories are treated as the stable base.
+ * Reads current-schema records and applies non-identity scoring defaults.
  * @returns {Array<{type: string, content: string, ts: number, consolidated: boolean}>}
  */
 export function loadSessionMemories() {
   const context = getContext();
   const memories = context.chatMetadata?.[META_KEY]?.sessionMemories ?? [];
-  // Migrate: entries without the consolidated flag are pre-existing stable memories.
-  // Entries without an importance score default to 2 (medium).
-  // applyGraphDefaults is a safety net for entries that predate the one-shot
-  // migration pass. It is non-destructive and only generates a new id when one
-  // is truly absent.
-  return memories.map((m) =>
-    applyGraphDefaults({
+  return memories.map((m) => {
+    assertCurrentMemoryRecord(m, 'session');
+    return ({
       ...m,
-      id: m.id ?? deterministicLegacySessionMemoryId(m),
-      consolidated: m.consolidated ?? true,
+      consolidated: m.consolidated,
       importance: m.importance ?? 2,
       expiration: m.expiration ?? 'session',
       confidence: m.confidence ?? 0.7,
       persona_relevance: m.persona_relevance ?? (m.type === 'development' ? 2 : 1),
       intimacy_relevance: m.intimacy_relevance ?? (m.type === 'development' ? 2 : 1),
       retrieval_count: m.retrieval_count ?? 0,
-      // Fall back to 0 (not Date.now()) when both fields are absent so legacy
-      // entries don't receive an artificial recency boost in memoryUtilityScore.
       last_confirmed_ts: m.last_confirmed_ts ?? m.ts ?? 0,
-    }),
-  );
+    });
+  });
 }
 
 /**
@@ -302,7 +274,9 @@ export async function saveSessionMemories(memories) {
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'session', operation: 'replace_session_memories', records: memories ?? [] });
   await executeFeaturePersistence({ command,
-    snapshot: () => structuredClone(metadata.sessionMemories ?? []),
+    snapshot: () => cloneSerializableDomain(metadata.sessionMemories ?? [], {
+      path: '$.feature_snapshot.session', stage: 'feature_snapshot', operation_type: 'session',
+    }),
     apply: () => { metadata.sessionMemories = memories; },
     persist: () => saveChatMetadata(context),
     restore: (before) => { metadata.sessionMemories = before; },
@@ -484,7 +458,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // chunk used by catch-up scheduling. Stored-memory and roster framing can
     // otherwise push a seemingly safe source window past the provider limit.
     const responseLength = settings.session_response_length ?? 500;
-    const rosterText = formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()));
+    const rosterText = formatCanonicalRosterForPrompt(buildCanonicalRoster(getContext()));
     const renderPrompt = (messages) => applyPromptOverride(
       buildSessionExtractionPrompt(
         messages.map((m, index) => `[${index}] ${m.name}: ${m.mes}`).join('\n\n'),
@@ -543,7 +517,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       expectedOutputFormat: primaryProviderRequest.protocol,
       schemaVersion: primaryProviderRequest.protocol,
     });
-    const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
+    const { coverageBase, rootObligationId, leafObligationId } = pipeline;
     const recordCompletedCoverage = pipeline.recordCompletedCoverage;
     const emitLifecycleEvent = pipeline.emitLifecycleEvent;
     const beginPhysicalAttempt = pipeline.beginAttempt;
@@ -682,7 +656,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           },
           onCommitted: async (child, { key: childKey }) => {
             const childRange = sourceRange(child);
-          await execution.hooks.context_overflow_child_committed({
+          await execution.hooks.recovery_child_completed({
             key: childKey, tier: 'session', owner: null,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
@@ -690,20 +664,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             split_reason: reason, provider_parent_attempt_id: parentAttemptId,
           });
           },
-        });
-        await execution.hooks.recovery_child_manifest_updated({
-          schema_version: 2, root_obligation_id: rootObligationId, tier: 'session',
-          registered_children: split.partitions.map((child) => {
-            const childRange = sourceRange(child);
-            return `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${sourceWindowFingerprint(child)}`;
-          }),
-          terminal_children_skipped: schedule.terminal_skipped_task_keys,
-          locally_repaired_children: schedule.locally_repaired_task_keys,
-          selected_incomplete_child: schedule.selected_incomplete_task_key,
-          reason_no_child_selected: schedule.reason_no_task_selected,
-          parent_aggregation_status: schedule.parent_aggregation_status,
-          next_sibling_action: schedule.next_sibling_action,
-          updated_at: Date.now(),
         });
         added = schedule.added;
       } catch (err) {
@@ -816,7 +776,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         onCommitted: async (child, { key: childKey }) => {
           const childRange = sourceRange(child);
         budget.split_children_committed.push(childKey);
-        await execution.hooks.context_overflow_child_committed({
+        await execution.hooks.recovery_child_completed({
           key: childKey, tier: 'session', owner: null,
           source_start_index: childRange.start, source_end_index: childRange.end,
           message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
@@ -824,20 +784,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           split_reason: 'malformed_output_repartition', malformed_reason: reason,
         });
         },
-      });
-      await execution.hooks.recovery_child_manifest_updated({
-        schema_version: 2, root_obligation_id: rootObligationId, tier: 'session',
-        registered_children: children.map((child) => {
-          const childRange = sourceRange(child);
-          return `${rootObligationId}:leaf:${childRange.start}-${childRange.end}:${sourceWindowFingerprint(child)}`;
-        }),
-        terminal_children_skipped: schedule.terminal_skipped_task_keys,
-        locally_repaired_children: schedule.locally_repaired_task_keys,
-        selected_incomplete_child: schedule.selected_incomplete_task_key,
-        reason_no_child_selected: schedule.reason_no_task_selected,
-        parent_aggregation_status: schedule.parent_aggregation_status,
-        next_sibling_action: schedule.next_sibling_action,
-        updated_at: Date.now(),
       });
       added = schedule.added;
       if (!schedule.completed) return { completed: false, reason: schedule.pause_reason };
@@ -907,7 +853,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       && resumeEligibility?.blocked === true) {
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
-        next_eligible_action: 'change_provider_configuration_or_install_updated_build',
+        next_eligible_action: 'stop_blocked',
         recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
       });
       const blocked = new Error('Session recovery has no eligible changed recovery stage.');
@@ -936,8 +882,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       if (!partialVerification.verified) {
         await emitLifecycleEvent('obligation_blocked', {
           exact_reason_code: 'committed_partial_record_verification_failed',
-          next_eligible_action: 'inspect_or_restore_committed_partial_record',
-          recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
+          next_eligible_action: 'stop_blocked',
+          recovery_intent: 'inspect_or_restore_committed_partial_record', recovery_stage: null,
           metrics: { partial_record_verification: partialVerification },
         });
         const verificationError = new Error('Committed partial Session record could not be verified before Resume.');
@@ -947,11 +893,10 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         throw verificationError;
       }
       markProviderPartialRecordsPersisted(providerMetadata, rootObligationId,
-        partialVerification.expected_count, coverageBase.source_fingerprint,
-        partialVerification.record_ids);
+        coverageBase.source_fingerprint, partialVerification.record_ids);
       await emitLifecycleEvent('recovery_required', {
         exact_reason_code: 'resume_epoch_ready',
-        next_eligible_action: resumeEligibility?.eligible_action ?? 'fragment_decision_regeneration',
+        next_eligible_action: 'dispatch_provider_request',
         recovery_intent: 'recover_unresolved_partial_output_fragments',
         recovery_stage: resumeEligibility?.eligible_action ?? 'fragment_decision_regeneration',
         persistence_result: 'partial_records_committed',
@@ -992,7 +937,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       await emitLifecycleEvent('obligation_blocked', {
         exact_reason_code: resumeEligibility.reason_code
           ?? 'all_recovery_stages_exhausted_for_unchanged_inputs',
-        next_eligible_action: 'change_provider_configuration_or_install_updated_build',
+        next_eligible_action: 'stop_blocked',
         recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: null,
       });
       const blocked = new Error('Session recovery has no eligible changed recovery stage.');
@@ -1012,10 +957,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         source_fingerprint: coverageBase.source_fingerprint,
       }) : null;
     const journalReplayMode = Boolean(journaledCurrentCompletion?.response_text != null
-      && ['continue_pending_downstream_processing',
-        'replay_terminal_provider_downstream_lifecycle',
-        'reconcile_terminal_attempt_evidence']
-        .includes(execution.provider.selected_recovery_action));
+      && execution.provider.selected_recovery_action === 'apply_journaled_provider_completion');
     const recoveryOnlyMode = !automaticFragmentRecovery
       && (execution.provider.resumed_pending_obligation && Boolean(resumeRecoveryState)
         || resumeEligibility?.eligible_action === 'single_source_unit_regeneration');
@@ -1051,7 +993,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           root_obligation_id: rootObligationId,
           leaf_obligation_id: leafObligationId,
           provider_call_required: false,
-          next_eligible_action: registeredIngress.next_action ?? 'resume_exact_obligation',
+          next_eligible_action: registeredIngress.next_action ?? 'dispatch_provider_request',
         };
         throw pause;
       }
@@ -1060,7 +1002,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       error.sme_recovery_blocked = true;
       error.sme_obligation_id = rootObligationId;
       error.sme_request_diagnostics = registeredIngress;
-      throw error;
+      throw annotatePreTransmissionFailure(error, {
+        fallback_stage: 'provider_attempt_registration',
+      });
     }
     const providerAttempt = journalReplayMode
       ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
@@ -1095,11 +1039,16 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         response = automaticFragmentRecovery.response;
         providerResponseReceived = true;
       } else if (!recoveryOnlyMode) {
-        providerRequestSent = true;
         await pipeline.recordActionReceipt('provider_request_started', {
           action: journalReplayMode ? 'apply_journaled_provider_completion'
             : 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
         });
+        await pipeline.markProviderDispatchStarted(providerAttempt);
+        // This flag describes a real transport boundary, not local attempt
+        // allocation or a request-start receipt. Nothing below may classify
+        // the failure as provider transport unless durable dispatch authority
+        // was published first.
+        providerRequestSent = true;
         response = await pipeline.executeSelectedAction('dispatch_provider_request',
           async () => generateMemoryExtract(primaryProviderRequest.prompt, {
             responseLength,
@@ -1129,6 +1078,19 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
           reason_code: err?.code ?? err?.name ?? 'provider_dispatch_failed',
         }).catch(() => undefined);
       }
+      if (!providerRequestSent) {
+        const localError = annotatePreTransmissionFailure(err);
+        healthFinish({ provider_outcome: 'request_not_sent_internal_error',
+          terminal_health: 'local_execution_failure',
+          attention_reason_codes: [localError.code ?? 'provider_dispatch_publication_failed'] });
+        recordExtractionCoverage(coverageLedger, {
+          ...coverageBase,
+          request_sent: false,
+          provider_outcome: 'request_not_sent_internal_error',
+          coverage_terminal_state: 'unresolved_local_execution_failure',
+        });
+        throw localError;
+      }
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
         finishProviderAttempt(providerMetadata, providerAttempt, {
@@ -1157,13 +1119,13 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         attempt_id: providerAttempt?.attempt_id,
         transport_status: 'failed', terminal: false,
         reason_code: failureReason,
-        next_action: 'dispatch_bounded_recovery_attempt',
+        next_action: 'dispatch_provider_request',
         raw_response_reference: null,
       });
       else await emitLifecycleEvent('provider_transport_failed', {
         provider_attempt_id: providerAttempt?.attempt_id ?? null,
         exact_reason_code: failureReason,
-        next_eligible_action: 'dispatch_bounded_recovery_attempt',
+        next_eligible_action: 'dispatch_provider_request',
         recovery_intent: 'recover_provider_transport_failure',
       });
       if (err && typeof err === 'object') {
@@ -1297,7 +1259,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
             error.sme_recovery_blocked = true;
             error.sme_request_diagnostics = ingress;
-            throw error;
+            throw annotatePreTransmissionFailure(error, {
+              fallback_stage: 'provider_attempt_registration',
+            });
+          }
+          try {
+            await pipeline.markProviderDispatchStarted(attempt);
+          } catch (error) {
+            throw annotatePreTransmissionFailure(error);
           }
         },
         onAttemptSettled: async (attempt, detail = {}) => {
@@ -1307,7 +1276,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               attempt_id: attempt.attempt_id,
               transport_status: 'failed', terminal: false,
               reason_code: attempt.failure_classification ?? 'provider_transport_failure',
-              next_action: 'dispatch_bounded_recovery_attempt',
+              next_action: 'dispatch_provider_request',
               raw_response_reference: null,
               recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
             });
@@ -1315,7 +1284,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               provider_attempt_id: attempt.attempt_id,
               exact_reason_code: attempt.failure_classification
                 ?? 'provider_transport_failure',
-              next_eligible_action: 'dispatch_bounded_recovery_attempt',
+              next_eligible_action: 'dispatch_provider_request',
             });
             return;
           }
@@ -1325,7 +1294,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               terminal: false,
               reason_code: detail.malformed_reason ?? attempt.malformed_reason
                 ?? 'malformed_provider_output',
-              next_action: 'dispatch_bounded_recovery_attempt',
+              next_action: 'dispatch_provider_request',
               raw_response_reference: { retained: false, digest: attempt.response_hash ?? null },
               parser_outcome: { status: 'rejected', accepted_candidate_ids: [],
                 rejected_fragment_ids: [], reason_code: detail.malformed_reason
@@ -1339,7 +1308,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               const settled = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
                 evidence: attempt,
                 reason_code: detail.malformed_reason ?? attempt.malformed_reason,
-                next_action: 'dispatch_bounded_recovery_attempt',
+                next_action: 'dispatch_provider_request',
                 recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
               });
               if (!['pending_reconciliation', 'operationally_paused',
@@ -1368,7 +1337,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             await emitLifecycleEvent('recovery_required', {
               provider_attempt_id: attempt.attempt_id,
               exact_reason_code: 'partial_output_pending',
-              next_action: 'dispatch_bounded_recovery_attempt',
+              next_action: 'dispatch_provider_request',
             });
           }
         },
@@ -1392,8 +1361,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               exact_reason_code: terminalAttempt.failure_classification
                 ?? 'provider_transport_failure',
               next_eligible_action: recoveryError?.sme_recovery_blocked
-                ? 'change_provider_configuration_or_install_updated_build'
-                : 'dispatch_bounded_recovery_attempt',
+                ? 'stop_blocked'
+                : 'dispatch_provider_request',
             });
           } else {
             const settlement = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
@@ -1401,7 +1370,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               reason_code: terminalAttempt.malformed_reason
                 ?? 'terminal_malformed_provider_output',
               next_action: recoveryError?.sme_request_diagnostics?.next_eligible_recovery_action
-                ?? 'dispatch_bounded_recovery_attempt',
+                ?? (recoveryError?.sme_recovery_blocked ? 'stop_blocked' : 'dispatch_provider_request'),
               recovery_stage: terminalAttempt.recovery_stage,
               operationally_paused: recoveryError?.sme_recovery_blocked === true,
             });
@@ -1438,7 +1407,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               provider_attempt_id: terminalRecoveryAttempt.attempt_id,
               exact_reason_code: terminalRecoveryAttempt.failure_classification
                 ?? 'provider_transport_failure',
-              next_eligible_action: 'dispatch_bounded_recovery_attempt',
+              next_eligible_action: 'dispatch_provider_request',
             });
           } else {
             const settlement = await pipeline.ingestProviderEvidence(
@@ -1447,7 +1416,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
                 reason_code: terminalRecoveryAttempt.malformed_reason
                   ?? 'terminal_malformed_provider_output',
                 next_action: recovery?.terminal_error?.sme_request_diagnostics
-                  ?.next_eligible_recovery_action ?? 'dispatch_bounded_recovery_attempt',
+                  ?.next_eligible_recovery_action ?? 'dispatch_provider_request',
                 recovery_stage: terminalRecoveryAttempt.recovery_stage,
               });
             if (!['pending_reconciliation', 'operationally_paused',
@@ -1481,7 +1450,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         }
         if (recovery.logical_obligation_id) {
           markProviderStagedRecoveryCompleted(providerMetadata, recovery.logical_obligation_id,
-            coverageBase.source_fingerprint, durableRecoveredCount);
+            coverageBase.source_fingerprint, recovery.durably_persisted_record_ids ?? []);
           await saveChatMetadata(getContext());
         }
         recordCompletedCoverage(durableRecoveredCount > 0
@@ -2068,22 +2037,14 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         rejected_count: Math.max(1, initiallyParsedCount), reason_code: pendingReason,
         unresolved_semantic_requirements: true,
         candidate_shape_repair_count: shapeRepair.repaired_count,
-        next_eligible_action: pendingReason === 'invalid_candidate_shape'
-          ? 'session_validation_repair_or_bounded_regeneration'
-          : pendingReason === 'missing_provenance'
-            ? 'citation_repair_or_bounded_regeneration'
-            : 'recover_unresolved_partial_output_fragments',
+        next_eligible_action: 'dispatch_provider_request',
       });
       await emitLifecycleEvent('recovery_required', {
         parser_result: unresolvedPartialFragments ? 'partial' : 'accepted',
         downstream_validation_result: `rejected_${pendingReason}`,
         persistence_result: 'not_committed', coverage_result: 'pending',
         exact_reason_code: pendingReason,
-        next_eligible_action: pendingReason === 'invalid_candidate_shape'
-          ? 'session_validation_repair_or_bounded_regeneration'
-          : pendingReason === 'missing_provenance'
-            ? 'citation_repair_or_bounded_regeneration'
-            : 'recover_unresolved_partial_output_fragments',
+        next_eligible_action: 'dispatch_provider_request',
         metrics: { downstream_rejected_records: Math.max(1, initiallyParsedCount), local_shape_repairs: shapeRepair.repaired_count },
         lifecycle: {
           downstream_rejected_candidate_ids: [...terminalRecords.values()]
@@ -2118,11 +2079,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         root_obligation_id: rootObligationId,
         tier: 'session',
         source_range: { start: range.start, end: range.end, message_count: range.message_count },
-        next_eligible_recovery_action: pendingReason === 'invalid_candidate_shape'
-          ? 'session_validation_repair_or_bounded_regeneration'
-          : pendingReason === 'missing_provenance'
-            ? 'citation_repair_or_bounded_regeneration'
-            : 'recover_unresolved_partial_output_fragments',
+        next_eligible_recovery_action: 'dispatch_provider_request',
       };
       throw pendingError;
     }
@@ -2251,7 +2208,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     // Normalize only deterministic card/persona aliases in generated prose.
     // Unknown names remain untouched so this cannot create or rename NPCs.
-    const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+    const canonicalRoster = buildCanonicalRoster(getContext());
     for (const mem of finalActive) {
       const narrative = canonicalizeNarrativeNames(mem.content, canonicalRoster);
       mem.content = narrative.text;
@@ -2299,7 +2256,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       terminal: unresolvedPartialFragments === 0,
       ...(unresolvedPartialFragments > 0 ? {
         reason_code: 'partial_valid_output_has_unresolved_fragments',
-        next_action: 'regenerate_unresolved_from_verified_source',
+        next_action: 'dispatch_provider_request',
       } : {}),
       raw_response_reference: { retained: true, journal_attempt_id: lifecycleAttemptId },
       parser_outcome: {
@@ -2365,30 +2322,31 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     });
     if (stagedRecoveryObligationId) {
       markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
-        coverageBase.source_fingerprint, added);
+        coverageBase.source_fingerprint, addedRecordIds);
       await saveChatMetadata(getContext());
     }
     if (recoveryPendingError) {
-      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, added,
+      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId,
         coverageBase.source_fingerprint, addedRecordIds);
       await saveChatMetadata(getContext());
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
         coverage_terminal_state: 'partial_records_persisted_obligation_pending',
-        accepted_partial_record_count: added,
+        parser_accepted_candidate_count: parserAcceptedCandidateIds.length,
+        durable_partial_record_count: addedRecordIds.length,
       });
       recoveryPendingError.sme_partial_records_persisted = true;
       throw recoveryPendingError;
     }
     if (unresolvedPartialFragments > 0) {
-      markProviderPartialRecordsPersisted(providerMetadata, rootObligationId, added,
+      markProviderPartialRecordsPersisted(providerMetadata, rootObligationId,
         coverageBase.source_fingerprint, addedRecordIds);
       markProviderDownstreamOutcome(providerMetadata, rootObligationId, {
         validation_accepted: true, persistence_committed: true, accepted_count: added,
         rejected_count: unresolvedPartialFragments, reason_code: 'partial_valid_output_has_unresolved_fragments',
         unresolved_semantic_requirements: true,
         candidate_shape_repair_count: shapeRepair.repaired_count,
-        next_eligible_action: 'recover_unresolved_partial_output_fragments',
+        next_eligible_action: 'dispatch_provider_request',
       });
       if (pipeline.atomicCompletionEnabled) {
         await pipeline.applyProviderCompletion(persistenceCompletionDetails);
@@ -2397,7 +2355,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         parser_result: 'partial', downstream_validation_result: 'accepted_partial_records',
         persistence_result: 'partial_records_committed', coverage_result: 'pending',
         exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-        next_eligible_action: 'recover_unresolved_partial_output_fragments',
+        next_eligible_action: 'dispatch_provider_request',
         recovery_intent: 'recover_unresolved_partial_output_fragments',
         recovery_stage: 'compact_response_repair',
         metrics: {
@@ -2420,7 +2378,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
         coverage_terminal_state: 'partial_records_persisted_obligation_pending',
-        accepted_partial_record_count: added,
+        parser_accepted_candidate_count: parserAcceptedCandidateIds.length,
+        durable_partial_record_count: addedRecordIds.length,
         unresolved_fragment_count: unresolvedPartialFragments,
       });
       const automaticRecoveryDepth = execution.recovery.automatic_depth;
@@ -2499,7 +2458,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
               epoch_requests_remaining: budgetAccounting.epoch_requests_remaining,
               budget_accounting: budgetAccounting,
               fresh_budget_on_resume: true,
-              next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments',
+              next_eligible_recovery_action: 'dispatch_provider_request',
             };
           }
           throw automaticError;
@@ -2517,7 +2476,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         root_obligation_id: rootObligationId,
         tier: 'session',
         source_range: { start: range.start, end: range.end, message_count: range.message_count },
-        next_eligible_recovery_action: 'recover_unresolved_partial_output_fragments',
+        next_eligible_recovery_action: 'dispatch_provider_request',
       };
       throw partialError;
     }

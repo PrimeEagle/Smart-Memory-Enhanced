@@ -18,10 +18,10 @@
  */
 
 /**
- * Settings management: default values, settings migration, and UI binding.
+ * Settings management: default values and UI binding.
  *
  * defaultSettings  - canonical default values for all extension_settings keys
- * loadSettings     - merges defaults + runs field migrations on startup
+ * loadSettings     - fills absent current settings from canonical defaults
  * bindSettingsUI   - wires all settings panel controls; takes a ctrl object
  *                    with getter/setter properties for index.js state variables
  *                    so this module never imports from index.js
@@ -54,6 +54,7 @@ import {
   PROMPT_KEY_EPISTEMIC,
   PROMPT_KEY_STATE_LEDGER,
   generateMemoryId,
+  SCHEMA_VERSION,
 } from './constants.js';
 import {
   memory_sources,
@@ -64,7 +65,7 @@ import {
   abortCurrentMemoryGeneration,
   getRuntimeContextLimitDiagnostics,
 } from './generate.js';
-import { sourceWindowFingerprint, summarizeExtractionCoverage } from './extraction-window-utils.js';
+import { summarizeExtractionCoverage } from './extraction-window-utils.js';
 import {
   exportLiveMemoryHealth,
   beginLiveExtractionEvent,
@@ -103,6 +104,7 @@ import {
 } from './memorize-obligation-ledger.js';
 import {
   deriveMemorizeResumeEligibility,
+  getCompletedRecoveryChildKeys,
   getAuthoritativeTierRangeStatus,
   isAuthoritativeTierRangeSafelyCovered,
   rebuildMemorizeManifestProjection,
@@ -146,12 +148,17 @@ import { commitMemorizeUnitOfWork, markMemorizeRecordsApplied,
   prepareMemorizeUnitOfWork } from './memorize-unit-of-work.js';
 import { projectMemorizeKernelDiagnostics } from './memorize-diagnostic-observer.js';
 import { selectDiagnosticsProjection, selectRecoveryPresentation, selectRunOutcomePresentation } from './memorize-projections.js';
+import { createMemorizeDiagnosticsDownload } from './memorize-diagnostics-download.js';
 import {
   updateMemorizeControllerHeartbeat,
   closeMemorizeControllerHeartbeat,
   classifyStaleMemorizeController,
   MEMORIZE_CONTROLLER_HEARTBEAT_SCHEMA_VERSION,
 } from './memorize-controller-heartbeat.js';
+import { createCompactFailureDiagnostics, createFullDiagnosticsExport,
+  createUnresolvedObligationSummary }
+  from './memorize-domain-dtos.js';
+import { resetMemorizeRunMetadata } from './fresh-start-state.js';
 import {
   inspectProviderCompletionConsistency,
   reconcileImpossibleLiveHealth,
@@ -176,7 +183,6 @@ import {
   getReadOnlyStartIndex,
   setReadOnlyStartIndex,
   getReadOnlyStartTime,
-  getCharacterMemoryPolicy,
   setCharacterMemoryPolicy,
 } from './longterm.js';
 import { extractAndStoreMultiOwnerMemories } from './multi-owner-longterm-runtime.js';
@@ -206,7 +212,6 @@ import {
   saveSceneHistory,
   clearSceneHistory,
   createSceneRecord,
-  detectSceneBreakAI,
   detectSceneBreakAIBatch,
   detectSceneBreakHeuristic,
   selectSceneBoundaryCandidates,
@@ -231,10 +236,6 @@ import {
   renamePromptProfile,
   getDefaultPromptPreview,
   getLivePromptInspection,
-  getPromptOverride,
-  setPromptOverride,
-  resetPromptOverride,
-  resolvePromptOverride,
   exportPromptOverrides,
   importPromptOverrides,
 } from './prompt-config.js';
@@ -251,7 +252,7 @@ import {
   summarizeCardLocalMemoryChanges,
   diagnosticMetadataHash,
   revisionMetadataHash,
-  normalizeIdempotenceResult,
+  projectIdempotenceResult,
 } from './idempotence-utils.js';
 import { buildIdempotenceLifecycleLedger } from './idempotence-lifecycle-utils.js';
 import { deriveRunStatus, normalizeRunStatusReport, RUN_STATUS_CLASSIFIER_VERSION } from './run-status-utils.js';
@@ -282,19 +283,17 @@ import { MALFORMED_RECOVERY_SCHEMA_VERSION } from './malformed-output-recovery.j
 import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
-  migrateCommittedShortTermFailureState,
   createShortTermAttemptAccounting, recordShortTermAttemptEvent,
   finalizeShortTermAttemptAccounting, summarizeShortTermAttemptAccounting,
   advanceShortTermRecoveryGrowth,
   deriveShortTermMissingPlanResumeEligibility,
-  migrateMissingPlanCommittedCheckpoint,
   isShortTermMinimumFloorExhausted, deriveShortTermPhaseProgress, reconcileShortTermSegmentLedger,
   SHORTTERM_RECOVERY_SCHEMA_VERSION, SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION,
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.93',
-  build_fingerprint: 'sme-v0.9.93-serializable-effect-boundary-r1',
+  extension_version: '0.9.94',
+  build_fingerprint: 'sme-v0.9.94-domain-boundaries-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -319,11 +318,6 @@ function diagnosticFingerprint(value) {
     hash = Math.imul(hash, 16777619);
   }
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
-}
-
-/** Must remain byte-for-byte compatible with compaction.js source identity. */
-function shortTermChatSourceFingerprint(chat = []) {
-  return diagnosticFingerprint(chat.map((message) => `${message?.name ?? ''}\u0000${message?.mes ?? ''}\u0000`).join(''));
 }
 
 /**
@@ -399,6 +393,11 @@ function summarizeCandidateContexts(candidateContexts = []) {
 // detection runs. This deliberately excludes prompts, chat messages, and raw
 // provider responses.
 function makeSceneStabilitySnapshot(audit = {}) {
+  if (!String(audit.run_id ?? '').trim()) {
+    const error = new Error('Scene stability snapshots require a current durable run ID.');
+    error.code = 'SME_SCENE_STABILITY_SCHEMA_MISMATCH';
+    throw error;
+  }
   const finalBreakIndices = [...(audit.final_break_indices ?? [])];
   const createdAt = Date.now();
   const taskSettings = audit.task_sampling_settings ?? {};
@@ -407,11 +406,10 @@ function makeSceneStabilitySnapshot(audit = {}) {
   const storedSummary = audit.candidate_context_hash_summary ?? null;
   const summaryMismatch = Boolean(storedSummary && contextSummary.summary && storedSummary !== contextSummary.summary);
   return {
-    run_id: audit.run_id ?? `unavailable-scene-run-${createdAt}`,
-    run_id_source: audit.run_id ? 'runtime' : 'unavailable',
+    run_id: audit.run_id,
+    run_id_source: 'runtime',
     created_at: createdAt,
     created_at_source: 'runtime',
-    run_signature: audit.scene_detection_run_signature ?? null,
     scene_detection_run_signature: audit.scene_detection_run_signature ?? null,
     final_break_indices: finalBreakIndices,
     boundary_count: finalBreakIndices.length,
@@ -426,18 +424,12 @@ function makeSceneStabilitySnapshot(audit = {}) {
     candidate_context_hash_summary: contextSummary.summary,
     candidate_context_hash_summary_source: 'computed_from_candidate_contexts',
     candidate_context_hash_summary_status: summaryMismatch ? 'mismatch_detected' : contextSummary.status,
-    legacy_candidate_context_hash_summary: summaryMismatch ? storedSummary : null,
-    candidate_context_summary_migration: {
-      stored_value: storedSummary,
-      recomputed_value: contextSummary.summary,
-      values_match: storedSummary === null || storedSummary === contextSummary.summary,
-      source_status: contextSummary.status,
-      migration_applied: summaryMismatch,
-      duplicate_candidate_ids: contextSummary.duplicate_candidate_ids,
-    },
+    candidate_context_summary_consistent: storedSummary === null || storedSummary === contextSummary.summary,
+    candidate_context_summary_observed_mismatch: summaryMismatch,
+    duplicate_candidate_context_ids: contextSummary.duplicate_candidate_ids,
     // A comparison contract makes it explicit which semantic shape produced
-    // these boundary decisions. Older records without it remain readable, but
-    // new runs are compared only against another run with the same contract.
+    // these boundary decisions. Runs are compared only when the complete
+    // current contract matches.
     comparison_contract: {
       version: 1,
       candidate_snapshot_schema_version: 1,
@@ -450,6 +442,8 @@ function makeSceneStabilitySnapshot(audit = {}) {
     // variance and deterministic-gate comparison. No chat or prompt text is
     // retained in scene history.
     candidate_detail_available: Array.isArray(audit.candidate_dispositions),
+    candidate_snapshot_schema_version: 1,
+    gate_output_schema_version: 1,
     candidate_dispositions: (audit.candidate_dispositions ?? []).map((candidate) => ({
       candidate_id: candidate.candidate_id,
       message_index: candidate.message_index ?? candidate.candidate_id,
@@ -459,7 +453,7 @@ function makeSceneStabilitySnapshot(audit = {}) {
       decision: typeof candidate.decision === 'boolean' ? candidate.decision : null,
       ai_confidence: candidate.ai_confidence ?? null,
       gate_input_hash: candidate.gate_input_hash ?? null,
-      gate_output_schema_version: candidate.gate_output_schema_version ?? 1,
+      gate_output_schema_version: candidate.gate_output_schema_version ?? null,
       gate_executed: candidate.gate_executed === true,
       gate_result: candidate.gate_result ?? null,
       gate_reason_code: candidate.gate_reason_code ?? null,
@@ -581,7 +575,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     ? (() => {
       const comparison = summarizeDurableStateChanges(durableStateBefore, durableStateAfterFirstPass);
       const cardLocal = summarizeCardLocalMemoryChanges(durableStateBefore, durableStateAfterFirstPass);
-      const writes = reconciliation.integrity_audit?.automatic_stabilization_second_pass_writes?.records ?? [];
+      const writes = reconciliation.integrity_audit?.reconciliation_write_accounting?.records ?? [];
       const accounting = reconciliation.integrity_audit?.durable_write_accounting ?? {};
       return {
         // Keep `changed` for older exports, but name the canonical-state fact
@@ -691,7 +685,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
     const summarizeStabilizationPass = (passNumber, input, output, passResult) => {
       const comparison = compareDurableSemanticStates(input, output);
       const passRepairs = passResult.integrity_audit?.entity_link_repairs ?? {};
-      const writes = passResult.integrity_audit?.automatic_stabilization_second_pass_writes?.records ?? [];
+      const writes = passResult.integrity_audit?.reconciliation_write_accounting?.records ?? [];
       const unresolvedSignature = JSON.stringify((passResult.integrity_audit?.stale_entity_references ?? [])
         .map((entry) => ({
           store: entry?.store ?? null,
@@ -714,7 +708,7 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
         changed_components: comparison.changed_components,
         changed_paths: comparison.paths,
         source_operations: [...new Set(writes.map((write) => write.source_operation).filter(Boolean))],
-        write_accounting: passResult.integrity_audit?.automatic_stabilization_second_pass_writes ?? {
+        write_accounting: passResult.integrity_audit?.reconciliation_write_accounting ?? {
           total: 0, records: [], semantic_uncounted_writes: 0, accounting_reconciled: true,
         },
         unresolved_signature: unresolvedSignature,
@@ -789,14 +783,10 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       durable_state_hash_after_second_pass: finalVerificationComparison.second_hash,
       diagnostic_metadata_hash_after: diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_hash_after: revisionMetadataHash(metadataAfterSecondPass),
-      durable_state_changed: finalVerificationComparison.changed,
       diagnostic_metadata_changed: diagnosticMetadataHash(metadataBeforeSecondPass) !== diagnosticMetadataHash(metadataAfterSecondPass),
       revision_metadata_changed: revisionMetadataHash(metadataBeforeSecondPass) !== revisionMetadataHash(metadataAfterSecondPass),
       second_pass_logical_mutations: repairs.actual_logical_mutations_this_run ?? 0,
       second_pass_physical_mutations: repairs.actual_physical_store_mutations_this_run ?? 0,
-      second_pass_compatibility_semantics: forceIdempotenceCheck
-        ? 'literal_pass_2_and_final_verification_pass'
-        : 'final_verification_pass_for_legacy_idempotence_consumers_not_literal_pass_2',
       literal_second_pass_logical_mutations: literalSecondPass?.logical_mutations ?? null,
       literal_second_pass_physical_mutations: literalSecondPass?.physical_mutations ?? null,
       final_verification_pass_number: finalVerificationPass?.pass_number ?? null,
@@ -815,11 +805,6 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       session_memory_change_summary: sessionMemoryChangeSummary,
       story_arc_change_summary: storyArcChangeSummary,
       card_local_memory_change_summary: cardLocalMemoryChangeSummary,
-      automatic_stabilization_second_pass_writes: literalSecondPass?.write_accounting ?? {
-        total: 0, records: [], semantic_uncounted_writes: 0, accounting_reconciled: true,
-      },
-      automatic_stabilization_second_pass_writes_compatibility_semantics:
-        'literal_pass_2_writes_retained_for_legacy_field_name',
       literal_pass_2_writes: {
         total_logical_mutations: literalSecondPass?.logical_mutations ?? null,
         total_physical_mutations: literalSecondPass?.physical_mutations ?? null,
@@ -1008,16 +993,11 @@ async function runFinalIntegrityReconciliation(characterName, { forceIdempotence
       final_export_state: durableStateHash(durableStateAfterSecondPass),
       transaction_mode: 'single_staged_precommit_comparison',
     };
-    // The bounded stabilization history is authoritative. These compatibility
-    // fields therefore describe the final verification pass, not pass one of
-    // an earlier two-pass implementation.
-    result.idempotence.first_final_semantic_hash = finalVerificationComparison.first_hash;
-    result.idempotence.second_final_semantic_hash = finalVerificationComparison.second_hash;
-    result.idempotence.semantic_hash_equal = result.idempotence.first_final_semantic_hash === result.idempotence.second_final_semantic_hash;
     result.idempotence.unaccounted_mutations = result.idempotence.durable_state_change_summary?.unaccounted_mutation_count ?? 0;
+    const finalVerificationHashesEqual = finalVerificationComparison.first_hash === finalVerificationComparison.second_hash;
     result.idempotence.converged = Boolean(convergedOnPass)
       && !result.idempotence.automatic_stabilization_passes.max_passes_reached
-      && result.idempotence.semantic_hash_equal
+      && finalVerificationHashesEqual
       && result.idempotence.second_pass_logical_mutations === 0
       && result.idempotence.second_pass_physical_mutations === 0
       && result.idempotence.stale_references_after_second_pass === 0
@@ -1375,34 +1355,6 @@ function getLivePersonaCaptureContext(context) {
   };
 }
 
-/** Keeps legacy camelCase arc diagnostics as export aliases of snake_case. */
-function normalizeArcExtractionDiagnostics(diagnostics) {
-  const aliases = {
-    completed: 'request_completed', providerError: 'provider_error', returnedNone: 'returned_none',
-    malformedOutput: 'malformed_output', parsedCandidates: 'parsed_candidates', acceptedOpenThreads: 'accepted_open_threads',
-    rejectedCompletedEvents: 'rejected_completed_events', rejectedBackgroundFacts: 'rejected_background_facts',
-    rejectedRelationshipStates: 'rejected_relationship_states', rejectedSceneDetails: 'rejected_scene_details',
-    rejectedMalformed: 'rejected_malformed', participantRepairs: 'participant_repairs', participantReviewItems: 'participant_review_items',
-    malformedRequest: 'malformed_request', inputTokenBudget: 'input_token_budget', inputTokenEstimate: 'input_token_estimate',
-    inputMessages: 'input_messages', omittedMessages: 'omitted_messages', truncatedMessage: 'truncated_message', terminalOutcome: 'terminal_outcome',
-  };
-  for (const [camel, snake] of Object.entries(aliases)) {
-    // terminal_outcome is the single canonical *string* outcome.  Treating
-    // it like a numeric counter turned values such as
-    // "completed_with_candidates" into 0 during export.
-    if (snake === 'terminal_outcome') {
-      const value = diagnostics?.[snake] ?? diagnostics?.[camel] ?? null;
-      diagnostics[snake] = value;
-      diagnostics[camel] = value;
-      continue;
-    }
-    const value = Math.max(Number(diagnostics?.[snake] ?? 0), Number(diagnostics?.[camel] ?? 0));
-    diagnostics[snake] = value;
-    diagnostics[camel] = value;
-  }
-  return diagnostics;
-}
-
 /** One canonical scoped identity-observation key for terminal accounting. */
 export function makeTerminalObservationKey(sourceStore, sourceRecordId) {
   const store = String(sourceStore ?? 'unknown').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -1518,8 +1470,6 @@ export const defaultSettings = {
   // Scene detection
   scene_enabled: true,
   scene_ai_detect: false,
-  // scene_max_history is retained only as a migration source for older data.
-  scene_max_history: 5,
   scene_archive_max: 100,
   scene_inject_count: 5,
   scene_min_messages: 3,
@@ -1959,7 +1909,7 @@ function applySettingsMode(mode) {
   }
 }
 
-// ---- Settings loading and migration -------------------------------------
+// ---- Settings loading ---------------------------------------------------
 
 /**
  * Merges defaultSettings into extension_settings for any missing keys.
@@ -1971,8 +1921,6 @@ export function loadSettings() {
     // requires nor imports configuration from the original Smart Memory.
     extension_settings[MODULE_NAME] = {};
   }
-  const hadSceneInjectCount = Object.prototype.hasOwnProperty.call(extension_settings[MODULE_NAME], 'scene_inject_count');
-  const hadSceneArchiveMax = Object.prototype.hasOwnProperty.call(extension_settings[MODULE_NAME], 'scene_archive_max');
   for (const [key, value] of Object.entries(defaultSettings)) {
     if (extension_settings[MODULE_NAME][key] === undefined) {
       extension_settings[MODULE_NAME][key] = value;
@@ -1982,64 +1930,6 @@ export function loadSettings() {
   // restart cannot briefly render or re-save stale token budgets.
   const restoredBudgetSafetySnapshot = restoreBudgetSettingsSafetySnapshot(extension_settings[MODULE_NAME]);
 
-  // Scene history used to use one setting as both a storage cap and injection
-  // limit. Preserve the old value as the visible injection count while giving
-  // the archive a safer independent capacity.
-  if (!hadSceneInjectCount) {
-    extension_settings[MODULE_NAME].scene_inject_count = extension_settings[MODULE_NAME].scene_max_history ?? 5;
-  }
-  if (!hadSceneArchiveMax) {
-    extension_settings[MODULE_NAME].scene_archive_max = 100;
-  }
-
-  // Migration: replace old bracket-wrapped template defaults with plain-text equivalents.
-  // Only affects users who never customized these fields (exact match on the old default).
-  // Bracket notation in injections bleeds into RP output - the model mimics it.
-  const TEMPLATE_MIGRATIONS = {
-    compaction_template: {
-      from: '[Story so far:\n{{summary}}]',
-      to: 'Story so far:\n{{summary}}',
-    },
-    longterm_template: {
-      from: '[Memories from previous conversations:\n{{memories}}]',
-      to: 'Memories from previous conversations:\n{{memories}}',
-    },
-    session_template: {
-      from: '[Details from this session:\n{{session}}]',
-      to: 'Details from this session:\n{{session}}',
-    },
-  };
-  for (const [key, migration] of Object.entries(TEMPLATE_MIGRATIONS)) {
-    if (extension_settings[MODULE_NAME][key] === migration.from) {
-      extension_settings[MODULE_NAME][key] = migration.to;
-    }
-  }
-
-  // Migration: raise compaction response length from 1500 to 2000.
-  // 1500 tokens was too tight for a 9-section summary, causing truncated output.
-  if (extension_settings[MODULE_NAME].compaction_response_length === 1500) {
-    extension_settings[MODULE_NAME].compaction_response_length = 2000;
-  }
-
-  // Migration: raise arc injection budget to 700.
-  // 400 was too tight once the adaptive budget applies a 0.8x multiplier during intimate
-  // scenes, dropping the oldest arc from injection. 200 is the pre-1.3.0 default.
-  if (
-    extension_settings[MODULE_NAME].arcs_inject_budget === 200 ||
-    extension_settings[MODULE_NAME].arcs_inject_budget === 400
-  ) {
-    extension_settings[MODULE_NAME].arcs_inject_budget = 700;
-  }
-
-  // Migration: longterm_consolidate -> consolidation_enabled (now controls both tiers).
-  // If a user had explicitly disabled long-term consolidation, carry that intent forward.
-  if (
-    Object.prototype.hasOwnProperty.call(extension_settings[MODULE_NAME], 'longterm_consolidate') &&
-    !Object.prototype.hasOwnProperty.call(extension_settings[MODULE_NAME], 'consolidation_enabled')
-  ) {
-    extension_settings[MODULE_NAME].consolidation_enabled =
-      extension_settings[MODULE_NAME].longterm_consolidate;
-  }
   if (restoredBudgetSafetySnapshot) persistSettingsImmediately();
 }
 
@@ -2257,7 +2147,6 @@ export function bindSettingsUI(ctrl) {
     const now = Date.now();
     const snapshot = snapshotMemorizeRunSettings(extension_settings[MODULE_NAME]);
     checkpoint.run_settings_snapshot = snapshot;
-    checkpoint.run_settings_snapshot_updated_at = now;
     checkpoint.updated_at = now;
     const sidecar = {
       schema_version: 1,
@@ -2299,19 +2188,10 @@ export function bindSettingsUI(ctrl) {
     const plan = finalization.shortterm_recovery_plan ?? null;
     if (!plan) {
       const marker = finalization.shortterm_post_commit_recovery_marker ?? null;
-      const metadata = context.chatMetadata?.[META_KEY] ?? {};
       return deriveShortTermMissingPlanResumeEligibility({ checkpointStatus: checkpoint?.status,
         phaseDisposition: finalization.phase_dispositions?.shortterm_extraction,
         postCommitMarker: marker,
-        compactionCheckpoint: metadata.shortterm_compaction_checkpoint ?? null,
-        summaryEnd: metadata.summaryEnd,
-        currentSummaryHash: diagnosticFingerprint(metadata.summary ?? ''),
-        currentSourceFingerprint: shortTermChatSourceFingerprint(context.chat ?? []),
         failureState: finalization.shortterm_failure_state,
-        logicalRunId: checkpoint?.run_id,
-        phase: 'shortterm_extraction',
-        promptShapeVersion: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
-        minimumSegmentFloor: 4,
       });
     }
     const items = (context.chat ?? []).map((item, index) => ({ item, index }))
@@ -2364,7 +2244,8 @@ export function bindSettingsUI(ctrl) {
       const audit = liveMetadata?.live_memory_health?.provider_attempt_audit;
       const staleAudit = classifyStaleMemorizeController(rawCheckpoint.controller_heartbeat, {
         stale_threshold_ms: 300000,
-        provider_running: (audit?.recent_attempts ?? []).some((item) => item.terminal_outcome === 'running'),
+        provider_running: (audit?.recent_attempts ?? []).some((item) =>
+          item.terminal_outcome === 'running' && item.transmission_started === true),
         persistence_running: false, save_running: false, background_operation_running: false,
         controller_executing: false, transaction_inspectable: true,
       });
@@ -2381,12 +2262,11 @@ export function bindSettingsUI(ctrl) {
             coverage_records: Object.values(staleCoverage)
               .flatMap((tier) => tier?.records ?? []),
             checkpoint_before: rawCheckpoint.next_source_offset,
-            source_message_count: rawCheckpoint.source_message_count
-              ?? rawCheckpoint.run_manifest?.source_message_count,
+            source_message_count: rawCheckpoint.run_manifest?.source_window?.message_count,
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         rawCheckpoint.run_manifest.obligation_ledger = staleJournalReconciliation.ledger;
-        const healthRepairs = reconcileImpossibleLiveHealth(liveMetadata, audit);
+        reconcileImpossibleLiveHealth(liveMetadata, audit);
         const transactionId = rawCheckpoint.transaction_lifecycle?.transaction_id ?? null;
         if (rawCheckpoint.transaction_lifecycle?.state === 'active') {
           rawCheckpoint.transaction_lifecycle = {
@@ -2413,9 +2293,6 @@ export function bindSettingsUI(ctrl) {
           obligation_id: staleAuthority.pending_obligation?.obligation_id ?? null,
           provider_call_required: staleAuthority.provider_call_permitted,
         };
-        rawCheckpoint.resume_eligibility = {
-          schema_version: 1, ...staleResumeEligibility, evaluated_at: Date.now(),
-        };
         recordMemorizeControllerExit(rawCheckpoint.run_manifest.obligation_ledger, {
           controller_invocation_id: rawCheckpoint.controller_heartbeat?.controller_invocation_id
             ?? `stale:${transactionId ?? rawCheckpoint.run_id}`,
@@ -2430,16 +2307,6 @@ export function bindSettingsUI(ctrl) {
         });
         rawCheckpoint.status = staleResumeEligibility.eligible
           ? 'awaiting_manual_resume' : 'blocked_recovery_change_required';
-        rawCheckpoint.stale_controller_audit = { ...staleAudit, reconciled: true,
-          repaired_obligations: repaired.repairs,
-          lifecycle_journal_reconciliation: {
-            mutations: staleJournalReconciliation.mutations,
-            reused_attempt_ids: staleJournalReconciliation.reused_attempt_ids,
-            provider_calls: 0, persistence_calls: 0,
-          },
-          resume_eligibility: staleResumeEligibility,
-          authoritative_recovery: staleAuthority,
-          live_health_repairs: healthRepairs, reconciled_at: Date.now() };
         rawCheckpoint.updated_at = Date.now();
         saveChatMetadata(getContext()).catch((error) => console.warn(
           `[${MODULE_NAME}] Could not persist stale-controller reconciliation:`, error));
@@ -2471,8 +2338,6 @@ export function bindSettingsUI(ctrl) {
       && checkpointRecovery.resumable && !checkpointRecovery.blocked) {
       rawCheckpoint.status = 'awaiting_manual_resume';
       checkpoint.status = 'awaiting_manual_resume';
-      delete rawCheckpoint.recovery_blocked;
-      delete checkpoint.recovery_blocked;
       rawCheckpoint.updated_at = Date.now();
       checkpointRecovery = { ...checkpointRecovery, status: 'awaiting_manual_resume' };
       saveChatMetadata(getContext()).catch((error) => console.warn(
@@ -2497,8 +2362,6 @@ export function bindSettingsUI(ctrl) {
         // The terminal signature is scoped to the exact provider setup. A
         // material configuration change makes one new bounded attempt useful,
         // while preserving every safely committed sibling and source range.
-        delete rawCheckpoint.recovery_blocked;
-        delete checkpoint.recovery_blocked;
         checkpointRecovery = {
           ...checkpointRecovery, blocked: false, resumable: true,
           resume_can_make_progress: true, blocked_reason_code: null,
@@ -2530,7 +2393,7 @@ export function bindSettingsUI(ctrl) {
     checkpointRecovery = { ...checkpointRecovery, authoritative_recovery: authority };
     const resumeEligibility = authority.pending_obligation ? {
       eligible: authority.resume_eligible,
-      decision: authority.resume_eligible ? 'resume_exact_obligation' : 'blocked',
+      decision: authority.resume_eligible ? authority.next_executable_action : 'blocked',
       reason: authority.resume_eligible ? 'exact_recovery_action_available'
         : authority.resume_blockers[0]?.reason_code,
       next_eligible_action: authority.next_executable_action,
@@ -2658,18 +2521,7 @@ export function bindSettingsUI(ctrl) {
     // These are derived from an earlier state of this chat. Keeping them after
     // a destructive reset can reintroduce obsolete redirects or make the next
     // fresh generation look degraded before it has produced any data.
-    for (const key of [
-      'entity_redirects', 'catch_up_diagnostics', 'last_catchup_run_id',
-      'scene_stability_history', 'request_efficiency_history', 'repair_history',
-      'repair_volume_changed', 'repair_volume_delta', 'repair_volume_change_reason',
-      'developer_idempotence_check', 'historical_persona_snapshot', 'canonical_persona_context',
-      'active_catchup_run_id', 'catch_up_checkpoint', 'catch_up_run_manifests', 'parser_debris_cleanup',
-      'provider_completion_journal',
-      'fresh_start_postcondition_audit', 'live_memory_health',
-      'page_run_lifecycle',
-      'shortterm_compaction_checkpoint',
-      'targeted_extraction_replay',
-    ]) delete metadata[key];
+    resetMemorizeRunMetadata(metadata);
     return {
       identity_reviews_removed: reviewQueue.length - remainingReviewQueue.length,
       current_chat_identity_reviews_remaining: currentChatIdentityReviewsRemaining,
@@ -3043,9 +2895,11 @@ export function bindSettingsUI(ctrl) {
     if (!providerSummary && !checkpointSummary?.available) return null;
     const pendingRange = Object.values(logicalRun?.cumulative_tier_coverage ?? {})
       .flatMap((tier) => tier?.pending_obligations ?? []).at(0) ?? null;
-    const safeOwners = (logicalRun?.longterm_owner_obligations ?? [])
-      .filter((item) => item.safely_committed === true
-        && (!pendingRange || (item.start_offset === pendingRange.start_offset && item.end_offset === pendingRange.end_offset)))
+    const safeOwners = Object.values(obligationLedger?.obligations ?? {})
+      .filter((item) => item.tier === 'longterm' && item.owner
+        && item.parent_obligation_id == null && item.checkpoint_eligible === true
+        && (!pendingRange || (item.source_range?.start === pendingRange.source_start_index
+          && item.source_range?.end === pendingRange.source_end_index)))
       .map((item) => item.owner);
     return {
       schema_version: 1,
@@ -3065,32 +2919,8 @@ export function bindSettingsUI(ctrl) {
           .includes(item.current_state)).length
         : unresolved.filter((item) => item.recovery_blocked === true).length,
       authority: canonicalUnresolved.length ? 'canonical_obligation_ledger' : 'provider_attempt_audit',
-      unresolved_obligations: (canonicalUnresolved.length ? canonicalUnresolved : unresolved).map((item) => ({
-        obligation_id: item.obligation_id ?? null,
-        root_obligation_id: item.root_obligation_id,
-        tier: item.tier,
-        owner: item.owner,
-        source_range: item.source_range,
-        source_fingerprint: item.source_fingerprint,
-        configuration_signature: item.configuration_signature,
-        stages_attempted: item.recovery_stages_attempted,
-        exhausted_stages: item.exhausted_recovery_stages,
-        accepted_partial_record_count: item.accepted_partial_record_count,
-        staged_partial_record_count: item.staged_partial_record_count,
-        missing_semantic_unit_count: item.missing_semantic_unit_count,
-        rejected_fragment_count: item.rejected_fragment_count,
-        candidate_rejections: item.candidate_rejections,
-        response_contract: item.last_response_contract,
-        repeated_failure_signature: item.last_terminal_signature,
-        terminal_signature_repeat_count: item.terminal_signature_repeat_count,
-        replay_count: item.retry_replay_count,
-        blocked: item.recovery_blocked ?? ['blocked', 'terminal_failed'].includes(item.current_state),
-        current_state: item.current_state ?? null,
-        exact_reason_code: item.exact_reason_code ?? null,
-        next_eligible_recovery_action: item.next_eligible_action
-          ?? item.next_eligible_recovery_action,
-        recovery_eligibility: item.recovery_eligibility,
-      })),
+      unresolved_obligations: (canonicalUnresolved.length ? canonicalUnresolved : unresolved)
+        .map(createUnresolvedObligationSummary),
       skipped_safe_sibling_owners: [...new Set(safeOwners)],
       safe_progress_preserved: checkpointSummary?.safe_progress_preserved
         ?? (logicalRun?.cumulative_committed_count ?? 0) > 0,
@@ -3110,7 +2940,6 @@ export function bindSettingsUI(ctrl) {
     const currentCompletionConsistency = inspectProviderCompletionConsistency({
       metadata, provider_audit: metadata.live_memory_health?.provider_attempt_audit,
       ledger: liveLedger,
-      child_manifests: metadata.catch_up_checkpoint?.recovery_child_manifests,
       live_health: metadata.live_memory_health,
       controller_heartbeat: metadata.catch_up_checkpoint?.controller_heartbeat,
     });
@@ -3191,6 +3020,10 @@ export function bindSettingsUI(ctrl) {
       live_memory_health: liveMemoryHealth,
       catch_up_recovery: recovery,
       provider_attempt_audit: liveProviderSummary,
+      authoritative_obligation_ledger: liveLedger
+        ? projectMemorizeObligationLedger(liveLedger) : null,
+      controller_exit: liveLedger
+        ? projectMemorizeObligationLedger(liveLedger).last_controller_exit ?? null : null,
       provider_completion_journal: {
         ...exportProviderCompletionJournal(metadata), reconciliation: currentCompletionConsistency,
       },
@@ -3238,19 +3071,10 @@ export function bindSettingsUI(ctrl) {
         .show();
     }
   };
-  const exportCatchUpDiagnostics = () => {
-    // A manual Developer check updates persisted chat diagnostics after the
-    // catch-up has finished. Prefer that current saved report over the
-    // in-memory pre-check snapshot so an export reflects the restored result.
-    const report = getExportableDiagnostics();
-    if (!report) return toastr.info('No Smart Memory Enhanced diagnostics are available for this chat yet.', 'Smart Memory Enhanced');
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'smart-memory-enhanced-diagnostics.json';
-    link.click();
-    URL.revokeObjectURL(link.href);
-  };
+  const exportCatchUpDiagnostics = createMemorizeDiagnosticsDownload({
+    readReport: getExportableDiagnostics,
+    onUnavailable: () => toastr.info('No Smart Memory Enhanced diagnostics are available for this chat yet.', 'Smart Memory Enhanced'),
+  });
   $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics()).on('click', exportCatchUpDiagnostics);
   const targetedReplayConfigurationSignatures = () => Object.fromEntries(['longterm', 'session'].map((tier) => [tier,
     providerConfigurationSignature({
@@ -4415,8 +4239,6 @@ export function bindSettingsUI(ctrl) {
       .filter(Boolean);
 
     if (descriptors.length === 0) return;
-    const key = `${subject}→${target}`;
-
     const pair = getRelationshipHistoryPair(subject, target);
     const h = loadRelationshipHistory(characterName);
 
@@ -5319,7 +5141,9 @@ export function bindSettingsUI(ctrl) {
     // Retain the finalized identity context with this chat's durable graph.
     // Once runtime cleanup occurs, the optional Developer check must not
     // rebuild a different current persona from imported header fields.
-    catchUpContext.chatMetadata[META_KEY].canonical_persona_context = structuredClone(canonicalRuntimeContext);
+    catchUpContext.chatMetadata[META_KEY].canonical_persona_context = cloneSerializableDomain(canonicalRuntimeContext, {
+      path: '$.canonical_persona_context', stage: 'run_initialization', operation_type: 'memorize_chat',
+    });
     let catchUpErrorCount = 0;
     const runResult = {
       run_id: catchUpRunId,
@@ -5375,9 +5199,9 @@ export function bindSettingsUI(ctrl) {
           provider_returned_none: 0,
         },
       },
-      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], terminal_accounting: null, family_role_pipeline_traces: [], family_coreference_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_relationship_self_targets_rejected: { count: 0, records: [] }, profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_conflict_details: [], relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0, relationshipConflictsDropped: 0, speculativeCurrentFieldsDropped: 0, preservedPriorFields: 0 },
+      profiles: { profiles_attempted: 0, profiles_parsed: 0, profiles_saved: 0, malformed_output: 0, malformed_output_details: [], attempts: [], terminal_accounting: null, family_role_pipeline_traces: [], family_coreference_traces: [], sibling_role_persistence_summary: [], family_role_persistence_summary: [], family_role_evidence_deduplication: [], family_role_trace_validation_failures: [], relationship_history_counts: [], profile_field_terminal_outcomes: [], profile_relationship_self_targets_rejected: { count: 0, records: [] }, profile_relationship_quality_breakdown: { fields_dropped_conflict: 0, fields_dropped_no_supported_descriptors: 0, fields_dropped_placeholder_only: 0, descriptors_rejected_unsupported: 0, descriptors_rejected_placeholder: 0, roles_unresolved: 0, canonical_roles_preserved: 0 }, sections_detected: { character_state: 0, world_state: 0, relationship_matrix: 0 }, fields: { accepted_exact: 0, accepted_normalized: 0, preserved_prior: 0, dropped_conflict: 0, dropped_speculative: 0, dropped_invalid_label: 0, dropped_unsupported: 0, dropped_malformed: 0 }, descriptor_outcomes: { accepted_exact: 0, accepted_normalized_synonym: 0, rejected_conflict: 0, rejected_unsupported: 0, rejected_placeholder: 0, rejected_malformed: 0, superseded_by_authoritative: 0 }, field_outcomes: { saved_with_all_descriptors: 0, saved_with_partial_descriptors: 0, preserved_authoritative_value: 0, dropped_no_supported_descriptors: 0, dropped_malformed_field: 0 }, relationship_descriptor_rejections: 0, relationship_field_rejections: 0, relationship_dropped_field_descriptor_count: 0, sections_parsed: 0, stale_fields_dropped: 0, speculative_fields_dropped: 0, unsupported_fields_dropped: 0, prior_fields_preserved: 0, relationship_conflicts_dropped: 0 },
       identity_review: { existing_at_start: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0, created_this_run: 0, resolved_this_run: 0, removed_as_duplicate: 0, remaining_at_end: extension_settings[MODULE_NAME]?.identity_review_queue?.length ?? 0 },
-      finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null, personaRosterSize: 0, personaAliasesMerged: 0, cardLocalEntitiesMerged: 0, relationshipPairsMerged: 0, participantListsRewritten: 0, syntheticParentheticalsRemoved: 0 },
+      finalReconciliation: { attempted: 0, completed: 0, rolled_back: false, failure_stage: null, error_class: null, error_message: null, persona_roster_size: 0, persona_aliases_merged: 0, card_local_entities_merged: 0, relationship_pairs_merged: 0, participant_lists_rewritten: 0, synthetic_parentheticals_removed: 0, identity_decision_duplicates_removed: 0, resolved_review_items_removed: 0, stale_entity_references: 0, unsafe_merge_candidates: 0, unsafe_merge_candidates_rejected: 0, safe_merge_candidates_completed: 0, review_items_created: 0, integrity_audit: null },
       runtimeContext: canonicalRuntimeContext,
       quality: { status: 'clean', reasons: [] },
     };
@@ -5390,6 +5214,7 @@ export function bindSettingsUI(ctrl) {
     let controllerPrimaryError = null;
     let firstLocalLifecycleError = null;
     let resumeProgressBefore = null;
+    let plannedResumeAction = null;
     let controllerFailureClassification = null;
     runResult.transactionRecovery = staleTransactionRecovery.recovered ? staleTransactionRecovery : null;
     let currentChunkFailed = false;
@@ -5416,7 +5241,9 @@ export function bindSettingsUI(ctrl) {
       if (controllerRuntime.checkpoint) {
         controllerRuntime.checkpoint.transaction_lifecycle = {
           schema_version: 1, transaction_id: transaction.transaction_id,
-          state: 'active', owner: structuredClone(transaction.owner),
+          state: 'active', owner: cloneSerializableDomain(transaction.owner, {
+            path: '$.transaction_lifecycle.owner', stage: 'transaction_begin', operation_type: phase,
+          }),
           revision: transaction.revision, generation: transaction.generation,
           started_at: transaction.started_at, updated_at: Date.now(),
         };
@@ -5427,7 +5254,10 @@ export function bindSettingsUI(ctrl) {
       if (controllerRuntime.checkpoint) {
         controllerRuntime.checkpoint.transaction_lifecycle = {
           schema_version: 1, transaction_id: transaction?.transaction_id ?? null,
-          state: 'committed', owner: structuredClone(transaction?.owner ?? {}),
+          state: 'committed', owner: cloneSerializableDomain(transaction?.owner ?? {}, {
+            path: '$.transaction_lifecycle.owner', stage: 'transaction_commit',
+            operation_type: transaction?.owner?.phase ?? 'memorize_chat',
+          }),
           revision: transaction?.revision ?? null, generation: transaction?.generation ?? null,
           started_at: transaction?.started_at ?? null, updated_at: Date.now(),
         };
@@ -5558,9 +5388,9 @@ export function bindSettingsUI(ctrl) {
         }, {
           type: pauseEventType, reason_code: pause.reason_code,
           next_action: requestDiagnostics.next_eligible_recovery_action
-            ?? requestDiagnostics.recovery_intent ?? 'resume_exact_obligation',
+            ?? 'dispatch_provider_request',
           recovery_intent: requestDiagnostics.recovery_intent
-            ?? requestDiagnostics.next_eligible_recovery_action ?? 'resume_exact_obligation',
+            ?? 'resume_interrupted_provider_work',
           recovery_stage: requestDiagnostics.recovery_stage
             ?? (budgetExhausted ? 'bounded_recovery_exhausted' : 'manual_pause'),
           persistence_result: pause.accepted_records_preserved > 0
@@ -5707,26 +5537,29 @@ export function bindSettingsUI(ctrl) {
       const total = allMessages.length;
       controllerRuntime.source_message_count = total;
       let resumeOffset = resumableCheckpoint ? resumeSourceValidation.resume_offset : 0;
+      let sourceTraversalOffset = resumeOffset;
       const checkpoint = resumableCheckpoint ?? {
         schema_version: 3,
         run_id: catchUpRunId,
         started_at: Date.now(),
-        source_message_count: total,
-        source_last_original_index: allMessages.at(-1)?.__sme_original_index ?? null,
         next_source_offset: 0,
-        committed_chunks: 0,
-        historical_participant_scope: structuredClone(historicalParticipantScope),
-        canonical_runtime_context: structuredClone(canonicalRuntimeContext),
+        historical_participant_scope: cloneSerializableDomain(historicalParticipantScope, {
+          path: '$.checkpoint.historical_participant_scope', stage: 'checkpoint_construction',
+          operation_type: 'memorize_chat',
+        }),
+        canonical_runtime_context: cloneSerializableDomain(canonicalRuntimeContext, {
+          path: '$.checkpoint.canonical_runtime_context', stage: 'checkpoint_construction',
+          operation_type: 'memorize_chat',
+        }),
       };
       checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
-      checkpoint.run_settings_snapshot_updated_at = recoverySettingsSidecar?.updated_at ?? Date.now();
       checkpoint.finalization = checkpoint.finalization && typeof checkpoint.finalization === 'object'
         ? checkpoint.finalization
         : { schema_version: 1, completed_phases: {}, active_phase: null, updated_at: null };
       checkpoint.finalization.phase_dispositions ??= {};
       const activePersona = canonicalRuntimeContext?.active_persona;
-      if (activePersona?.canonical_name && activePersona?.stable_persona_id) {
-        checkpoint.persona_audit_proof = {
+      const personaAuditProof = activePersona?.canonical_name && activePersona?.stable_persona_id
+        ? {
           schema_version: 1,
           finalized_roster_fingerprint: diagnosticFingerprint(JSON.stringify(canonicalRuntimeContext)),
           active_persona_stable_id_fingerprint: diagnosticFingerprint(activePersona.stable_persona_id),
@@ -5734,14 +5567,12 @@ export function bindSettingsUI(ctrl) {
           context_source: resumableCheckpoint ? 'restored_finalized_context_confirmed_by_live_snapshot' : 'initial_finalized_runtime_context',
           roster_membership_result: true,
           audited_at: Date.now(),
-        };
-      } else if (!checkpoint.persona_audit_proof) {
-        checkpoint.persona_audit_proof = {
+        }
+        : {
           schema_version: 1, finalized_roster_fingerprint: null,
           active_persona_stable_id_fingerprint: null, active_persona_canonical_name_fingerprint: null,
           context_source: 'live_persona_unavailable', roster_membership_result: null, audited_at: Date.now(),
         };
-      }
       // v0.9.44 could commit this reconciliation after Short-Term had already
       // failed. Preserve its audit as an intermediate checkpoint, but do not
       // misrepresent it as the definitive post-generation reconciliation.
@@ -5753,7 +5584,7 @@ export function bindSettingsUI(ctrl) {
         delete checkpoint.finalization.completed_phases.final_reconciliation;
       }
       const sourceWindow = {
-        source_message_count: total,
+        message_count: total,
         source_start_index: allMessages[0]?.__sme_original_index ?? null,
         source_end_index: allMessages.at(-1)?.__sme_original_index ?? null,
         fingerprint: diagnosticFingerprint(JSON.stringify({
@@ -5803,84 +5634,29 @@ export function bindSettingsUI(ctrl) {
       const authoritativeOffset = authorityProjection.safe_resume_offset;
       checkpoint.next_source_offset = authoritativeOffset;
       resumeOffset = authoritativeOffset;
-      checkpoint.source_traversal_offset = Math.max(
-        Number(checkpoint.source_traversal_offset ?? 0), authoritativeOffset);
-      checkpoint.authority_projection_reconciliation = {
-        schema_version: 1,
-        projection_mutations: authorityProjection.mutations,
-        retired_provider_recovery_window_count: providerWindowRepair.retired_windows.length,
-        provider_audit_mutations: providerWindowRepair.mutations,
-        safe_resume_offset: authoritativeOffset,
-        selection: authorityProjection.selection,
-        provider_calls: 0,
-        persistence_calls: 0,
-        reconciled_at: Date.now(),
-      };
-      if (lifecycleJournalRepair.mutations) checkpoint.lifecycle_journal_reconciliation = {
-        mutations: lifecycleJournalRepair.mutations,
-        parent_aggregation_mutations: lifecycleJournalRepair.parent_aggregation_mutations,
-        reused_attempt_ids: lifecycleJournalRepair.reused_attempt_ids,
-        preserved_durable_record_ids: lifecycleJournalRepair.preserved_durable_record_ids,
-        safe_resume_offset: lifecycleJournalRepair.safe_resume_offset,
-        next_source_range: lifecycleJournalRepair.next_source_range,
-        provider_calls: 0, persistence_calls: 0, reconciled_at: Date.now(),
-      };
+      sourceTraversalOffset = Math.max(
+        authorityProjection.source_traversal_offset, authoritativeOffset);
       const liveHealthRepairs = reconcileImpossibleLiveHealth(
         catchUpContext.chatMetadata?.[META_KEY], providerAudit);
-      checkpoint.provider_completion_consistency = inspectProviderCompletionConsistency({
-        metadata: catchUpContext.chatMetadata?.[META_KEY], provider_audit: providerAudit,
-        ledger: checkpoint.run_manifest.obligation_ledger,
-        child_manifests: checkpoint.recovery_child_manifests,
-        live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
-      });
-      checkpoint.stale_controller_audit = classifyStaleMemorizeController(
-        checkpoint.controller_heartbeat, {
-          stale_threshold_ms: 300000,
-          provider_running: (providerAudit?.recent_attempts ?? []).some((item) => item.terminal_outcome === 'running'),
-          persistence_running: false, save_running: false, background_operation_running: false,
-          controller_executing: false, transaction_inspectable: true,
-        });
-      if (liveHealthRepairs.length) {
-        checkpoint.runtime_lifecycle_repairs = {
-          live_health_repairs: liveHealthRepairs,
-          reconciled_at: Date.now(),
-        };
-      }
       if (runningReconciliation.repairs.length || lifecycleJournalRepair.mutations
         || providerWindowRepair.mutations
-        || authorityProjection.mutations) {
-        checkpoint.runtime_obligation_repairs = [
-          ...(checkpoint.runtime_obligation_repairs ?? []), ...runningReconciliation.repairs,
-        ].slice(-16);
+        || authorityProjection.mutations || liveHealthRepairs.length) {
         checkpoint.updated_at = Date.now();
         await saveChatMetadata(catchUpContext);
       }
       const reconciledProjection = projectMemorizeObligationLedger(
         checkpoint.run_manifest.obligation_ledger);
+      let reconciledResumeEligibility = null;
       if (reconciledProjection.pending_obligation_count > 0) {
-        const reconciledResumeEligibility = deriveMemorizeResumeEligibility({
+        reconciledResumeEligibility = deriveMemorizeResumeEligibility({
           projection: reconciledProjection,
           provider_audit: providerAudit,
           provider_completion_journal:
             catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
           active_transaction: getActiveCatchUpTransactionSnapshot(),
         });
-        checkpoint.resume_eligibility = {
-          schema_version: 1, ...reconciledResumeEligibility, evaluated_at: Date.now(),
-        };
         if (!reconciledResumeEligibility.eligible) {
           checkpoint.status = 'blocked_recovery_change_required';
-          checkpoint.recovery_blocked = {
-            blocked: true,
-            reason_code: reconciledResumeEligibility.reason_code,
-            next_eligible_recovery_action:
-              reconciledResumeEligibility.next_eligible_action,
-            obligations: reconciledProjection.pending_obligations.slice(0, 16)
-              .map((item) => ({ obligation_id: item.obligation_id,
-                current_state: item.current_state,
-                exact_reason_code: item.exact_reason_code,
-                next_eligible_action: item.next_eligible_action })),
-          };
           checkpoint.updated_at = Date.now();
           await saveChatMetadata(catchUpContext);
           const error = new Error('Resume reconciliation did not produce a safe executable action.');
@@ -5897,14 +5673,8 @@ export function bindSettingsUI(ctrl) {
           ledger: checkpoint.run_manifest.obligation_ledger,
           provider_audit: providerAudit,
         });
-        checkpoint.resume_progress_in_flight = {
-          schema_version: 1,
-          invocation_id: controllerRuntime.invocation_id,
-          before: resumeProgressBefore,
-          planned_exact_action: checkpoint.resume_eligibility?.next_eligible_action
-            ?? resumeProgressBefore.exact_action,
-          started_at: Date.now(),
-        };
+        plannedResumeAction = reconciledResumeEligibility?.next_eligible_action
+          ?? resumeProgressBefore.exact_action;
       }
       // v0.9.57 could run and commit final reconciliation after source-tier
       // ingestion paused. On resume, remove every premature finalization
@@ -5917,7 +5687,7 @@ export function bindSettingsUI(ctrl) {
           : priorTerminalReason === 'finalization_phase_failed' ? 'resumed_after_phase_failure'
             : priorTerminalReason === 'unclassified_page_interruption' ? 'resumed_after_page_interruption'
               : resumableCheckpoint.status === 'in_progress' ? 'resumed_after_application_restart'
-                : checkpoint.resume_eligibility?.obligation_id
+                : reconciledResumeEligibility?.obligation_id
                   ? 'resumed_after_canonical_recovery'
                   : 'resumed_after_unknown_interruption';
       checkpoint.run_manifest = beginCatchUpAttempt(checkpoint.run_manifest, {
@@ -5938,14 +5708,15 @@ export function bindSettingsUI(ctrl) {
         runResult.transactionRecovery = {
           recovered: true,
           reason_code: 'page_instance_ended_without_in_memory_transaction',
-          transaction: structuredClone(checkpoint.transaction_lifecycle),
+          transaction: cloneSerializableDomain(checkpoint.transaction_lifecycle, {
+            path: '$.transaction_recovery', stage: 'transaction_recovery_projection',
+            operation_type: 'memorize_chat',
+          }),
         };
       }
       checkpoint.status = 'in_progress';
       checkpoint.updated_at = Date.now();
       checkpoint.next_source_offset = resumeOffset;
-      checkpoint.source_message_count = total;
-      checkpoint.source_last_original_index = allMessages.at(-1)?.__sme_original_index ?? null;
       catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint = checkpoint;
       const existingPageMarker = pageRunScope(catchUpContext)
         ? readPageRunMarker(localStorage, pageRunScope(catchUpContext)) : null;
@@ -6152,7 +5923,6 @@ export function bindSettingsUI(ctrl) {
         }
         const activeElapsed = finalizationTiming.active_phase_started_at ? Math.max(0, now - finalizationTiming.active_phase_started_at) : 0;
         const completedUnits = finalizationTiming.completed_units;
-        const remainingUnits = Math.max(0, finalizationTiming.planned_units - completedUnits);
         const observedPhaseAverage = median(Object.values(finalizationTiming.phase_durations).flat());
         const weightedHistoricalEstimate = (kind) => historicalFinalizationMsPerUnit
           ? Math.round(historicalFinalizationMsPerUnit * finalizationTiming.planned_units * ((finalizationPhaseWeights[kind] ?? 1) / totalFinalizationWeight))
@@ -6243,9 +6013,9 @@ export function bindSettingsUI(ctrl) {
       // finalization. Long-Term and persistence failures remain strict.
       const recoveryTraversalPolicy = 'completion_first_traversal';
       let recoverySweepActive = false;
-      // Resume selection is ledger-authoritative. Compatibility tier gaps are
-      // projections only and must never rewind traversal or dispatch work.
-      const authoritativeResumeSelection = checkpoint.run_manifest.authoritative_resume_selection;
+      // Resume selection is a local ledger projection. It is never persisted
+      // as a second source of execution authority.
+      const authoritativeResumeSelection = authorityProjection.selection;
       if (authoritativeResumeSelection?.kind === 'blocked_unactionable_obligation') {
         const blocked = new Error('The canonical Memorize Chat obligation ledger contains a blocked obligation with no eligible recovery action.');
         blocked.code = 'SME_CANONICAL_OBLIGATION_BLOCKED';
@@ -6297,18 +6067,25 @@ export function bindSettingsUI(ctrl) {
           await_point: 'transaction_checkpoint', progress: true,
           last_durable_transition: 'chunk_transaction_started',
         });
-        checkpoint.context_overflow_recovery ??= { schema_version: 1, completed_children: [] };
-        checkpoint.context_overflow_recovery.completed_children ??= [];
-        const completedOverflowChildren = checkpoint.context_overflow_recovery.completed_children
-          .map((entry) => entry?.key).filter(Boolean);
+        const completedOverflowChildren = getCompletedRecoveryChildKeys(
+          checkpoint.run_manifest.obligation_ledger);
         const runLeasedPersistence = async (callbackType, mutation, detail = {}) => {
+          const moduleMetadataBefore = cloneSerializableDomain(
+            catchUpContext.chatMetadata?.[META_KEY] ?? {}, {
+              path: '$.leased_persistence.before',
+              stage: 'leased_persistence_precondition',
+              operation_type: callbackType,
+              obligation_id: detail.obligation_id ?? controllerRuntime.obligation_id,
+            });
           const lease = createCatchUpTransactionLease(chunkTransaction, {
             callback_type: callbackType,
             obligation_id: detail.obligation_id ?? controllerRuntime.obligation_id,
             provider_attempt_id: detail.provider_attempt_id ?? null,
           });
-          const result = await mutateAndCheckpointCatchUpTransaction(
-            chunkTransaction, lease, async () => {
+          let result;
+          try {
+            result = await mutateAndCheckpointCatchUpTransaction(
+              chunkTransaction, lease, async () => {
               const value = await mutation();
               if (checkpoint.transaction_lifecycle?.transaction_id
                 === chunkTransaction.transaction_id) {
@@ -6320,6 +6097,21 @@ export function bindSettingsUI(ctrl) {
               await saveChatMetadata(catchUpContext);
               return value;
             });
+          } catch (error) {
+            // The storage transaction may already have restored its last
+            // durable snapshot. Reapply the exact pre-mutation aggregate so
+            // an exception before checkpoint publication cannot leak a
+            // partially reduced ledger, audit, or journal into live state.
+            catchUpContext.chatMetadata ??= {};
+            catchUpContext.chatMetadata[META_KEY] = cloneSerializableDomain(
+              moduleMetadataBefore, {
+                path: '$.leased_persistence.rollback',
+                stage: 'leased_persistence_rollback',
+                operation_type: callbackType,
+                obligation_id: detail.obligation_id ?? controllerRuntime.obligation_id,
+              });
+            throw error;
+          }
           if (!result.allowed) {
             controllerRuntime.stale_lease_callbacks ??= [];
             controllerRuntime.stale_lease_callbacks.push({
@@ -6337,28 +6129,9 @@ export function bindSettingsUI(ctrl) {
           }
           return result;
         };
-        const commitOverflowChild = async (record) => {
+        const recordCompletedRecoveryChild = async (record) => {
           if (!record?.key || completedOverflowChildren.includes(record.key)) return;
-          return runLeasedPersistence('context_overflow_child_committed', () => {
-            completedOverflowChildren.push(record.key);
-            checkpoint.context_overflow_recovery.completed_children = [
-              ...checkpoint.context_overflow_recovery.completed_children,
-              { ...record, committed_at: Date.now(), terminal_state: 'safely_committed' },
-            ].slice(-2048);
-            checkpoint.updated_at = Date.now();
-          }, { obligation_id: record.obligation_id });
-        };
-        checkpoint.recovery_child_manifests ??= { schema_version: 1, roots: {} };
-        checkpoint.recovery_child_manifests.roots ??= {};
-        const commitRecoveryChildManifest = async (manifest) => {
-          if (!manifest?.root_obligation_id) return;
-          return runLeasedPersistence('recovery_child_manifest_updated', () => {
-            updateMemorizeControllerHeartbeat(checkpoint, controllerRuntime, {
-              await_point: 'child_manifest_update', progress: true,
-            });
-            checkpoint.recovery_child_manifests.roots[manifest.root_obligation_id] = manifest;
-            checkpoint.updated_at = Date.now();
-          }, { obligation_id: manifest.root_obligation_id });
+          completedOverflowChildren.push(record.key);
         };
         const commitProviderCompletionJournal = async (entry, heartbeatPatch = {}) => {
           return runLeasedPersistence('provider_completion_journal_updated', () => {
@@ -6496,6 +6269,27 @@ export function bindSettingsUI(ctrl) {
         const applyAuthoritativeLifecycleEvent = async (event) => {
           let lifecycleResult = null;
           const leaseResult = await runLeasedPersistence('obligation_event', async () => {
+          const lifecycleEvent = { ...event };
+          const providerStateProposal = lifecycleEvent.provider_state_proposal ?? null;
+          delete lifecycleEvent.provider_state_proposal;
+          if (providerStateProposal) {
+            const moduleMetadata = catchUpContext.chatMetadata[META_KEY];
+            moduleMetadata.live_memory_health ??= {};
+            moduleMetadata.live_memory_health.provider_attempt_audit
+              = cloneSerializableDomain(providerStateProposal.provider_attempt_audit, {
+                path: '$.provider_registration.publish.provider_attempt_audit',
+                stage: 'provider_registration_publication',
+                operation_type: 'provider_attempt_registration',
+                obligation_id: event.obligation_id,
+              });
+            moduleMetadata.provider_completion_journal
+              = cloneSerializableDomain(providerStateProposal.provider_completion_journal, {
+                path: '$.provider_registration.publish.provider_completion_journal',
+                stage: 'provider_registration_publication',
+                operation_type: 'provider_attempt_registration',
+                obligation_id: event.obligation_id,
+              });
+          }
           trackMemorizeTransaction(controllerRuntime, controllerRuntime.active_transaction, {
             phase: 'source_extraction', tier: event.tier, owner: event.owner,
             source_range: event.source_range, obligation_id: event.obligation_id,
@@ -6541,7 +6335,7 @@ export function bindSettingsUI(ctrl) {
                 leaf_obligation_id: event.obligation_id,
                 source_range: event.source_range,
                 source_fingerprint: event.source_fingerprint,
-                next_eligible_recovery_action: 'reconcile_terminal_attempt_evidence',
+                next_eligible_recovery_action: 'stop_blocked',
                 provider_call_required: false,
               };
               throw identityError;
@@ -6573,7 +6367,7 @@ export function bindSettingsUI(ctrl) {
               'validation_rejected'].includes(afterParser?.current_state)) {
               const pendingResult = applyMemorizeLifecycleEvent(ledger, identity, {
                 type: 'recovery_required', reason_code: 'malformed_provider_output',
-                next_action: 'dispatch_bounded_recovery_attempt',
+                next_action: 'dispatch_provider_request',
                 recovery_intent: 'recover_unresolved_partial_output_fragments',
                 recovery_stage: event.recovery_stage,
                 event_id: `retry-settlement:${terminal.attempt_id}:pending`,
@@ -6584,7 +6378,18 @@ export function bindSettingsUI(ctrl) {
               });
             }
           }
-          lifecycleResult = applyMemorizeLifecycleEvent(ledger, identity, event);
+          lifecycleResult = applyMemorizeLifecycleEvent(ledger, identity, lifecycleEvent);
+          if (event.type === 'provider_attempt_registered') {
+            requireAppliedLifecycleResult(lifecycleResult, ['provider_registered'], {
+              stage: event.type, obligation_id: event.obligation_id,
+              event_type: event.type,
+            });
+          } else if (event.type === 'provider_attempt_started') {
+            requireAppliedLifecycleResult(lifecycleResult, ['provider_running'], {
+              stage: event.type, obligation_id: event.obligation_id,
+              event_type: event.type,
+            });
+          }
           checkpoint.updated_at = Date.now();
           return lifecycleResult;
           }, { obligation_id: event.obligation_id,
@@ -6601,7 +6406,10 @@ export function bindSettingsUI(ctrl) {
           const obligation = getCanonicalMemorizeObligation(
             checkpoint.run_manifest.obligation_ledger, obligationId,
             logicalRunId ?? checkpoint.run_manifest.logical_run_id);
-          return obligation ? structuredClone(obligation) : null;
+          return obligation ? cloneSerializableDomain(obligation, {
+            path: '$.canonical_obligation', stage: 'obligation_projection',
+            operation_type: 'memorize_chat', obligation_id: obligationId,
+          }) : null;
         };
         const longtermEnabledForRun = Boolean(settings.longterm_enabled && !isFreshStart());
         const sessionEnabledForRun = Boolean(settings.session_enabled && !isFreshStart());
@@ -6676,8 +6484,7 @@ export function bindSettingsUI(ctrl) {
                     },
                     recovery: { completed_child_keys: completedOverflowChildren },
                     hooks: {
-                      context_overflow_child_committed: commitOverflowChild,
-                      recovery_child_manifest_updated: commitRecoveryChildManifest,
+                      recovery_child_completed: recordCompletedRecoveryChild,
                       provider_completion_journal_updated: commitProviderCompletionJournal,
                       provider_completion_command: commitAtomicProviderCompletion,
                       action_receipt: commitActionReceipt,
@@ -6812,8 +6619,7 @@ export function bindSettingsUI(ctrl) {
                   recovery: { completed_child_keys: completedOverflowChildren,
                     controller_owned: true },
                   hooks: {
-                    context_overflow_child_committed: commitOverflowChild,
-                    recovery_child_manifest_updated: commitRecoveryChildManifest,
+                    recovery_child_completed: recordCompletedRecoveryChild,
                     obligation_event: applyAuthoritativeLifecycleEvent,
                     provider_completion_command: commitAtomicProviderCompletion,
                     action_receipt: commitActionReceipt,
@@ -6930,10 +6736,6 @@ export function bindSettingsUI(ctrl) {
         let rangeBlocked = false;
         const checkpointForCommit = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
         if (checkpointForCommit) {
-          checkpointForCommit.last_committed_source_start_index = chunk[0]?.__sme_original_index ?? null;
-          checkpointForCommit.last_committed_source_end_index = chunk.at(-1)?.__sme_original_index ?? null;
-          const chunkStartIndex = chunk[0]?.__sme_original_index ?? null;
-          const chunkEndIndex = chunk.at(-1)?.__sme_original_index ?? null;
           const lifecycleReconciliation = reconcileMemorizeLifecycleFromJournal(
             checkpointForCommit.run_manifest.obligation_ledger, {
               logical_run_id: checkpointForCommit.run_manifest.logical_run_id,
@@ -6944,13 +6746,6 @@ export function bindSettingsUI(ctrl) {
                 .flatMap((tier) => tier?.records ?? []),
             });
           checkpointForCommit.run_manifest.obligation_ledger = lifecycleReconciliation.ledger;
-          checkpointForCommit.lifecycle_journal_reconciliation = {
-            mutations: lifecycleReconciliation.mutations,
-            parent_aggregation_mutations: lifecycleReconciliation.parent_aggregation_mutations,
-            reused_attempt_ids: lifecycleReconciliation.reused_attempt_ids,
-            preserved_durable_record_ids: lifecycleReconciliation.preserved_durable_record_ids,
-            provider_calls: 0, persistence_calls: 0, reconciled_at: Date.now(),
-          };
           const projection = rebuildMemorizeManifestProjection(
             checkpointForCommit.run_manifest, {
               source_message_count: total,
@@ -6990,15 +6785,6 @@ export function bindSettingsUI(ctrl) {
             provider_failure_count: runResult.providerFailures.length,
           };
           checkpointForCommit.next_source_offset = projection.safe_resume_offset;
-          checkpointForCommit.authority_projection_reconciliation = {
-            schema_version: 1,
-            projection_mutations: projection.mutations,
-            safe_resume_offset: projection.safe_resume_offset,
-            selection: projection.selection,
-            provider_calls: 0,
-            persistence_calls: 0,
-            reconciled_at: Date.now(),
-          };
           checkpointForCommit.updated_at = Date.now();
         }
         try {
@@ -7071,8 +6857,7 @@ export function bindSettingsUI(ctrl) {
               && queueCandidate.next_eligible_action;
             if (mayContinueTraversal) {
               checkpointForCommit.status = 'in_progress_with_recovery_backlog';
-              checkpointForCommit.source_traversal_offset = processed;
-              checkpointForCommit.recovery_traversal_policy = recoveryTraversalPolicy;
+              sourceTraversalOffset = Math.max(sourceTraversalOffset, processed);
               checkpointForCommit.updated_at = Date.now();
               await retryTransientMemoryOperation(() => saveChatMetadata(catchUpContext));
               i = processed;
@@ -7084,11 +6869,6 @@ export function bindSettingsUI(ctrl) {
                 if (nextBacklog) {
                   recoverySweepActive = true;
                   i = nextBacklog.source_range.start;
-                  checkpointForCommit.recovery_sweep = {
-                    schema_version: 1, status: 'running',
-                    next_obligation_id: nextBacklog.obligation_id,
-                    started_at: Date.now(),
-                  };
                 }
               }
               continue;
@@ -7102,49 +6882,20 @@ export function bindSettingsUI(ctrl) {
             const recoveryBlocked = blockedObligations.length > 0;
             checkpointForCommit.status = recoveryBlocked
               ? 'blocked_recovery_change_required' : 'awaiting_manual_resume';
-            checkpointForCommit.recovery_blocked = recoveryBlocked ? {
-              schema_version: 1,
-              blocked: true,
-              reason_code: 'recovery_change_required',
-              unresolved_obligation_count: blockedObligations.length,
-              safe_progress_preserved: true,
-              next_eligible_recovery_action: 'change_provider_configuration_or_install_updated_build',
-              obligations: blockedObligations.map((obligation) => ({
-                root_obligation_id: obligation.root_obligation_id,
-                tier: obligation.tier,
-                owner: obligation.owner,
-                source_range: obligation.source_range,
-                source_fingerprint: obligation.source_fingerprint,
-                configuration_signature: obligation.configuration_signature,
-                recovery_stages_attempted: obligation.recovery_stages_attempted,
-                terminal_signature: obligation.last_terminal_signature,
-                terminal_signature_repeat_count: obligation.terminal_signature_repeat_count,
-              })).slice(-16),
-              blocked_at: Date.now(),
-            } : null;
             const obligationProjection = projectMemorizeObligationLedger(
               checkpointForCommit.run_manifest.obligation_ledger);
             const exactPendingObligation = obligationProjection.pending_obligations.find((obligation) =>
               Number(obligation.source_range?.start) === Number(currentRange.source_start_index)
               && Number(obligation.source_range?.end) === Number(currentRange.source_end_index));
-            const operationalPauseReason = checkpointForCommit.operational_pause?.reason_code ?? null;
             const canonicalBlockedWithoutAction = Boolean(exactPendingObligation
               && !exactPendingObligation.next_eligible_action);
             const controllerBlocked = recoveryBlocked || canonicalBlockedWithoutAction;
             if (canonicalBlockedWithoutAction) {
               checkpointForCommit.status = 'blocked_recovery_change_required';
-              checkpointForCommit.recovery_blocked = {
-                schema_version: 1, blocked: true,
-                reason_code: 'canonical_pending_obligation_has_no_executable_action',
-                unresolved_obligation_count: obligationProjection.pending_obligation_count,
-                safe_progress_preserved: true,
-                next_eligible_recovery_action: null,
-                obligations: [exactPendingObligation], blocked_at: Date.now(),
-              };
             }
             const terminalReasonCode = recoveryBlocked
               ? 'recovery_change_required'
-              : operationalPauseReason ?? exactPendingObligation?.exact_reason_code
+              : exactPendingObligation?.exact_reason_code
                 ?? 'canonical_pending_obligation_has_no_executable_action';
             recordControllerExit({
               logical_run_id: checkpointForCommit.run_manifest.logical_run_id,
@@ -7166,14 +6917,12 @@ export function bindSettingsUI(ctrl) {
             ctrl.catchUpStopReason = terminalReasonCode;
             setStatusMessage(controllerBlocked
               ? `Source ingestion blocked: ${blockedObligations.length} extraction obligation${blockedObligations.length === 1 ? '' : 's'} exhausted every available recovery path for ${i}-${processed - 1}. Safe progress is preserved; change provider configuration or install an updated build before resuming.`
-              : operationalPauseReason === 'recovery_request_budget_reached_with_pending_children'
-                ? `Source ingestion paused safely at the recovery-request budget for ${i}-${processed - 1}. Resume continues with ${checkpointForCommit.operational_pause?.next_resumable_child ?? 'the exact pending child'}.`
+              : terminalReasonCode === 'recovery_request_budget_reached_with_pending_children'
+                ? `Source ingestion paused safely at the recovery-request budget for ${i}-${processed - 1}. Resume continues with ${formatDiagnosticIdentifier(exactPendingObligation?.next_eligible_action, 'the exact pending child')}.`
                 : exactPendingObligation
                   ? `Source ingestion paused: ${exactPendingObligation.tier === 'session' ? 'Session' : 'Long-Term'} ${exactPendingObligation.source_range.start}–${exactPendingObligation.source_range.end} requires ${formatDiagnosticIdentifier(exactPendingObligation.next_eligible_action, 'a recovery change')} (${formatDiagnosticIdentifier(terminalReasonCode, 'pending recovery')}).`
                   : `Source ingestion is blocked for ${i}-${processed - 1} because the canonical ledger has no executable recovery action.`);
           } else {
-            checkpointForCommit.committed_chunks = Number(checkpointForCommit.committed_chunks ?? 0) + 1;
-            delete checkpointForCommit.operational_pause;
             const postCommitProjection = projectMemorizeObligationLedger(
               checkpointForCommit.run_manifest.obligation_ledger);
             const earliestPendingOffset = postCommitProjection.pending_obligations
@@ -7182,27 +6931,17 @@ export function bindSettingsUI(ctrl) {
               .sort((left, right) => left - right)[0];
             checkpointForCommit.next_source_offset = Number.isInteger(earliestPendingOffset)
               ? Math.min(processed, earliestPendingOffset) : processed;
-            checkpointForCommit.source_traversal_offset = Math.max(
-              Number(checkpointForCommit.source_traversal_offset ?? 0), processed);
+            sourceTraversalOffset = Math.max(sourceTraversalOffset, processed);
             if (recoverySweepActive) {
               const nextBacklog = postCommitProjection.pending_obligations
                 .filter((obligation) => obligation.next_eligible_action && obligation.source_range)
                 .sort((left, right) => left.source_range.start - right.source_range.start)[0];
               if (nextBacklog) {
                 i = nextBacklog.source_range.start;
-                checkpointForCommit.recovery_sweep = {
-                  ...(checkpointForCommit.recovery_sweep ?? { schema_version: 1, started_at: Date.now() }),
-                  status: 'running', next_obligation_id: nextBacklog.obligation_id,
-                  updated_at: Date.now(),
-                };
               } else {
                 recoverySweepActive = false;
-                checkpointForCommit.next_source_offset = Number(checkpointForCommit.source_traversal_offset ?? total);
-                checkpointForCommit.recovery_sweep = {
-                  ...(checkpointForCommit.recovery_sweep ?? { schema_version: 1 }),
-                  status: 'completed', completed_at: Date.now(),
-                };
-                i = Number(checkpointForCommit.source_traversal_offset ?? total);
+                checkpointForCommit.next_source_offset = sourceTraversalOffset;
+                i = sourceTraversalOffset;
               }
             } else if (processed >= total && postCommitProjection.pending_obligation_count > 0) {
               const nextBacklog = postCommitProjection.pending_obligations
@@ -7293,7 +7032,6 @@ export function bindSettingsUI(ctrl) {
         checkpoint.finalization.active_phase = null;
         checkpoint.finalization.updated_at = Date.now();
         checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
-        checkpoint.run_settings_snapshot_updated_at = Date.now();
         checkpoint.updated_at = Date.now();
         // Save through the active transaction, then make this phase's full
         // durable state the new recovery boundary before the next phase.
@@ -7306,7 +7044,6 @@ export function bindSettingsUI(ctrl) {
         checkpoint.finalization.active_phase = key;
         checkpoint.finalization.updated_at = Date.now();
         checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
-        checkpoint.run_settings_snapshot_updated_at = Date.now();
         checkpoint.updated_at = Date.now();
         updateActivePageMarker(checkpoint, key, 'in_flight');
         await saveChatMetadata(catchUpContext);
@@ -7327,7 +7064,6 @@ export function bindSettingsUI(ctrl) {
       if (completedFinalizationPhases.arc_extraction) {
         runResult.arcExtraction.terminal_outcome = completedFinalizationPhases.arc_extraction.terminal_outcome
           ?? (completedFinalizationPhases.arc_extraction.completed_at ? 'completed_terminal_summary_unavailable' : null);
-        runResult.arcExtraction.terminalOutcome = runResult.arcExtraction.terminal_outcome;
       }
 
       if (!ctrl.catchUpCancelled) {
@@ -7437,8 +7173,6 @@ export function bindSettingsUI(ctrl) {
             const msg = allMessages[msgIdx];
 
             const msgText = msg.mes ?? '';
-            const isAiMsg = !msg.is_user;
-
             if (settings.scene_ai_detect && sceneAudit.ai_decisions?.has(msgIdx)) {
               setStatusMessage(`Detecting scene breaks... (${msgIdx + 1}/${allMessages.length})`);
             }
@@ -7961,9 +7695,8 @@ export function bindSettingsUI(ctrl) {
             + (sceneAudit.break_terminal_outcomes.removed_during_final_assembly ?? 0);
           sceneAudit.terminal_break_accounting_reconciled = sceneAudit.initial_ai_break_proposals === Object.values(sceneAudit.break_terminal_outcomes)
             .reduce((total, count) => total + Number(count ?? 0), 0);
-          // New history records use the structural definition of scene count;
-          // `generated` remains a separate count of successfully saved scene
-          // summaries for backwards-compatible diagnostics.
+          // Scene count is structural; `generated` remains the separate count
+          // of successfully saved scene summaries.
           sceneAudit.boundary_count = sceneAudit.final_break_indices.length;
           sceneAudit.scene_count = sceneAudit.boundary_count + 1;
           const priorSceneAudits = [
@@ -7971,8 +7704,7 @@ export function bindSettingsUI(ctrl) {
             catchUpContext.chatMetadata?.[META_KEY]?.catch_up_diagnostics?.sceneDetection,
           ].filter(Boolean);
           const comparablePriorRun = [...priorSceneAudits].reverse().find((priorSceneAudit) => (
-            priorSceneAudit?.run_signature === sceneAudit.scene_detection_run_signature
-            || priorSceneAudit?.scene_detection_run_signature === sceneAudit.scene_detection_run_signature
+            priorSceneAudit?.scene_detection_run_signature === sceneAudit.scene_detection_run_signature
           ) && priorSceneAudit?.prompt_shape_hash === sceneAudit.prompt_shape_hash
             && priorSceneAudit?.model_identifier === sceneAudit.model_identifier
             && priorSceneAudit?.connection_profile_identifier === sceneAudit.connection_profile_identifier
@@ -8185,7 +7917,6 @@ export function bindSettingsUI(ctrl) {
             }
             checkpoint.updated_at = Date.now();
             checkpoint.run_settings_snapshot = snapshotMemorizeRunSettings(settings);
-            checkpoint.run_settings_snapshot_updated_at = Date.now();
             // A rolling-summary pass has already written its durable summary
             // and summaryEnd. Commit that boundary before asking the provider
             // for the next pass so a crash resumes from the saved tail.
@@ -8276,7 +8007,6 @@ export function bindSettingsUI(ctrl) {
             prior: checkpoint.finalization?.shortterm_attempt_accounting ?? null,
             runId: checkpoint.run_id ?? catchUpRunId,
             attemptNumber: checkpoint.run_manifest?.total_attempt_count ?? null,
-            legacyPhysicalAttempts: priorCompactionAudit?.physical_provider_attempts ?? 0,
           });
           compactionRequestAudit.attempt_accounting = shortTermAttemptAccounting;
           runResult.compactionRequestAudit = compactionRequestAudit;
@@ -8417,173 +8147,24 @@ export function bindSettingsUI(ctrl) {
             return restored;
           };
           let persistedRecoveryPlan = checkpoint.finalization?.shortterm_recovery_plan ?? null;
-          if (!persistedRecoveryPlan && !checkpoint.finalization?.shortterm_post_commit_recovery_marker) {
-            const shortTermMetadata = catchUpContext.chatMetadata?.[META_KEY] ?? {};
-            const migratedAt = Date.now();
-            const migration = migrateMissingPlanCommittedCheckpoint({
-              activePlan: null, postCommitMarker: null,
-              compactionCheckpoint: shortTermMetadata.shortterm_compaction_checkpoint ?? null,
-              summaryEnd: shortTermMetadata.summaryEnd,
-              currentSummaryHash: diagnosticFingerprint(shortTermMetadata.summary ?? ''),
-              currentSourceFingerprint: shortTermChatSourceFingerprint(catchUpContext.chat ?? []),
-              failureState: checkpoint.finalization.shortterm_failure_state,
-              logicalRunId: checkpoint.run_id,
-              phase: 'shortterm_extraction',
-              configurationSignature: shortTermConfigurationSignature(),
-              promptShapeVersion: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
-              minimumSegmentFloor: 4,
-              migratedAt,
-            });
-            const missingPlanProof = migration.proof;
-            if (migration.applied) {
-              const committedPlan = missingPlanProof.committed_plan;
-              const history = checkpoint.finalization.shortterm_recovery_plan_history ?? [];
-              if (!history.some((entry) => entry?.plan_id === committedPlan.plan_id
-                && Number(entry?.committed_boundary) === missingPlanProof.committed_boundary)) {
-                checkpoint.finalization.shortterm_recovery_plan_history = [...history, committedPlan].slice(-16);
-              }
-              const oldLadderCount = Number(checkpoint.finalization.shortterm_failure_state?.recovery_ladder?.total_failures ?? 0);
-              checkpoint.finalization.shortterm_failure_state = migration.failure_state;
-              checkpoint.finalization.shortterm_post_commit_recovery_marker = migration.post_commit_marker;
-              checkpoint.finalization.shortterm_recovery_migration = {
-                schema_version: 1, applied: true,
-                reason: 'committed_predecessor_plan_was_already_cleared',
-                evidence_source: missingPlanProof.evidence_source,
-                committed_predecessor_range: missingPlanProof.committed_predecessor_range,
-                false_failure_size_removed: migration.removed_failure_size,
-                old_ladder_count: oldLadderCount,
-                new_ladder_count: Number(migration.failure_state?.recovery_ladder?.total_failures ?? 0),
-                synthesized_marker_id: missingPlanProof.marker_id,
-                successor_reconstruction_status: 'required',
-                migrated_at: migratedAt,
-              };
-              checkpoint.finalization.phase_dispositions ??= {};
-              checkpoint.finalization.phase_dispositions.shortterm_extraction = {
-                ...(checkpoint.finalization.phase_dispositions.shortterm_extraction ?? {}),
-                disposition: 'pending_resume', resumable: true,
-                resume_decision: 'reconstruct_successor_from_committed_boundary',
-                terminal_outcome: 'committed_progress_without_active_successor',
-              };
-              checkpoint.updated_at = migratedAt;
-              await saveChatMetadata(catchUpContext);
-              await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
-              finalTransaction = beginRunTransaction('profile_generation');
-              const restoredMarker = getContext().chatMetadata?.[META_KEY]?.catch_up_checkpoint
-                ?.finalization?.shortterm_post_commit_recovery_marker;
-              if (restoredMarker?.marker_id !== missingPlanProof.marker_id) {
-                const error = new Error('The repaired Short-Term post-commit marker failed durable reload verification.');
-                error.sme_reason_code = 'post_commit_marker_persistence_verification_failed';
-                throw error;
-              }
-              const reconstructed = buildRecoveryPlan({
-                start: missingPlanProof.successor_start,
-                count: Math.max(4, Number(committedPlan.target_message_count ?? committedPlan.message_count ?? 4)),
-                parentSummaryHash: missingPlanProof.successor_parent_hash,
-                predecessorPlan: committedPlan,
-                reductionReason: 'reconstructed_from_committed_boundary',
-              });
-              if (reconstructed) {
-                persistedRecoveryPlan = await persistAndVerifyRecoveryPlan(reconstructed);
-                checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_plan_id = persistedRecoveryPlan.plan_id;
-                checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_state = 'reload_verified';
-                checkpoint.finalization.shortterm_recovery_migration.successor_reconstruction_status = 'reload_verified';
-                await saveChatMetadata(catchUpContext);
-                await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
-                finalTransaction = beginRunTransaction('profile_generation');
-              } else {
-                checkpoint.finalization.shortterm_recovery_migration.successor_reconstruction_status = 'tail_complete';
-              }
-              compactionRequestAudit.recovery_state_migration = checkpoint.finalization.shortterm_recovery_migration;
-            } else if (shortTermMetadata.shortterm_compaction_checkpoint) {
-              compactionRequestAudit.recovery_state_migration = {
-                applied: false, reason: migration.reason,
-                evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
-                conflicts: migration.conflicts,
-              };
-            }
-          }
           if (persistedRecoveryPlan) {
-            if (Number(persistedRecoveryPlan.schema_version ?? 0) < 3) {
-              const legacySchemaVersion = Number(persistedRecoveryPlan.schema_version ?? 2);
-              persistedRecoveryPlan.schema_version = 3;
-              persistedRecoveryPlan.logical_run_id = checkpoint.run_id;
-              persistedRecoveryPlan.phase = 'shortterm_extraction';
-              persistedRecoveryPlan.migrated_from_schema_version = legacySchemaVersion;
+            if (Number(persistedRecoveryPlan.schema_version)
+              !== SHORTTERM_RECOVERY_SCHEMA_VERSION
+              || typeof persistedRecoveryPlan.configuration_signature !== 'string'
+              || !persistedRecoveryPlan.configuration_signature.trim()) {
+              const error = new Error('The saved Short-Term recovery plan uses an unsupported schema. Use Fresh Start before starting a new run.');
+              error.code = 'SME_INCOMPATIBLE_SHORTTERM_RECOVERY_SCHEMA';
+              error.sme_reason_code = 'fresh_start_required';
+              error.sme_failure_stage = 'shortterm_recovery_plan_validation';
+              throw error;
             }
             let validation = validateRecoveryPlan(persistedRecoveryPlan);
             persistedRecoveryPlan.resume_validation = validation.reason;
-            const committedBoundary = Number(catchUpContext.chatMetadata?.[META_KEY]?.summaryEnd);
-            const committedSummaryHash = diagnosticFingerprint(catchUpContext.chatMetadata?.[META_KEY]?.summary ?? '');
-            const planRangeAlreadyCommitted = validation.reason === 'parent_summary_mismatch'
-              && Number.isInteger(committedBoundary)
-              && Number(persistedRecoveryPlan.next_segment_end) < committedBoundary;
-            if (!validation.valid && planRangeAlreadyCommitted) {
-              const committedPlan = {
-                ...persistedRecoveryPlan,
-                lifecycle_state: 'consumed_successfully', terminal_state: 'committed',
-                provider_terminal_outcome: 'completed', segment_terminal_outcome: 'committed',
-                committed_boundary: committedBoundary, committed_summary_hash: committedSummaryHash,
-                migrated_from_false_active_plan: true, migrated_at: Date.now(),
-              };
-              checkpoint.finalization.shortterm_recovery_plan_history = [
-                ...(checkpoint.finalization.shortterm_recovery_plan_history ?? []), committedPlan,
-              ].slice(-16);
-              const migratedFailure = migrateCommittedShortTermFailureState(
-                checkpoint.finalization.shortterm_failure_state ?? {}, {
-                  committedBoundary, committedPlan, committedSummaryHash,
-                },
-              );
-              checkpoint.finalization.shortterm_failure_state = migratedFailure.failure_state;
-              checkpoint.finalization.shortterm_post_commit_recovery_marker = {
-                schema_version: 1, predecessor_plan_id: committedPlan.plan_id ?? committedPlan.effective_request_signature,
-                predecessor_terminal_state: 'committed', predecessor_source_range: {
-                  start: committedPlan.next_segment_start, end: committedPlan.next_segment_end,
-                },
-                committed_boundary: committedBoundary, committed_summary_hash: committedSummaryHash,
-                remaining_tail_end: committedBoundary < catchUpContext.chat.length ? catchUpContext.chat.length - 1 : null,
-                configuration_signature: shortTermConfigurationSignature(),
-                prompt_shape_version: SHORTTERM_COMPACTION_PROMPT_SHAPE_VERSION,
-                recovery_strategy: 'smaller_segment_rebuild', minimum_segment_floor: 4,
-                successor_state: 'reconstruction_required', created_at: Date.now(),
-                migrated_false_failed_ladder_entry: migratedFailure.migrated,
-              };
-              const reconstructed = buildRecoveryPlan({
-                start: committedBoundary,
-                count: Math.max(4, Number(committedPlan.target_message_count ?? committedPlan.message_count ?? 4)),
-                parentSummaryHash: committedSummaryHash,
-                predecessorPlan: committedPlan,
-                reductionReason: 'reconstructed_from_committed_boundary',
-              });
-              checkpoint.finalization.shortterm_recovery_plan = null;
-              if (!reconstructed) {
-                persistedRecoveryPlan = null;
-                validation = { valid: true, reason: 'committed_tail_complete', conflicts: [] };
-              } else {
-                persistedRecoveryPlan = await persistAndVerifyRecoveryPlan(reconstructed);
-                checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_plan_id = persistedRecoveryPlan.plan_id;
-                checkpoint.finalization.shortterm_post_commit_recovery_marker.successor_state = 'reload_verified';
-                validation = validateRecoveryPlan(persistedRecoveryPlan);
-              }
-              compactionRequestAudit.recovery_state_migration = {
-                reason: 'committed_predecessor_was_still_active', predecessor_archived: true,
-                false_failed_ladder_entry_removed: migratedFailure.migrated,
-                resume_boundary: committedBoundary,
-                successor_plan_id: persistedRecoveryPlan?.plan_id ?? null,
-              };
-            }
             if (!validation.valid) {
               const error = new Error('Resume refused because the persisted Short-Term plan does not match the current chat range.');
               error.sme_reason_code = validation.reason;
               throw error;
             }
-            // v3 predates the provider/configuration signature. Enrich only
-            // after the range, source, parent summary and request signature
-            // independently validate against the current state.
-            if (persistedRecoveryPlan.configuration_signature == null) {
-              persistedRecoveryPlan.configuration_signature = shortTermConfigurationSignature();
-              persistedRecoveryPlan.migrated_missing_configuration_signature = true;
-            }
-            persistedRecoveryPlan.schema_version = SHORTTERM_RECOVERY_SCHEMA_VERSION;
             if (persistedRecoveryPlan.reload_result !== 'verified') {
               try {
                 persistedRecoveryPlan = await persistAndVerifyRecoveryPlan(persistedRecoveryPlan);
@@ -9169,15 +8750,15 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.stale_fields_dropped += profiles.stale_field_rejections?.length ?? 0;
             runResult.profiles.speculative_fields_dropped += profiles.speculative_field_rejections?.length ?? 0;
             runResult.profiles.unsupported_fields_dropped += profiles.field_grounding_rejections?.length ?? 0;
-            // field_validation is the sole accumulator.  Legacy summary
-            // counters below are derived from it, preventing the same field
-            // disposition from being counted once here and once in the loop.
+            // field_validation is the sole accumulator, preventing the same
+            // field disposition from being counted again in terminal traces.
             for (const [field, value] of Object.entries(profiles.field_validation ?? {})) {
               runResult.profiles.fields[field] = (runResult.profiles.fields[field] ?? 0) + Number(value ?? 0);
             }
             runResult.profiles.prior_fields_preserved = runResult.profiles.fields.preserved_prior;
             runResult.profiles.relationship_conflicts_dropped = runResult.profiles.fields.dropped_conflict;
-            runResult.profiles.relationship_conflict_details.push(...(profiles.relationship_field_details ?? []));
+            runResult.profiles.profile_field_terminal_outcomes.push(
+              ...(profiles.profile_field_terminal_outcomes ?? []));
             for (const outcome of profiles.profile_descriptor_terminal_outcomes ?? []) {
               const key = String(outcome.disposition ?? '');
               if (key in runResult.profiles.descriptor_outcomes) runResult.profiles.descriptor_outcomes[key]++;
@@ -9203,9 +8784,6 @@ export function bindSettingsUI(ctrl) {
             runResult.profiles.relationship_descriptor_rejections += descriptorOutcomes.filter((entry) => entry.disposition === 'rejected_unsupported').length;
             runResult.profiles.relationship_field_rejections += droppedFields.length - placeholderOnlyFields.length;
             runResult.profiles.relationship_dropped_field_descriptor_count += droppedFields.reduce((total, entry) => total + (entry.rejected_descriptors?.length ?? entry.generated_descriptors?.length ?? 0), 0);
-            runResult.profiles.speculativeCurrentFieldsDropped = runResult.profiles.speculative_fields_dropped;
-            runResult.profiles.relationshipConflictsDropped = runResult.profiles.relationship_conflicts_dropped;
-            runResult.profiles.preservedPriorFields = runResult.profiles.prior_fields_preserved;
           }
           updateFinalizationEta(`profile generation for ${name}`, { completed: true });
         }
@@ -9266,8 +8844,14 @@ export function bindSettingsUI(ctrl) {
       // Catch-up can surface first-name variants that only become resolvable
       // after the full roster and extracted evidence are available.
       const reconciliationSnapshot = {
-        metadata: structuredClone(catchUpContext.chatMetadata?.[META_KEY] ?? {}),
-        settings: structuredClone(extension_settings[MODULE_NAME] ?? {}),
+        metadata: cloneSerializableDomain(catchUpContext.chatMetadata?.[META_KEY] ?? {}, {
+          path: '$.reconciliation_snapshot.metadata', stage: 'reconciliation_snapshot',
+          operation_type: 'final_reconciliation',
+        }),
+        settings: cloneSerializableDomain(extension_settings[MODULE_NAME] ?? {}, {
+          path: '$.reconciliation_snapshot.settings', stage: 'reconciliation_snapshot',
+          operation_type: 'final_reconciliation',
+        }),
       };
       let reconciliation;
       runResult.finalReconciliation.attempted = (ctrl.catchUpCancelled || resumableFinalizationFailure) ? 0 : 1;
@@ -9321,10 +8905,19 @@ export function bindSettingsUI(ctrl) {
           // Preserve a compact copy if a genuinely structural integrity
           // failure requires rolling the staged mutations back.
           error.sme_reconciliation_diagnostics = {
-            identity_outcomes: structuredClone(reconciliation.identity_outcomes ?? []),
-            integrity_audit: structuredClone(reconciliation.integrity_audit ?? null),
+            identity_outcomes: cloneSerializableDomain(reconciliation.identity_outcomes ?? [], {
+              path: '$.reconciliation_diagnostics.identity_outcomes', stage: 'reconciliation_diagnostics',
+              operation_type: 'final_reconciliation',
+            }),
+            integrity_audit: cloneSerializableDomain(reconciliation.integrity_audit ?? null, {
+              path: '$.reconciliation_diagnostics.integrity_audit', stage: 'reconciliation_diagnostics',
+              operation_type: 'final_reconciliation',
+            }),
             persona_roster_size: reconciliation.persona_roster_size ?? 0,
-            rejected_unsafe_merges: structuredClone(reconciliation.integrity_audit?.rejected_unsafe_merges ?? []),
+            rejected_unsafe_merges: cloneSerializableDomain(reconciliation.integrity_audit?.rejected_unsafe_merges ?? [], {
+              path: '$.reconciliation_diagnostics.rejected_unsafe_merges',
+              stage: 'reconciliation_diagnostics', operation_type: 'final_reconciliation',
+            }),
           };
           throw error;
         }
@@ -9463,7 +9056,6 @@ export function bindSettingsUI(ctrl) {
       // its own explicit name so exported diagnostics do not imply that the
       // user has already run the optional Developer command.
       runResult.finalReconciliation.stabilization = reconciliation.idempotence ?? null;
-      runResult.finalReconciliation.idempotence = reconciliation.idempotence ?? null;
       runResult.finalReconciliation.final_state_audit = reconciliation.final_state_audit ?? reconciliation.integrity_audit ?? null;
       runResult.finalReconciliation.final_state_consistency = reconciliation.final_state_consistency ?? null;
       runResult.finalReconciliation.duration_ms = reconciliation.duration_ms ?? null;
@@ -9476,21 +9068,11 @@ export function bindSettingsUI(ctrl) {
       runResult.identity_review.resolved_this_run = reconciliation.resolved_review_items_removed ?? 0;
       runResult.identity_review.removed_as_duplicate = reconciliation.identity_decision_duplicates_removed ?? 0;
       runResult.identity_review.remaining_at_end = reconciliation.integrity_audit?.identity_review_items ?? runResult.identity_review.existing_at_start;
-      runResult.finalReconciliation.personaRosterSize = runResult.finalReconciliation.persona_roster_size;
-      runResult.finalReconciliation.personaAliasesMerged = runResult.finalReconciliation.persona_aliases_merged;
-      runResult.finalReconciliation.cardLocalEntitiesMerged = runResult.finalReconciliation.card_local_entities_merged;
-      runResult.finalReconciliation.relationshipPairsMerged = runResult.finalReconciliation.relationship_pairs_merged;
-      runResult.finalReconciliation.participantListsRewritten = runResult.finalReconciliation.participant_lists_rewritten;
-      runResult.finalReconciliation.syntheticParentheticalsRemoved = runResult.finalReconciliation.synthetic_parentheticals_removed;
       // Finalize the one canonical arc outcome before evaluating quality.
-      // Compatibility aliases are derived from it, never maintained as a
-      // separately-updated second state.
-      normalizeArcExtractionDiagnostics(runResult.arcExtraction);
       if (!runResult.arcExtraction.terminal_outcome && runResult.arcExtraction.request_completed > 0) {
         runResult.arcExtraction.terminal_outcome = runResult.arcExtraction.parsed_candidates > 0
           ? 'completed_with_candidates'
           : 'completed_no_candidates';
-        runResult.arcExtraction.terminalOutcome = runResult.arcExtraction.terminal_outcome;
       }
       const qualityReasons = [];
       const providerAttemptSummary = summarizeProviderAttemptAudit(catchUpContext.chatMetadata?.[META_KEY]);
@@ -9682,9 +9264,9 @@ export function bindSettingsUI(ctrl) {
         // must never make a populated Aaron-style runtime snapshot look absent.
         ['active_persona_snapshot_present', Boolean(runResult.runtimeContext?.active_persona?.canonical_name), 'active_persona_snapshot_missing'],
         ['active_persona_roster_entry_present', !runResult.runtimeContext?.active_persona?.canonical_name
-          || checkpoint.persona_audit_proof?.roster_membership_result === true
+          || personaAuditProof.roster_membership_result === true
           || runResult.finalReconciliation.persona_roster_size > 0,
-        checkpoint.persona_audit_proof?.roster_membership_result === false
+        personaAuditProof.roster_membership_result === false
           ? 'active_persona_roster_entry_missing' : 'active_persona_roster_audit_proof_unavailable'],
         ['active_persona_stable_id_present', Boolean(runResult.runtimeContext?.active_persona?.stable_persona_id), 'active_persona_invalid'],
         ['deterministic_persona_aliases_resolved', !runResult.runtimeContext?.active_persona?.canonical_name || !(reconciliation.integrity_audit?.persona_aliases?.persona_aliases_unresolved), 'A deterministic active-persona alias remains unresolved.'],
@@ -9696,7 +9278,7 @@ export function bindSettingsUI(ctrl) {
         ['identity_terminal_totals_reconcile', runResult.identityResolution.terminal_reconciled, 'Final identity terminal records were duplicated or did not reconcile.'],
         ['review_records_deduplicated', !(reconciliation.integrity_audit?.duplicate_review_records?.length), 'Duplicate identity review records remain.'],
         ['session_dispositions_reconcile', runResult.sessionExtraction.terminalReconciled, 'Session candidate terminal dispositions did not reconcile.'],
-        ['arc_extraction_terminal_outcome_present', !sourceExtractionComplete || !settings.arcs_enabled || isFreshStart() || Boolean(runResult.arcExtraction.terminalOutcome), 'Arc extraction has no terminal diagnostic outcome.'],
+        ['arc_extraction_terminal_outcome_present', !sourceExtractionComplete || !settings.arcs_enabled || isFreshStart() || Boolean(runResult.arcExtraction.terminal_outcome), 'Arc extraction has no terminal diagnostic outcome.'],
         ['profile_terminal_accounting_reconciles', !sourceExtractionComplete || !settings.profiles_enabled || profileAccountingValidation.reconciled, 'Profile terminal accounting did not reconcile.'],
         ['profile_coverage_complete', !sourceExtractionComplete || !settings.profiles_enabled || (runResult.profiles?.terminal_accounting?.unresolved_profiles ?? 0) === 0, 'A profile attempt has neither usable nor safe pending coverage.'],
         ['integrity_audit_invalid_status', ['clean', 'repaired', 'degraded', 'unsafe', 'failed', 'blocked_by_upstream_phase'].includes(reconciliation.integrity_audit?.status), 'Integrity audit returned an invalid status.'],
@@ -9823,7 +9405,7 @@ export function bindSettingsUI(ctrl) {
           'deterministic_fallbacks', 'accepted_boundaries', 'final_scene_count', 'failed_terminal_candidates',
           'accounting_reconciled', 'final_boundary_fingerprint', 'malformed_responses_recovered',
         ].map((field) => [field, recoveredPhaseResults.scene_detection.summary?.[field] == null
-          ? { available: false, reason_code: 'legacy_compact_scene_summary_field_unavailable' }
+          ? { available: false, reason_code: 'compact_scene_summary_field_unavailable' }
           : { available: true, reason_code: null }])),
       } : null);
       const restoredArcExtraction = runResult.arcExtraction?.request_completed > 0
@@ -9832,7 +9414,6 @@ export function bindSettingsUI(ctrl) {
           ...runResult.arcExtraction,
           restored_from_recovery_checkpoint: true,
           terminal_outcome: recoveredPhaseResults.arc_extraction.terminal_outcome ?? null,
-          terminalOutcome: recoveredPhaseResults.arc_extraction.terminal_outcome ?? null,
           reason_code: recoveredPhaseResults.arc_extraction.reason_code ?? null,
         } : runResult.arcExtraction);
       const restoredProfiles = runResult.profiles.profiles_attempted > 0
@@ -9893,7 +9474,14 @@ export function bindSettingsUI(ctrl) {
         provider_completion_journal: exportProviderCompletionJournal(
           catchUpContext.chatMetadata?.[META_KEY]),
         controller_heartbeat: checkpoint.controller_heartbeat ?? null,
-        provider_completion_reconciliation: checkpoint.provider_completion_consistency ?? null,
+        provider_completion_reconciliation: inspectProviderCompletionConsistency({
+          metadata: catchUpContext.chatMetadata?.[META_KEY],
+          provider_audit: catchUpContext.chatMetadata?.[META_KEY]
+            ?.live_memory_health?.provider_attempt_audit,
+          ledger: checkpoint.run_manifest?.obligation_ledger,
+          live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
+          controller_heartbeat: checkpoint.controller_heartbeat,
+        }),
         provider_runtime_reconciliation: reconcileMemorizeProviderRuntime(
           checkpoint.run_manifest?.obligation_ledger,
           catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit,
@@ -9905,7 +9493,8 @@ export function bindSettingsUI(ctrl) {
           checkpoint.run_manifest?.obligation_ledger,
         ),
         provider_request_reconciliation: (() => {
-          const persistedChildren = checkpoint.context_overflow_recovery?.completed_children?.length ?? 0;
+          const persistedChildren = getCompletedRecoveryChildKeys(
+            checkpoint.run_manifest.obligation_ledger).length;
           const providerContextChildren = Number(providerAttemptSummary?.request_kind_counts?.repartition_child ?? 0);
           const providerMalformedChildren = Number(providerAttemptSummary?.request_kind_counts?.malformed_repartition_child ?? 0);
           const providerChildren = providerContextChildren + providerMalformedChildren;
@@ -9941,8 +9530,11 @@ export function bindSettingsUI(ctrl) {
         error_details: runResult.errors,
         operational_pauses: runResult.operationalPauses,
         operational_pause_count: runResult.operationalPauses.length,
-        successful_tier_work_awaiting_parent_commit: checkpoint.operational_pause?.parent_chunk_range ? (() => {
-          const pendingRange = checkpoint.operational_pause.parent_chunk_range;
+        successful_tier_work_awaiting_parent_commit: (() => {
+          const pause = runResult.operationalPauses.findLast(
+            (item) => item?.parent_chunk_range);
+          if (!pause) return null;
+          const pendingRange = pause.parent_chunk_range;
           const canonicalPendingRange = {
             start: pendingRange.source_start_index ?? pendingRange.start_offset,
             end: pendingRange.source_end_index ?? pendingRange.end_offset,
@@ -9960,10 +9552,10 @@ export function bindSettingsUI(ctrl) {
             },
             longterm: {
               safely_completed: longtermStatus?.safely_committed === true,
-              pending_owner: checkpoint.operational_pause.owner ?? 'Aster Graves',
+              pending_owner: pause.owner ?? 'Aster Graves',
             },
           };
-        })() : null,
+        })(),
         warnings: runResult.warnings,
         warnings_suppressed: runResult.warningsSuppressed,
         pre_run_state_audit: preRunFreshStartAudit ? {
@@ -10003,9 +9595,7 @@ export function bindSettingsUI(ctrl) {
         manual_idempotence: catchUpContext.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? null,
         runtime_context: runResult.runtimeContext,
         runtime_context_limits: { ...getRuntimeContextLimitDiagnostics(), ...(checkpoint.runtime_context_limits ?? {}) },
-        context_overflow_recovery: checkpoint.context_overflow_recovery ?? null,
-        recovery_child_manifests: checkpoint.recovery_child_manifests ?? null,
-        persona_audit_proof: checkpoint.persona_audit_proof ?? null,
+        persona_audit_proof: personaAuditProof,
         imported_persona_recovery: (() => {
           const recovery = runResult.runtimeContext?.active_persona?.imported_persona_recovery;
           if (!recovery) return null;
@@ -10055,12 +9645,12 @@ export function bindSettingsUI(ctrl) {
           const safeRejections = runResult.quality.reasons.filter((reason) => safeRejectionCodes.has(reason.code));
           const unresolvedSafe = (runResult.profiles?.profile_field_terminal_outcomes ?? [])
             .filter((entry) => String(entry?.terminal_outcome ?? '').startsWith('unresolved_')).length;
-          const legacyPairKeyDebt = integrity.relationship_pair_key_issues?.length ?? 0;
+          const deterministicPairKeyDebt = integrity.relationship_pair_key_issues?.length ?? 0;
           const integrityErrors = integrity.relationship_integrity_errors?.length ?? 0;
           const summary = summarizeRelationshipQuality({
             profileUnresolved: unresolvedSafe,
             unresolvedPairs: integrity.unresolved_relationship_pair_key_records ?? [],
-            deterministicDebt: legacyPairKeyDebt,
+            deterministicDebt: deterministicPairKeyDebt,
             integrityErrors,
           });
           return {
@@ -10112,8 +9702,8 @@ export function bindSettingsUI(ctrl) {
           prior_provider_request_count: priorRequests,
           prior_request_run_id: priorSceneRun?.run_id ?? null,
           prior_request_count_available: priorRequests !== null,
-          prior_request_compatibility_status: priorSceneRun ? (priorRequests === null ? 'prior_metrics_missing' : 'compatible') : 'no_prior_compatible_run',
-          prior_request_unavailable_reason: priorRequests !== null ? null : (!priorSceneRun ? 'no_prior_compatible_run' : 'prior_metrics_missing'),
+          prior_request_comparison_status: priorSceneRun ? (priorRequests === null ? 'prior_metrics_missing' : 'comparable') : 'no_prior_comparable_run',
+          prior_request_unavailable_reason: priorRequests !== null ? null : (!priorSceneRun ? 'no_prior_comparable_run' : 'prior_metrics_missing'),
           current_provider_request_count: currentRequests,
           request_count_delta: priorRequests === null ? null : currentRequests - priorRequests,
           provider_partial_response_count: (runResult.sceneDetection.batch_attempts ?? []).filter((attempt) => attempt.partial_or_truncated).length,
@@ -10171,7 +9761,7 @@ export function bindSettingsUI(ctrl) {
       const terminalCheckpoint = catchUpContext.chatMetadata[META_KEY].catch_up_checkpoint;
       if (ctrl.catchUpCancelled || resumableFinalizationFailure) {
         if (terminalCheckpoint) {
-          const recoveryChangeRequired = terminalCheckpoint.recovery_blocked?.blocked === true
+          const recoveryChangeRequired = summarizeCatchUpCheckpoint(terminalCheckpoint).blocked
             || ctrl.catchUpStopReason === 'recovery_change_required';
           terminalCheckpoint.status = recoveryChangeRequired
             ? 'blocked_recovery_change_required' : 'awaiting_manual_resume';
@@ -10330,7 +9920,6 @@ export function bindSettingsUI(ctrl) {
           diagnosticObservation.failure].slice(-50);
       }
       runResult.quality = diagnostics.quality ?? runResult.quality;
-      catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = diagnostics;
       catchUpContext.chatMetadata[META_KEY].scene_stability_history = diagnostics.scene_stability_history;
       catchUpContext.chatMetadata[META_KEY].request_efficiency_history = diagnostics.request_efficiency_history;
       catchUpContext.chatMetadata[META_KEY].repair_history = diagnostics.repair_history;
@@ -10354,7 +9943,6 @@ export function bindSettingsUI(ctrl) {
         && Boolean(checkpoint.finalization?.completed_phases?.final_reconciliation);
       if (!requiredFinalizationComplete) {
         runResult.finalReconciliation.stabilization = null;
-        runResult.finalReconciliation.idempotence = null;
         diagnostics.automatic_stabilization = {
           attempted: false, current: false, status: 'blocked_by_upstream_phase',
           blocked_by: resumableFinalizationFailure ? 'shortterm_extraction' : 'required_finalization_phase',
@@ -10386,7 +9974,6 @@ export function bindSettingsUI(ctrl) {
         runResult.finalReconciliation.integrity_audit = preCommitAutomaticReconciliation.integrity_audit ?? runResult.finalReconciliation.integrity_audit;
         runResult.finalReconciliation.final_state_audit = preCommitAutomaticReconciliation.final_state_audit ?? runResult.finalReconciliation.final_state_audit;
         runResult.finalReconciliation.stabilization = preCommitAutomaticReconciliation.idempotence ?? runResult.finalReconciliation.stabilization;
-        runResult.finalReconciliation.idempotence = preCommitAutomaticReconciliation.idempotence ?? runResult.finalReconciliation.idempotence;
         runResult.finalReconciliation.final_state_consistency = preCommitAutomaticReconciliation.final_state_consistency ?? runResult.finalReconciliation.final_state_consistency;
         runResult.finalReconciliation.precommit_automatic_dependency_trace = preCommitDependencyTrace;
         diagnostics.finalReconciliation = runResult.finalReconciliation;
@@ -10405,7 +9992,37 @@ export function bindSettingsUI(ctrl) {
         };
       }
       Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
-      latestExportDiagnostics = diagnostics;
+      const fullDiagnosticPublication = observeMemorizeDiagnostics(() =>
+        createFullDiagnosticsExport(diagnostics));
+      const finalizedDiagnostics = fullDiagnosticPublication.ok
+        ? fullDiagnosticPublication.value
+        : createCompactFailureDiagnostics({
+          core_workflow_completed: !ctrl.catchUpCancelled && !resumableFinalizationFailure,
+          build_identity: SME_BUILD_IDENTITY,
+          controller_exit: diagnostics.controller_exit
+            ?? diagnostics.authoritative_obligation_ledger?.last_controller_exit ?? null,
+          authoritative_obligation_ledger: diagnostics.authoritative_obligation_ledger,
+          provider_attempt_audit: diagnostics.provider_attempt_audit,
+          provider_completion_journal: diagnostics.provider_completion_journal,
+          controller_heartbeat: diagnostics.controller_heartbeat,
+          catch_up_recovery: {
+            available: true,
+            logical_run: diagnostics.logical_run,
+            logical_run_id: diagnostics.logical_run?.logical_run_id ?? catchUpRunId,
+            resumable: ctrl.catchUpCancelled || resumableFinalizationFailure,
+            resume_can_make_progress: ctrl.catchUpCancelled || resumableFinalizationFailure,
+            reason_code: fullDiagnosticPublication.failure?.code
+              ?? 'SME_DIAGNOSTIC_PROJECTION_FAILED',
+            transaction_state: terminalCheckpoint?.transaction_lifecycle?.state ?? null,
+            safely_committed_offset: terminalCheckpoint?.next_source_offset
+              ?? diagnostics.logical_run?.cumulative_committed_count ?? null,
+            source_message_count: diagnostics.logical_run?.source_window?.message_count ?? null,
+            unresolved_obligations: diagnostics.authoritative_obligation_ledger
+              ?.pending_obligations ?? [],
+          },
+        });
+      catchUpContext.chatMetadata[META_KEY].catch_up_diagnostics = finalizedDiagnostics;
+      latestExportDiagnostics = finalizedDiagnostics;
       try {
         await retryTransientMemoryOperation(() => commitRunTransaction(finalTransaction));
         if (!ctrl.catchUpCancelled && !resumableFinalizationFailure) clearPageRunMarker(localStorage, pageRunScope(catchUpContext), catchUpRunId);
@@ -10421,7 +10038,11 @@ export function bindSettingsUI(ctrl) {
         Object.assign(diagnostics, normalizeRunStatusReport(diagnostics));
         // The transaction rollback removes saved metadata, but this session
         // copy remains available through Export Diagnostics.
-        latestExportDiagnostics = diagnostics;
+        const failedDiagnosticPublication = observeMemorizeDiagnostics(() =>
+          createFullDiagnosticsExport(diagnostics));
+        latestExportDiagnostics = failedDiagnosticPublication.ok
+          ? failedDiagnosticPublication.value
+          : finalizedDiagnostics;
       } finally {
         finalTransaction = null;
       }
@@ -10504,12 +10125,6 @@ export function bindSettingsUI(ctrl) {
           failedProviderAudit,
         );
         failedCheckpoint.run_manifest.obligation_ledger = failedRunningReconciliation.ledger;
-        if (failedRunningReconciliation.repairs.length) {
-          failedCheckpoint.runtime_obligation_repairs = [
-            ...(failedCheckpoint.runtime_obligation_repairs ?? []),
-            ...failedRunningReconciliation.repairs,
-          ].slice(-16);
-        }
         const failedCoverage = catchUpContext.chatMetadata?.[META_KEY]
           ?.catch_up_diagnostics?.extractionCoverage ?? {};
         const failedJournalReconciliation = reconcileMemorizeLifecycleFromJournal(
@@ -10524,25 +10139,6 @@ export function bindSettingsUI(ctrl) {
             chunk_size: CATCH_UP_CHUNK_SIZE,
           });
         failedCheckpoint.run_manifest.obligation_ledger = failedJournalReconciliation.ledger;
-        failedCheckpoint.controller_failure = {
-          schema_version: 1,
-          phase: controllerRuntime.phase,
-          tier: controllerRuntime.tier,
-          owner: controllerRuntime.owner,
-          source_range: controllerRuntime.source_range,
-          obligation_id: controllerRuntime.obligation_id,
-          transaction_state: controllerRuntime.active_transaction ? {
-            transaction_id: controllerRuntime.active_transaction.transaction_id,
-            state: controllerRuntime.active_transaction.state,
-            terminal_disposition: controllerRuntime.active_transaction.terminal_disposition ?? null,
-          } : null,
-          normalized_exception_class: controllerRuntime.primary_failure?.normalized_exception_class ?? null,
-          code: controllerRuntime.primary_failure?.code ?? null,
-          bounded_message: controllerRuntime.primary_failure?.bounded_message ?? null,
-          stack_fingerprint: controllerRuntime.primary_failure?.stack_fingerprint_input
-            ? diagnosticFingerprint(controllerRuntime.primary_failure.stack_fingerprint_input.replace(/https?:\/\/\S+/g, '<url>')) : null,
-          recorded_at: Date.now(),
-        };
         failedCheckpoint.run_manifest = finalizeCatchUpRunManifest(failedCheckpoint.run_manifest, {
           status: failedCheckpoint.status,
           reasonCode: err?.code ?? 'internal_exception',
@@ -10568,24 +10164,9 @@ export function bindSettingsUI(ctrl) {
       const exitCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
         ?? controllerRuntime.checkpoint;
       if (exitCheckpoint) {
-        if (controllerRuntime.stale_lease_callbacks?.length) {
-          exitCheckpoint.stale_lease_callbacks = [
-            ...(exitCheckpoint.stale_lease_callbacks ?? []),
-            ...controllerRuntime.stale_lease_callbacks,
-          ].slice(-32);
-        }
         reconcileImpossibleLiveHealth(
           catchUpContext.chatMetadata?.[META_KEY],
           catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health?.provider_attempt_audit);
-        exitCheckpoint.provider_completion_consistency = inspectProviderCompletionConsistency({
-          metadata: catchUpContext.chatMetadata?.[META_KEY],
-          provider_audit: catchUpContext.chatMetadata?.[META_KEY]
-            ?.live_memory_health?.provider_attempt_audit,
-          ledger: exitCheckpoint.run_manifest?.obligation_ledger,
-          child_manifests: exitCheckpoint.recovery_child_manifests,
-          live_health: catchUpContext.chatMetadata?.[META_KEY]?.live_memory_health,
-          controller_heartbeat: exitCheckpoint.controller_heartbeat,
-        });
       }
       const terminalCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
         ?? controllerRuntime.checkpoint;
@@ -10599,12 +10180,10 @@ export function bindSettingsUI(ctrl) {
         terminalCheckpoint.resume_progress = deriveMemorizeResumeProgress(
           resumeProgressBefore, resumeProgressAfter, {
             invocation_id: controllerRuntime.invocation_id,
-            planned_exact_action: terminalCheckpoint.resume_progress_in_flight
-              ?.planned_exact_action,
+            planned_exact_action: plannedResumeAction,
             exact_blocker: firstLocalLifecycleError?.sme_reason_code
               ?? firstLocalLifecycleError?.code ?? null,
           });
-        delete terminalCheckpoint.resume_progress_in_flight;
       }
       const terminalProjection = terminalCheckpoint?.run_manifest?.obligation_ledger
         ? projectMemorizeObligationLedger(terminalCheckpoint.run_manifest.obligation_ledger)
@@ -10666,7 +10245,6 @@ export function bindSettingsUI(ctrl) {
           ? async () => saveChatMetadata(catchUpContext) : null,
       });
       if (terminalCheckpoint) {
-        terminalCheckpoint.authoritative_recovery = finalization.authority;
         if (terminalMetadata?.catch_up_diagnostics) {
           terminalMetadata.catch_up_diagnostics.controller_heartbeat
             = terminalCheckpoint.controller_heartbeat;
@@ -10690,14 +10268,11 @@ export function bindSettingsUI(ctrl) {
       catchUpUiRunning = false;
       ctrl.catchUpCancelled = false;
       ctrl.catchUpStopReason = null;
-      const cleanupWarnings = await cleanupMemorizeRuntime(controllerRuntime, (warning, cleanupErr) => {
+      await cleanupMemorizeRuntime(controllerRuntime, (warning, cleanupErr) => {
         console.warn(`[Smart Memory Enhanced] Cleanup warning (${warning.resource_name}/${warning.classification}):`, cleanupErr);
       });
       const cleanupCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
       if (cleanupCheckpoint) {
-        if (cleanupWarnings.length) cleanupCheckpoint.cleanup_warnings = [
-          ...(cleanupCheckpoint.cleanup_warnings ?? []), ...cleanupWarnings,
-        ].slice(-16);
         closeMemorizeControllerHeartbeat(cleanupCheckpoint, controllerRuntime,
           controllerRuntime.controller_exit);
         if (cleanupCheckpoint.transaction_lifecycle?.state === 'active') {
@@ -11277,7 +10852,7 @@ export function bindSettingsUI(ctrl) {
       panel.hide().empty();
       return;
     }
-    const normalized = normalizeIdempotenceResult(result);
+    const normalized = projectIdempotenceResult(result);
     const currentSemanticHash = durableStateHash(idempotenceDurableState(getContext().chatMetadata?.[META_KEY] ?? {}));
     const evaluatedSemanticHash = normalized.evaluated_semantic_hash ?? normalized.durable_state_hash_after_second_pass ?? null;
     const staleResult = Boolean(evaluatedSemanticHash && evaluatedSemanticHash !== currentSemanticHash);
@@ -11328,18 +10903,15 @@ export function bindSettingsUI(ctrl) {
     const existing = characters?.[characterName];
     if (!existing) return;
     const policy = existing.memory_policy;
-    if (policy) characters[characterName] = { memory_policy: policy };
+    if (policy) characters[characterName] = {
+      schema_version: SCHEMA_VERSION, memory_policy: policy,
+    };
     else delete characters[characterName];
   };
   const restoredIdempotenceContext = getContext();
   const restoredIdempotence = restoredIdempotenceContext.chatMetadata?.[META_KEY]?.developer_idempotence_check;
-  if (restoredIdempotence) {
-    const normalized = normalizeIdempotenceResult(restoredIdempotence);
-    if (JSON.stringify(normalized) !== JSON.stringify(restoredIdempotence) && restoredIdempotenceContext.chatMetadata) {
-      restoredIdempotenceContext.chatMetadata[META_KEY].developer_idempotence_check = normalized;
-      saveChatMetadata(restoredIdempotenceContext).catch((error) => smLog('[Smart Memory Enhanced] Could not persist migrated idempotence result:', error));
-    }
-    renderIdempotenceResult(normalized);
+  if (restoredIdempotence?.idempotence_result_schema_version === 2) {
+    renderIdempotenceResult(projectIdempotenceResult(restoredIdempotence));
   } else renderIdempotenceResult(null);
   $('#sme_run_idempotence_check').on('click', async function () {
     const button = $(this);
@@ -11357,16 +10929,16 @@ export function bindSettingsUI(ctrl) {
       const reconciliation = await runFinalIntegrityReconciliation(characterName, { forceIdempotenceCheck: true });
       const context = getContext();
       if (context.chatMetadata) {
-        context.chatMetadata[META_KEY] ??= {};
-        const runnerResult = normalizeIdempotenceResult(reconciliation.idempotence);
+        context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
+        const runnerResult = projectIdempotenceResult(reconciliation.idempotence);
         context.chatMetadata[META_KEY].developer_idempotence_check = runnerResult;
         await saveChatMetadata(context);
-        const persistedResult = normalizeIdempotenceResult(context.chatMetadata[META_KEY].developer_idempotence_check);
-        const restoredResult = normalizeIdempotenceResult(getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check ?? persistedResult);
+        const persistedResult = projectIdempotenceResult(context.chatMetadata[META_KEY].developer_idempotence_check);
+        const restoredResult = projectIdempotenceResult(getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check ?? persistedResult);
         // A manual check is local-only, but its result must be visible through
         // the same diagnostics export consumers use after a catch-up run.
         const exportReport = latestExportDiagnostics ?? context.chatMetadata[META_KEY].catch_up_diagnostics ?? null;
-        const exportedResult = normalizeIdempotenceResult(restoredResult);
+        const exportedResult = projectIdempotenceResult(restoredResult);
         const lifecycle = {
           runner_result: runnerResult.idempotent,
           persisted_result: persistedResult.idempotent,
@@ -11375,7 +10947,7 @@ export function bindSettingsUI(ctrl) {
           renderer_result: exportedResult.idempotent,
           values_consistent: [runnerResult.idempotent, persistedResult.idempotent, restoredResult.idempotent, exportedResult.idempotent].every((value) => value === runnerResult.idempotent),
         };
-        const finalResult = normalizeIdempotenceResult({
+        const finalResult = projectIdempotenceResult({
           ...exportedResult,
           audit_type: 'manual_developer_idempotence_check',
           is_manual_developer_check: true,
@@ -11391,16 +10963,11 @@ export function bindSettingsUI(ctrl) {
         });
         context.chatMetadata[META_KEY].developer_idempotence_check = finalResult;
         if (exportReport && typeof exportReport === 'object') {
-          exportReport.developer_idempotence_check = finalResult;
           exportReport.manual_idempotence = finalResult;
           exportReport.automatic_stabilization ??= exportReport.finalReconciliation?.stabilization
             ?? exportReport.finalReconciliation?.automatic_stabilization
             ?? null;
           exportReport.finalReconciliation ??= {};
-          // Retain the historical compatibility field for existing consumers,
-          // but never replace the named automatic stabilization record.
-          exportReport.finalReconciliation.manual_idempotence = finalResult;
-          exportReport.finalReconciliation.idempotence = finalResult;
           exportReport.finalReconciliation.final_state_consistency ??= {};
           Object.assign(exportReport.finalReconciliation.final_state_consistency, {
             developer_check_semantic_hash: finalResult.evaluated_semantic_hash ?? null,
@@ -11426,7 +10993,7 @@ export function bindSettingsUI(ctrl) {
       const savedResult = context.chatMetadata?.[META_KEY]?.developer_idempotence_check ?? reconciliation.idempotence;
       renderIdempotenceResult(savedResult);
       $('#sme_export_diagnostics').prop('disabled', !getExportableDiagnostics());
-      const result = normalizeIdempotenceResult(savedResult).idempotent === true ? 'passed' : 'found remaining changes';
+      const result = projectIdempotenceResult(savedResult).idempotent === true ? 'passed' : 'found remaining changes';
       setStatusMessage(`Developer idempotence check ${result}.`);
     } catch (error) {
       smLog('[Smart Memory Enhanced] Developer idempotence check failed:', error);
@@ -11710,11 +11277,10 @@ export function bindSettingsUI(ctrl) {
 }
 
 function summarizeArcSummaryVerification(summaries = [], arcs = []) {
-  // New historical arcs are verified as durable records even when they do not
-  // need a separate resolved-arc prose summary. Older summary records remain
-  // included for backward-compatible review accounting.
+  // Historical arcs are verified as durable records even when they do not
+  // need a separate resolved-arc prose summary.
   const verifiedArcs = (arcs ?? []).filter((arc) => arc?.verification);
-  const result = { total: verifiedArcs.length || summaries.length, supported: 0, pending_review: 0, rejected: 0, legacy_unverified: 0, preverification: {} };
+  const result = { total: verifiedArcs.length || summaries.length, supported: 0, pending_review: 0, rejected: 0, preverification: {} };
   for (const arc of verifiedArcs) {
     const outcome = arc.verification?.outcome;
     if (outcome === 'supported') result.supported++;
@@ -11726,7 +11292,6 @@ function summarizeArcSummaryVerification(summaries = [], arcs = []) {
     if (summary.validation_status === 'approved' || summary.semantic_support === 'supported' || summary.semantic_support === 'user_approved') result.supported++;
     else if (summary.validation_status === 'rejected' || summary.semantic_support === 'unsupported') result.rejected++;
     else result.pending_review++;
-    if (summary.verification_state === 'legacy_unverified') result.legacy_unverified++;
     if (summary.deterministic_rejection_reason) {
       result.preverification[summary.deterministic_rejection_reason] = (result.preverification[summary.deterministic_rejection_reason] ?? 0) + 1;
     }

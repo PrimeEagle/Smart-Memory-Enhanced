@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createMemorizeDiagnosticsDownload } from '../memorize-diagnostics-download.js';
 import { selectDiagnosticsProjection, selectRecoveryPresentation, selectRunOutcomePresentation } from '../memorize-projections.js';
 
 test('run outcome projection is pure and deterministic', () => {
@@ -35,5 +36,61 @@ test('diagnostics projection returns a new read model without mutating sources',
   assert.deepEqual(selected.parser_result, { status: 'accepted' });
   assert.equal(completed.provider_completion_journal.entries[0].response_text,
     'private provider response');
+});
+
+test('export projection preserves the original run failure when full publication fails', () => {
+  const report = {
+    status: 'incomplete',
+    logical_run: { logical_run_id: 'run-1' },
+    controller_exit: { code: 'SME_HOST_SAVE_FAILED', failure_stage: 'checkpoint' },
+    provider_completion_journal: { response_body: 'private response' },
+  };
+  const full = selectDiagnosticsProjection({ completedRun: report, createdAt: 1 });
+  assert.equal(full.root_error.code, 'SME_HOST_SAVE_FAILED');
+  const compact = selectDiagnosticsProjection({
+    completedRun: { ...report, broken_section: { value: Infinity } }, createdAt: 1,
+  });
+  assert.equal(compact.diagnostic_type, 'incomplete_catchup_recovery');
+  assert.equal(compact.root_error.code, full.root_error.code);
+  assert.equal(compact.root_error.failure_stage, 'checkpoint');
+  assert.equal(compact.logical_run_identity.logical_run_id, 'run-1');
+  assert.doesNotMatch(JSON.stringify(compact), /private response|broken_section/);
+});
+
+test('Export Diagnostics downloads the current compact report and revokes its URL', async () => {
+  let completedRun;
+  let blob;
+  const events = [];
+  const link = { click() { events.push(['download', this.href, this.download]); } };
+  const download = createMemorizeDiagnosticsDownload({
+    readReport: () => selectDiagnosticsProjection({ completedRun, createdAt: 1 }),
+    onUnavailable: () => events.push(['unavailable']),
+    document: { createElement: (tag) => { assert.equal(tag, 'a'); return link; } },
+    url: {
+      createObjectURL(value) { blob = value; return 'blob:diagnostics'; },
+      revokeObjectURL(href) { events.push(['revoke', href]); },
+    },
+  });
+  download();
+  completedRun = {
+    status: 'incomplete', controller_exit: { code: 'SME_HOST_SAVE_FAILED' },
+    broken_section: Infinity, provider_completion_journal: { response_body: 'private response' },
+  };
+  download();
+  assert.deepEqual(events, [
+    ['unavailable'],
+    ['download', 'blob:diagnostics', 'smart-memory-enhanced-diagnostics.json'],
+    ['revoke', 'blob:diagnostics'],
+  ]);
+  assert.equal(blob.type, 'application/json');
+  const body = await blob.text();
+  const parsed = JSON.parse(body);
+  assert.equal(parsed.diagnostic_type, 'incomplete_catchup_recovery');
+  assert.equal(parsed.root_error.code, 'SME_HOST_SAVE_FAILED');
+  assert.doesNotMatch(body, /private response|broken_section/);
+  link.click = () => { throw new Error('download failure'); };
+  assert.throws(download, /download failure/);
+  assert.deepEqual(events.at(-1), ['revoke', 'blob:diagnostics']);
+  assert.equal(events.filter(([type]) => type === 'revoke').length, 2);
 });
 

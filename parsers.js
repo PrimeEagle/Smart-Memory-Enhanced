@@ -29,7 +29,7 @@
  * parseExtractionOutput     - parses [type:score:expiration:entity=...] tagged lines from long-term extraction
  * parseSessionOutput        - parses [type:score:expiration:entity=...] tagged lines from session extraction
  * parseArcOutput            - parses [arc] / [resolved] tagged lines from arc extraction
- * parseContradictions       - parses contradiction lines from a continuity check response
+ * parseContinuityVerdict    - parses the typed outcome from a continuity check response
  * formatSummary             - strips model analysis scaffolding and extracts the summary text
  * detectSceneBreakHeuristic - pattern-based scene break check, no model call required
  * parseProfileOutput        - extracts character_state, world_state, and relationship_matrix from profile generation output
@@ -483,9 +483,6 @@ export function parseArcOutput(text, existingArcs) {
 
 /**
  * Parses the structured response used for a completed scene summary.
- * Older prompt overrides may still return plain text, which is retained as
- * the summary with no explicit participants.
- *
  * @param {string} text - Raw model response.
  * @returns {{summary: string, characterParticipants: string[]}|null}
  */
@@ -493,8 +490,10 @@ export function parseSceneSummaryOutput(text) {
   if (!text?.trim()) return null;
 
   const sceneMatch = text.match(/\[SCENE\]([\s\S]*?)\[\/SCENE\]/i);
+  if (!sceneMatch) return null;
   const charactersMatch = text.match(/\[CHARACTERS\]([\s\S]*?)\[\/CHARACTERS\]/i);
-  const summary = stripOuterGeneratedWrapper(sceneMatch?.[1] ?? text);
+  const summary = stripOuterGeneratedWrapper(sceneMatch[1]);
+  if (!summary) return null;
   const characterParticipants = (charactersMatch?.[1] ?? '')
     .split(/[\n,]/)
     .map((name) => name.trim())
@@ -557,11 +556,6 @@ export function parseContinuityVerdict(text) {
   return contradictions.length
     ? { outcome: 'contradictions_found', contradictions }
     : { outcome: 'malformed_or_unusable_response', contradictions: [] };
-}
-
-/** Backward-compatible contradiction-list helper. */
-export function parseContradictions(text) {
-  return parseContinuityVerdict(text).contradictions;
 }
 
 // ---- Summary formatting -------------------------------------------------

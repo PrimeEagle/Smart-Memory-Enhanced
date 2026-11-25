@@ -28,7 +28,7 @@ export function captureMemorizeDiagnosticSnapshot({ metadata = {}, checkpoint = 
     transaction_revision: Number(checkpointCopy?.transaction_lifecycle?.revision ?? 0),
     transaction_state: checkpointCopy?.transaction_lifecycle?.state ?? null,
     checkpoint_revision: Number(checkpointCopy?.revision
-      ?? checkpointCopy?.committed_chunks ?? 0),
+      ?? checkpointCopy?.run_manifest?.cumulative_chunk_count ?? 0),
     checkpoint_status: checkpointCopy?.status ?? null,
     checkpoint_updated_at: checkpointCopy?.updated_at ?? null,
   };

@@ -31,7 +31,7 @@ test('every read-only Memorize projection accepts a deeply frozen current-schema
     committed_ranges: [], committed_chunks: [], cumulative_chunk_count: 0,
     tier_coverage: { longterm: { enabled: true, committed_ranges: [] },
       session: { enabled: true, committed_ranges: [] } },
-    tier_obligations: [], owner_obligations: [], checkpoint_transitions: [],
+    checkpoint_transitions: [],
     terminal_status: 'in_progress', terminal_reason_code: null,
     obligation_ledger: aggregate,
   });

@@ -3,16 +3,15 @@ import assert from 'node:assert/strict';
 import {
   advanceShortTermRecoveryLadder, deriveShortTermResumeEligibility, nextShortTermRecoverySegmentSize,
   reconcileShortTermRecoveryState, shortTermRecoveryPlanRepeatsFailure, validateShortTermRecoveryPlan,
-  countShortTermPhysicalAttempts, isShortTermMinimumFloorExhausted, migrateCommittedShortTermFailureState,
+  countShortTermPhysicalAttempts, isShortTermMinimumFloorExhausted,
   createShortTermAttemptAccounting, recordShortTermAttemptEvent,
   finalizeShortTermAttemptAccounting, summarizeShortTermAttemptAccounting,
   advanceShortTermRecoveryGrowth,
-  deriveMissingPlanCommittedCheckpoint,
   deriveShortTermMissingPlanResumeEligibility,
   deriveShortTermResumePresentation,
-  migrateMissingPlanCommittedCheckpoint,
   deriveShortTermPhaseProgress,
   reconcileShortTermSegmentLedger,
+  SHORTTERM_RECOVERY_SCHEMA_VERSION,
 } from '../shortterm-recovery-utils.js';
 
 test('Short-Term phase progress distinguishes durable passes from the current provider request', () => {
@@ -61,7 +60,7 @@ test('Short-Term phase progress remains indeterminate before pass size or durati
   assert.equal(progress.estimated_remaining_ms, null);
 });
 
-test('completed legacy compaction ledger restores committed state from exact durable totals', () => {
+test('completed compaction audit does not rewrite inconsistent retained ledger evidence', () => {
   const audit = reconcileShortTermSegmentLedger({
     terminal_outcome: 'completed', successful_segment_commits: 564, segment_attempt_ledger_limit: 32,
     segment_attempt_ledger: Array.from({ length: 32 }, (_, index) => ({
@@ -74,9 +73,9 @@ test('completed legacy compaction ledger restores committed state from exact dur
       active_attempts: {},
     },
   });
-  assert.equal(audit.segment_attempt_ledger.every((entry) => entry.committed), true);
-  assert.equal(audit.ledger_reconciliation.legacy_entries_restored_from_exact_totals, 32);
-  assert.equal(audit.ledger_reconciliation.no_terminal_success_stuck, true);
+  assert.equal(audit.segment_attempt_ledger.every((entry) => entry.committed === false), true);
+  assert.equal(audit.ledger_reconciliation.no_terminal_success_stuck, false);
+  assert.equal(audit.ledger_reconciliation.terminal_successful_entries_stuck_at_response_observed, 32);
   assert.equal(audit.ledger_reconciliation.active_plus_terminal_equals_physical, true);
 });
 
@@ -86,160 +85,23 @@ test('failed compaction never fabricates a committed retained segment', () => {
     segment_attempt_ledger: [{ provider_completed: true, parsed: true, committed: false, latest_state: 'response_observed' }],
   });
   assert.equal(audit.segment_attempt_ledger[0].committed, false);
-  assert.equal(audit.ledger_reconciliation.legacy_entries_restored_from_exact_totals, 0);
+  assert.equal(audit.ledger_reconciliation.no_terminal_success_stuck, false);
 });
 
-const missingPlanFixture = (overrides = {}) => ({
-  activePlan: null,
-  postCommitMarker: null,
-  compactionCheckpoint: {
-    schema_version: 2, source_end: 7644, summary_end: 7645,
-    pending_tail_start: 7645, pending_tail_end: 9434,
-    summary_hash: 'fnv1a-1427688d', source_fingerprint: 'fnv1a-source',
-    parent_summary_hash: 'fnv1a-420849bf', commit_status: 'committed', output_budget: 3000,
-  },
-  summaryEnd: 7645,
-  currentSummaryHash: 'fnv1a-1427688d',
-  currentSourceFingerprint: 'fnv1a-source',
-  failureState: {
-    adaptation: 'recovery_plan_persistence_verification_failed',
-    next_resume_strategy: 'operator_action_required', operator_action_required: true,
-    effective_request_signature: 'fnv1a-f9159529', configuration_signature: 'fnv1a-config',
-    last_failed_request: { source_start: 7636, source_end: 7644, message_count: 9,
-      source_fingerprint: 'fnv1a-range', parent_summary_hash: 'fnv1a-420849bf',
-      effective_request_signature: 'fnv1a-f9159529', dispatched: true },
-    recovery_ladder: { total_failures: 3, failures_by_segment_size: { 18: 1, 9: 1, 1: 1 },
-      reductions_attempted: [18, 9, 1], smallest_segment_attempted: 1, any_segment_committed: true,
-      minimum_segment_floor: 4, last_actual_dispatched_request: {
-        source_start: 7636, source_end: 7644, message_count: 9,
-        effective_request_signature: 'fnv1a-f9159529' } },
-  },
-  logicalRunId: 'run-shape-b', phase: 'shortterm_extraction',
-  configurationSignature: 'fnv1a-config', promptShapeVersion: 'shortterm-compaction-v3',
-  minimumSegmentFloor: 4, migratedAt: 123456,
-  ...overrides,
-});
-
-test('exact legacy missing-plan state proves the committed boundary without mutating input', () => {
-  const input = missingPlanFixture();
-  const before = structuredClone(input);
-  const result = deriveMissingPlanCommittedCheckpoint(input);
-  assert.equal(result.proven, true);
-  assert.equal(result.decision, 'reconstruct_successor_from_committed_boundary');
-  assert.equal(result.committed_boundary, 7645);
-  assert.equal(result.successor_start, 7645);
-  assert.equal(result.successor_parent_hash, 'fnv1a-1427688d');
-  assert.deepEqual(result.committed_predecessor_range, { start: 7636, end: 7644 });
-  assert.equal(result.false_failure_size, 9);
-  assert.equal(result.post_commit_marker.marker_id, 'missing-plan:run-shape-b:7645:fnv1a-1427688d');
-  assert.equal(result.post_commit_marker.successor_state, 'reconstruction_required');
-  assert.equal(result.committed_plan.summary_parent_hash, 'fnv1a-420849bf');
-  assert.deepEqual(input, before);
-});
-
-test('actual panel eligibility path enables Resume From Safe Boundary before migration writes', () => {
-  const fixture = missingPlanFixture();
+test('a missing Short-Term recovery plan fails closed and requires Fresh Start', () => {
   const result = deriveShortTermMissingPlanResumeEligibility({
     checkpointStatus: 'awaiting_manual_resume',
-    phaseDisposition: { disposition: 'failed', resumable: false },
+    phaseDisposition: { disposition: 'failed', resumable: true },
     postCommitMarker: null,
-    compactionCheckpoint: fixture.compactionCheckpoint,
-    summaryEnd: fixture.summaryEnd,
-    currentSummaryHash: fixture.currentSummaryHash,
-    currentSourceFingerprint: fixture.currentSourceFingerprint,
-    failureState: fixture.failureState,
-    logicalRunId: fixture.logicalRunId,
-    promptShapeVersion: fixture.promptShapeVersion,
+    failureState: { operator_action_required: false },
   });
   assert.deepEqual(result, {
-    eligible: true,
-    decision: 'reconstruct_successor_from_committed_boundary',
-    reason: 'committed_progress_without_active_successor',
-    inferred_post_commit_state: true,
-    evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
-    committed_boundary: 7645,
-    conflicts: [],
+    eligible: false, decision: 'fresh_start_required',
+    reason: 'shortterm_recovery_plan_missing', conflicts: [],
   });
   assert.deepEqual(deriveShortTermResumePresentation(result, false), {
-    disabled: false, label: 'Resume From Safe Boundary', mode: 'safe_boundary',
+    disabled: true, label: 'Short-Term Recovery Blocked', mode: 'blocked',
   });
-});
-
-test('missing-plan proof blocks summary, boundary, source, tail, and stale-range conflicts precisely', () => {
-  const cases = [
-    [{ currentSummaryHash: 'different' }, 'summary_hash_mismatch'],
-    [{ summaryEnd: 7646 }, 'summary_boundary_mismatch'],
-    [{ currentSourceFingerprint: 'different' }, 'source_fingerprint_mismatch'],
-    [{ compactionCheckpoint: { ...missingPlanFixture().compactionCheckpoint, pending_tail_start: 7644 } }, 'pending_tail_boundary_mismatch'],
-    [{ failureState: { ...missingPlanFixture().failureState,
-      last_failed_request: { source_start: 7645, source_end: 7653, message_count: 9 } } }, 'stale_failure_range_mismatch'],
-  ];
-  for (const [override, expected] of cases) {
-    const result = deriveMissingPlanCommittedCheckpoint(missingPlanFixture(override));
-    assert.equal(result.proven, false);
-    assert.ok(result.conflicts.some((item) => item.reason === expected), expected);
-  }
-});
-
-test('missing-plan proof refuses a newer plan or marker and is stable across repeated refreshes', () => {
-  const first = deriveMissingPlanCommittedCheckpoint(missingPlanFixture());
-  const second = deriveMissingPlanCommittedCheckpoint(missingPlanFixture());
-  assert.deepEqual(second, first);
-  assert.equal(deriveMissingPlanCommittedCheckpoint(missingPlanFixture({ activePlan: { plan_id: 'new' } })).proven, false);
-  assert.equal(deriveMissingPlanCommittedCheckpoint(missingPlanFixture({ postCommitMarker: first.post_commit_marker })).proven, false);
-});
-
-test('Shape B converges through the same failure cleanup as an archived Shape A predecessor', () => {
-  const proof = deriveMissingPlanCommittedCheckpoint(missingPlanFixture());
-  const once = migrateCommittedShortTermFailureState(missingPlanFixture().failureState, {
-    committedBoundary: proof.committed_boundary, committedPlan: proof.committed_plan,
-    committedSummaryHash: proof.committed_summary_hash, migratedAt: 123456,
-  });
-  assert.equal(once.migrated, true);
-  assert.equal(once.removed_failure_size, 9);
-  assert.deepEqual(once.failure_state.recovery_ladder.failures_by_segment_size, { 18: 1, 1: 1 });
-  assert.equal(once.failure_state.operator_action_required, false);
-  assert.equal(once.failure_state.next_resume_strategy, 'reconstruct_successor_from_committed_boundary');
-  const twice = migrateCommittedShortTermFailureState(once.failure_state, {
-    committedBoundary: proof.committed_boundary, committedPlan: proof.committed_plan,
-    committedSummaryHash: proof.committed_summary_hash, migratedAt: 123457,
-  });
-  assert.equal(twice.migrated, false);
-  assert.deepEqual(twice.failure_state, once.failure_state);
-});
-
-test('Shape B durable migration is restart-safe before and after successor persistence', () => {
-  const fixture = missingPlanFixture();
-  const migration = migrateMissingPlanCommittedCheckpoint(fixture);
-  assert.equal(migration.applied, true);
-  assert.equal(migration.post_commit_marker.committed_boundary, 7645);
-  assert.equal(migration.post_commit_marker.predecessor_terminal_state, 'committed');
-  assert.equal(migration.failure_state.operator_action_required, false);
-  const afterMigrationReload = deriveShortTermMissingPlanResumeEligibility({
-    checkpointStatus: 'awaiting_manual_resume',
-    postCommitMarker: structuredClone(migration.post_commit_marker),
-    failureState: structuredClone(migration.failure_state),
-  });
-  assert.equal(afterMigrationReload.eligible, true);
-  assert.equal(afterMigrationReload.decision, 'reconstruct_successor_from_committed_boundary');
-  const successor = {
-    next_segment_start: migration.proof.successor_start,
-    summary_parent_hash: migration.proof.successor_parent_hash,
-    predecessor_source_range: migration.proof.committed_predecessor_range,
-    lifecycle_state: 'successor_reload_verified',
-  };
-  assert.deepEqual(successor, {
-    next_segment_start: 7645,
-    summary_parent_hash: 'fnv1a-1427688d',
-    predecessor_source_range: { start: 7636, end: 7644 },
-    lifecycle_state: 'successor_reload_verified',
-  });
-  const repeated = migrateMissingPlanCommittedCheckpoint({
-    ...fixture, postCommitMarker: migration.post_commit_marker,
-    failureState: migration.failure_state,
-  });
-  assert.equal(repeated.applied, false);
-  assert.ok(repeated.conflicts.some((item) => item.reason === 'post_commit_marker_already_present'));
 });
 
 test('Short-Term reduction ladder replaces 84 messages with 42 and stops at its floor', () => {
@@ -299,7 +161,7 @@ test('pre-dispatch null-range failure does not advance the ladder or become a on
 
 test('recovery plan validation reports exact parent, source, configuration, and floor conflicts', () => {
   const plan = {
-    schema_version: 5, logical_run_id: 'run', phase: 'shortterm_extraction', message_count: 9,
+    schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION, logical_run_id: 'run', phase: 'shortterm_extraction', message_count: 9,
     next_segment_start: 7636, next_segment_end: 7644, source_fingerprint: 'source-a',
     summary_parent_hash: 'summary-a', prompt_shape_version: 'v3', effective_request_signature: 'request-a',
     configuration_signature: 'config-a', minimum_segment_floor: 4,
@@ -318,6 +180,31 @@ test('recovery plan validation reports exact parent, source, configuration, and 
     'source_fingerprint_mismatch', 'parent_summary_mismatch', 'effective_request_signature_mismatch',
     'configuration_changed', 'minimum_floor_violation',
   ]));
+});
+
+test('old or unsigned Short-Term recovery plans fail closed instead of migrating', () => {
+  const base = {
+    schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
+    logical_run_id: 'run', phase: 'shortterm_extraction', message_count: 9,
+    next_segment_start: 0, next_segment_end: 8, source_fingerprint: 'source',
+    summary_parent_hash: 'summary', prompt_shape_version: 'shape',
+    effective_request_signature: 'request', configuration_signature: 'config',
+  };
+  const current = {
+    logical_run_id: 'run', phase: 'shortterm_extraction', source_start: 0,
+    source_end: 8, source_fingerprint: 'source', parent_summary_hash: 'summary',
+    prompt_shape_version: 'shape', effective_request_signature: 'request',
+    configuration_signature: 'config', minimum_segment_floor: 4,
+  };
+  const old = validateShortTermRecoveryPlan({ ...base,
+    schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION - 1 }, current);
+  assert.equal(old.valid, false);
+  assert.equal(old.reason, 'unsupported_recovery_schema_fresh_start_required');
+  const unsigned = validateShortTermRecoveryPlan({ ...base,
+    configuration_signature: null }, current);
+  assert.equal(unsigned.valid, false);
+  assert.ok(unsigned.conflicts.some((item) =>
+    item.reason === 'missing_configuration_signature_fresh_start_required'));
 });
 
 test('UI and backend use the same authoritative Resume eligibility decision', () => {
@@ -381,7 +268,7 @@ test('durable Short-Term attempt totals remain exact after bounded detail would 
   assert.equal(Object.hasOwn(summary, 'counted_attempt_ids'), false);
 });
 
-test('Short-Term attempt accounting resumes from durable scalars without fabricating legacy totals', () => {
+test('Short-Term attempt accounting resumes from current-schema durable scalars', () => {
   let first = createShortTermAttemptAccounting({ runId: 'run-a', attemptNumber: 1 });
   first = recordShortTermAttemptEvent(first, { state: 'in_flight', request_id: 'one', prompt_visible_message_count: 9 });
   first = recordShortTermAttemptEvent(first, { state: 'request_error', request_id: 'one' });
@@ -394,10 +281,14 @@ test('Short-Term attempt accounting resumes from durable scalars without fabrica
   assert.deepEqual(resumed.cumulative_terminal_counts, {
     completed: 1, failed: 1, cancelled: 0, interrupted: 0, fallback_replaced: 0,
   });
-  const legacy = createShortTermAttemptAccounting({ legacyPhysicalAttempts: 64 });
-  assert.equal(legacy.cumulative_physical_transmissions, 0);
-  assert.equal(legacy.legacy_cumulative_lower_bound, 64);
-  assert.equal(legacy.totals_exact, false);
+});
+
+test('old Short-Term attempt accounting fails closed and requires Fresh Start', () => {
+  assert.throws(() => createShortTermAttemptAccounting({
+    prior: { schema_version: 1, physical_provider_attempts: 64 },
+    runId: 'run-a', attemptNumber: 2,
+  }), (error) => error?.code === 'SME_FRESH_START_REQUIRED'
+    && error?.sme_reason_code === 'shortterm_attempt_accounting_schema_unsupported');
 });
 
 test('Short-Term attempt lifecycle distinguishes a fallback transmission and interruption', () => {
@@ -440,28 +331,6 @@ test('adaptive Short-Term recovery grows only after stable successes with contex
   });
   assert.equal(held.decision, 'hold_context_headroom_insufficient');
   assert.equal(held.proposed_segment_size, 14);
-});
-
-test('a committed predecessor is removed from the false failure ladder exactly once', () => {
-  const migrated = migrateCommittedShortTermFailureState({
-    failure_signature: 'request-9', operator_action_required: true,
-    last_failed_request: { source_start: 7636, source_end: 7644, message_count: 9 },
-    recovery_ladder: { total_failures: 3, failures_by_segment_size: { 18: 1, 9: 1, 1: 1 },
-      reductions_attempted: [18, 9, 1], smallest_segment_attempted: 1,
-      last_actual_dispatched_request: { source_start: 7636, source_end: 7644, message_count: 9 } },
-  }, { committedBoundary: 7645, committedSummaryHash: 'summary-b', committedPlan: {
-    next_segment_start: 7636, next_segment_end: 7644, message_count: 9,
-  } });
-  assert.equal(migrated.migrated, true);
-  assert.deepEqual(migrated.failure_state.recovery_ladder.failures_by_segment_size, { 18: 1, 1: 1 });
-  assert.equal(migrated.failure_state.recovery_ladder.total_failures, 2);
-  assert.equal(migrated.failure_state.operator_action_required, false);
-  const repeated = migrateCommittedShortTermFailureState(migrated.failure_state, {
-    committedBoundary: 7645, committedSummaryHash: 'summary-b', committedPlan: {
-      next_segment_start: 7636, next_segment_end: 7644, message_count: 9,
-    },
-  });
-  assert.equal(repeated.migrated, false);
 });
 
 test('minimum-floor exhaustion requires a failed pending transmission at or below the floor', () => {

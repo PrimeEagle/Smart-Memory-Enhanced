@@ -12,6 +12,7 @@ import {
   getAuthoritativeOwnerRangeStatus,
   getAuthoritativeTierRangeStatus,
   getContiguousSafeSourceOffset,
+  getCompletedRecoveryChildKeys,
   getFirstActionableObligation,
   getNextSourceTraversalRange,
   isAuthoritativeTierRangeSafelyCovered,
@@ -68,7 +69,11 @@ function staleManifest(ledger = canonicalLedger()) {
     total_attempt_count: 3,
     total_resumption_count: 2,
     committed_chunks: [{ start_offset: 0, end_offset: 19 }, { start_offset: 20, end_offset: 39 }],
-    ...structuredClone(fixture.stale_compatibility),
+    committed_ranges: [{ start_offset: 0, end_offset: 39 }],
+    tier_coverage: {
+      longterm: { enabled: true, committed_ranges: [{ start_offset: 0, end_offset: 59 }] },
+      session: { enabled: true, committed_ranges: [{ start_offset: 0, end_offset: 39 }] },
+    },
     obligation_ledger: ledger,
   };
 }
@@ -81,11 +86,12 @@ function rebuilt() {
   });
 }
 
-test('1 canonical ledger stays complete while compatibility Session 40-59 is stale', () => {
+test('1 canonical ledger is the only obligation authority', () => {
   assert.equal(projectMemorizeObligationLedger(canonicalLedger()).pending_obligation_count, 0);
-  assert.equal(fixture.stale_compatibility.tier_obligations.at(-1).safely_committed, false);
+  assert.equal('tier_obligations' in rebuilt().manifest, false);
+  assert.equal('owner_obligations' in rebuilt().manifest, false);
 });
-test('2 authoritative Session status ignores the stale compatibility entry', () => {
+test('2 authoritative Session status comes directly from the ledger', () => {
   assert.equal(getAuthoritativeTierRangeStatus(canonicalLedger(), 'session', { start: 40, end: 59 }).safely_committed, true);
 });
 test('3 authoritative Long-Term status requires every owner root', () => {
@@ -109,7 +115,7 @@ test('10 canonical safe-offset query returns 60', () => assert.equal(getContiguo
 test('11 next work is normal source traversal', () => assert.equal(rebuilt().selection.action, 'continue_source_traversal'));
 test('12 next traversal starts at 60', () => assert.equal(rebuilt().selection.source_range.start_offset, 60));
 test('13 next traversal ends at 79', () => assert.equal(rebuilt().selection.source_range.end_offset, 79));
-test('14 Resume never selects stale 40-59', () => assert.notEqual(rebuilt().selection.source_range.start_offset, 40));
+test('14 Resume selects the first uncovered source range', () => assert.notEqual(rebuilt().selection.source_range.start_offset, 40));
 test('15 committed root skips partial verification', () => assert.equal(shouldVerifyPersistedPartialSessionRecords({
   canonical_obligation: { current_state: 'durably_committed', checkpoint_eligible: true,
     source_range: { start: 40, end: 59 } },
@@ -206,7 +212,7 @@ test('30 no actionable recovery exists after repair', () => assert.equal(getFirs
 test('31 direct next-range query always has an executable action', () => assert.equal(
   getNextSourceTraversalRange(canonicalLedger(), { source_message_count: 9434, chunk_size: 20 }).action,
   'continue_source_traversal'));
-test('32 canonical coverage cannot be downgraded by stale compatibility', () => assert.equal(
+test('32 canonical coverage remains ledger-derived', () => assert.equal(
   isAuthoritativeTierRangeSafelyCovered(staleManifest().obligation_ledger, 'session', { start: 40, end: 59 }), true));
 
 test('33 journal-backed candidate mappings repair all three records without duplication', () => {
@@ -225,7 +231,7 @@ test('33 journal-backed candidate mappings repair all three records without dupl
   assert.equal(reconcileMemorizeLifecycleFromJournal(ledger, { journal }).mutations, 0);
 });
 
-test('34 beginRegisteredAttempt emits the semantic running event before dispatch returns', async () => {
+test('34 beginRegisteredAttempt durably registers without claiming provider dispatch', async () => {
   const events = []; const execution = createMemorizeExecutionContext({ hooks: {
     obligation_event: async (event) => events.push(event.type),
   } });
@@ -237,7 +243,32 @@ test('34 beginRegisteredAttempt emits the semantic running event before dispatch
       estimated_input_tokens: 100 }, requestBudget: {}, providerConfigSignature: 'config', chatId: 'chat',
     expectedOutputFormat: 'longterm-v1' });
   const attempt = await pipeline.beginRegisteredAttempt();
-  assert.ok(attempt.attempt_id); assert.deepEqual(events, ['provider_attempt_started']);
+  assert.ok(attempt.attempt_id); assert.deepEqual(events, ['provider_attempt_registered']);
+  assert.equal(attempt.transmission_started, false);
+});
+test('34b failed registration restores audit and journal and preserves the root exception', async () => {
+  const root = Object.assign(new TypeError('invalid checkpoint DTO'), {
+    code: 'SME_NON_SERIALIZABLE_DOMAIN_DATA',
+    sme_serialization_path: '$.checkpoint.invalid',
+  });
+  const metadata = {};
+  const execution = createMemorizeExecutionContext({
+    hooks: { obligation_event: async () => { throw root; } } });
+  const pipeline = createMemorizeTierPipeline({ tier: 'longterm', tierLabel: 'Long-Term',
+    owner: 'Taylor', execution, metadata,
+    range: { start: 0, end: 19, message_count: 20, source_indices: [0] },
+    rangeId: 'range', coverageLedger: { records: [] }, sourceFingerprint: 'fingerprint',
+    preflight: { configured_context_limit: 8192, effective_context_limit: 8192,
+      reserved_output_tokens: 100, safety_margin_tokens: 10, protocol_overhead_tokens: 10,
+      estimated_input_tokens: 100 }, requestBudget: {}, providerConfigSignature: 'config',
+    chatId: 'chat', expectedOutputFormat: 'longterm-v1' });
+  await assert.rejects(() => pipeline.beginRegisteredAttempt(), (error) => {
+    assert.equal(error, root);
+    assert.equal(error.code, 'SME_NON_SERIALIZABLE_DOMAIN_DATA');
+    return true;
+  });
+  assert.equal(metadata.live_memory_health?.provider_attempt_audit, undefined);
+  assert.equal(metadata.provider_completion_journal, undefined);
 });
 test('35 current and reconciled lifecycle violations remain separately classified', () => {
   const ledger = canonicalLedger();
@@ -292,6 +323,50 @@ test('39 a fully covered source-index-gap run advances to finalization', () => {
   assert.equal(result.safe_resume_offset, 20);
   assert.equal(result.selection.action, 'continue_finalization');
   assert.equal(result.selection.source_range, null);
+});
+
+test('40 traversal offset is derived from registered root windows while safe offset waits', () => {
+  const ledger = createMemorizeObligationLedger('traversal-ahead-of-commit');
+  complete(ledger, { ...identity('session', null, 0, 19),
+    logical_run_id: 'traversal-ahead-of-commit' });
+  complete(ledger, { ...identity('longterm', 'Taylor', 0, 19),
+    logical_run_id: 'traversal-ahead-of-commit' });
+  applyMemorizeLifecycleEvent(ledger, {
+    ...identity('session', null, 20, 39), logical_run_id: 'traversal-ahead-of-commit',
+  }, { type: 'obligation_registered', next_action: 'dispatch_provider_request' });
+  const result = rebuildMemorizeManifestProjection({
+    logical_run_id: 'traversal-ahead-of-commit', obligation_ledger: ledger,
+  }, { source_message_count: 100, enabled_tiers: ['longterm', 'session'] });
+  assert.equal(result.safe_resume_offset, 20);
+  assert.equal(result.source_traversal_offset, 40);
+});
+
+test('41 derived traversal offset is capped to the canonical source window', () => {
+  const ledger = createMemorizeObligationLedger('traversal-cap');
+  applyMemorizeLifecycleEvent(ledger, {
+    ...identity('session', null, 0, 19), logical_run_id: 'traversal-cap',
+    source_range: { start: 0, end: 19, message_count: 20 },
+  }, { type: 'obligation_registered', next_action: 'dispatch_provider_request' });
+  const before = structuredClone(ledger);
+  const result = rebuildMemorizeManifestProjection({
+    logical_run_id: 'traversal-cap', obligation_ledger: ledger,
+  }, { source_message_count: 12, enabled_tiers: ['session'] });
+  assert.equal(result.source_traversal_offset, 12);
+  assert.deepEqual(ledger, before);
+});
+
+test('42 terminal recovery scheduler keys are derived from canonical child obligations', () => {
+  const ledger = createMemorizeObligationLedger('completed-child-keys');
+  const parent = { ...identity('session', null, 0, 19),
+    logical_run_id: 'completed-child-keys' };
+  const child = { ...identity('session', null, 0, 9),
+    logical_run_id: 'completed-child-keys',
+    obligation_id: `${parent.obligation_id}:leaf:0-9:fixture-0-9`,
+    parent_obligation_id: parent.obligation_id };
+  complete(ledger, child, ['session-record']);
+  assert.deepEqual(getCompletedRecoveryChildKeys(ledger), [
+    'session:chat:0-9:fixture-0-9',
+  ]);
 });
 
 for (const staleSession of [false, true]) for (const repeat of [false, true]) {

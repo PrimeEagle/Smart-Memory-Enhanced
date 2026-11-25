@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, canonicalizeGateOutput, compareSceneBoundaryRuns } from '../scene-stability-utils.js';
+import { analyzeSameRunBoundaryClusters, analyzeSceneStabilityHistory, compareSceneBoundaryRuns, projectCurrentGateOutput } from '../scene-stability-utils.js';
 
 test('same-run boundary clustering is diagnostic-only and never imports prior-run evidence', () => {
   const result = analyzeSameRunBoundaryClusters([
@@ -139,7 +139,7 @@ test('scene-count mode reports a unique winner and current-run accounting is exp
 
 test('all-run candidate analysis separates AI, gate, and final-assembly variance', () => {
   const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [] };
-  const run = (run_id, candidates) => ({ ...shared, run_id, candidate_context_hashes: candidates.map((candidate) => ({ candidate_id: candidate.candidate_id, context_hash: 'same-context' })), candidate_dispositions: candidates });
+  const run = (run_id, candidates) => ({ ...shared, run_id, candidate_context_hashes: candidates.map((candidate) => ({ candidate_id: candidate.candidate_id, context_hash: 'same-context' })), candidate_dispositions: candidates.map((candidate) => ({ gate_output_schema_version: 1, ...candidate })) });
   const result = analyzeSceneStabilityHistory([
     run('one', [
       { candidate_id: 10, decision: true, gate_result: 'accepted', terminal_break_disposition: 'accepted_final_break', gate_input_hash: 'a', gate_output_hash: 'a1' },
@@ -230,47 +230,47 @@ test('missing candidate snapshots leave variance and gate determinism explicitly
   ], { ...shared, run_id: 'current', candidate_detail_available: true, candidate_dispositions: [{ candidate_id: 1, decision: false }] });
   assert.equal(result.candidate_variance_analysis_complete, false);
   assert.equal(result.scene_variance_sources, null);
-  assert.equal(result.gate_determinism_coverage.result_conclusive, false);
+  assert.equal(result.gate_determinism_coverage.representative_result_conclusive, false);
   assert.deepEqual(result.scene_stability_incomplete_reasons, ['missing_candidate_history']);
 });
 
 test('compact snapshots verify gate determinism from retained result fields', () => {
   const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [], candidate_detail_available: true };
   const result = analyzeSceneStabilityHistory([
-    { ...shared, run_id: 'one', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }] },
-  ], { ...shared, run_id: 'two', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_result: 'rejected', gate_reason_code: 'same_continuous_interaction', terminal_break_disposition: 'rejected_deterministic_gate' }] });
+    { ...shared, run_id: 'one', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_output_schema_version: 1, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }] },
+  ], { ...shared, run_id: 'two', candidate_dispositions: [{ candidate_id: 1, decision: true, gate_input_hash: 'same', gate_output_schema_version: 1, gate_result: 'rejected', gate_reason_code: 'same_continuous_interaction', terminal_break_disposition: 'rejected_deterministic_gate' }] });
   assert.equal(result.gate_determinism_coverage.comparisons_completed, 1);
   assert.equal(result.gate_determinism_coverage.result_conclusive_for_eligible_comparisons, true);
   assert.equal(result.gate_determinism_coverage.result_broadly_representative, true);
-  assert.equal(result.gate_determinism_coverage.result_conclusive, false);
+  assert.equal(result.gate_determinism_coverage.representative_result_conclusive, false);
   assert.equal(result.gate_determinism_coverage.overall_result, 'violations_detected');
   assert.equal(result.gate_determinism_violation_count, 1);
 });
 
-test('gate output migration excludes incomplete legacy values from impossible violations', () => {
+test('gate output schema mismatches are excluded from determinism conclusions', () => {
   const shared = { scene_detection_run_signature: 'sig', prompt_shape_hash: 'prompt', model_identifier: 'model', connection_profile_identifier: 'profile', task_sampling_settings: {}, final_break_indices: [], candidate_detail_available: true };
   const incomplete = Array.from({ length: 41 }, (_, index) => ({ candidate_id: index, decision: true, gate_input_hash: `legacy-${index}`, gate_output_hash: `opaque-${index}` }));
-  const complete = [{ candidate_id: 99, decision: true, gate_input_hash: 'same', gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }];
+  const complete = [{ candidate_id: 99, decision: true, gate_input_hash: 'same', gate_output_schema_version: 1, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' }];
   const result = analyzeSceneStabilityHistory([{ ...shared, run_id: 'one', candidate_dispositions: [...incomplete, ...complete] }], { ...shared, run_id: 'two', candidate_dispositions: [...incomplete, ...complete] });
   const coverage = result.gate_determinism_coverage;
   assert.equal(coverage.comparisons_attempted, coverage.comparisons_completed + coverage.comparisons_skipped);
   assert.ok(coverage.violations_found <= coverage.comparisons_completed);
   assert.equal(coverage.violations_found, 0);
-  assert.equal(coverage.terminal_skip_reasons.skipped_incompatible_legacy_gate_output, 41);
+  assert.equal(coverage.terminal_skip_reasons.skipped_gate_output_schema_mismatch, 41);
   assert.equal(coverage.result_broadly_representative, false);
   assert.equal(coverage.result_conclusive_for_eligible_comparisons, true);
-  assert.equal(coverage.result_conclusive, false);
+  assert.equal(coverage.representative_result_conclusive, false);
   assert.equal(coverage.overall_result, 'deterministic_for_eligible_comparisons_only');
 });
 
-test('canonical gate migration normalizes structured records and refuses opaque legacy hashes', () => {
-  const current = canonicalizeGateOutput({ gate_output_schema_version: 1, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' });
-  const migrated = canonicalizeGateOutput({ gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' });
-  const opaque = canonicalizeGateOutput({ gate_output_hash: 'legacy-hash' });
-  assert.equal(current.classification, 'comparable_canonical_output');
-  assert.equal(migrated.classification, 'migrated_legacy_output');
-  assert.equal(current.canonical_gate_output_hash, migrated.canonical_gate_output_hash);
-  assert.equal(opaque.classification, 'legacy_output_incomplete');
+test('current gate projection accepts only the current structured schema', () => {
+  const current = projectCurrentGateOutput({ gate_output_schema_version: 1, gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' });
+  const missingSchema = projectCurrentGateOutput({ gate_result: 'accepted', gate_reason_code: 'accepted_combined_change', terminal_break_disposition: 'accepted_final_break' });
+  const opaque = projectCurrentGateOutput({ gate_output_hash: 'opaque-hash' });
+  assert.equal(current.classification, 'comparable_current_output');
+  assert.equal(missingSchema.classification, 'current_schema_mismatch');
+  assert.equal(missingSchema.canonical_gate_output_hash, null);
+  assert.equal(opaque.classification, 'current_schema_mismatch');
   assert.equal(opaque.canonical_gate_output_hash, null);
 });
 

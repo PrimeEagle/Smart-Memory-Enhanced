@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { preverifyArcSummary } from '../arc-summary-validation.js';
-import { buildCanonicalCharacterRoster, canonicalizeRelationshipPair, resolveCanonicalCharacterName, validateArcParticipants } from '../canonical-entities.js';
+import { buildCanonicalRoster, canonicalizeRelationshipPair, resolveCanonicalCharacterName, validateArcParticipants } from '../canonical-entities.js';
 import { parseArcOutput, parseExtractionOutput, parseSessionOutput } from '../parsers.js';
 
 const fixtureDirectory = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures', 'diagnostics');
@@ -19,7 +19,7 @@ test('diagnostic fixtures: leakage and hallucination are rejected before storage
 
 test('diagnostic fixtures: entity relevance respects the active roster', () => {
   const data = fixture('entity-relevance');
-  const result = resolveCanonicalCharacterName(data.candidate, buildCanonicalCharacterRoster(data.roster));
+  const result = resolveCanonicalCharacterName(data.candidate, buildCanonicalRoster(data.roster));
   assert.equal(result.canonicalName, data.expectedCanonicalName);
 });
 
@@ -59,7 +59,7 @@ test('diagnostic fixture: search stays independently namespaced and carries prov
 
 test('v0.8.14 regression fixture covers persona, provenance, arcs, relationships, and quality contracts', () => {
   const data = fixture('v0814-regression');
-  const roster = buildCanonicalCharacterRoster({
+  const roster = buildCanonicalRoster({
     ...data.persona.context,
     characters: [
       { id: 'alissa', name: 'Alissa Kawaguchi', description: '' },
@@ -89,5 +89,5 @@ test('v0.8.14 regression fixture covers persona, provenance, arcs, relationships
   assert.match(profiles, /descriptorTokens/);
   assert.match(settings, /quality: runResult\.quality/);
   assert.match(settings, new RegExp(data.quality.expected_reason));
-  assert.match(settings, /participantListsRewritten/);
+  assert.match(settings, /participant_lists_rewritten/);
 });

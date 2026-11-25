@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
+  applyMemorizeLifecycleEvent,
   createMemorizeObligationLedger,
   ensureMemorizeObligationLedger,
   projectMemorizeObligationLedger,
@@ -32,6 +33,21 @@ import {
 const sessionId = 'session:chat:640-659:fnv1a-4ee9852e';
 const sessionInput = { obligation_id: sessionId, logical_run_id: 'run', tier: 'session', source_range: { start: 640, end: 659 }, source_fingerprint: 'fnv1a-4ee9852e' };
 
+test('authoritative lifecycle rejects descriptive recovery text as an executable command', () => {
+  const ledger = createMemorizeObligationLedger('run');
+  assert.throws(() => transitionMemorizeObligation(ledger, sessionInput, {
+    current_state: 'pending_recovery',
+    next_eligible_action: 'inspect_or_restore_committed_partial_record',
+  }), /Unknown Memorize kernel action/);
+  const result = applyMemorizeLifecycleEvent(ledger, sessionInput, {
+    type: 'recovery_required', reason_code: 'verification_failed',
+    next_action: 'inspect_or_restore_committed_partial_record',
+  });
+  assert.equal(result.applied, false);
+  assert.equal(result.violation.code, 'unknown_memorize_kernel_action');
+  assert.equal(ledger.obligations[sessionId], undefined);
+});
+
 test('current-schema interrupted provider state repairs to exact pending work', () => {
   const ledger = createMemorizeObligationLedger('run');
   ledger.obligations[sessionId] = {
@@ -55,7 +71,7 @@ test('current-schema interrupted provider state repairs to exact pending work', 
   const obligation = repaired.ledger.obligations[sessionId];
   assert.equal(repaired.repairs.length, 1);
   assert.equal(obligation.current_state, 'pending_recovery');
-  assert.equal(obligation.next_eligible_action, 'recover_unresolved_partial_output_fragments');
+  assert.equal(obligation.next_eligible_action, 'dispatch_provider_request');
   assert.equal(obligation.persistence_result, 'partial_records_committed');
   assert.equal(obligation.partial_record_persistence.persisted_record_count, 1);
   assert.equal(projectMemorizeObligationLedger(repaired.ledger).invariants.valid, true);
@@ -73,7 +89,7 @@ test('provider-running requires a registered physical attempt and partial persis
   const ledger = createMemorizeObligationLedger('run');
   transitionMemorizeObligation(ledger, sessionInput, {
     current_state: 'pending_recovery', exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-    next_eligible_action: 'recover_unresolved_partial_output_fragments',
+    next_eligible_action: 'dispatch_provider_request',
     persistence_result: 'partial_records_committed', metrics: { persisted_records: 1 },
     lifecycle: {
       parser_accepted_candidate_ids: ['candidate-1'],
@@ -105,7 +121,7 @@ test('provider runtime reconciliation identifies ledger/audit mismatches exactly
 test('Session 640-659 downstream rejection remains exact pending recovery', () => {
   const ledger = createMemorizeObligationLedger('run');
   transitionMemorizeObligation(ledger, sessionInput, { current_state: 'parser_partial', parser_result: 'one accepted, two rejected', exact_reason_code: 'partial_valid_output_has_unresolved_fragments', metrics: { parser_accepted_records: 1, parser_rejected_fragments: 2 } });
-  transitionMemorizeObligation(ledger, sessionInput, { current_state: 'pending_recovery', downstream_validation_result: 'rejected_invalid_candidate_shape', persistence_result: 'not_committed', coverage_result: 'pending', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'session_validation_repair_or_bounded_regeneration', recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair' });
+  transitionMemorizeObligation(ledger, sessionInput, { current_state: 'pending_recovery', downstream_validation_result: 'rejected_invalid_candidate_shape', persistence_result: 'not_committed', coverage_result: 'pending', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'dispatch_provider_request', recovery_intent: 'recover_unresolved_partial_output_fragments', recovery_stage: 'compact_response_repair' });
   const result = projectMemorizeObligationLedger(ledger);
   assert.equal(result.pending_obligation_count, 1);
   assert.equal(result.next_eligible_obligation.obligation_id, sessionId);
@@ -245,18 +261,18 @@ test('validated no-update explicitly closes a Session range', () => {
 
 test('every resumable exit retains exact reason and next action', () => {
   const ledger = createMemorizeObligationLedger('run');
-  transitionMemorizeObligation(ledger, sessionInput, { current_state: 'pending_recovery', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'session_validation_repair_or_bounded_regeneration' });
-  recordMemorizeControllerExit(ledger, { reason_code: 'invalid_candidate_shape', classification: 'downstream_validation_pending', obligation_id: sessionId, next_eligible_action: 'session_validation_repair_or_bounded_regeneration' });
+  transitionMemorizeObligation(ledger, sessionInput, { current_state: 'pending_recovery', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'dispatch_provider_request' });
+  recordMemorizeControllerExit(ledger, { reason_code: 'invalid_candidate_shape', classification: 'downstream_validation_pending', obligation_id: sessionId, next_eligible_action: 'dispatch_provider_request' });
   const result = projectMemorizeObligationLedger(ledger);
   assert.equal(result.last_controller_exit.reason_code, 'invalid_candidate_shape');
-  assert.equal(result.last_controller_exit.next_eligible_action, 'session_validation_repair_or_bounded_regeneration');
+  assert.equal(result.last_controller_exit.next_eligible_action, 'dispatch_provider_request');
   assert.equal(result.invariants.valid, true);
 });
 
 test('crash/reload retains exact obligation and deduplicates record identity', () => {
   const first = runMemorizeReplay({ logicalRunId: 'run', obligations: [sessionInput], events: [
-    { obligation_id: sessionId, current_state: 'pending_recovery', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'session_validation_repair_or_bounded_regeneration' },
-    { type: 'controller_exit', reason_code: 'page_interruption', obligation_id: sessionId, next_eligible_action: 'session_validation_repair_or_bounded_regeneration' },
+    { obligation_id: sessionId, current_state: 'pending_recovery', exact_reason_code: 'invalid_candidate_shape', next_eligible_action: 'dispatch_provider_request' },
+    { type: 'controller_exit', reason_code: 'page_interruption', obligation_id: sessionId, next_eligible_action: 'dispatch_provider_request' },
   ] });
   const restored = structuredClone(first.ledger);
   transitionMemorizeObligation(restored, sessionInput, { current_state: 'durably_committed', downstream_validation_result: 'accepted', persistence_result: 'committed', coverage_result: 'safely_committed' });
@@ -276,7 +292,7 @@ test('canary corpus is routed through actionable terminal states', () => {
   for (const [index, name] of corpus.cases.entries()) {
     const id = `session:chat:${index}-${index}:canary`;
     const replay = runMemorizeReplay({ obligations: [{ obligation_id: id, tier: 'session', source_range: { start: index, end: index } }], events: [
-      { obligation_id: id, current_state: 'pending_recovery', exact_reason_code: name, next_eligible_action: 'resume_exact_obligation' },
+      { obligation_id: id, current_state: 'pending_recovery', exact_reason_code: name, next_eligible_action: 'dispatch_provider_request' },
       { obligation_id: id, current_state: 'durably_committed', persistence_result: 'committed', coverage_result: 'safely_committed' },
     ] });
     assert.equal(replay.finalization_reachable, true, name);

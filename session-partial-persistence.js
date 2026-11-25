@@ -9,8 +9,7 @@ export function shouldVerifyPersistedPartialSessionRecords({
   if (!canonical_obligation || canonical_obligation.current_state !== 'pending_recovery') return false;
   if (!recovery_state?.resume_unresolved_obligation) return false;
   if (!(recovery_state?.unresolved_semantic_units ?? []).length) return false;
-  if (!(recovery_state?.durably_persisted_record_ids
-    ?? recovery_state?.accepted_record_ids ?? []).length) return false;
+  if (!(recovery_state?.durably_persisted_record_ids ?? []).length) return false;
   if (!selected_action) return false;
   if (!canonical_obligation.obligation_id || !canonical_obligation.source_fingerprint) return false;
   if (String(recovery_state.root_obligation_id ?? '')
@@ -30,9 +29,8 @@ export function shouldVerifyPersistedPartialSessionRecords({
   return canonicalRangeMatches && recoveryRangeMatches;
 }
 
-export function verifyPersistedPartialSessionRecords(memories = [], recoveryState = null, range = {}) {
-  const expectedIds = new Set((recoveryState?.durably_persisted_record_ids
-    ?? recoveryState?.accepted_record_ids ?? []).map(String));
+export function verifyPersistedPartialSessionRecords(memories = [], recoveryState = null, _range = {}) {
+  const expectedIds = new Set((recoveryState?.durably_persisted_record_ids ?? []).map(String));
   const aliases = recoveryState?.durable_record_aliases ?? {};
   const resolvedExpectedIds = new Map([...expectedIds].map((id) =>
     [id, String(aliases[id] ?? id)]));

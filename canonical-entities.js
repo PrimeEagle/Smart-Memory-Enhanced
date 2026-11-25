@@ -123,10 +123,8 @@ export function snapshotCanonicalRuntimeContext(context = {}) {
     { name: context?.userName, record: explicitPersona, source: 'resolved_user_name' },
     ...(!recoveredAuthorShouldWin ? [{ name: importedPersonaRecovery.canonical_name, record: explicitPersona, source: 'stable_user_message_author', authoritative: true }] : []),
     // SillyTavern uses name1 for the current user/persona and name2 for the
-    // active character.  Keep name2 only as a legacy final fallback for older
-    // context adapters that expose the user identity there.
+    // active character. Character identity must never become a persona fallback.
     { name: context?.name1, record: explicitPersona, source: 'context_name1' },
-    { name: context?.name2, record: explicitPersona, source: 'legacy_name2' },
   ];
   const selected = personaCandidates.find((candidate) => isUsablePersonaName(candidate.name)
     && (candidate.authoritative || !activeCharacterNames.has(normalize(candidate.name)))) ?? null;
@@ -239,22 +237,20 @@ export function summarizeCanonicalPersonaContext(snapshot = null) {
   };
 }
 
-/** Normalizes supported roster shapes before identity helpers inspect them. */
+/** Validates the single current roster container before identity helpers inspect it. */
 export function getCanonicalRosterPeople(roster) {
-  if (Array.isArray(roster)) return roster;
   if (Array.isArray(roster?.characters)) return roster.characters;
-  if (roster?.characters instanceof Map) return [...roster.characters.values()];
-  if (roster?.people instanceof Map) return [...roster.people.values()];
-  if (Array.isArray(roster?.people)) return roster.people;
-  return [];
+  const error = new TypeError('Canonical roster must use the current { characters: [] } shape.');
+  error.code = 'SME_CANONICAL_ROSTER_SCHEMA_UNSUPPORTED';
+  throw error;
 }
 
 export function getCanonicalPersonaEntries(roster) {
-  return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'user-persona' || entry?.source_type === 'persona');
+  return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'user-persona' || entry?.source === 'historical-persona');
 }
 
 export function getCanonicalCardEntries(roster) {
-  return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'character-card' || entry?.source_type === 'character-card');
+  return getCanonicalRosterPeople(roster).filter((entry) => entry?.source === 'character-card');
 }
 
 /**
@@ -287,9 +283,9 @@ export function normalizeSyntheticIdentityQualifier(candidate, existingEntities 
 }
 
 /**
- * Builds the authoritative identity roster for one active chat scope. Entries
- * retain the legacy camelCase fields for existing callers and expose the
- * canonical schema used by reconciliation and diagnostics.
+ * Builds the authoritative identity roster for one active chat scope. Roster
+ * entries are an in-memory JavaScript domain model; persisted identity DTOs
+ * use their own schema-owned projections at their publication boundaries.
  */
 export function buildCanonicalRoster(context, scope = {}) {
   const group = context?.groupId ? context.groups?.find((entry) => String(entry.id) === String(context.groupId)) : null;
@@ -308,8 +304,6 @@ export function buildCanonicalRoster(context, scope = {}) {
       return {
         id: card.id ?? card.avatar ?? null,
         canonicalName,
-        canonical_id: String(card.id ?? card.avatar ?? `card:${normalize(canonicalName)}`),
-        canonical_name: canonicalName,
         entity_type: 'character',
         aliases,
         descriptionExcerpt: String(card.description ?? '').trim().slice(0, 240),
@@ -317,16 +311,14 @@ export function buildCanonicalRoster(context, scope = {}) {
         // spouse/family facts, while the shorter excerpt keeps prompts compact.
         relationshipFactExcerpt: String(card.description ?? '').trim().slice(0, 2000),
         source: 'character-card',
-        source_type: 'character-card',
       };
     })
     .filter((entry) => entry.canonicalName && !isGenericCharacterContainerName(entry.canonicalName));
   // The active user persona participates in the chat but is not represented
   // by a character card. Include it as a canonical participant so persona
   // entities are not incorrectly reported as unmatched during reconciliation.
-  // SillyTavern's name1 is normally the active character while name2 is the
-  // user/persona. Prefer explicit persona state, userName/name2, and actual
-  // user messages before using name1 as a legacy fallback.
+  // Persona identity comes from the finalized runtime snapshot or explicit
+  // persona scope; character display fields are never interpreted as persona.
   const runtimePersona = scope.runtimeSnapshot?.active_persona
     ?? activeRuntimePersonaSnapshot?.active_persona
     ?? snapshotCanonicalRuntimeContext(context).active_persona;
@@ -360,8 +352,6 @@ export function buildCanonicalRoster(context, scope = {}) {
     characters.push({
       id: `persona:${personaId}`,
       canonicalName: personaName,
-      canonical_id: `persona:${personaId}`,
-      canonical_name: personaName,
       entity_type: 'character',
       canonical_identity_type: 'persona',
       canonical_persona_id: String(personaId),
@@ -369,7 +359,6 @@ export function buildCanonicalRoster(context, scope = {}) {
       aliases: [...new Set(personaAliases)],
       descriptionExcerpt: '',
       source: 'user-persona',
-      source_type: 'persona',
     });
   }
   const historicalPersona = scope.runtimeSnapshot?.historical_persona
@@ -380,8 +369,6 @@ export function buildCanonicalRoster(context, scope = {}) {
     characters.push({
       id: `persona:${historicalPersona.stable_persona_id}`,
       canonicalName: historicalPersona.canonical_name,
-      canonical_id: `persona:${historicalPersona.stable_persona_id}`,
-      canonical_name: historicalPersona.canonical_name,
       entity_type: 'character',
       canonical_identity_type: 'persona',
       canonical_persona_id: String(historicalPersona.stable_persona_id),
@@ -389,7 +376,6 @@ export function buildCanonicalRoster(context, scope = {}) {
       aliases: [...new Set(historicalPersona.approved_aliases ?? [])],
       descriptionExcerpt: '',
       source: 'historical-persona',
-      source_type: 'persona',
       persona_scope: historicalPersona.scope ?? 'imported_chat_history',
     });
   }
@@ -404,13 +390,10 @@ export function buildCanonicalRoster(context, scope = {}) {
       characters.push({
         id: entity.id ?? `chat-local:${normalize(entity.name)}`,
         canonicalName: entity.name,
-        canonical_id: entity.id ?? `chat-local:${normalize(entity.name)}`,
-        canonical_name: entity.name,
         entity_type: 'character',
         aliases: [...new Set(entity.aliases ?? [])],
         descriptionExcerpt: '',
         source: 'chat-local-approved',
-        source_type: 'chat-local-approved',
       });
     }
   }
@@ -432,11 +415,6 @@ export function sanitizeSyntheticIdentityLabels(text, roster = { characters: [] 
     return normalized.normalized_name;
   });
   return { text: output, removals };
-}
-
-/** Backward-compatible name for callers that only need character entries. */
-export function buildCanonicalCharacterRoster(context, options = {}) {
-  return buildCanonicalRoster(context, options);
 }
 
 export function formatCanonicalRosterForPrompt(roster) {
@@ -680,7 +658,7 @@ export function validateArcParticipants(participants, roster, { content = '', ev
         name,
         reason: 'Participant is not named in the arc content or supplied source evidence.',
         canonicalName: entry?.canonicalName ?? name,
-        canonicalId: entry?.canonical_id ?? null,
+        canonicalId: entry?.id ?? null,
       });
     }
   }
@@ -861,7 +839,7 @@ export function reconcileCanonicalLedger(ledger, roster) {
 }
 
 function resolved(candidateName, entry, reason) {
-  const isPersona = entry.source === 'user-persona' || entry.source_type === 'persona';
+  const isPersona = entry.source === 'user-persona' || entry.source === 'historical-persona';
   const candidate_normalized_name = normalize(candidateName);
   const authoritative_card_normalized_name = normalize(entry.canonicalName);
   return {

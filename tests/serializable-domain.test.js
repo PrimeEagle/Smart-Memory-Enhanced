@@ -54,6 +54,26 @@ test('plain-data validator rejects promises, class instances, cycles, and access
     { code: 'SME_NON_SERIALIZABLE_DOMAIN_DATA' });
 });
 
+test('plain-data validator exhaustively rejects runtime and non-finite values at exact paths', () => {
+  const cases = [
+    [{ nested: { missing: undefined } }, '$.nested.missing'],
+    [{ nested: { value: Number.NaN } }, '$.nested.value'],
+    [{ nested: { value: Number.POSITIVE_INFINITY } }, '$.nested.value'],
+    [{ nested: { value: Number.NEGATIVE_INFINITY } }, '$.nested.value'],
+    [{ nested: { callback: () => {} } }, '$.nested.callback'],
+    [{ nested: { symbol: Symbol('x') } }, '$.nested.symbol'],
+    [{ nested: { bigint: 1n } }, '$.nested.bigint'],
+  ];
+  for (const [value, path] of cases) assert.throws(
+    () => assertSerializableDomain(value),
+    (error) => error.code === 'SME_NON_SERIALIZABLE_DOMAIN_DATA'
+      && error.sme_serialization_path === path,
+  );
+  const sparse = []; sparse.length = 1;
+  assert.throws(() => assertSerializableDomain({ sparse }),
+    (error) => error.sme_serialization_path === '$.sparse[0]');
+});
+
 test('aggregate validation finishes before the first runtime effect', () => {
   let effects = 0;
   const executor = createRuntimeEffectExecutor({

@@ -55,10 +55,11 @@ test('genuine provider empty and malformed responses remain quality outcomes', (
   assert.equal(summary.provider_quality.malformed_responses, 1);
 });
 
-test('legacy events without lifecycle evidence are reported as unknown, not provider defects', () => {
+test('events without lifecycle evidence are reported as unknown, not provider defects', () => {
   const metadata = { live_memory_health: { recent_extraction_events: [{ event_id: 'old', tier: 'session', terminal_health: 'malformed_response' }], recent_injection_events: [], aggregate: { extraction: {}, injection: {} } } };
   const summary = exportLiveMemoryHealth(metadata).extraction_outcome_summary;
-  assert.equal(summary.deduplicated_logical_request_counts.legacy_outcome_unknown, 1);
+  assert.equal(summary.deduplicated_logical_request_counts.outcome_unknown, 1);
+  assert.equal(summary.physical_attempt_accounting, null);
   assert.equal(summary.provider_quality.malformed_responses, 0);
 });
 

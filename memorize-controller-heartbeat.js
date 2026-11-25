@@ -1,4 +1,5 @@
 /** Durable controller heartbeat and multi-signal stale classification. */
+import { createStaleControllerAudit } from './memorize-domain-dtos.js';
 export const MEMORIZE_CONTROLLER_HEARTBEAT_SCHEMA_VERSION = 1;
 export const MEMORIZE_AWAIT_POINTS = new Set([
   'provider_request', 'response_parse', 'downstream_validation', 'canonical_persistence',
@@ -61,16 +62,21 @@ export function closeMemorizeControllerHeartbeat(checkpoint, runtime, exit = {},
 }
 
 export function classifyStaleMemorizeController(heartbeat, evidence = {}, at = Date.now()) {
-  const threshold = Math.max(1, Number(evidence.stale_threshold_ms ?? 300000));
-  const age = heartbeat?.last_progress_at == null ? Infinity : Math.max(0, at - heartbeat.last_progress_at);
+  const requestedThreshold = Number(evidence.stale_threshold_ms ?? 300000);
+  const threshold = Number.isFinite(requestedThreshold)
+    ? Math.max(1, requestedThreshold) : 300000;
+  const age = Number.isFinite(Number(heartbeat?.last_progress_at))
+    ? Math.max(0, at - Number(heartbeat.last_progress_at)) : null;
   const blockers = [];
-  if (age <= threshold) blockers.push('recent_heartbeat');
+  if (age != null && age <= threshold) blockers.push('recent_heartbeat');
   if (evidence.provider_running) blockers.push('provider_request_running');
   if (evidence.persistence_running) blockers.push('persistence_running');
   if (evidence.save_running) blockers.push('metadata_save_running');
   if (evidence.background_operation_running) blockers.push('background_operation_running');
   if (evidence.controller_executing) blockers.push('current_controller_executing');
   if (!evidence.transaction_inspectable) blockers.push('transaction_not_inspectable');
-  return { stale: blockers.length === 0, age_ms: age, threshold_ms: threshold,
-    blockers, await_point: heartbeat?.await_point ?? null };
+  return createStaleControllerAudit({
+    stale: blockers.length === 0, age_ms: age, threshold_ms: threshold,
+    blockers, await_point: heartbeat?.await_point ?? null,
+  });
 }

@@ -7,44 +7,48 @@ export function selectScenesForInjection(history, injectCount = 5) {
   return history.slice(Math.max(0, history.length - Math.max(1, Number(injectCount) || 5)));
 }
 
-function stableLegacySceneId(scene, indices) {
-  // Legacy scenes predate stable IDs. Their content and source provenance are
-  // already durable, so derive an ID from that state rather than allocating a
-  // new random one every time the record is read for reconciliation.
-  const source = [
-    String(scene?.summary ?? '').trim().toLowerCase(),
-    indices.join(','),
-    String(scene?.source_start_index ?? ''),
-    String(scene?.source_end_index ?? ''),
-    String(scene?.detection_message_index ?? ''),
-    String(scene?.ts ?? ''),
-  ].join('|');
-  let hash = 2166136261;
-  for (const char of source) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
+export function createCurrentSceneRecord(scene, idFactory) {
+  if (typeof idFactory !== 'function' && !String(scene?.id ?? '').trim()) {
+    throw new TypeError('Current scene construction requires an ID or ID factory.');
   }
-  return `legacy-scene-${(hash >>> 0).toString(16).padStart(8, '0')}`;
-}
-
-export function normalizeSceneRecord(scene, idFactory = null) {
   const indices = [...new Set((scene.source_message_indices ?? []).filter(Number.isInteger))].sort((a, b) => a - b);
   const participants = [...new Set((scene.character_participants ?? [])
     .map((name) => String(name ?? '').trim())
     .filter(isPlausibleEntityName))];
   return {
     ...scene,
-    id: scene.id ?? (typeof idFactory === 'function' ? idFactory() : stableLegacySceneId(scene, indices)),
+    id: scene.id ?? idFactory(),
     source_message_indices: indices,
     source_start_index: scene.source_start_index ?? indices[0] ?? null,
     source_end_index: scene.source_end_index ?? indices.at(-1) ?? null,
     source_memory_ids: [...new Set(scene.source_memory_ids ?? [])],
     character_participants: participants,
-    grounding_status: scene.grounding_status ?? (indices.length ? 'direct' : 'legacy'),
-    validation_status: scene.validation_status ?? (indices.length ? 'validated' : 'legacy'),
+    grounding_status: scene.grounding_status ?? (indices.length ? 'direct' : 'unsupported'),
+    validation_status: scene.validation_status ?? (indices.length ? 'validated' : 'rejected'),
     validation_issues: scene.validation_issues ?? [],
-    detected_by: scene.detected_by ?? 'legacy',
+    detected_by: scene.detected_by ?? 'runtime',
     detection_message_index: scene.detection_message_index ?? null,
   };
+}
+
+export function assertCurrentSceneRecord(scene) {
+  const valid = scene && typeof scene === 'object' && !Array.isArray(scene)
+    && Boolean(String(scene.id ?? '').trim())
+    && typeof scene.summary === 'string'
+    && Number.isFinite(Number(scene.ts))
+    && Array.isArray(scene.source_message_indices)
+    && Array.isArray(scene.source_memory_ids)
+    && Array.isArray(scene.character_participants)
+    && typeof scene.grounding_status === 'string'
+    && typeof scene.validation_status === 'string'
+    && Array.isArray(scene.validation_issues)
+    && Boolean(String(scene.detected_by ?? '').trim());
+  if (!valid) {
+    const error = new Error('Scene History contains a non-current record. Run Fresh Start before continuing.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.reason = 'scene_history_record_schema_mismatch';
+    throw error;
+  }
+  return scene;
 }
 import { isPlausibleEntityName } from './parsers.js';

@@ -1,5 +1,7 @@
 /** Authoritative, content-free coverage for repartitioned recovery roots. */
 
+import { cloneSerializableDomain } from './serializable-domain.js';
+
 export const RECOVERY_CHILD_MANIFEST_SCHEMA_VERSION = 1;
 
 const COMPLETE_STATES = new Set(['completed', 'validated_no_update']);
@@ -53,7 +55,10 @@ function recompute(manifest) {
 }
 
 export function createRecoveryChildManifest(input = {}, prior = null) {
-  const manifest = prior ? structuredClone(prior) : {
+  const manifest = prior ? cloneSerializableDomain(prior, {
+    path: '$.recovery_child_manifest', stage: 'recovery_manifest_clone',
+    operation_type: 'memorize_recovery',
+  }) : {
     schema_version: RECOVERY_CHILD_MANIFEST_SCHEMA_VERSION,
     root_obligation_id: input.root_obligation_id ?? null,
     tier: input.tier ?? null,
@@ -162,7 +167,10 @@ export function resumeRecoveryChildManifest(manifest) {
 
 export function summarizeRecoveryChildManifest(manifest) {
   if (!manifest) return null;
-  const current = recompute(structuredClone(manifest));
+  const current = recompute(cloneSerializableDomain(manifest, {
+    path: '$.recovery_child_manifest', stage: 'recovery_manifest_projection',
+    operation_type: 'memorize_recovery',
+  }));
   return {
     ...current,
     expected_children: Object.values(current.children),

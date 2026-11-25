@@ -11,6 +11,7 @@ const window = chat.slice(10, 20).map((message, offset) => ({ ...message, __sme_
 const obligation = {
   tier: 'longterm', owner: 'Aster Graves', source_range: { start: 10, end: 19, message_count: 10 },
   source_fingerprint: sourceWindowFingerprint(window), root_obligation_id: 'longterm:aster:10-19',
+  configuration_signature: 'config-a',
   targeted_replay_eligible: true, prior_authoritative_memory_preserved: true,
   malformed_reason: 'missing_required_top_level_structure',
 };
@@ -30,7 +31,7 @@ test('targeted replay refuses stale source fingerprints while supporting session
   const candidates = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
     { ...obligation, source_fingerprint: 'fnv1a-stale' },
     { ...obligation, tier: 'session', root_obligation_id: 'session:chat:10-19' },
-  ] }, { chat, chatId: 'chat-a' });
+  ] }, { chat, chatId: 'chat-a', configurationSignature: 'config-a' });
   assert.equal(candidates[0].eligible, false);
   assert.ok(candidates[0].rejection_reasons.includes('source_fingerprint_mismatch'));
   assert.equal(candidates[1].eligible, true);
@@ -41,7 +42,7 @@ test('session replay does not require an owner while unknown tiers remain unsupp
   const [session, unknown] = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
     { ...obligation, tier: 'session', owner: null, root_obligation_id: 'session:chat:10-19' },
     { ...obligation, tier: 'profile', owner: null, root_obligation_id: 'profile:chat:10-19' },
-  ] }, { chat, chatId: 'chat-a' });
+  ] }, { chat, chatId: 'chat-a', configurationSignature: 'config-a' });
   assert.equal(session.eligible, true);
   assert.equal(unknown.eligible, false);
   assert.ok(unknown.rejection_reasons.includes('unsupported_tier'));
@@ -57,15 +58,23 @@ test('tier-specific configuration signatures validate Session independently from
   assert.equal(session.configuration_signature, 'session-config');
 });
 
-test('targeted replay rejects a known provider-configuration mismatch but labels legacy evidence honestly', () => {
-  const [changed, legacy] = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
+test('targeted replay rejects changed or missing provider configuration evidence', () => {
+  const [changed, unsigned] = buildTargetedReplayCandidates({ terminal_unresolved_obligations: [
     { ...obligation, configuration_signature: 'config-old' },
-    { ...obligation, root_obligation_id: 'legacy-obligation' },
+    { ...obligation, root_obligation_id: 'unsigned-obligation', configuration_signature: null },
   ] }, { chat, chatId: 'chat-a', configurationSignature: 'config-current' });
   assert.equal(changed.eligible, false);
   assert.ok(changed.rejection_reasons.includes('provider_configuration_changed'));
-  assert.equal(legacy.eligible, true);
-  assert.equal(legacy.configuration_validation, 'unavailable_for_legacy_obligation');
+  assert.equal(unsigned.eligible, false);
+  assert.ok(unsigned.rejection_reasons.includes('configuration_signature_missing'));
+  assert.equal(unsigned.configuration_validation, 'configuration_not_verified');
+});
+
+test('old targeted replay checkpoints fail closed instead of migrating', () => {
+  assert.throws(() => createTargetedReplayCheckpoint([], {
+    chatId: 'chat-a', configurationSignature: 'config-a',
+    prior: { schema_version: 2, status: 'in_progress' },
+  }), { code: 'SME_FRESH_START_REQUIRED' });
 });
 
 test('targeted replay checkpoint is restart-safe and summarizes one/all outcomes', () => {
@@ -80,6 +89,7 @@ test('targeted replay checkpoint is restart-safe and summarizes one/all outcomes
   checkpoint = updateTargetedReplayCheckpoint(restored, candidate.root_obligation_id, {
     terminal_outcome: 'completed', added_memories: 2,
   });
+  assert.equal(Object.hasOwn(checkpoint.targets[0], 'attempted'), false);
   checkpoint.status = 'completed';
   const summary = summarizeTargetedReplayCheckpoint(checkpoint);
   assert.equal(summary.completed, 1);

@@ -8,7 +8,7 @@
 import { summarizeProviderAttemptAudit } from './provider-attempt-audit.js';
 import { cloneSerializableDomain } from './serializable-domain.js';
 
-export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 2;
+export const LIVE_MEMORY_HEALTH_SCHEMA_VERSION = 3;
 export const LIVE_MEMORY_HEALTH_MAX_EVENTS = 75;
 export const CONTINUITY_HEALTH_MAX_EVENTS = 75;
 
@@ -20,7 +20,7 @@ const extractionTerminalStates = new Set([
   'interrupted_by_crash', 'interrupted_by_restart', 'interrupted_by_manual_cancel',
   'cancelled_by_manual_stop', 'cancelled_by_run_replacement', 'interrupted_by_runtime_reset', 'interrupted_unknown',
   'completion_uncertain_after_restart', 'completion_uncertain_after_page_interruption', 'replayed_after_recovery',
-  'replay_completed', 'replay_failed', 'recovered_completed', 'legacy_outcome_unknown',
+  'replay_completed', 'replay_failed', 'recovered_completed', 'outcome_unknown',
 ]);
 
 function number(value, fallback = 0) {
@@ -451,12 +451,12 @@ export function exportLiveMemoryHealth(metadata) {
     return current?.event_id ?? event.event_id;
   };
   for (const event of health.recent_extraction_events) {
-    increment(rawOutcomes, event.terminal_health ?? 'legacy_outcome_unknown');
+    increment(rawOutcomes, event.terminal_health ?? 'outcome_unknown');
     const logicalId = rootFor(event);
     logicalRequests.set(logicalId, event);
   }
   const logicalOutcomes = {};
-  for (const event of logicalRequests.values()) increment(logicalOutcomes, event.lifecycle_outcome ?? (event.terminal_health === 'running' ? 'running' : 'legacy_outcome_unknown'));
+  for (const event of logicalRequests.values()) increment(logicalOutcomes, event.lifecycle_outcome ?? (event.terminal_health === 'running' ? 'running' : 'outcome_unknown'));
   const providerFailureStates = new Set(['provider_response_malformed', 'provider_response_empty', 'provider_failure', 'malformed_response']);
   const completedStates = new Set(['completed', 'completed_with_repairs', 'completed_repartitioned', 'replay_completed', 'recovered_completed']);
   const retainedChains = new Map();
@@ -512,7 +512,6 @@ export function exportLiveMemoryHealth(metadata) {
       if (!run) return null;
       const terminalTotal = Object.values(run.terminal_counts ?? {}).reduce((sum, value) => sum + number(value), 0);
       return {
-        legacy_field_name: true,
         scope: 'root_extraction_obligation_health_events_not_provider_calls',
         attempted: number(run.attempted), terminal_outcomes: run.physical_terminal_counts,
         detailed_terminal_states: run.terminal_counts ?? {},

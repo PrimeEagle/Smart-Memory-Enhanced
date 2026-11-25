@@ -51,15 +51,17 @@ import {
 } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
-  recordFeaturePersistenceReceipt } from './feature-persistence.js';
+import { executeFeaturePersistence, executeFeaturePersistenceSync,
+  prepareFeaturePersistenceCommand } from './feature-persistence.js';
 import { assignCandidateIdentity } from './candidate-identity.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import {
   MODULE_NAME,
   META_KEY,
   PROMPT_KEY_EPISTEMIC,
   estimateTokens,
   generateMemoryId,
+  SCHEMA_VERSION,
 } from './constants.js';
 import { buildEpistemicExtractionPrompt } from './prompts.js';
 import { parseEpistemicResponse, parseEpistemicRetireIndices } from './parsers.js';
@@ -72,7 +74,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
-import { buildCanonicalCharacterRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalRoster, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy } from './longterm.js';
 import { loadCharacterEntityRegistry, resolveEntityNames, saveCharacterEntityRegistry } from './graph-migration.js';
 
@@ -197,10 +199,13 @@ export function saveEpistemicKnowledge(characterName, entries) {
     feature: 'epistemic', operation: 'replace_epistemic_knowledge',
     owner: characterName, records: entries });
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    context.chatMetadata ??= {};
+    context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
     const metadata = context.chatMetadata[META_KEY];
     executeFeaturePersistence({ command,
-      snapshot: () => structuredClone(metadata.card_local_epistemic?.[characterName] ?? []),
+      snapshot: () => cloneSerializableDomain(metadata.card_local_epistemic?.[characterName] ?? [], {
+        path: '$.feature_snapshot.epistemic', stage: 'feature_snapshot', operation_type: 'epistemic',
+      }),
       apply: () => { (metadata.card_local_epistemic ??= {})[characterName] = entries; },
       persist: () => saveChatMetadata(context),
       restore: (before) => { (metadata.card_local_epistemic ??= {})[characterName] = before; },
@@ -210,17 +215,25 @@ export function saveEpistemicKnowledge(characterName, entries) {
   }
   const s = extension_settings[MODULE_NAME];
   if (!s.characters) s.characters = {};
-  const existing = s.characters[characterName] ?? {};
-  s.characters[characterName] = { ...existing, epistemic_knowledge: entries };
-  recordFeaturePersistenceReceipt(command, s);
-  saveSettingsDebounced();
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => s.characters[characterName] ?? null,
+    apply: () => {
+      s.characters[characterName] = {
+        ...(s.characters[characterName] ?? {}),
+        schema_version: SCHEMA_VERSION, epistemic_knowledge: entries,
+      };
+    }, persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete s.characters[characterName];
+      else s.characters[characterName] = before;
+    }, receipt_container: s });
 }
 
 export function reconcileEpistemicCanonicalNames(characterName, { runtimeSnapshot = null } = {}) {
   const entries = loadEpistemicKnowledge(characterName);
   // Mainline canonical reconciliation supplies its finalized persona context.
   // Keep the direct-runtime roster only for standalone compatibility calls.
-  const roster = buildCanonicalCharacterRoster(getContext(), { runtimeSnapshot });
+  const roster = buildCanonicalRoster(getContext(), { runtimeSnapshot });
   let changed = false;
   const applyIdentityLink = (entry, prefix, resolution) => {
     const next = {
@@ -264,7 +277,7 @@ export function reconcileEpistemicCanonicalNames(characterName, { runtimeSnapsho
 export function remapEpistemicEntity(characterName, sourceName, targetName) {
   const entries = loadEpistemicKnowledge(characterName);
   const source = String(sourceName).trim().toLowerCase();
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const resolvedTarget = resolveCanonicalCharacterName(targetName, roster);
   const canonicalTarget = resolvedTarget.status === 'resolved' && resolvedTarget.canonicalName
     ? resolvedTarget.canonicalName
@@ -309,16 +322,7 @@ export function remapEpistemicEntity(characterName, sourceName, targetName) {
 export function clearEpistemicKnowledge(characterName) {
   if (!characterName) return;
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
-  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    const context = getContext();
-    if (context.chatMetadata?.[META_KEY]?.card_local_epistemic) delete context.chatMetadata[META_KEY].card_local_epistemic[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local epistemic knowledge:', err));
-    return;
-  }
-  const s = extension_settings[MODULE_NAME];
-  if (!s.characters?.[characterName]) return;
-  s.characters[characterName].epistemic_knowledge = [];
-  saveSettingsDebounced();
+  saveEpistemicKnowledge(characterName, []);
 }
 
 // ---- Deduplication ----------------------------------------------------------
@@ -404,7 +408,7 @@ export async function extractEpistemicKnowledge(
       chatExcerpt,
       participants,
       existing,
-      formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+      formatCanonicalRosterForPrompt(buildCanonicalRoster(getContext())),
     );
 
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.EPISTEMIC, characterName), {
@@ -429,7 +433,7 @@ export async function extractEpistemicKnowledge(
       );
     }
 
-    const roster = buildCanonicalCharacterRoster(getContext());
+    const roster = buildCanonicalRoster(getContext());
     const perSubjectCap = Math.max(1, Number(settings.epistemic_max_per_subject_per_scene) || 5);
     const acceptedBySubject = new Map();
     const acceptedBySubjectAndType = new Map();

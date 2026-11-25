@@ -23,7 +23,6 @@ test('Resume verifies the one durable ID instead of four parser candidates', () 
   const stored = [{ id: fixture.durably_persisted_record_ids[0], source_message_indices: [43] }];
   const result = verifyPersistedPartialSessionRecords(stored, {
     parser_accepted_candidate_count: 4,
-    accepted_partial_record_count: 4,
     durable_partial_record_count: 1,
     durably_persisted_record_ids: fixture.durably_persisted_record_ids,
   }, fixture.source_range);
@@ -56,7 +55,7 @@ test('identity model properties hold for independently varied lifecycle stages',
       }, {
         current_state: fragments.length || persistedCount < acceptedCount ? 'pending_recovery' : 'durably_committed',
         exact_reason_code: fragments.length || persistedCount < acceptedCount ? 'model_pending' : null,
-        next_eligible_action: fragments.length || persistedCount < acceptedCount ? 'resume_exact_obligation' : null,
+        next_eligible_action: fragments.length || persistedCount < acceptedCount ? 'dispatch_provider_request' : null,
         persistence_result: records.length ? 'partial_records_committed' : 'not_committed',
         coverage_result: fragments.length || persistedCount < acceptedCount ? 'pending' : 'safely_committed',
         lifecycle: {
@@ -96,7 +95,7 @@ test('0-119 canary traverses six chunks, recovers backlog, and gates finalizatio
       const candidates = Array.from({ length: 4 }, (_, index) => `candidate-${index}`);
       events.push({ obligation_id: session, current_state: 'pending_recovery',
         exact_reason_code: 'partial_valid_output_has_unresolved_fragments',
-        next_eligible_action: 'recover_unresolved_partial_output_fragments',
+        next_eligible_action: 'dispatch_provider_request',
         lifecycle: {
           parser_accepted_candidate_ids: candidates,
           parser_rejected_fragment_ids: fixture.unresolved_fragment_ids,
@@ -121,18 +120,17 @@ test('0-119 canary traverses six chunks, recovers backlog, and gates finalizatio
   assert.equal(replay.projection.invariants.valid, true);
 });
 
-test('provider reconciliation false always exports exact violated invariant IDs', () => {
+test('registered but undispatched attempt is not misreported as physical provider work', () => {
   const metadata = { active_catchup_run_id: 'provider-reconciliation-canary' };
   beginProviderAttempt(metadata, {
     tier: 'session', logical_obligation_id: 'session:chat:0-19:canary',
     source_range: { start: 0, end: 19 }, request_kind: 'original',
   });
   const summary = summarizeProviderAttemptAudit(metadata);
-  assert.equal(summary.reconciliation.consistent, false);
-  assert.ok(summary.reconciliation.violated_invariant_ids.includes(
-    'provider_attempt_terminal_accounting'));
-  assert.ok(summary.reconciliation.violated_invariants.every((item) =>
-    item.invariant_id && Array.isArray(item.affected_obligation_ids)));
+  assert.equal(summary.reconciliation.consistent, true);
+  assert.equal(summary.registered_attempts, 1);
+  assert.equal(summary.physical_attempts, 0);
+  assert.equal(summary.registered_not_dispatched_attempts, 1);
 });
 
 test('mixed fragment recovery keeps RECORD and NONE terminal identities distinct', () => {

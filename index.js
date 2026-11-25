@@ -97,7 +97,6 @@ import {
   injectArcs,
   loadArcs,
   loadArcSummaries,
-  migrateLegacyArcSummaries,
   mergePersistentArcs,
   mergeGroupPersistentArcs,
   loadGroupPersistentArcs,
@@ -105,7 +104,6 @@ import {
   pruneOrphanedGroupArcs,
 } from './arcs.js';
 import {
-  checkContinuity,
   checkContinuityDetailed,
   generateRepair,
   injectRepair,
@@ -121,8 +119,8 @@ import {
 import { jaccardSimilarity } from './similarity.js';
 import { generateCanon, injectCanon } from './canon.js';
 import {
-  ensureCharacterMigrated,
-  ensureChatMigrated,
+  ensureCharacterSchemaCurrent,
+  ensureChatSchemaCurrent,
   loadCharacterEntityRegistry,
   saveCharacterEntityRegistry,
   seedCharacterEntity,
@@ -1201,9 +1199,9 @@ async function onChatChangedImpl() {
   clearEmbeddingCache();
   clearUnifiedSlot();
 
-  // Migrate chat data first - no character name needed, operates on chatMetadata.
-  // Fast no-op when the container is already at the current schema version.
-  await ensureChatMigrated();
+  // Validate the chat store before any feature reads it. Older test schemas
+  // fail closed instead of being rewritten in place.
+  await ensureChatSchemaCurrent();
   // The settings panel is bound before SillyTavern finishes restoring a chat.
   // Refresh this control after the current chat metadata is available so a
   // completed run remains exportable across a page reload.
@@ -1211,12 +1209,6 @@ async function onChatChangedImpl() {
   const restoredFreshStartAudit = getContext().chatMetadata?.[META_KEY]?.fresh_start_postcondition_audit;
   const restoredDeveloperCheck = getContext().chatMetadata?.[META_KEY]?.developer_idempotence_check;
   $('#sme_export_diagnostics').prop('disabled', !(restoredDiagnostics || restoredFreshStartAudit || restoredDeveloperCheck));
-  // Legacy resolved summaries predate semantic verification. Persist their
-  // quarantine fields on first load so every later reader sees the same state.
-  await migrateLegacyArcSummaries().catch((error) => {
-    console.warn('[Smart Memory Enhanced] Could not persist legacy arc-summary migration:', error);
-  });
-
   // Remove group arc stores for groups that no longer exist. Runs once per
   // chat load; cheap enough that it does not need further throttling.
   pruneOrphanedGroupArcs();
@@ -1244,10 +1236,9 @@ async function onChatChangedImpl() {
     // Recovery needs the selected card to be available before it can resume a
     // historical group run.
     $(document).trigger('sme:chat-changed');
-    // Migrate the selected character's data container before any reads so that
-    // confidence/decay fields and other v2+ additions are present. Other members
-    // are migrated lazily on their first onGroupMemberDrafted.
-    if (selectedGroupCharacter) ensureCharacterMigrated(selectedGroupCharacter);
+    // Validate the selected character store before any reads. Other members
+    // are validated lazily on their first onGroupMemberDrafted.
+    if (selectedGroupCharacter) ensureCharacterSchemaCurrent(selectedGroupCharacter);
     await injectMemories(selectedGroupCharacter);
     injectRelationshipHistory(selectedGroupCharacter);
     loadAndInjectEpistemicKnowledge(selectedGroupCharacter, selectedGroupCharacter);
@@ -1315,9 +1306,8 @@ async function onChatChangedImpl() {
 
   const characterName = getCurrentCharacterName();
 
-  // Migrate character data now that we know which character is active.
-  // Fast no-op when already at the current schema version.
-  ensureCharacterMigrated(characterName);
+  // Validate character data now that the active character is known.
+  ensureCharacterSchemaCurrent(characterName);
 
   // Seed the active character's canonical name into the long-term entity registry
   // if not already present, so the main character appears in the entity panel and
@@ -1488,9 +1478,8 @@ async function onGroupMemberDrafted(chId) {
   const characterName = context.characters[chId]?.name;
   if (!characterName) return;
 
-  // Migrate per-character data on first access in this session. Fast no-op
-  // once already at the current schema version.
-  ensureCharacterMigrated(characterName);
+  // Validate per-character data on first access in this session.
+  ensureCharacterSchemaCurrent(characterName);
 
   // Seed the character entity so it appears in the entity panel and benefits
   // from overlap scoring from the first message.
@@ -2217,7 +2206,7 @@ jQuery(async function () {
       callback: async () => {
         const characterName = getCurrentCharacterName();
         if (!characterName) return 'No character active.';
-        const contradictions = await checkContinuity(characterName);
+        const { contradictions } = await checkContinuityDetailed(characterName, { trigger: 'slash_command' });
         if (contradictions.length === 0) {
           toastr.info('No contradictions found.', 'Smart Memory', {
             timeOut: 4000,

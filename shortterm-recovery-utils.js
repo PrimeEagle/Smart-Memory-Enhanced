@@ -1,5 +1,5 @@
 export const SHORTTERM_RECOVERY_SCHEMA_VERSION = 6;
-export const SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION = 1;
+export const SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION = 2;
 export const SHORTTERM_RECOVERY_GROWTH_SCHEMA_VERSION = 1;
 const SHORTTERM_ATTEMPT_IDENTITY_LIMIT = 8192;
 
@@ -70,23 +70,10 @@ export function deriveShortTermPhaseProgress({
   };
 }
 
-/** Repairs legacy retained ledger entries only when exact terminal counters prove every successful segment committed. */
+/** Audits the retained segment ledger without rewriting historical entries. */
 export function reconcileShortTermSegmentLedger(audit = {}) {
-  const retained = (audit.segment_attempt_ledger ?? []).map((entry) => ({ ...entry }));
+  const ledger = (audit.segment_attempt_ledger ?? []).map((entry) => ({ ...entry }));
   const exactCommits = Math.max(0, Number(audit.successful_segment_commits) || 0);
-  const terminalCompleted = audit.terminal_outcome === 'completed';
-  const eligibleLegacy = retained.filter((entry) => entry.provider_completed === true
-    && entry.parsed === true && entry.committed !== true
-    && entry.failed_before_commit !== true && entry.failed_after_commit !== true);
-  const canRestore = terminalCompleted && exactCommits >= eligibleLegacy.length;
-  const ledger = canRestore ? retained.map((entry) => eligibleLegacy.includes(entry) ? {
-    ...entry,
-    committed: true,
-    commit_started: true,
-    segment_terminal_outcome: 'committed',
-    latest_state: 'committed',
-    restored_from_authoritative_commit_totals: true,
-  } : entry) : retained;
   const committed = ledger.filter((entry) => entry.committed === true);
   const invalidCommitted = committed.filter((entry) => entry.provider_completed !== true || entry.parsed !== true);
   const stuckSuccessful = ledger.filter((entry) => entry.provider_completed === true && entry.parsed === true
@@ -109,7 +96,6 @@ export function reconcileShortTermSegmentLedger(audit = {}) {
       retained_detail_bounded: true,
       retained_detail_limit: Number(audit.segment_attempt_ledger_limit ?? 32),
       exact_successful_commit_count: exactCommits,
-      legacy_entries_restored_from_exact_totals: canRestore ? eligibleLegacy.length : 0,
       successful_commits_do_not_exceed_completed_provider_attempts: exactCommits <= completed,
       completed_provider_attempts: completed,
       committed_entries_are_completed_and_parsed: invalidCommitted.length === 0,
@@ -194,19 +180,24 @@ const emptyTerminalCounts = () => ({
 /**
  * Creates durable Short-Term provider accounting. Scalar totals are the
  * authority; bounded event lists elsewhere are only diagnostic samples.
- * Legacy retained-event counts are carried as an explicitly inexact lower
- * bound instead of being presented as a cumulative total.
+ * Persisted accounting must use the current schema. Incomplete runs from an
+ * older schema are deliberately not upgraded because doing so would invent
+ * physical-transmission history.
  */
 export function createShortTermAttemptAccounting({ prior = null, runId = null,
-  attemptNumber = null, legacyPhysicalAttempts = 0 } = {}) {
-  const compatible = Number(prior?.schema_version) === SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION;
-  const priorTotal = compatible ? count(prior.cumulative_physical_transmissions) : 0;
-  const legacyLowerBound = compatible
-    ? count(prior.legacy_cumulative_lower_bound)
-    : Math.max(0, count(legacyPhysicalAttempts));
-  const restoredInterrupted = compatible ? Object.keys(prior?.active_attempts ?? {}).length : 0;
-  const cumulativeTerminal = compatible
-    ? { ...emptyTerminalCounts(), ...(prior.cumulative_terminal_counts ?? prior.terminal_counts ?? {}) }
+  attemptNumber = null } = {}) {
+  if (prior != null
+    && Number(prior?.schema_version) !== SHORTTERM_ATTEMPT_ACCOUNTING_SCHEMA_VERSION) {
+    const error = new Error('Short-Term attempt accounting uses an unsupported schema; Fresh Start is required.');
+    error.code = 'SME_FRESH_START_REQUIRED';
+    error.sme_reason_code = 'shortterm_attempt_accounting_schema_unsupported';
+    error.sme_failure_stage = 'shortterm_attempt_accounting_restore';
+    throw error;
+  }
+  const priorTotal = count(prior?.cumulative_physical_transmissions);
+  const restoredInterrupted = Object.keys(prior?.active_attempts ?? {}).length;
+  const cumulativeTerminal = prior
+    ? { ...emptyTerminalCounts(), ...(prior.cumulative_terminal_counts ?? {}) }
     : emptyTerminalCounts();
   cumulativeTerminal.interrupted = count(cumulativeTerminal.interrupted) + restoredInterrupted;
   return {
@@ -221,7 +212,7 @@ export function createShortTermAttemptAccounting({ prior = null, runId = null,
     cumulative_terminal_counts: cumulativeTerminal,
     restored_interrupted_transmissions: restoredInterrupted,
     by_segment_size: {},
-    cumulative_by_segment_size: compatible ? { ...(prior.cumulative_by_segment_size ?? prior.by_segment_size ?? {}) } : {},
+    cumulative_by_segment_size: { ...(prior?.cumulative_by_segment_size ?? {}) },
     retry_transmissions: 0,
     fallback_transmissions: 0,
     format_repair_transmissions: 0,
@@ -230,10 +221,8 @@ export function createShortTermAttemptAccounting({ prior = null, runId = null,
     terminal_attempt_ids: [],
     recent_attempt_ids: [],
     attempt_identity_limit: SHORTTERM_ATTEMPT_IDENTITY_LIMIT,
-    totals_exact: compatible ? prior.totals_exact !== false : legacyLowerBound === 0,
-    legacy_cumulative_lower_bound: legacyLowerBound,
-    legacy_limitation: !compatible && legacyLowerBound > 0
-      ? 'prior_build_retained_only_a_bounded_attempt_sample' : null,
+    totals_exact: prior?.totals_exact !== false,
+    accounting_limitation: prior?.accounting_limitation ?? null,
   };
 }
 
@@ -241,7 +230,7 @@ function terminalizeShortTermAttempt(next, attemptId, outcome) {
   if (!attemptId || next.terminal_attempt_ids.includes(attemptId)) return;
   if (next.terminal_attempt_ids.length >= SHORTTERM_ATTEMPT_IDENTITY_LIMIT) {
     next.totals_exact = false;
-    next.legacy_limitation ??= 'attempt_identity_limit_exceeded';
+    next.accounting_limitation ??= 'attempt_identity_limit_exceeded';
     return;
   }
   next.terminal_attempt_ids.push(attemptId);
@@ -276,7 +265,7 @@ export function recordShortTermAttemptEvent(accounting, event = {}) {
     if (!next.counted_attempt_ids.includes(attemptId)) {
       if (next.counted_attempt_ids.length >= SHORTTERM_ATTEMPT_IDENTITY_LIMIT) {
         next.totals_exact = false;
-        next.legacy_limitation ??= 'attempt_identity_limit_exceeded';
+        next.accounting_limitation ??= 'attempt_identity_limit_exceeded';
       } else {
         next.counted_attempt_ids.push(attemptId);
         next.recent_attempt_ids = [...next.recent_attempt_ids, attemptId].slice(-64);
@@ -340,8 +329,7 @@ export function summarizeShortTermAttemptAccounting(accounting, { successfulSegm
     fallback_transmissions: count(accounting?.fallback_transmissions),
     format_repair_transmissions: count(accounting?.format_repair_transmissions),
     totals_exact: accounting?.totals_exact !== false,
-    legacy_cumulative_lower_bound: count(accounting?.legacy_cumulative_lower_bound),
-    legacy_limitation: accounting?.legacy_limitation ?? null,
+    accounting_limitation: accounting?.accounting_limitation ?? null,
     retained_attempt_id_count: (accounting?.recent_attempt_ids ?? []).length,
     retained_attempt_id_limit: 64,
     recent_attempt_ids: [...(accounting?.recent_attempt_ids ?? [])].slice(-64),
@@ -420,184 +408,12 @@ export function isShortTermMinimumFloorExhausted({ dispatched = false, failedBef
     && pending && configurationMatches && !alternateRecoveryAvailable);
 }
 
-export function migrateCommittedShortTermFailureState(failureState = {}, {
-  committedBoundary = null, committedPlan = null, committedSummaryHash = null, migratedAt = Date.now(),
-} = {}) {
-  const boundary = finiteInteger(committedBoundary);
-  const start = finiteInteger(committedPlan?.next_segment_start);
-  const end = finiteInteger(committedPlan?.next_segment_end);
-  const size = finiteInteger(committedPlan?.message_count);
-  const safelyCommitted = boundary !== null && start !== null && end !== null
-    && end < boundary && size !== null && committedSummaryHash;
-  if (!safelyCommitted) return { failure_state: failureState, migrated: false, removed_failure_size: null };
-  const ladder = { ...(failureState?.recovery_ladder ?? {}) };
-  const failures = { ...(ladder.failures_by_segment_size ?? {}) };
-  if (!Number(failures[size] ?? 0)) return { failure_state: failureState, migrated: false, removed_failure_size: null };
-  const last = failureState?.last_failed_request ?? ladder.last_actual_dispatched_request ?? null;
-  const sameRange = finiteInteger(last?.source_start) === start && finiteInteger(last?.source_end) === end;
-  if (!sameRange) return { failure_state: failureState, migrated: false, removed_failure_size: null };
-  failures[size] = Math.max(0, Number(failures[size]) - 1);
-  if (failures[size] === 0) delete failures[size];
-  ladder.failures_by_segment_size = failures;
-  ladder.total_failures = Math.max(0, Number(ladder.total_failures ?? 0) - 1);
-  ladder.reductions_attempted = (ladder.reductions_attempted ?? []).filter((value) => Number(value) !== size || Number(failures[size] ?? 0) > 0);
-  ladder.smallest_segment_attempted = Object.keys(failures).length
-    ? Math.min(...Object.keys(failures).map(Number)) : null;
-  if (sameRange) delete ladder.last_actual_dispatched_request;
-  return {
-    migrated: true,
-    removed_failure_size: size,
-    failure_state: {
-      ...failureState,
-      failure_signature: null,
-      last_failed_request: null,
-      operator_action_required: false,
-      adaptation: 'committed_segment_failure_reclassified',
-      next_resume_strategy: 'reconstruct_successor_from_committed_boundary',
-      recovery_ladder: ladder,
-      committed_failure_migration: {
-        source_start: start, source_end: end, message_count: size,
-        committed_boundary: boundary, committed_summary_hash: committedSummaryHash,
-        migrated_at: migratedAt,
-      },
-    },
-  };
-}
-
-/**
- * Proves the legacy state where a committed compaction pass survived, but the
- * active recovery plan and its post-commit marker were cleared. This is a
- * read-only derivation: callers may safely use it while rendering the panel.
- */
-export function deriveMissingPlanCommittedCheckpoint({ activePlan = null, postCommitMarker = null,
-  compactionCheckpoint = null, summaryEnd = null, currentSummaryHash = null,
-  currentSourceFingerprint = null, failureState = null, logicalRunId = null,
-  phase = 'shortterm_extraction', configurationSignature = null,
-  promptShapeVersion = null, minimumSegmentFloor = 4, migratedAt = null } = {}) {
-  const conflicts = [];
-  const compare = (field, persisted, current, reason) => {
-    if (persisted !== current) conflicts.push({ field, persisted: persisted ?? null, current: current ?? null, reason });
-  };
-  if (activePlan) conflicts.push({ field: 'shortterm_recovery_plan', persisted: 'present', current: 'absent', reason: 'newer_active_plan_present' });
-  if (postCommitMarker) conflicts.push({ field: 'shortterm_post_commit_recovery_marker', persisted: 'present', current: 'absent', reason: 'post_commit_marker_already_present' });
-  if (!compactionCheckpoint) conflicts.push({ field: 'shortterm_compaction_checkpoint', persisted: null, current: 'committed checkpoint', reason: 'committed_checkpoint_missing' });
-
-  const boundary = finiteInteger(summaryEnd);
-  const checkpointBoundary = finiteInteger(compactionCheckpoint?.summary_end);
-  const sourceEnd = finiteInteger(compactionCheckpoint?.source_end);
-  const tailStart = finiteInteger(compactionCheckpoint?.pending_tail_start);
-  const tailEnd = finiteInteger(compactionCheckpoint?.pending_tail_end);
-  const failure = failureState?.last_failed_request ?? failureState?.recovery_ladder?.last_actual_dispatched_request ?? null;
-  const failureStart = finiteInteger(failure?.source_start);
-  const failureEnd = finiteInteger(failure?.source_end);
-  const failureSize = finiteInteger(failure?.message_count)
-    ?? (failureStart !== null && failureEnd !== null ? failureEnd - failureStart + 1 : null);
-
-  if (compactionCheckpoint?.commit_status !== 'committed') {
-    conflicts.push({ field: 'commit_status', persisted: compactionCheckpoint?.commit_status ?? null, current: 'committed', reason: 'checkpoint_not_committed' });
-  }
-  if (!currentSummaryHash || !compactionCheckpoint?.summary_hash) {
-    conflicts.push({ field: 'summary_hash', persisted: compactionCheckpoint?.summary_hash ?? null,
-      current: currentSummaryHash ?? null, reason: 'summary_hash_missing' });
-  }
-  compare('summary_end', checkpointBoundary, boundary, 'summary_boundary_mismatch');
-  compare('summary_hash', compactionCheckpoint?.summary_hash ?? null, currentSummaryHash ?? null, 'summary_hash_mismatch');
-  if (!currentSourceFingerprint || !compactionCheckpoint?.source_fingerprint) {
-    conflicts.push({ field: 'source_fingerprint', persisted: compactionCheckpoint?.source_fingerprint ?? null,
-      current: currentSourceFingerprint ?? null, reason: 'source_fingerprint_missing' });
-  }
-  compare('source_fingerprint', compactionCheckpoint?.source_fingerprint ?? null, currentSourceFingerprint ?? null, 'source_fingerprint_mismatch');
-  if (sourceEnd === null || boundary === null || sourceEnd >= boundary || sourceEnd + 1 !== boundary) {
-    conflicts.push({ field: 'source_end', persisted: sourceEnd, current: boundary === null ? null : boundary - 1, reason: 'committed_source_boundary_mismatch' });
-  }
-  compare('pending_tail_start', tailStart, boundary, 'pending_tail_boundary_mismatch');
-  if (tailEnd === null || boundary === null || tailEnd < boundary) {
-    conflicts.push({ field: 'pending_tail_end', persisted: tailEnd, current: boundary, reason: 'remaining_tail_missing' });
-  }
-  if (failureStart === null || failureEnd === null || failureEnd < failureStart || sourceEnd === null || failureEnd > sourceEnd) {
-    conflicts.push({ field: 'last_failed_request', persisted: failure ?? null,
-      current: sourceEnd === null ? null : { source_end_at_or_before: sourceEnd }, reason: 'stale_failure_range_mismatch' });
-  }
-  const evidenceRun = failure?.logical_run_id ?? failureState?.logical_run_id ?? compactionCheckpoint?.logical_run_id ?? null;
-  if (evidenceRun != null && logicalRunId != null && evidenceRun !== logicalRunId) {
-    conflicts.push({ field: 'logical_run_id', persisted: evidenceRun, current: logicalRunId, reason: 'logical_run_mismatch' });
-  }
-  const evidencePhase = failure?.phase ?? failureState?.phase ?? compactionCheckpoint?.phase ?? null;
-  if (evidencePhase != null && evidencePhase !== phase) {
-    conflicts.push({ field: 'phase', persisted: evidencePhase, current: phase, reason: 'phase_mismatch' });
-  }
-
-  const proven = conflicts.length === 0;
-  if (!proven) return { proven: false, eligible: false, reason: conflicts[0]?.reason ?? 'committed_checkpoint_unproven', conflicts };
-  const markerId = `missing-plan:${logicalRunId ?? 'legacy'}:${boundary}:${currentSummaryHash}`;
-  const committedPlan = {
-    schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
-    plan_id: failure?.plan_id ?? failure?.effective_request_signature ?? markerId,
-    effective_request_signature: failure?.effective_request_signature ?? failureState?.effective_request_signature ?? null,
-    logical_run_id: logicalRunId,
-    phase,
-    next_segment_start: failureStart,
-    next_segment_end: failureEnd,
-    message_count: failureSize,
-    target_message_count: failureSize,
-    source_fingerprint: failure?.source_fingerprint ?? null,
-    summary_parent_hash: failure?.parent_summary_hash ?? compactionCheckpoint?.parent_summary_hash ?? null,
-    configuration_signature: failureState?.configuration_signature ?? configurationSignature,
-    prompt_shape_version: promptShapeVersion,
-    lifecycle_state: 'consumed_successfully', terminal_state: 'committed',
-    provider_terminal_outcome: 'completed', segment_terminal_outcome: 'committed',
-    committed_boundary: boundary, committed_summary_hash: currentSummaryHash,
-    successor_start: boundary, successor_parent_hash: currentSummaryHash,
-    migrated_from_missing_active_plan: true, migrated_at: migratedAt,
-  };
-  return {
-    proven: true, eligible: true,
-    decision: 'reconstruct_successor_from_committed_boundary',
-    reason: 'committed_progress_without_active_successor', conflicts: [],
-    evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
-    committed_boundary: boundary, committed_summary_hash: currentSummaryHash,
-    successor_start: boundary, successor_parent_hash: currentSummaryHash,
-    committed_predecessor_range: { start: failureStart, end: failureEnd },
-    false_failure_size: failureSize, remaining_tail_end: tailEnd,
-    marker_id: markerId, committed_plan: committedPlan,
-    post_commit_marker: {
-      schema_version: 2, marker_id: markerId,
-      predecessor_plan_id: committedPlan.plan_id,
-      predecessor_terminal_state: 'committed',
-      predecessor_source_range: { start: failureStart, end: failureEnd },
-      committed_boundary: boundary, committed_summary_hash: currentSummaryHash,
-      remaining_tail_end: tailEnd,
-      configuration_signature: failureState?.configuration_signature ?? configurationSignature,
-      prompt_shape_version: promptShapeVersion,
-      recovery_strategy: 'smaller_segment_rebuild',
-      minimum_segment_floor: Math.max(1, finiteInteger(minimumSegmentFloor) ?? 4),
-      successor_state: 'reconstruction_required',
-      migration_provenance: 'legacy_missing_plan_committed_checkpoint',
-      evidence_source: 'durable_shortterm_compaction_checkpoint_and_failure_state',
-      created_at: migratedAt,
-    },
-  };
-}
-
 /** Authoritative no-plan path used by the recovery panel and Resume preflight. */
 export function deriveShortTermMissingPlanResumeEligibility({ checkpointStatus = null,
-  phaseDisposition = null, postCommitMarker = null, compactionCheckpoint = null,
-  summaryEnd = null, currentSummaryHash = null, currentSourceFingerprint = null,
-  failureState = null, logicalRunId = null, phase = 'shortterm_extraction',
-  configurationSignature = null, promptShapeVersion = null, minimumSegmentFloor = 4 } = {}) {
-  if (!postCommitMarker && compactionCheckpoint) {
-    const proof = deriveMissingPlanCommittedCheckpoint({
-      activePlan: null, postCommitMarker: null, compactionCheckpoint, summaryEnd,
-      currentSummaryHash, currentSourceFingerprint, failureState, logicalRunId,
-      phase, configurationSignature, promptShapeVersion, minimumSegmentFloor,
-    });
-    if (proof.proven) return {
-      eligible: true, decision: proof.decision, reason: proof.reason,
-      inferred_post_commit_state: true, evidence_source: proof.evidence_source,
-      committed_boundary: proof.committed_boundary, conflicts: [],
-    };
-    return { eligible: false, decision: 'committed_checkpoint_revalidation_required',
-      reason: proof.reason, conflicts: proof.conflicts };
+  phaseDisposition = null, postCommitMarker = null, failureState = null } = {}) {
+  if (!postCommitMarker) {
+    return { eligible: false, decision: 'fresh_start_required',
+      reason: 'shortterm_recovery_plan_missing', conflicts: [] };
   }
   return deriveShortTermResumeEligibility({ checkpointStatus, phaseDisposition,
     plan: null, validation: null, failureState, postCommitMarker });
@@ -611,29 +427,6 @@ export function deriveShortTermResumePresentation(eligibility = {}, running = fa
     label: running ? 'Resumed Automatically' : blocked ? 'Short-Term Recovery Blocked'
       : reconstructing ? 'Resume From Safe Boundary' : 'Resume Incomplete Run',
     mode: running ? 'running' : blocked ? 'blocked' : reconstructing ? 'safe_boundary' : 'ordinary',
-  };
-}
-
-export function migrateMissingPlanCommittedCheckpoint(input = {}) {
-  const proof = deriveMissingPlanCommittedCheckpoint(input);
-  if (!proof.proven) return { applied: false, proof, reason: proof.reason, conflicts: proof.conflicts };
-  const migratedFailure = migrateCommittedShortTermFailureState(input.failureState ?? {}, {
-    committedBoundary: proof.committed_boundary,
-    committedPlan: proof.committed_plan,
-    committedSummaryHash: proof.committed_summary_hash,
-    migratedAt: input.migratedAt,
-  });
-  if (!migratedFailure.migrated && input.failureState?.operator_action_required) {
-    const conflict = { field: 'recovery_ladder', persisted: input.failureState?.recovery_ladder ?? null,
-      current: { removable_failure_size: proof.false_failure_size }, reason: 'committed_failure_cleanup_unproven' };
-    return { applied: false, proof, reason: conflict.reason, conflicts: [conflict] };
-  }
-  return {
-    applied: true, proof,
-    failure_state: migratedFailure.failure_state,
-    post_commit_marker: { ...proof.post_commit_marker,
-      migrated_false_failed_ladder_entry: migratedFailure.migrated },
-    removed_failure_size: migratedFailure.removed_failure_size,
   };
 }
 
@@ -665,13 +458,23 @@ export function validateShortTermRecoveryPlan(plan, current = {}) {
   const floor = Math.max(1, finiteInteger(current.minimum_segment_floor ?? plan.minimum_segment_floor) ?? 4);
   const messageCount = finiteInteger(plan.message_count);
   if (messageCount === null || messageCount < floor) conflicts.push({ field: 'message_count', persisted: messageCount, current: floor, reason: 'minimum_floor_violation' });
-  if (finiteInteger(plan.schema_version) < 3) conflicts.push({ field: 'schema_version', persisted: plan.schema_version ?? null, current: SHORTTERM_RECOVERY_SCHEMA_VERSION, reason: 'unsupported_legacy_recovery_schema' });
+  if (finiteInteger(plan.schema_version) !== SHORTTERM_RECOVERY_SCHEMA_VERSION) {
+    conflicts.push({ field: 'schema_version', persisted: plan.schema_version ?? null,
+      current: SHORTTERM_RECOVERY_SCHEMA_VERSION,
+      reason: 'unsupported_recovery_schema_fresh_start_required' });
+  }
+  if (typeof plan.configuration_signature !== 'string'
+    || !plan.configuration_signature.trim()) {
+    conflicts.push({ field: 'configuration_signature',
+      persisted: plan.configuration_signature ?? null,
+      current: current.configuration_signature ?? null,
+      reason: 'missing_configuration_signature_fresh_start_required' });
+  }
   return {
     valid: conflicts.length === 0,
     reason: conflicts[0]?.reason ?? 'validated_against_current_state',
     conflicts,
     minimum_segment_floor: floor,
-    legacy_configuration_signature_missing: plan.configuration_signature == null,
   };
 }
 
@@ -699,7 +502,7 @@ export function reconcileShortTermRecoveryState({ plan = null, validation = null
     cumulative_physical_attempts: cumulativePhysical,
     current_attempt_physical_attempts: currentPhysical,
     cumulative_physical_attempts_exact: accounting ? accounting.totals_exact !== false : null,
-    legacy_cumulative_lower_bound: accounting?.legacy_cumulative_lower_bound ?? null,
+    accounting_limitation: accounting?.accounting_limitation ?? null,
     cumulative_segment_sizes_attempted: [...new Set([...(cumulative.segment_sizes_attempted ?? []),
       ...Object.keys(historicalLadder.failures_by_segment_size ?? {}).map(Number).filter(Number.isFinite),
       ...(currentAttempt.segment_sizes_attempted ?? [])])].sort((a, b) => b - a),

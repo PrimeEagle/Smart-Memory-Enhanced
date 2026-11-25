@@ -476,7 +476,7 @@ Does the latest response contradict or conflict with any established fact? List 
 /**
  * Assembles the prompt that turns a list of detected contradictions into a
  * short corrective context note, ready to inject before the next AI turn.
- * @param {string[]} contradictions - Array of contradiction descriptions from parseContradictions.
+ * @param {string[]} contradictions - Typed continuity-verdict contradiction descriptions.
  * @param {string} establishedFacts - Combined summary + memories as a text block.
  * @returns {string} The complete prompt string.
  */

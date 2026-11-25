@@ -78,9 +78,9 @@ test('rolled-back transaction and checkpoint settle as one coherent projection',
 
 test('diagnostic snapshot is frozen, read-only, and detects revision conflicts', () => {
   const metadata = { active_catchup_run_id: 'run' };
-  const checkpoint = { status: 'awaiting_manual_resume', committed_chunks: 2,
+  const checkpoint = { status: 'awaiting_manual_resume',
     transaction_lifecycle: { state: 'rolled_back', revision: 5 },
-    run_manifest: { logical_run_id: 'run', obligation_ledger: {
+    run_manifest: { logical_run_id: 'run', cumulative_chunk_count: 2, obligation_ledger: {
       logical_run_id: 'run', execution_kernel: { revision: 12 },
     } } };
   const before = structuredClone({ metadata, checkpoint });

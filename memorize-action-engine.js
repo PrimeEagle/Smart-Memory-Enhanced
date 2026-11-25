@@ -3,7 +3,7 @@ import { cloneSerializableDomain } from './serializable-domain.js';
 
 const cloneActionData = (value) => cloneSerializableDomain(value, {
   path: '$.action_selection', stage: 'action_selection_projection',
-  operation_type: 'memorize_action_selection', allow_undefined: true,
+  operation_type: 'memorize_action_selection',
 });
 
 const TERMINAL_STATES = new Set(['durably_committed', 'explicit_no_update']);

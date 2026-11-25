@@ -1,5 +1,6 @@
 import { isMemorizeOutcome, memorizeOutcomeFromException } from './memorize-outcome.js';
 import { normalizeMemorizeReasonCode } from './memorize-reasons.js';
+import { createControllerExit } from './memorize-domain-dtos.js';
 
 /**
  * Explicit ownership for one Memorize Chat controller invocation.
@@ -26,6 +27,7 @@ export function createMemorizeControllerRuntime(input = {}) {
     controller_exit: null,
     cleanup_resources: new Map(),
     cleanup_warnings: [],
+    stale_lease_callbacks: [],
   };
 }
 
@@ -50,12 +52,6 @@ export function trackMemorizeTransaction(runtime, transaction, detail = {}) {
 }
 
 export function recordMemorizeOperationalPause(runtime, runResult, label, errorOrOutcome, tier = null) {
-  const checkpoint = runtime?.checkpoint;
-  if (!checkpoint) {
-    const missing = new Error('Cannot record a Memorize Chat operational pause before its checkpoint is bound.');
-    missing.code = 'SME_MEMORIZE_CHECKPOINT_UNBOUND';
-    throw missing;
-  }
   const outcome = isMemorizeOutcome(errorOrOutcome)
     ? errorOrOutcome
     : memorizeOutcomeFromException(errorOrOutcome, { kind: 'paused' });
@@ -74,7 +70,6 @@ export function recordMemorizeOperationalPause(runtime, runResult, label, errorO
       || item.next_resumable_child !== pause.next_resumable_child),
     pause,
   ].slice(-16);
-  checkpoint.operational_pause = pause;
   runtime.phase = 'operational_pause';
   runtime.tier = tier;
   return pause;
@@ -112,6 +107,10 @@ export function captureMemorizePrimaryFailure(runtime, error) {
     code: error?.code ?? null,
     bounded_message: String(error?.message ?? error ?? 'Unknown controller failure').replace(/\s+/g, ' ').slice(0, 300),
     stack_fingerprint_input: String(error?.stack ?? error?.message ?? error ?? 'unknown'),
+    failure_stage: error?.sme_failure_stage ?? null,
+    serialization_path: error?.sme_serialization_path ?? null,
+    serialization_type: error?.sme_serialization_type ?? null,
+    operation_type: error?.sme_operation_type ?? null,
   };
   return runtime.primary_failure;
 }
@@ -140,16 +139,21 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
     checkpoint_after: Number(runtime.checkpoint?.next_source_offset ?? runtime.checkpoint_before) || 0,
     reason_code: normalizeMemorizeReasonCode(input.reason_code ?? failure?.code, 'unknown_interruption'),
     classification: input.classification ?? (failure ? 'internal_exception' : 'completed'),
+    code: failure?.code ?? null,
     normalized_exception_class: failure?.normalized_exception_class ?? null,
     bounded_message: failure?.bounded_message ?? null,
     stack_fingerprint_input: failure?.stack_fingerprint_input ?? null,
+    failure_stage: failure?.failure_stage ?? null,
+    serialization_path: failure?.serialization_path ?? null,
+    serialization_type: failure?.serialization_type ?? null,
+    operation_type: failure?.operation_type ?? null,
     resumable: input.resumable === true,
     next_eligible_action: input.next_eligible_action ?? null,
     at: input.at ?? Date.now(),
     finalize_transaction_evidence: input.finalize_transaction_evidence === true,
   };
   if (runtime.controller_exit && candidate.finalize_transaction_evidence) {
-    runtime.controller_exit = {
+    runtime.controller_exit = createControllerExit({
       ...runtime.controller_exit,
       active_transaction_id: candidate.active_transaction_id,
       active_transaction_state: candidate.active_transaction_state,
@@ -157,13 +161,13 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
       at: candidate.at,
       finalize_transaction_evidence: true,
       transaction_evidence_finalized: true,
-    };
+    });
     return runtime.controller_exit;
   }
   if (runtime.controller_exit
     && exitPriority(candidate.classification) <= exitPriority(runtime.controller_exit.classification)) {
     return runtime.controller_exit;
   }
-  runtime.controller_exit = candidate;
+  runtime.controller_exit = createControllerExit(candidate);
   return runtime.controller_exit;
 }

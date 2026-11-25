@@ -1,35 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveTypedRolePersistenceState, extractExplicitNamedFamilyCandidates, mergeRelationshipPairEvidence, migrateProfileRoleDescriptorSeparation, relationshipTypeForProfileTarget } from '../profile-role-utils.js';
+import { deriveTypedRolePersistenceState, extractExplicitNamedFamilyCandidates, mergeRelationshipPairEvidence, normalizeProfileRoleDescriptorSeparation, relationshipTypeForProfileTarget } from '../profile-role-utils.js';
 
-test('profile role migration persists canonical roles separately from descriptors', () => {
-  const migrated = migrateProfileRoleDescriptorSeparation({
+test('profile role normalization persists canonical roles separately from descriptors', () => {
+  const normalized = normalizeProfileRoleDescriptorSeparation({
     relationship_matrix_structured: [{
       target: 'Morgan Lee',
       canonical_relationship_type: 'Wife',
       relationship_descriptors: ['wife', 'protective', 'open', 'protective'],
     }],
   });
-  assert.deepEqual(migrated.profile.relationship_matrix_structured, [{
+  assert.deepEqual(normalized.profile.relationship_matrix_structured, [{
     target: 'Morgan Lee',
     canonical_relationship_type: 'wife',
     relationship_descriptors: ['protective', 'open'],
   }]);
-  assert.equal(migrated.profile.relationship_matrix, 'Morgan Lee [wife]: protective, open');
-  assert.equal(migrated.profile_role_tokens_removed, 1);
-  assert.equal(migrated.profile_fields_migrated_for_role_separation, 1);
+  assert.equal(normalized.profile.relationship_matrix, 'Morgan Lee [wife]: protective, open');
+  assert.equal(normalized.profile_role_tokens_removed, 1);
+  assert.equal(normalized.profile_fields_normalized_for_role_separation, 1);
 });
 
-test('profile role migration is idempotent and preserves role-free descriptors', () => {
-  const first = migrateProfileRoleDescriptorSeparation({
+test('profile role normalization is idempotent and preserves role-free descriptors', () => {
+  const first = normalizeProfileRoleDescriptorSeparation({
     relationship_matrix_structured: [{
       target: 'Jamie Rivera', canonical_relationship_type: 'sister', descriptors: ['loyal'],
     }],
   });
-  const second = migrateProfileRoleDescriptorSeparation(first.profile);
+  const second = normalizeProfileRoleDescriptorSeparation(first.profile);
   assert.deepEqual(second.profile, first.profile);
   assert.equal(second.profile_role_tokens_removed, 0);
-  assert.equal(second.profile_fields_migrated_for_role_separation, 0);
+  assert.equal(second.profile_fields_normalized_for_role_separation, 0);
 });
 
 test('relationship type selection uses target-relative direction without unsafe family inversion', () => {

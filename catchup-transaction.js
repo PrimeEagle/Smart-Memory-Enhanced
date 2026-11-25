@@ -11,7 +11,7 @@ import { cloneSerializableDomain } from './serializable-domain.js';
 
 const cloneTransactionData = (value, path = '$.transaction_state') =>
   cloneSerializableDomain(value, { path, stage: 'transaction_state_snapshot',
-    operation_type: 'memorize_transaction', allow_undefined: true });
+    operation_type: 'memorize_transaction' });
 
 let activeTransaction = null;
 let transactionSequence = 0;

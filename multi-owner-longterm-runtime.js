@@ -44,7 +44,7 @@ function sourcePrompt(messages) {
 function policyPauseEvidence(ingress, leafId, rootId) {
   return { ...(ingress.policy_outcome ?? {}), root_obligation_id: rootId,
     leaf_obligation_id: leafId, provider_call_required: false,
-    next_eligible_action: ingress.next_action ?? 'resume_exact_obligation' };
+    next_eligible_action: ingress.next_action ?? 'dispatch_provider_request' };
 }
 
 /** One provider action and one lifecycle leaf for every Long-Term owner in a chunk. */
@@ -140,11 +140,7 @@ export async function extractAndStoreMultiOwnerMemories(
       source_fingerprint: sourceFingerprint,
     }) : null;
   const journalReplayMode = Boolean(journaledCurrentCompletion?.response_text != null
-    && ['continue_pending_downstream_processing',
-      'replay_terminal_provider_downstream_lifecycle',
-      'reconcile_terminal_attempt_evidence',
-      'apply_journaled_provider_completion']
-      .includes(execution.provider.selected_recovery_action));
+    && execution.provider.selected_recovery_action === 'apply_journaled_provider_completion');
   const physicalProviderRequests = journalReplayMode ? 0 : 1;
   const dispatchAction = journalReplayMode ? 'apply_journaled_provider_completion'
     : execution.provider.selected_recovery_action === 'recover_missing_owner_coverage'
@@ -240,7 +236,7 @@ export async function extractAndStoreMultiOwnerMemories(
       recoverable: true, failure_classification: 'provider_transport_failure' });
     await pipeline.applyProviderCompletion({
       attempt_id: attempt?.attempt_id, transport_status: 'failed', terminal: false,
-      reason_code: 'provider_transport_failure', next_action: 'dispatch_bounded_recovery_attempt',
+      reason_code: 'provider_transport_failure', next_action: 'dispatch_provider_request',
     });
     healthFinish({ terminal_health: 'provider_failure', provider_outcome: 'provider_failure',
       attention_reason_codes: ['provider_transport_failure'] });
@@ -284,7 +280,7 @@ export async function extractAndStoreMultiOwnerMemories(
         source_backed_regeneration_available: true,
         recovery_stage: 'multi_owner_source_backed_regeneration', protocol: request.protocol },
       reason_code: 'malformed_multi_owner_contract',
-      next_action: 'dispatch_bounded_recovery_attempt',
+      next_action: 'dispatch_provider_request',
     });
     const depth = Number(execution.recovery.malformed_depth ?? 0);
     if (sourceMessages.length > 1 && depth < 8) {
@@ -368,7 +364,7 @@ export async function extractAndStoreMultiOwnerMemories(
         },
         onCommitted: async (child, { key }) => {
           const childRange = sourceRange(child);
-          await execution.hooks.context_overflow_child_committed({
+          await execution.hooks.recovery_child_completed({
             key, tier: 'longterm', owner: OWNER_SCOPE,
             source_start_index: childRange.start,
             source_end_index: childRange.end,
@@ -406,7 +402,7 @@ export async function extractAndStoreMultiOwnerMemories(
       }
       return createMemorizeTierOutcome({ kind: 'policy_paused',
         reason_code: schedule.pause_reason ?? 'malformed_multi_owner_recovery_incomplete',
-        next_action: 'dispatch_bounded_recovery_attempt', provider_call_required: true,
+        next_action: 'dispatch_provider_request', provider_call_required: true,
         value: { root_obligation_id: pipeline.rootObligationId },
         evidence: { next_task_key: schedule.next_task_key,
           unattempted_task_keys: schedule.unattempted_task_keys } });
@@ -417,12 +413,12 @@ export async function extractAndStoreMultiOwnerMemories(
       attention_reason_codes: ['unparseable_provider_response'] });
     return createMemorizeTierOutcome({ kind: 'policy_paused',
       reason_code: 'malformed_multi_owner_contract',
-      next_action: 'dispatch_bounded_recovery_attempt', provider_call_required: true,
+      next_action: 'dispatch_provider_request', provider_call_required: true,
       value: { root_obligation_id: pipeline.rootObligationId },
       evidence: { root_obligation_id: pipeline.rootObligationId,
         leaf_obligation_id: pipeline.leafObligationId,
         recovery_stage: 'malformed_multi_owner_contract',
-        next_eligible_recovery_action: 'dispatch_bounded_recovery_attempt' } });
+        next_eligible_recovery_action: 'dispatch_provider_request' } });
   }
   const originalIndices = sourceMessages.map((message, index) =>
     Number.isInteger(message.__sme_original_index) ? message.__sme_original_index : index);

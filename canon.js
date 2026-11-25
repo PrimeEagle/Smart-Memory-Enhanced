@@ -44,9 +44,11 @@ import { generateMemoryExtract } from './generate.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
-  recordFeaturePersistenceReceipt } from './feature-persistence.js';
-import { estimateTokens, META_KEY, MODULE_NAME, PROMPT_KEY_CANON } from './constants.js';
+import { executeFeaturePersistence, executeFeaturePersistenceSync,
+  prepareFeaturePersistenceCommand } from './feature-persistence.js';
+import { estimateTokens, META_KEY, MODULE_NAME, PROMPT_KEY_CANON,
+  SCHEMA_VERSION } from './constants.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import { buildCanonSummaryPrompt } from './prompts.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, loadCharacterMemories } from './longterm.js';
 import { loadArcSummaries } from './arcs.js';
@@ -68,11 +70,7 @@ export function loadCanon(characterName) {
   if (!characterName) return null;
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
     const metadata = getContext().chatMetadata;
-    // Read the original Chat-Local store as a compatibility fallback, but use
-    // the shared extension metadata key for all new writes and clears.
-    return metadata?.[META_KEY]?.card_local_canon?.[characterName]
-      ?? metadata?.[MODULE_NAME]?.card_local_canon?.[characterName]
-      ?? null;
+    return metadata?.[META_KEY]?.card_local_canon?.[characterName] ?? null;
   }
   return extension_settings[MODULE_NAME]?.characters?.[characterName]?.canon ?? null;
 }
@@ -96,10 +94,13 @@ export function saveCanon(characterName, text) {
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'canon', operation: 'replace_canon', owner: characterName, records: [record] });
   if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    context.chatMetadata ??= {};
+    context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
     const metadata = context.chatMetadata[META_KEY];
     executeFeaturePersistence({ command,
-      snapshot: () => structuredClone(metadata.card_local_canon?.[characterName] ?? null),
+      snapshot: () => cloneSerializableDomain(metadata.card_local_canon?.[characterName] ?? null, {
+        path: '$.feature_snapshot.canon', stage: 'feature_snapshot', operation_type: 'canon',
+      }),
       apply: () => { (metadata.card_local_canon ??= {})[characterName] = record; },
       persist: () => saveChatMetadata(context),
       restore: (before) => {
@@ -113,13 +114,19 @@ export function saveCanon(characterName, text) {
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
-    ...existing,
-    canon: record,
-  };
-  recordFeaturePersistenceReceipt(command, extension_settings[MODULE_NAME]);
-  saveSettingsDebounced();
+  const settings = extension_settings[MODULE_NAME];
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => settings.characters[characterName] ?? null,
+    apply: () => {
+      settings.characters[characterName] = {
+        ...(settings.characters[characterName] ?? {}),
+        schema_version: SCHEMA_VERSION, canon: record,
+      };
+    }, persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete settings.characters[characterName];
+      else settings.characters[characterName] = before;
+    }, receipt_container: settings });
 }
 
 /**
@@ -129,21 +136,36 @@ export function saveCanon(characterName, text) {
  */
 export function clearCanon(characterName) {
   if (!characterName) return;
-  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
-  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    const context = getContext();
-    if (context.chatMetadata?.[META_KEY]?.card_local_canon) delete context.chatMetadata[META_KEY].card_local_canon[characterName];
-    // Clear historical misplaced entries as well.
-    if (context.chatMetadata?.[MODULE_NAME]?.card_local_canon) delete context.chatMetadata[MODULE_NAME].card_local_canon[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local canon:', err));
-    setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
-    invalidateUnifiedCache(PROMPT_KEY_CANON);
-    return;
-  }
-  const char = extension_settings[MODULE_NAME]?.characters?.[characterName];
-  if (char) {
-    delete char.canon;
-    saveSettingsDebounced();
+  const policy = getCharacterMemoryPolicy(characterName);
+  if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(policy)) return;
+  const context = getContext();
+  const workflowId = context.chatMetadata?.[META_KEY]?.active_catchup_run_id
+    ?? context.chatId ?? context.groupId ?? `interactive-canon:${characterName}`;
+  const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+    feature: 'canon', operation: 'clear_canon', owner: characterName, records: [] });
+  if (policy === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
+    const metadata = context.chatMetadata?.[META_KEY];
+    if (metadata?.card_local_canon?.[characterName]) {
+      executeFeaturePersistence({ command,
+        snapshot: () => cloneSerializableDomain(metadata.card_local_canon[characterName], {
+          path: '$.feature_snapshot.canon', stage: 'feature_snapshot', operation_type: 'canon',
+        }),
+        apply: () => { delete metadata.card_local_canon[characterName]; },
+        persist: () => saveChatMetadata(context),
+        restore: (before) => { (metadata.card_local_canon ??= {})[characterName] = before; },
+        receipt_container: metadata,
+      }).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local canon:', err));
+    }
+  } else {
+    const settings = extension_settings[MODULE_NAME];
+    if (settings?.characters?.[characterName]?.canon) {
+      executeFeaturePersistenceSync({ command,
+        snapshot: () => settings.characters[characterName],
+        apply: () => { delete settings.characters[characterName].canon; },
+        persist: () => { saveSettingsDebounced(); },
+        restore: (before) => { settings.characters[characterName] = before; },
+        receipt_container: settings });
+    }
   }
   setExtensionPrompt(PROMPT_KEY_CANON, '', extension_prompt_types.NONE, 0);
   invalidateUnifiedCache(PROMPT_KEY_CANON);

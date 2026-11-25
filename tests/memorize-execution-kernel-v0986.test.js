@@ -196,7 +196,7 @@ test('missing private fragment payload regenerates from a verified source window
   });
   const result = await materializeSourceBackedRecovery(capsule, async () => messages, sourceFingerprint);
   assert.equal(result.status, 'ready');
-  assert.equal(result.next_action, 'regenerate_unresolved_from_verified_source');
+  assert.equal(result.next_action, 'dispatch_provider_request');
   assert.deepEqual(result.exclusions.durable_record_ids, ['record:a']);
 });
 
@@ -226,7 +226,7 @@ test('canonical status offers Resume only when the exact action is executable', 
   const ready = projectMemorizeKernelStatus(aggregate);
   assert.equal(ready.resume_enabled, true);
   assert.equal(ready.next_action, 'dispatch_provider_request');
-  assert.equal(ready.raw_obligation_action, 'regenerate_unresolved_from_verified_source');
+  assert.equal(ready.raw_obligation_action, 'dispatch_provider_request');
 
   const blockedAggregate = structuredClone(aggregate);
   blockedAggregate.execution_kernel.recovery_capsules['session:40-59'] = {
@@ -582,7 +582,6 @@ test('historical identical Session evidence cannot intercept current-run dispatc
           tier: event.tier, owner: event.owner, source_range: event.source_range,
           source_fingerprint: event.source_fingerprint,
         }, { ...event, event_id: event.event_id ?? `event:${event.type}:${Date.now()}` });
-        aggregate = applied.ledger;
         if (event.type === 'provider_attempt_started') providerStarted++;
         return applied;
       },
@@ -603,6 +602,8 @@ test('historical identical Session evidence cannot intercept current-run dispatc
   pipeline.requireSelectedAction('dispatch_provider_request');
   const ingress = await pipeline.ingestProviderEvidence('register_new_attempt');
   assert.equal(ingress.status, 'applied');
+  assert.equal(providerStarted, 0, 'durable registration is not provider dispatch');
+  await pipeline.markProviderDispatchStarted(ingress.attempt);
   assert.equal(providerStarted, 1);
   assert.notEqual(ingress.attempt.attempt_id, 'historical');
   assert.equal(ingress.attempt.logical_run_id, currentRun);
@@ -674,11 +675,11 @@ function scriptedControllerCommand(id, scenario) {
     validation_outcome: { status: 'not_applicable', accepted_candidate_ids: [] },
     persistence_outcome: { status: 'not_required', durable_record_ids: [],
       durable_record_candidate_map: {}, source_provenance: {} },
-    next_action: 'dispatch_bounded_recovery_attempt', reason_code: scenario,
+    next_action: 'dispatch_provider_request', reason_code: scenario,
   };
   if (['transport_failure', 'timeout'].includes(scenario)) return {
     ...base, transport_status: 'failed', parser_outcome: undefined,
-    reason_code: scenario, next_action: 'retry_provider_with_backoff',
+    reason_code: scenario, next_action: 'dispatch_provider_request',
   };
   if (scenario === 'valid_empty_no_update') return {
     ...base, terminal: true,

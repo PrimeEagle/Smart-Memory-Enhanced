@@ -211,7 +211,8 @@ export function assessCurrentRunCompletionReplay(metadata, input = {}) {
 export function reconcileImpossibleLiveHealth(metadata, providerAudit, at = Date.now()) {
   const health = metadata?.live_memory_health;
   if (!health) return [];
-  const running = providerAudit?.recent_attempts?.filter((item) => item?.terminal_outcome === 'running') ?? [];
+  const running = providerAudit?.recent_attempts?.filter((item) =>
+    item?.terminal_outcome === 'running' && item.transmission_started === true) ?? [];
   const repairs = [];
   const completionEntries = journalEntriesForHealth(metadata);
   for (const event of health.recent_extraction_events ?? []) {
@@ -261,12 +262,12 @@ function journalEntriesForHealth(metadata) {
 }
 
 export function inspectProviderCompletionConsistency({ metadata, provider_audit, ledger,
-  child_manifests, live_health, controller_heartbeat: controllerHeartbeat } = {}) {
+  live_health, controller_heartbeat: controllerHeartbeat } = {}) {
   const journal = currentContainerForRead(metadata) ?? { entries: {}, order: [] };
   const attempts = provider_audit?.recent_attempts ?? [];
   const obligations = ledger?.obligations ?? {};
-  const manifests = child_manifests?.roots ?? child_manifests ?? {};
-  const runningAttemptIds = new Set(attempts.filter((item) => item?.terminal_outcome === 'running')
+  const runningAttemptIds = new Set(attempts.filter((item) => item?.terminal_outcome === 'running'
+    && item.transmission_started === true)
     .map((item) => item.attempt_id));
   const violations = [];
   if (metadata?.provider_completion_journal && !currentContainerForRead(metadata)) {
@@ -286,7 +287,7 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
       provider_call_required: false,
     });
   }
-  const recordViolation = (violation, attempt = null) => {
+  const recordViolation = (violation, _attempt = null) => {
     violations.push({
       ...violation,
       classification: 'current_runtime',
@@ -303,18 +304,17 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
     const obligation = obligations[attempt.logical_obligation_id]
       ?? Object.values(obligations).find((item) => item?.obligation_id === attempt.logical_obligation_id);
     const entry = journal.entries[attempt.attempt_id];
-    const matchingChildren = Object.values(manifests).flatMap((manifest) =>
-      Object.values(manifest?.children ?? {}).map((child) => ({ manifest, child })))
-      .filter(({ manifest, child }) => manifest.root_obligation_id === attempt.logical_obligation_id
-        && child.source_fingerprint === attempt.source_fingerprint);
+    const matchingChildren = Object.values(obligations).filter((child) =>
+      child?.parent_obligation_id === attempt.logical_obligation_id
+      && child.source_fingerprint === attempt.source_fingerprint);
     if (obligation?.current_state === 'provider_running') recordViolation({
       code: 'terminal_attempt_left_obligation_provider_running', attempt_id: attempt.attempt_id,
       obligation_id: attempt.logical_obligation_id, source_range: attempt.source_range,
     }, attempt);
-    for (const { child } of matchingChildren.filter(({ child }) => child.state === 'unattempted')) {
-      recordViolation({ code: 'completed_attempt_has_unattempted_manifest_child',
+    for (const child of matchingChildren.filter((item) => item.current_state === 'unattempted')) {
+      recordViolation({ code: 'completed_attempt_has_unattempted_ledger_child',
         attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
-        child_key: child.key, source_range: child.source_range }, attempt);
+        child_obligation_id: child.obligation_id, source_range: child.source_range }, attempt);
     }
     if (!entry) recordViolation({ code: 'terminal_attempt_missing_completion_journal',
       attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
@@ -324,14 +324,14 @@ export function inspectProviderCompletionConsistency({ metadata, provider_audit,
       recordViolation({ code: 'terminal_attempt_missing_persistence_disposition',
         attempt_id: attempt.attempt_id, obligation_id: attempt.logical_obligation_id,
         persistence_status: entry.persistence?.status ?? null,
-        next_action: 'reconcile_terminal_attempt_evidence',
+        next_action: 'apply_journaled_provider_completion',
         provider_call_required: false }, attempt);
     } else if (!verifiedTransition(entry.ledger_transition)) {
       recordViolation({ code: 'terminal_attempt_missing_verified_ledger_acknowledgement',
         attempt_id: attempt.attempt_id, obligation_id: entry.child_obligation_id
           ?? attempt.child_obligation_id ?? attempt.logical_obligation_id,
         ledger_transition_status: entry.ledger_transition?.status ?? null,
-        next_action: 'reconcile_terminal_attempt_evidence',
+        next_action: 'apply_journaled_provider_completion',
         provider_call_required: false }, attempt);
     }
   }

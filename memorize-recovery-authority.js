@@ -40,7 +40,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
   ]?.recovery_windows?.[pending.source_fingerprint] ?? null : null;
   const stageEligibility = recoveryWindow ? deriveRecoveryStageEligibility(recoveryWindow) : null;
   const sourceMessageCount = Number(input.source_message_count
-    ?? checkpoint?.source_message_count ?? 0);
+    ?? checkpoint?.run_manifest?.source_window?.message_count ?? 0);
   const nextSourceOffset = Number(input.next_source_offset
     ?? checkpoint?.next_source_offset ?? 0);
   const sourceTraversalPending = !pending && sourceMessageCount > 0
@@ -49,7 +49,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     && checkpoint != null && !['completed', 'terminal_failure'].includes(
       input.checkpoint_status ?? checkpoint.status);
   const preliminaryAction = kernelStatus?.next_action ?? (stageEligibility?.blocked === false
-    ? stageEligibility.eligible_action : pending?.next_eligible_action
+    ? 'dispatch_provider_request' : pending?.next_eligible_action
       ?? (sourceTraversalPending ? 'continue_source_traversal'
         : finalizationPending ? 'continue_finalization' : null));
   const transactionContradiction = transaction?.state === 'active' && !liveController
@@ -120,7 +120,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     schema_version: 1,
     state,
     pending_obligation: pending,
-    exact_recovery_stage: exactAction,
+    exact_recovery_stage: stageEligibility?.eligible_action ?? pending?.recovery_stage ?? null,
     next_executable_action: exactAction,
     resume_eligible: eligible,
     resume_blockers: blockers,

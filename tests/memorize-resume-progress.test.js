@@ -23,14 +23,16 @@ function pendingAggregate() {
 test('Resume reports an action only when a durable action receipt was added', () => {
   const aggregate = pendingAggregate();
   const before = snapshotMemorizeResumeProgress({ ledger: aggregate,
-    checkpoint: { next_source_offset: 160, committed_chunks: 8 } });
+    checkpoint: { next_source_offset: 160,
+      run_manifest: { cumulative_chunk_count: 8 } } });
   const recorded = recordMemorizeActionReceipt(aggregate, {
     logical_run_id: 'run-1', obligation_id: 'session:160-179:fp',
     action: 'dispatch_provider_request', phase: 'provider_request_started',
     attempt_id: 'attempt-1', controller_generation: 2,
   });
   const after = snapshotMemorizeResumeProgress({ ledger: recorded.aggregate,
-    checkpoint: { next_source_offset: 160, committed_chunks: 8 } });
+    checkpoint: { next_source_offset: 160,
+      run_manifest: { cumulative_chunk_count: 8 } } });
   const progress = deriveMemorizeResumeProgress(before, after);
   assert.equal(progress.action_actually_executed, 'dispatch_provider_request');
   assert.equal(progress.provider_request_started, true);

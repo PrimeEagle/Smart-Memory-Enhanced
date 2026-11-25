@@ -31,7 +31,7 @@
  * getStateCard                - returns the fields object for a given entity, or null
  * setStateCard                - upserts a state card into the ledger
  * deleteStateCard             - removes a state card entry
- * migrateStateLedgerKey       - migrates a state card to a new key after a type change
+ * rekeyStateLedgerCard        - moves a state card to a new key after a type change
  * clearStateLedger            - empties the entire ledger
  * runStateCardExtraction      - runs the extraction pass for the current message window
  * injectStateLedger           - pushes the current-state block into the prompt
@@ -48,6 +48,7 @@ import { saveChatMetadata } from './catchup-transaction.js';
 import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
   from './feature-persistence.js';
 import { assignCandidateIdentity } from './candidate-identity.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import { MODULE_NAME, META_KEY, PROMPT_KEY_STATE_LEDGER, estimateTokens } from './constants.js';
 import { buildStateCardPrompt } from './prompts.js';
 import { parseStateCardResponse } from './parsers.js';
@@ -58,7 +59,7 @@ import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
-import { buildCanonicalCharacterRoster, buildStableLedgerKey, formatCanonicalRosterForPrompt, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalRoster, buildStableLedgerKey, formatCanonicalRosterForPrompt, reconcileCanonicalLedger, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
 
 // ---- Field schema -----------------------------------------------------------
@@ -88,7 +89,7 @@ function ledgerKey(name, type) {
 }
 
 function stableLedgerKey(name, type) {
-  return buildStableLedgerKey(name, type, buildCanonicalCharacterRoster(getContext()));
+  return buildStableLedgerKey(name, type, buildCanonicalRoster(getContext()));
 }
 
 // ---- Feature gate -----------------------------------------------------------
@@ -136,7 +137,9 @@ export async function saveStateLedger(ledger) {
     source_provenance: { validation: 'state_card_schema_and_grounding' } });
   const stagedLedger = Object.fromEntries(stagedRecords.map(({ key, ...value }) => [key, value]));
   await executeFeaturePersistence({ command,
-    snapshot: () => structuredClone(metadata.state_ledger ?? {}),
+    snapshot: () => cloneSerializableDomain(metadata.state_ledger ?? {}, {
+      path: '$.feature_snapshot.state_ledger', stage: 'feature_snapshot', operation_type: 'state_ledger',
+    }),
     apply: () => { metadata.state_ledger = stagedLedger; },
     persist: () => saveChatMetadata(context),
     restore: (before) => { metadata.state_ledger = before; }, receipt_container: metadata });
@@ -165,7 +168,7 @@ export function getStateCard(name, type) {
  */
 export async function setStateCard(name, type, fields) {
   const ledger = loadStateLedger();
-  const resolution = resolveCanonicalCharacterName(name, buildCanonicalCharacterRoster(getContext()));
+  const resolution = resolveCanonicalCharacterName(name, buildCanonicalRoster(getContext()));
   const key = stableLedgerKey(name, type);
   ledger[key] = {
     ...(ledger[key] ?? {}),
@@ -202,7 +205,7 @@ export async function deleteStateCard(name, type) {
  * @param {string} newType
  * @returns {Promise<void>}
  */
-export async function migrateStateLedgerKey(name, oldType, newType) {
+export async function rekeyStateLedgerCard(name, oldType, newType) {
   const ledger = loadStateLedger();
   const oldKey = stableLedgerKey(name, oldType);
   if (!(oldKey in ledger)) return;
@@ -244,7 +247,7 @@ export async function clearStateLedger() {
 /** Safely merges legacy name variants into canonical character-card ledger keys. */
 export async function reconcileStateLedgerCanonicalNames() {
   const ledger = loadStateLedger();
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const reconciled = reconcileCanonicalLedger(ledger, roster);
   for (const [key, fields] of Object.entries({ ...reconciled })) {
     const separator = key.lastIndexOf('|');
@@ -313,7 +316,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
 
     if (entityList.length === 0) return 0;
 
-    const prompt = buildStateCardPrompt(chatExcerpt, entityList, formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())));
+    const prompt = buildStateCardPrompt(chatExcerpt, entityList, formatCanonicalRosterForPrompt(buildCanonicalRoster(getContext())));
 
     const response = await generateMemoryExtract(applyPromptOverride(prompt, PROMPT_TASKS.STATE_LEDGER, characterName), { responseLength: 400 });
     smLog('[Smart Memory Enhanced] State ledger raw response:', response);
@@ -329,7 +332,7 @@ export async function runStateCardExtraction(characterName, messages, abortCheck
     // Merge updates into the existing ledger.
     if (abortCheck?.()) return 0;
     const ledger = loadStateLedger();
-    const roster = buildCanonicalCharacterRoster(getContext());
+    const roster = buildCanonicalRoster(getContext());
     const sourceMessageIndices = messages.map((message) => Number.isInteger(message.__sme_original_index)
       ? message.__sme_original_index : getContext().chat.indexOf(message)).filter((index) => Number.isInteger(index) && index >= 0);
     let count = 0;

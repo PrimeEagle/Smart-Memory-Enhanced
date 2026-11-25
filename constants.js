@@ -79,18 +79,9 @@ export const SESSION_TYPES = ['scene', 'revelation', 'development', 'detail'];
 export const META_KEY = 'smartMemoryEnhanced';
 
 /**
- * Current schema version for stored memory data (long-term and session).
- *
- * This value is written into each data container (character store and
- * chatMetadata block) when migration runs. On load, the stored version is
- * compared against this constant and any missing steps are applied in order.
- *
- * Rules:
- * - Bump this value only when a new migration step is added to graph-migration.js.
- * - Do not bump it between releases unless a new migration step ships with the bump.
- * - Migration steps are never removed - old chats may be opened at any point.
- * - Version 0 is the implicit state for any container that has no stored version
- *   (i.e. all data written by v1.3.0 or earlier, before this system existed).
+ * Current schema version for stored character and chat memory data. Every new
+ * store is stamped at creation. Older schemas are not upgraded in place; this
+ * clean-break project requires clearing the obsolete test store/Fresh Start.
  */
 export const SCHEMA_VERSION = 9;
 

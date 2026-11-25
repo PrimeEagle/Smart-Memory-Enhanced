@@ -59,12 +59,15 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
+import { annotatePreTransmissionFailure } from './provider-dispatch-boundary.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
+import { assertCurrentMemoryRecord } from './memory-store-schema.js';
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
 import { createLongtermOwnerEffectExecutor, createLongtermOwnerPersistencePlan,
   LONGTERM_OWNER_NOOP_OPERATION, LONGTERM_OWNER_REPLACE_OPERATION }
   from './longterm-owner-persistence.js';
-import { executeFeaturePersistence, prepareFeaturePersistenceCommand,
-  recordFeaturePersistenceReceipt } from './feature-persistence.js';
+import { executeFeaturePersistence, executeFeaturePersistenceSync,
+  prepareFeaturePersistenceCommand } from './feature-persistence.js';
 import {
   estimateTokens,
   MODULE_NAME,
@@ -74,9 +77,9 @@ import {
   MEMORY_TYPES,
   META_KEY,
   MAX_RETIRED_POOL,
+  SCHEMA_VERSION,
 } from './constants.js';
 import {
-  applyGraphDefaults,
   loadCharacterEntityRegistry,
   loadSessionEntityRegistry,
   saveCharacterEntityRegistry,
@@ -86,7 +89,7 @@ import {
 } from './graph-migration.js';
 import { applyDirectProvenance, isGrounded, validateGeneratedMemoryRecord } from './grounding.js';
 import { flattenConsolidationProvenance, isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
-import { buildCanonicalCharacterRoster, buildStableRelationshipPair, canonicalizeNarrativeNames, canonicalizeRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalRoster, buildStableRelationshipPair, canonicalizeNarrativeNames, canonicalizeRelationshipPair, formatCanonicalRosterForPrompt, resolveCanonicalCharacterName } from './canonical-entities.js';
 import {
   buildExtractionPrompt,
   buildLongtermConsolidationPrompt,
@@ -285,6 +288,7 @@ export function setCharacterMemoryPolicy(characterName, policy) {
   settings.characters ??= {};
   settings.characters[characterName] = {
     ...(settings.characters[characterName] ?? {}),
+    schema_version: SCHEMA_VERSION,
     memory_policy: policy,
   };
 }
@@ -296,7 +300,7 @@ function loadChatLocalMemories(characterName) {
 async function saveChatLocalMemories(characterName, memories) {
   const context = getContext();
   context.chatMetadata ??= {};
-  context.chatMetadata[META_KEY] ??= {};
+  context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
   const metadata = context.chatMetadata[META_KEY];
   const workflowId = metadata.active_catchup_run_id
     ?? context.chatId ?? context.groupId ?? `interactive-longterm:${characterName}`;
@@ -304,7 +308,9 @@ async function saveChatLocalMemories(characterName, memories) {
     feature: 'longterm', operation: 'replace_chat_local_memories',
     owner: characterName, records: memories });
   await executeFeaturePersistence({ command,
-    snapshot: () => structuredClone(metadata.card_local_memories?.[characterName] ?? []),
+    snapshot: () => cloneSerializableDomain(metadata.card_local_memories?.[characterName] ?? [], {
+      path: '$.feature_snapshot.longterm', stage: 'feature_snapshot', operation_type: 'longterm',
+    }),
     apply: () => {
       metadata.card_local_memories ??= {};
       metadata.card_local_memories[characterName] = memories;
@@ -317,8 +323,7 @@ async function saveChatLocalMemories(characterName, memories) {
 
 /**
  * Returns the memory array for a character, or an empty array if none exist.
- * Migrates legacy entries (no consolidated flag) to consolidated: true on load
- * so existing memories are treated as the stable base.
+ * Reads current-schema records and applies non-identity scoring defaults.
  * @param {string} characterName
  * @returns {Array<{type: string, content: string, ts: number, consolidated: boolean}>}
  */
@@ -328,26 +333,20 @@ export function loadCharacterMemories(characterName) {
   const memories = getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL
     ? loadChatLocalMemories(characterName)
     : chars?.[characterName]?.memories ?? [];
-  // Migrate: entries without the consolidated flag are pre-existing stable memories.
-  // Entries without an importance score default to 2 (medium).
-  // applyGraphDefaults is a safety net for entries that predate the one-shot
-  // migration pass. It is non-destructive and only generates a new id when one
-  // is truly absent (e.g. a rollback/downgrade scenario).
-  return memories.map((m) =>
-    applyGraphDefaults({
+  return memories.map((m) => {
+    assertCurrentMemoryRecord(m, 'longterm');
+    return ({
       ...m,
-      consolidated: m.consolidated ?? true,
+      consolidated: m.consolidated,
       importance: m.importance ?? 2,
       expiration: m.expiration ?? 'permanent',
       confidence: m.confidence ?? 0.7,
       persona_relevance: m.persona_relevance ?? (m.type === 'relationship' ? 3 : 1),
       intimacy_relevance: m.intimacy_relevance ?? (m.type === 'preference' ? 3 : 1),
       retrieval_count: m.retrieval_count ?? 0,
-      // Fall back to 0 (not Date.now()) when both fields are absent so legacy
-      // entries don't receive an artificial recency boost in memoryUtilityScore.
       last_confirmed_ts: m.last_confirmed_ts ?? m.ts ?? 0,
-    }),
-  );
+    });
+  });
 }
 
 /**
@@ -374,34 +373,30 @@ export function saveCharacterMemories(characterName, memories) {
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'longterm', operation: 'replace_character_memories',
     owner: characterName, records: memories });
-  // Spread the existing character object so the entity registry and any other
-  // fields stored alongside memories (e.g. entities, canon) are preserved.
-  const existing = settings.characters[characterName] ?? {};
-  settings.characters[characterName] = {
-    ...existing,
-    memories,
-    lastUpdated: Date.now(),
-  };
-  recordFeaturePersistenceReceipt(command, settings);
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => settings.characters[characterName] ?? null,
+    apply: () => {
+      const existing = settings.characters[characterName] ?? {};
+      settings.characters[characterName] = {
+        ...existing, schema_version: SCHEMA_VERSION,
+        memories, lastUpdated: Date.now(),
+      };
+    },
+    persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete settings.characters[characterName];
+      else settings.characters[characterName] = before;
+    }, receipt_container: settings });
 }
 
 /**
  * Removes all stored memories for a character.
- * Caller must call saveSettingsDebounced() afterwards.
  * @param {string} characterName
  */
 export function clearCharacterMemories(characterName) {
   if (!characterName) return;
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
-  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    const context = getContext();
-    if (context.chatMetadata?.[META_KEY]?.card_local_memories) delete context.chatMetadata[META_KEY].card_local_memories[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local memories:', err));
-    return;
-  }
-  if (extension_settings[MODULE_NAME].characters?.[characterName]) {
-    delete extension_settings[MODULE_NAME].characters[characterName];
-  }
+  saveCharacterMemories(characterName, []);
 }
 
 // ---- Relationship history storage ---------------------------------------
@@ -418,23 +413,21 @@ export function loadRelationshipHistory(characterName) {
   const raw = getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL
     ? getContext().chatMetadata?.[META_KEY]?.card_local_relationships?.[characterName] ?? {}
     : extension_settings[MODULE_NAME].characters?.[characterName]?.relationship_history ?? {};
-  // Normalize entries still in the old flat format { descriptors: string[], magnitude: string }
-  // to the current per-descriptor format { descriptors: Array<{word, magnitude}> }.
-  // This is a read-time safety net in case the schema migration did not run yet.
-  const normalized = {};
   for (const [key, state] of Object.entries(raw)) {
     const descs = state.descriptors ?? [];
-    if (descs.length > 0 && typeof descs[0] === 'string') {
-      const fallbackMag = state.magnitude ?? 'medium';
-      normalized[key] = {
-        descriptors: descs.map((w) => ({ word: w, magnitude: fallbackMag })),
-        updatedAt: state.updatedAt ?? Date.now(),
-      };
-    } else {
-      normalized[key] = state;
-    }
+    if (!state || typeof state !== 'object' || !Array.isArray(descs)
+      || descs.some((descriptor) => !descriptor || typeof descriptor !== 'object'
+        || !String(descriptor.word ?? '').trim() || !String(descriptor.magnitude ?? '').trim())
+      || !String(state.subject_name ?? '').trim() || !String(state.target_name ?? '').trim()
+      || Object.hasOwn(state, 'source_message_indices')
+      || Object.hasOwn(state, 'last_update_source_indices')) throw Object.assign(
+      new Error(`Relationship history record ${key} uses an unsupported schema. Fresh Start is required.`), {
+        code: 'SME_FRESH_START_REQUIRED',
+        sme_reason_code: 'relationship_history_record_schema_unsupported',
+        sme_failure_stage: 'memory_record_schema_validation',
+      });
   }
-  return normalized;
+  return raw;
 }
 
 /**
@@ -458,10 +451,13 @@ export function saveRelationshipHistory(characterName, history) {
     feature: 'relationship_history', operation: 'replace_relationship_history',
     owner: characterName, records });
   if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    context.chatMetadata ??= {}; context.chatMetadata[META_KEY] ??= {};
+    context.chatMetadata ??= {};
+    context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
     const metadata = context.chatMetadata[META_KEY];
     executeFeaturePersistence({ command,
-      snapshot: () => structuredClone(metadata.card_local_relationships?.[characterName] ?? {}),
+      snapshot: () => cloneSerializableDomain(metadata.card_local_relationships?.[characterName] ?? {}, {
+        path: '$.feature_snapshot.relationships', stage: 'feature_snapshot', operation_type: 'relationships',
+      }),
       apply: () => {
         (metadata.card_local_relationships ??= {})[characterName] = history;
       }, persist: () => saveChatMetadata(context),
@@ -474,12 +470,20 @@ export function saveRelationshipHistory(characterName, history) {
   if (!extension_settings[MODULE_NAME].characters) {
     extension_settings[MODULE_NAME].characters = {};
   }
-  const existing = extension_settings[MODULE_NAME].characters[characterName] ?? {};
-  extension_settings[MODULE_NAME].characters[characterName] = {
-    ...existing,
-    relationship_history: history,
-  };
-  recordFeaturePersistenceReceipt(command, extension_settings[MODULE_NAME]);
+  const settings = extension_settings[MODULE_NAME];
+  executeFeaturePersistenceSync({ command,
+    snapshot: () => settings.characters[characterName] ?? null,
+    apply: () => {
+      const existing = settings.characters[characterName] ?? {};
+      settings.characters[characterName] = {
+        ...existing, schema_version: SCHEMA_VERSION, relationship_history: history,
+      };
+    },
+    persist: () => { saveSettingsDebounced(); },
+    restore: (before) => {
+      if (before === null) delete settings.characters[characterName];
+      else settings.characters[characterName] = before;
+    }, receipt_container: settings });
 }
 
 /**
@@ -487,7 +491,7 @@ export function saveRelationshipHistory(characterName, history) {
  * pair. Character-card identities use immutable card IDs; discovered entities
  * retain a normalized name key until they have a card identity.
  */
-export function getRelationshipHistoryPair(subject, target, roster = buildCanonicalCharacterRoster(getContext())) {
+export function getRelationshipHistoryPair(subject, target, roster = buildCanonicalRoster(getContext())) {
   const pair = buildStableRelationshipPair(subject, target, roster);
   return {
     key: pair.key,
@@ -496,17 +500,13 @@ export function getRelationshipHistoryPair(subject, target, roster = buildCanoni
   };
 }
 
-/** Returns readable pair labels for both ID-backed and legacy storage keys. */
-export function getRelationshipHistoryPairDisplay(key, state = {}) {
-  if (state.subject_name && state.target_name) {
-    return { subject: state.subject_name, target: state.target_name };
-  }
-  const [subject, target] = key.split('→').map((part) => part.trim());
-  return { subject, target };
+/** Returns the current record's explicit participant labels. */
+export function getRelationshipHistoryPairDisplay(_key, state = {}) {
+  return { subject: state.subject_name, target: state.target_name };
 }
 
 /** Deterministic propagation gate for relationship pairs; unresolved identities are never guessed. */
-export function classifyRelationshipPairSafety(key, state = {}, roster = buildCanonicalCharacterRoster(getContext())) {
+export function classifyRelationshipPairSafety(key, state = {}, roster = buildCanonicalRoster(getContext())) {
   const labels = getRelationshipHistoryPairDisplay(key, state);
   const preliminary = classifyRelationshipPairIdentity({ subjectLabel: labels.subject, targetLabel: labels.target });
   if (preliminary.safe === false) return { ...preliminary, labels };
@@ -531,10 +531,10 @@ export function compactRelationshipProvenance(state = {}) {
     if (sortNumeric) unique.sort((left, right) => left - right);
     return unique.length > limit ? unique.slice(-limit) : unique;
   };
-  const allSupportingIndices = [...new Set((state.supporting_source_indices ?? state.source_message_indices ?? []).filter(Number.isInteger))].sort((left, right) => left - right);
+  const allSupportingIndices = [...new Set((state.supporting_source_indices ?? []).filter(Number.isInteger))].sort((left, right) => left - right);
   const supportingSourceIndices = compact(allSupportingIndices, 96, true);
   const historicalEvidenceCount = Number(state.historical_evidence_count ?? 0) + Math.max(0, allSupportingIndices.length - supportingSourceIndices.length);
-  const latestUpdateIndices = compact(state.latest_update_indices ?? state.last_update_source_indices, 24, true);
+  const latestUpdateIndices = compact(state.latest_update_indices, 24, true);
   const toRanges = (indices) => {
     const sorted = [...new Set((indices ?? []).filter(Number.isInteger))].sort((a, b) => a - b);
     const ranges = [];
@@ -555,8 +555,6 @@ export function compactRelationshipProvenance(state = {}) {
   };
   return {
     ...state,
-    // New explicit fields are the compact relationship-audit contract. Keep
-    // the legacy names synchronized for compatibility with existing records.
     supporting_source_indices: supportingSourceIndices,
     supporting_source_ranges: toRanges(supportingSourceIndices),
     latest_update_indices: latestUpdateIndices,
@@ -567,20 +565,17 @@ export function compactRelationshipProvenance(state = {}) {
     historical_evidence_digest: historicalEvidenceCount
       ? `Omitted ${historicalEvidenceCount} older repeated evidence index${historicalEvidenceCount === 1 ? '' : 'es'}; representative recent evidence retained.`
       : null,
-    source_message_indices: supportingSourceIndices,
-    last_update_source_indices: latestUpdateIndices,
     source_record_ids: compact(state.source_record_ids, 80),
     parent_memory_ids: compact(state.parent_memory_ids, 80),
     evidence_ranges: compact(state.evidence_ranges, 48),
     source_messages: compact(state.source_messages, 48),
     provenance: compact(state.provenance, 48),
     source_chat_ids: compact(state.source_chat_ids, 24),
-    migration_metadata: compact(state.migration_metadata, 24),
     provenance_audit: audit,
   };
 }
 
-export function reconcileRelationshipHistoryMap(history, roster = buildCanonicalCharacterRoster(getContext())) {
+export function reconcileRelationshipHistoryMap(history, roster = buildCanonicalRoster(getContext())) {
   const reconciled = {};
   let changed = false;
   let merged = 0;
@@ -608,7 +603,7 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
       continue;
     }
     // A relationship key is valid only when both directions resolve to a
-    // stable character/persona identity. Preserve an unresolvable legacy
+    // stable character/persona identity. Preserve an unresolvable
     // record for review rather than silently assigning it a name-based key.
     const safety = classifyRelationshipPairSafety(key, state, roster);
     if (!safety.safe) {
@@ -663,26 +658,25 @@ export function reconcileRelationshipHistoryMap(history, roster = buildCanonical
     };
     const prior = reconciled[pair.key];
     if (prior) merged++;
-    const manualApproved = Boolean(prior?.manual_approved || prior?.manualApproved || canonicalState?.manual_approved || canonicalState?.manualApproved);
+    const manualApprovalGranted = Boolean(prior?.manual_approved || canonicalState?.manual_approved);
     const mergedState = prior
       ? {
         ...prior,
         ...canonicalState,
         descriptors: [...new Map([...normalizedDescriptors(prior.descriptors), ...normalizedDescriptors(canonicalState.descriptors)].map((item) => [item.word, item])).values()],
-        source_message_indices: mergeList(prior.source_message_indices, canonicalState.source_message_indices).filter(Number.isInteger).sort((a, b) => a - b),
-        last_update_source_indices: mergeList(prior.last_update_source_indices, canonicalState.last_update_source_indices).filter(Number.isInteger).sort((a, b) => a - b),
+        supporting_source_indices: mergeList(prior.supporting_source_indices, canonicalState.supporting_source_indices).filter(Number.isInteger).sort((a, b) => a - b),
+        latest_update_indices: mergeList(prior.latest_update_indices, canonicalState.latest_update_indices).filter(Number.isInteger).sort((a, b) => a - b),
         source_record_ids: mergeList(prior.source_record_ids, canonicalState.source_record_ids),
         parent_memory_ids: mergeList(prior.parent_memory_ids, canonicalState.parent_memory_ids),
         evidence_ranges: mergeList(prior.evidence_ranges, canonicalState.evidence_ranges),
         manual_edits: mergeList(prior.manual_edits, canonicalState.manual_edits),
-        manual_approval_state: manualApproved ? (prior.manual_approval_state ?? canonicalState.manual_approval_state ?? 'approved') : (canonicalState.manual_approval_state ?? prior.manual_approval_state),
-        manual_approved: manualApproved,
+        manual_approval_state: manualApprovalGranted ? (prior.manual_approval_state ?? canonicalState.manual_approval_state ?? 'approved') : (canonicalState.manual_approval_state ?? prior.manual_approval_state),
+        manual_approved: manualApprovalGranted,
         descriptor_removals: mergeList(prior.descriptor_removals, canonicalState.descriptor_removals),
         superseded_descriptors: mergeList(prior.superseded_descriptors, canonicalState.superseded_descriptors),
         provenance: mergeList(prior.provenance, canonicalState.provenance),
         historical_display_names: mergeList(prior.historical_display_names, canonicalState.historical_display_names),
         source_chat_ids: mergeList(prior.source_chat_ids, canonicalState.source_chat_ids),
-        migration_metadata: mergeList(prior.migration_metadata, canonicalState.migration_metadata),
         validation_issues: mergeList(prior.validation_issues, canonicalState.validation_issues),
         updatedAt: Math.max(prior.updatedAt ?? 0, canonicalState.updatedAt ?? 0),
       }
@@ -733,20 +727,12 @@ export function remapRelationshipHistoryEntity(characterName, sourceName, target
 
 /**
  * Removes the relationship history for a character from extension_settings.
- * Caller must call saveSettingsDebounced() afterwards.
  * @param {string} characterName
  */
 export function clearRelationshipHistory(characterName) {
   if (!characterName) return;
   if ([CHARACTER_MEMORY_POLICIES.READ_ONLY, CHARACTER_MEMORY_POLICIES.DISABLED].includes(getCharacterMemoryPolicy(characterName))) return;
-  if (getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.CHAT_LOCAL) {
-    const context = getContext();
-    if (context.chatMetadata?.[META_KEY]?.card_local_relationships) delete context.chatMetadata[META_KEY].card_local_relationships[characterName];
-    saveChatMetadata(context).catch((err) => smLog('[Smart Memory Enhanced] Failed to clear chat-local relationships:', err));
-    return;
-  }
-  const char = extension_settings[MODULE_NAME].characters?.[characterName];
-  if (char) delete char.relationship_history;
+  saveRelationshipHistory(characterName, {});
 }
 
 // ---- Formatting ---------------------------------------------------------
@@ -925,7 +911,7 @@ export async function prepareLongtermOwnerPersistencePlan(
       }
     }
   }
-  const narrativeRoster = buildCanonicalCharacterRoster(context);
+  const narrativeRoster = buildCanonicalRoster(context);
   const entityRegistry = loadCharacterEntityRegistry(characterName);
   for (const memory of finalActive) {
     const narrative = canonicalizeNarrativeNames(memory.content, narrativeRoster);
@@ -1053,7 +1039,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     // authoritative limit is here, after every prompt frame and stored-memory
     // context has been rendered exactly as the provider will receive it.
     const responseLength = settings.longterm_response_length || 600;
-    const rosterText = formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext()));
+    const rosterText = formatCanonicalRosterForPrompt(buildCanonicalRoster(getContext()));
     const renderPrompt = (messages) => applyPromptOverride(
       buildExtractionPrompt(
         messages.map((m, index) => `[${index}] ${m.name}: ${m.mes}`).join('\n\n'),
@@ -1116,7 +1102,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       expectedOutputFormat: primaryProviderRequest.protocol,
       schemaVersion: primaryProviderRequest.protocol,
     });
-    const { coverageBase, rootObligationId, rootSourceRange, leafObligationId } = pipeline;
+    const { coverageBase, rootObligationId, leafObligationId } = pipeline;
     const recordCompletedCoverage = pipeline.recordCompletedCoverage;
     const emitLifecycleEvent = pipeline.emitLifecycleEvent;
     const beginPhysicalAttempt = pipeline.beginAttempt;
@@ -1217,7 +1203,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           },
           onCommitted: async (child, { key: childKey }) => {
             const childRange = sourceRange(child);
-          await execution.hooks.context_overflow_child_committed({
+          await execution.hooks.recovery_child_completed({
             key: childKey, tier: 'longterm', owner: characterName,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
@@ -1295,7 +1281,6 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         completed_child_keys: completedChildKeysAtStart,
         budget,
       });
-      await execution.hooks.recovery_child_manifest_updated(childManifest);
       let deferredTerminalReconciliation = null;
       const schedule = await createMemorizeRecoveryScheduler().run({
         tasks: children,
@@ -1343,14 +1328,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
                 reason_code: 'terminal_output_not_durably_retained',
                 recovery_requests_consumed: Number(budget.additional_provider_requests ?? 0),
               });
-            await execution.hooks.recovery_child_manifest_updated(childManifest);
             return { added: 0, committed: false };
           }
         },
         onCommitted: async (child, { key: childKey }) => {
           const childRange = sourceRange(child);
           budget.split_children_committed.push(childKey);
-          await execution.hooks.context_overflow_child_committed({
+          await execution.hooks.recovery_child_completed({
             key: childKey, tier: 'longterm', owner: characterName,
             source_start_index: childRange.start, source_end_index: childRange.end,
             message_count: childRange.message_count, source_fingerprint: sourceWindowFingerprint(child),
@@ -1379,11 +1363,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           }
           await emitLifecycleEvent('recovery_required', {
             exact_reason_code: 'recovery_child_completed_siblings_pending',
-            next_eligible_action: 'continue_unattempted_recovery_child',
+            next_eligible_action: 'aggregate_completed_children',
             recovery_intent: 'complete_recovery_child_coverage',
             recovery_stage: 'malformed_repartition_child',
           });
-          await execution.hooks.recovery_child_manifest_updated(childManifest);
         },
       });
       added = schedule.added;
@@ -1397,7 +1380,6 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           unattempted_siblings: schedule.unattempted_task_keys,
           progress_made: schedule.executed > 0 || completedChildKeysAtStart.length > 0,
           });
-          await execution.hooks.recovery_child_manifest_updated(childManifest);
           return { completed: false, paused: true,
             reason: childManifest?.operational_pause?.reason_code
               ?? 'recovery_request_budget_reached_with_pending_children',
@@ -1462,6 +1444,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     }
 
     let response;
+    let providerRequestSent = false;
     const storedRecoveryState = readProviderRecoveryWindowState(
       providerMetadata, rootObligationId, coverageBase.source_fingerprint);
     const resumeRecoveryState = storedRecoveryState?.configuration_signature === providerConfigSignature
@@ -1477,7 +1460,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         ?? 'all_recovery_stages_exhausted_for_unchanged_inputs';
       error.sme_request_diagnostics = {
         root_obligation_id: rootObligationId, leaf_obligation_id: leafObligationId,
-        next_eligible_recovery_action: 'change_provider_configuration_or_install_updated_build',
+        next_eligible_recovery_action: 'stop_blocked',
         provider_call_required: false,
       };
       throw error;
@@ -1493,10 +1476,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         source_fingerprint: coverageBase.source_fingerprint,
       }) : null;
     const journalReplayMode = Boolean(journaledCurrentCompletion?.response_text != null
-      && ['continue_pending_downstream_processing',
-        'replay_terminal_provider_downstream_lifecycle',
-        'reconcile_terminal_attempt_evidence']
-        .includes(execution.provider.selected_recovery_action));
+      && execution.provider.selected_recovery_action === 'apply_journaled_provider_completion');
     const recoveryOnlyMode = resumeEligibility?.eligible_action === 'single_source_unit_regeneration';
     if (journalReplayMode) {
       pipeline.requireSelectedAction('apply_journaled_provider_completion');
@@ -1530,7 +1510,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           root_obligation_id: rootObligationId,
           leaf_obligation_id: leafObligationId,
           provider_call_required: false,
-          next_eligible_action: registeredIngress.next_action ?? 'resume_exact_obligation',
+          next_eligible_action: registeredIngress.next_action ?? 'dispatch_provider_request',
         };
         throw pause;
       }
@@ -1539,7 +1519,9 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
       error.sme_recovery_blocked = true;
       error.sme_obligation_id = rootObligationId;
       error.sme_request_diagnostics = registeredIngress;
-      throw error;
+      throw annotatePreTransmissionFailure(error, {
+        fallback_stage: 'provider_attempt_registration',
+      });
     }
     const providerAttempt = journalReplayMode
       ? [...(providerMetadata?.live_memory_health?.provider_attempt_audit?.recent_attempts ?? [])]
@@ -1574,6 +1556,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           await pipeline.recordActionReceipt('provider_request_started', {
             action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
           });
+          await pipeline.markProviderDispatchStarted(providerAttempt);
+          // A local await-point, receipt, or dispatch-publication failure is
+          // not a provider failure. This flips only after the durable dispatch
+          // transition succeeds and immediately before invoking the provider.
+          providerRequestSent = true;
           response = await pipeline.executeSelectedAction('dispatch_provider_request',
             async () => generateMemoryExtract(primaryProviderRequest.prompt, {
               responseLength,
@@ -1592,6 +1579,19 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             : 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
           reason_code: err?.code ?? err?.name ?? 'provider_dispatch_failed',
         }).catch(() => undefined);
+      }
+      if (!recoveryOnlyMode && !journalReplayMode && !providerRequestSent) {
+        const localError = annotatePreTransmissionFailure(err);
+        healthFinish({ provider_outcome: 'request_not_sent_internal_error',
+          terminal_health: 'local_execution_failure',
+          attention_reason_codes: [localError.code ?? 'provider_dispatch_publication_failed'] });
+        recordExtractionCoverage(coverageLedger, {
+          ...coverageBase,
+          request_sent: false,
+          provider_outcome: 'request_not_sent_internal_error',
+          coverage_terminal_state: 'unresolved_local_execution_failure',
+        });
+        throw localError;
       }
       const overflow = classifyContextOverflow(err);
       if (overflow || isEstimatedContextOverflow(err)) {
@@ -1621,13 +1621,13 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         attempt_id: providerAttempt?.attempt_id,
         transport_status: 'failed', terminal: false,
         reason_code: failureReason,
-        next_action: 'dispatch_bounded_recovery_attempt',
+        next_action: 'dispatch_provider_request',
         raw_response_reference: null,
       });
       else await emitLifecycleEvent('provider_transport_failed', {
         provider_attempt_id: providerAttempt?.attempt_id ?? null,
         exact_reason_code: failureReason,
-        next_eligible_action: 'dispatch_bounded_recovery_attempt',
+        next_eligible_action: 'dispatch_provider_request',
         recovery_intent: 'recover_provider_transport_failure',
       });
       healthFinish({ provider_outcome: 'provider_failure', terminal_health: 'provider_failure', attention_reason_codes: ['provider_failure'] });
@@ -1747,7 +1747,14 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             error.code = 'SME_PROVIDER_ATTEMPT_REGISTRATION_FAILED';
             error.sme_recovery_blocked = true;
             error.sme_request_diagnostics = ingress;
-            throw error;
+            throw annotatePreTransmissionFailure(error, {
+              fallback_stage: 'provider_attempt_registration',
+            });
+          }
+          try {
+            await pipeline.markProviderDispatchStarted(attempt);
+          } catch (error) {
+            throw annotatePreTransmissionFailure(error);
           }
         },
         onAttemptSettled: async (attempt, detail = {}) => {
@@ -1757,7 +1764,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               attempt_id: attempt.attempt_id,
               transport_status: 'failed', terminal: false,
               reason_code: attempt.failure_classification ?? 'provider_transport_failure',
-              next_action: 'dispatch_bounded_recovery_attempt',
+              next_action: 'dispatch_provider_request',
               raw_response_reference: null,
               recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
             });
@@ -1765,7 +1772,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               provider_attempt_id: attempt.attempt_id,
               exact_reason_code: attempt.failure_classification
                 ?? 'provider_transport_failure',
-              next_eligible_action: 'dispatch_bounded_recovery_attempt',
+              next_eligible_action: 'dispatch_provider_request',
             });
             return;
           }
@@ -1775,7 +1782,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               terminal: false,
               reason_code: detail.malformed_reason ?? attempt.malformed_reason
                 ?? 'malformed_provider_output',
-              next_action: 'dispatch_bounded_recovery_attempt',
+              next_action: 'dispatch_provider_request',
               raw_response_reference: { retained: false, digest: attempt.response_hash ?? null },
               parser_outcome: { status: 'rejected', accepted_candidate_ids: [],
                 rejected_fragment_ids: [], reason_code: detail.malformed_reason
@@ -1789,7 +1796,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               const settled = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
                 evidence: attempt,
                 reason_code: detail.malformed_reason ?? attempt.malformed_reason,
-                next_action: 'dispatch_bounded_recovery_attempt',
+                next_action: 'dispatch_provider_request',
                 recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
               });
               if (!['pending_reconciliation', 'operationally_paused',
@@ -1818,7 +1825,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
             await emitLifecycleEvent('recovery_required', {
               provider_attempt_id: attempt.attempt_id,
               exact_reason_code: 'partial_output_pending',
-              next_action: 'dispatch_bounded_recovery_attempt',
+              next_action: 'dispatch_provider_request',
             });
           }
         },
@@ -1840,8 +1847,8 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               exact_reason_code: terminalAttempt.failure_classification
                 ?? 'provider_transport_failure',
               next_eligible_action: recoveryError?.sme_recovery_blocked
-                ? 'change_provider_configuration_or_install_updated_build'
-                : 'dispatch_bounded_recovery_attempt',
+                ? 'stop_blocked'
+                : 'dispatch_provider_request',
             });
           } else {
             const settlement = await pipeline.ingestProviderEvidence('settle_terminal_malformed_attempt', {
@@ -1849,7 +1856,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               reason_code: terminalAttempt.malformed_reason
                 ?? 'terminal_malformed_provider_output',
               next_action: recoveryError?.sme_request_diagnostics?.next_eligible_recovery_action
-                ?? 'dispatch_bounded_recovery_attempt',
+                ?? (recoveryError?.sme_recovery_blocked ? 'stop_blocked' : 'dispatch_provider_request'),
               recovery_stage: terminalAttempt.recovery_stage,
               operationally_paused: recoveryError?.sme_recovery_blocked === true,
             });
@@ -1886,7 +1893,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               provider_attempt_id: terminalRecoveryAttempt.attempt_id,
               exact_reason_code: terminalRecoveryAttempt.failure_classification
                 ?? 'provider_transport_failure',
-              next_eligible_action: 'dispatch_bounded_recovery_attempt',
+              next_eligible_action: 'dispatch_provider_request',
             });
           } else {
             const settlement = await pipeline.ingestProviderEvidence(
@@ -1895,7 +1902,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
                 reason_code: terminalRecoveryAttempt.malformed_reason
                   ?? 'terminal_malformed_provider_output',
                 next_action: recovery?.terminal_error?.sme_request_diagnostics
-                  ?.next_eligible_recovery_action ?? 'dispatch_bounded_recovery_attempt',
+                  ?.next_eligible_recovery_action ?? 'dispatch_provider_request',
                 recovery_stage: terminalRecoveryAttempt.recovery_stage,
               });
             if (!['pending_reconciliation', 'operationally_paused',
@@ -1918,7 +1925,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         const durableRecoveredCount = Number(recovery.durable_partial_record_count ?? 0) || 0;
         if (recovery.logical_obligation_id) {
           markProviderStagedRecoveryCompleted(providerMetadata, recovery.logical_obligation_id,
-            coverageBase.source_fingerprint, durableRecoveredCount);
+            coverageBase.source_fingerprint, recovery.durably_persisted_record_ids ?? []);
           await saveChatMetadata(getContext());
         }
         recordCompletedCoverage(durableRecoveredCount > 0
@@ -2065,19 +2072,20 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         `[Smart Memory Enhanced] All ${parsed.length} extracted candidates were duplicates of existing memories.`,
       );
       if (recoveryPendingError) {
-        markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, parsed.length,
-          coverageBase.source_fingerprint);
+        markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId,
+          coverageBase.source_fingerprint, verifiedExistingRecordIds);
         await saveChatMetadata(getContext());
         recordExtractionCoverage(coverageLedger, { ...coverageBase,
           provider_outcome: 'partial_valid_records_preserved_no_new_write',
           coverage_terminal_state: 'partial_records_preserved_obligation_pending',
-          accepted_partial_record_count: parsed.length,
+          parser_accepted_candidate_count: parsed.length,
+          durable_partial_record_count: verifiedExistingRecordIds.length,
         });
         throw recoveryPendingError;
       }
       if (stagedRecoveryObligationId) {
         markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
-          coverageBase.source_fingerprint, parsed.length);
+          coverageBase.source_fingerprint, verifiedExistingRecordIds);
         await saveChatMetadata(getContext());
       }
       completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
@@ -2276,14 +2284,14 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
           chatHistory,
           stateLines,
           cardExcerpt,
-          formatCanonicalRosterForPrompt(buildCanonicalCharacterRoster(getContext())),
+          formatCanonicalRosterForPrompt(buildCanonicalRoster(getContext())),
         );
         const relResponse = await generateMemoryExtract(applyPromptOverride(relPrompt, PROMPT_TASKS.RELATIONSHIPS, characterName), { responseLength: 300 });
         const deltas = parseRelationshipDeltaResponse(relResponse);
 
         // Only store pairs where the character is one of the parties.
         if (deltas.length > 0) {
-          const canonicalRoster = buildCanonicalCharacterRoster(getContext());
+          const canonicalRoster = buildCanonicalRoster(getContext());
           const sessionEntityRegistry = loadSessionEntityRegistry();
           const knownEntityType = (name) => {
             const normalized = String(name ?? '').trim().toLowerCase();
@@ -2356,11 +2364,11 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
               target_canonical_card_id: pair.target.cardId,
               updatedAt: Date.now(),
             };
-            relationshipRecord.source_message_indices = [...new Set([
-              ...(existing.source_message_indices ?? []),
+            relationshipRecord.supporting_source_indices = [...new Set([
+              ...(existing.supporting_source_indices ?? []),
               ...relationshipSources,
             ])].sort((a, b) => a - b);
-            relationshipRecord.last_update_source_indices = relationshipSources;
+            relationshipRecord.latest_update_indices = relationshipSources;
             relationshipRecord.parent_memory_ids = [];
             validateGeneratedRecord(relationshipRecord);
             relationshipRecord.evidence_ranges = relationshipRecord.source_messages;
@@ -2376,7 +2384,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
 
     // Normalize only deterministic card/persona aliases in generated prose.
     // Unknown names remain untouched so this cannot create or rename NPCs.
-    const narrativeRoster = buildCanonicalCharacterRoster(getContext());
+    const narrativeRoster = buildCanonicalRoster(getContext());
     for (const mem of finalActive) {
       const narrative = canonicalizeNarrativeNames(mem.content, narrativeRoster);
       mem.content = narrative.text;
@@ -2403,7 +2411,7 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         id: `relationship:${pairKey}`,
         grounding_status: relationship.grounding_status,
         validation_status: relationship.validation_status,
-        source_message_indices: relationship.source_message_indices ?? [],
+        source_message_indices: relationship.supporting_source_indices ?? [],
         entity_link_stage: 'relationship_promotion',
         entity_link_store: 'relationship-history',
         entity_creation_method: 'relationship_promotion',
@@ -2498,17 +2506,18 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
     }
     if (stagedRecoveryObligationId) {
       markProviderStagedRecoveryCompleted(providerMetadata, stagedRecoveryObligationId,
-        coverageBase.source_fingerprint, parsed.length);
+        coverageBase.source_fingerprint, durableRecordIds);
       await saveChatMetadata(getContext());
     }
     if (recoveryPendingError) {
-      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId, added,
-        coverageBase.source_fingerprint);
+      markProviderPartialRecordsPersisted(providerMetadata, recoveryPendingObligationId,
+        coverageBase.source_fingerprint, durableRecordIds);
       await saveChatMetadata(getContext());
       recordExtractionCoverage(coverageLedger, { ...coverageBase,
         provider_outcome: 'partial_valid_records_persisted_obligation_pending',
         coverage_terminal_state: 'partial_records_persisted_obligation_pending',
-        accepted_partial_record_count: added,
+        parser_accepted_candidate_count: parsed.length,
+        durable_partial_record_count: durableRecordIds.length,
       });
       recoveryPendingError.sme_partial_records_persisted = true;
       throw recoveryPendingError;
@@ -3002,7 +3011,7 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
   if (!settings.relationships_enabled || !characterName || getCharacterMemoryPolicy(characterName) === CHARACTER_MEMORY_POLICIES.DISABLED) return clear();
 
   const history = loadRelationshipHistory(characterName);
-  const roster = buildCanonicalCharacterRoster(getContext());
+  const roster = buildCanonicalRoster(getContext());
   const pairs = Object.entries(history).filter(([key, state]) =>
     isGeneratedRecordApproved(state)
     && state?.excluded_from_injection !== true
@@ -3034,7 +3043,6 @@ export function injectRelationshipHistory(characterName, updateTelemetry = false
     const labels = getRelationshipHistoryPairDisplay(key, history[key]);
     const displaySubject = labels.subject.toLowerCase();
     const displayTarget = labels.target.toLowerCase();
-    const [subject, target] = key.split('→').map((s) => s.trim().toLowerCase());
     return (
       recentText.includes(displaySubject) ||
       recentText.includes(displayTarget) ||

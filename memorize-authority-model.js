@@ -9,10 +9,7 @@ import { cloneSerializableDomain } from './serializable-domain.js';
 export const MEMORIZE_AUTHORITY_MODEL_VERSION = 1;
 const TIERS = Object.freeze(['longterm', 'session']);
 const LOCAL_RECONCILIATION_ACTIONS = new Set([
-  'continue_pending_downstream_processing',
-  'replay_terminal_provider_downstream_lifecycle',
-  'settle_terminal_malformed_attempt',
-  'reconcile_terminal_attempt_evidence',
+  'apply_journaled_provider_completion',
 ]);
 
 const clone = (value) => cloneSerializableDomain(value, {
@@ -148,6 +145,19 @@ export function getFirstActionableObligation(ledgerValue) {
   return projectMemorizeObligationLedger(ledgerValue).next_eligible_obligation ?? null;
 }
 
+/** Scheduler keys for terminal recovery children, derived from canonical state. */
+export function getCompletedRecoveryChildKeys(ledgerValue) {
+  const ledger = ensureMemorizeObligationLedger(ledgerValue);
+  return [...new Set(Object.values(ledger.obligations ?? {})
+    .filter((item) => item?.parent_obligation_id && item.checkpoint_eligible === true
+      && Number.isInteger(Number(item.source_range?.start))
+      && Number.isInteger(Number(item.source_range?.end))
+      && String(item.source_fingerprint ?? '').trim())
+    .map((item) => `${item.tier}:${String(item.owner ?? 'chat').toLowerCase()}`
+      + `:${item.source_range.start}-${item.source_range.end}:${item.source_fingerprint}`))]
+    .sort();
+}
+
 /**
  * Derives Resume eligibility exclusively from current-run authoritative state.
  * Historical journal and diagnostic records are not executable inputs.
@@ -258,9 +268,6 @@ function projectionFields(manifest = {}) {
     cumulative_chunk_count_available: manifest.cumulative_chunk_count_available ?? null,
     cumulative_chunk_count_reason: manifest.cumulative_chunk_count_reason ?? null,
     tier_coverage: manifest.tier_coverage ?? {},
-    tier_obligations: manifest.tier_obligations ?? [],
-    owner_obligations: manifest.owner_obligations ?? [],
-    authoritative_resume_selection: manifest.authoritative_resume_selection ?? null,
   };
 }
 
@@ -321,31 +328,6 @@ export function rebuildMemorizeManifestProjection(manifestValue = {}, options = 
     committed_ranges: mergeRanges(tierRanges[tier]),
     projection_source: 'authoritative_obligation_ledger',
   }]));
-  manifest.tier_obligations = TIERS.flatMap((tier) => tierGroups[tier].map((group) => {
-    const pending = group.obligations.filter((item) => !item.checkpoint_eligible);
-    const actionable = pending.find((item) => item.next_eligible_action) ?? pending[0] ?? null;
-    return {
-      key: group.key, tier, ...group.range,
-      enabled: tiers.includes(tier), applicable: true,
-      safely_committed: pending.length === 0,
-      terminal_outcome: pending.length === 0 ? 'safely_committed' : 'pending',
-      reason_code: actionable?.exact_reason_code ?? null,
-      next_eligible_action: actionable?.next_eligible_action ?? null,
-      root_obligation_ids: group.obligations.map((item) => item.obligation_id).sort(),
-      projection_source: 'authoritative_obligation_ledger',
-    };
-  })).slice(-1024);
-  manifest.owner_obligations = rootObligations(ledger, 'longterm')
-    .filter((item) => item.owner).map((item) => ({
-      key: `longterm:${String(item.owner).toLowerCase()}:${item.source_range.start}-${item.source_range.end}`,
-      tier: 'longterm', owner: item.owner, ...projectCoordinates(rangeOf(item.source_range)),
-      source_fingerprint: item.source_fingerprint ?? null,
-      safely_committed: item.checkpoint_eligible === true,
-      terminal_outcome: item.checkpoint_eligible ? 'safely_committed' : 'pending',
-      reason_code: item.exact_reason_code ?? null,
-      updated_at: item.timestamps?.updated_at ?? null,
-      projection_source: 'authoritative_obligation_ledger',
-    })).slice(-4096);
   manifest.committed_ranges = generalRanges;
 
   const chunkCandidates = [...new Map(TIERS.flatMap((tier) => tierGroups[tier])
@@ -382,6 +364,12 @@ export function rebuildMemorizeManifestProjection(manifestValue = {}, options = 
     ?? manifest.source_window?.message_count ?? 0);
   const projectedSafeResumeOffset = generalRanges.length
     && generalRanges[0].start_offset === 0 ? generalRanges[0].end_offset + 1 : 0;
+  // Root obligations are registered before provider work begins. Their unique
+  // source windows therefore prove how far source traversal reached even when
+  // one tier remains pending and the contiguous safe checkpoint must stay
+  // behind. This is a projection, not a second persisted cursor.
+  const projectedSourceTraversalOffset = Math.min(sourceCount,
+    Math.max(projectedSafeResumeOffset, canonicalOffset));
   const obligationProjection = projectMemorizeObligationLedger(ledger);
   const actionable = obligationProjection.next_eligible_obligation;
   const selection = actionable ? {
@@ -407,11 +395,6 @@ export function rebuildMemorizeManifestProjection(manifestValue = {}, options = 
     } : {
       action: 'continue_finalization', kind: 'finalization', obligation_id: null, source_range: null,
     };
-  manifest.authoritative_resume_selection = {
-    schema_version: 1,
-    ...selection,
-    projection_source: 'authoritative_obligation_ledger',
-  };
   const before = JSON.stringify(projectionFields(manifestValue));
   const after = JSON.stringify(projectionFields(manifest));
   return {
@@ -421,6 +404,7 @@ export function rebuildMemorizeManifestProjection(manifestValue = {}, options = 
     persistence_calls: 0,
     committed_message_count: generalRanges.reduce((sum, range) => sum + range.message_count, 0),
     safe_resume_offset: projectedSafeResumeOffset,
+    source_traversal_offset: projectedSourceTraversalOffset,
     selection,
     tier_ranges: clone(tierRanges),
   };

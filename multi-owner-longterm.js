@@ -69,7 +69,8 @@ export function partitionMultiOwnerLongtermResponse(response, {
         reason_code: 'cross_owner_duplicate_assignment' });
       continue;
     }
-    const { _record_index, ...durableRecord } = record;
+    const durableRecord = { ...record };
+    delete durableRecord._record_index;
     partitions[record.owner].push(durableRecord);
   }
   const explicitNoUpdate = [...new Set((Array.isArray(value.no_update_owners)

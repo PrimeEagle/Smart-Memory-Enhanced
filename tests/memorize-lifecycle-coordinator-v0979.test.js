@@ -45,11 +45,14 @@ function strandedLedger() {
   });
   const first = fixture.children[0];
   applyMemorizeLifecycleEvent(ledger, identity(first), {
+    type: 'provider_attempt_registered', provider_attempt_id: first.attempt_id, at: 3,
+  });
+  applyMemorizeLifecycleEvent(ledger, identity(first), {
     type: 'provider_attempt_started', provider_attempt_id: first.attempt_id, at: 3,
   });
   applyMemorizeLifecycleEvent(ledger, identity(first), {
     type: 'recovery_required', reason_code: 'provider_attempt_registration_required',
-    next_action: 'resume_exact_obligation', at: 4,
+    next_action: 'dispatch_provider_request', at: 4,
   });
   const second = fixture.children[1];
   const candidateMap = Object.fromEntries(fixture.journal[2].validated_record_identities

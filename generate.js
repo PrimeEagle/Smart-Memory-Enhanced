@@ -51,6 +51,7 @@ import {
   resolveEffectiveContextLimit,
 } from './extraction-window-utils.js';
 import { classifyOpenAiResponseEnvelope } from './provider-response-utils.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import {
   inspectOpenAiSsePayload,
   summarizeOpenAiStreamEvents,
@@ -366,7 +367,10 @@ function readRuntimeContextLimits() {
 
 /** Returns a privacy-safe copy for diagnostics and recovery UI. */
 export function getRuntimeContextLimitDiagnostics() {
-  return structuredClone(readRuntimeContextLimits());
+  return cloneSerializableDomain(readRuntimeContextLimits(), {
+    path: '$.runtime_context_limits', stage: 'runtime_context_projection',
+    operation_type: 'provider_configuration',
+  });
 }
 
 function runtimeContextLimitLookup(identity = memoryProviderIdentity(), now = Date.now()) {
@@ -1137,8 +1141,9 @@ export async function generateMemoryExtract(prompt, {
   const charLimit =
     responseLength > 0 && getGenerationBudget() !== -1
       ? Math.max(responseLength, getGenerationBudget()) * 4
-      : Infinity;
-      return stripped.length > charLimit ? stripped.slice(0, charLimit) : stripped;
+      : null;
+      return charLimit !== null && stripped.length > charLimit
+        ? stripped.slice(0, charLimit) : stripped;
       }),
     );
   } catch (error) {
@@ -1252,8 +1257,8 @@ export async function generateMemorySummarize(
     const charLimitDirect =
       responseLength > 0 && getGenerationBudget() !== -1
         ? Math.max(responseLength, getGenerationBudget()) * 4
-        : Infinity;
-    return strippedDirect.length > charLimitDirect
+        : null;
+    return charLimitDirect !== null && strippedDirect.length > charLimitDirect
       ? strippedDirect.slice(0, charLimitDirect)
       : strippedDirect;
   }

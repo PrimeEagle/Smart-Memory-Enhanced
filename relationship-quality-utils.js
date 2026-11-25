@@ -40,7 +40,7 @@ export function summarizeRelationshipQuality({ profileUnresolved = 0, unresolved
       quarantined_from_injection: quarantinedPairs,
       disposition: ambiguousPairs ? 'retained_for_review_and_excluded_from_propagation' : 'none',
     },
-    legacy_pair_key_normalization_debt: {
+    deterministic_pair_key_reconciliation_debt: {
       count: Number(deterministicDebt),
       disposition: deterministicDebt ? 'review_or_safe_rekey_if_deterministic' : 'none',
     },

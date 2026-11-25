@@ -20,14 +20,14 @@ const obligation = (id, start, end, patch = {}) => ({
 function nestedLedger() {
   const root = obligation('root', 20, 39, {
     current_state: 'pending_recovery', exact_reason_code: 'recovery_children_pending',
-    next_eligible_action: 'continue_unattempted_recovery_child',
+    next_eligible_action: 'aggregate_completed_children',
     expected_child_obligation_ids: ['20-29', '30-39'],
   });
   const left = obligation('20-29', 20, 29, { parent_obligation_id: 'root',
     current_state: 'durably_committed', checkpoint_eligible: true });
   const right = obligation('30-39', 30, 39, { parent_obligation_id: 'root',
     current_state: 'pending_recovery', expected_child_obligation_ids: ['30-34', '35-39'],
-    next_eligible_action: 'continue_unattempted_recovery_child' });
+    next_eligible_action: 'aggregate_completed_children' });
   const committed = obligation('30-34', 30, 34, { parent_obligation_id: '30-39',
     current_state: 'durably_committed', checkpoint_eligible: true });
   const pending = obligation('35-39', 35, 39, { parent_obligation_id: '30-39' });
@@ -81,7 +81,7 @@ test('real obligation reducer and action engine complete nested Session recovery
   });
   transitionMemorizeObligation(ledger, identity('root', 20, 39, null, ['20-29', '30-39']), {
     current_state: 'pending_recovery', exact_reason_code: 'recovery_children_pending',
-    next_eligible_action: 'continue_unattempted_recovery_child', at: 2,
+    next_eligible_action: 'aggregate_completed_children', at: 2,
   });
   transitionMemorizeObligation(ledger, identity('20-29', 20, 29, 'root'), {
     current_state: 'durably_committed', at: 3,
@@ -89,7 +89,7 @@ test('real obligation reducer and action engine complete nested Session recovery
   transitionMemorizeObligation(ledger,
     identity('30-39', 30, 39, 'root', ['30-34', '35-39']), {
       current_state: 'pending_recovery', exact_reason_code: 'recovery_children_pending',
-      next_eligible_action: 'continue_unattempted_recovery_child', at: 4,
+      next_eligible_action: 'aggregate_completed_children', at: 4,
     });
   transitionMemorizeObligation(ledger, identity('30-34', 30, 34, '30-39'), {
     current_state: 'durably_committed', at: 5,

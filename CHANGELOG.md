@@ -7,6 +7,192 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.94] - 2026-11-25
+
+- Added scripted host-persistence coverage for saving provider registration before dispatch, rejecting dispatch after a failed save, and reopening the last saved checkpoint without accepting stale callbacks.
+- Export Diagnostics falls back to compact JSON when full report validation fails, preserves the original run error, and releases the temporary download URL even when download initiation fails.
+- Removed duplicate scene request and confidence counters, including double counting when a parent batch adopts a retry decision.
+- Browser-level Fresh Start, repeated Resume, and diagnostic download verification remain pending.
+
+- Removed the obsolete `buildCanonicalCharacterRoster` compatibility API. All production identity consumers now use the single `buildCanonicalRoster` entry point, with an architecture gate preventing the duplicate builder name from returning.
+- Collapsed canonical-roster entries to one JavaScript domain shape (`id`, `canonicalName`, `source`, aliases, and excerpts). The builder no longer emits duplicate `canonical_id`, `canonical_name`, or `source_type` aliases; persisted identity DTOs remain independently schema-owned.
+- Removed array, `Map`, and `people` compatibility containers from canonical-roster readers. Identity helpers now require the single current `{ characters: [...] }` contract and fail closed with `SME_CANONICAL_ROSTER_SCHEMA_UNSUPPORTED` on structural drift.
+- Removed synthetic `legacy-durable:*` provider-audit identities and the count-only partial-persistence API. Long-Term, Session, malformed recovery, and replay paths now carry actual durable record IDs into recovery accounting, with partial counts derived from those identities.
+- Removed camelCase Arc Extraction and final-reconciliation diagnostic aliases. Those projections now publish only their canonical snake_case fields, eliminating duplicate counter maintenance and two double-increment defects in Arc `returned_none` and `provider_error` accounting.
+- Removed the obsolete `scene_max_history` setting entirely. Scene archive retention and injection now expose only their distinct current settings, without retaining a dormant migration-source key.
+- Removed the provider audit’s compatibility translation from `missing_tagged_records` to `prose_around_structured_output`. Tagged-record requests now retain the precise parser reason consistently through recovery and diagnostics.
+- Simplified idempotence ownership: chat metadata keeps the persisted `developer_idempotence_check`, while diagnostics publish only top-level `manual_idempotence` and `automatic_stabilization`. Removed redundant developer/manual copies and the ambiguous `finalReconciliation.idempotence` slot that could overwrite automatic stabilization meaning.
+- Renamed scene-recovery comparison diagnostics to describe current evidence directly: missing compact metrics are no longer labelled “legacy,” and prior-run request comparison now reports comparable/not-comparable status rather than compatibility terminology.
+- Removed the obsolete persona fallback from SillyTavern’s character-side `name2` field. Canonical persona identity now comes only from explicit persona/runtime state, the current `name1` user field, or grounded imported authorship evidence.
+- Split partial-output accounting into two explicit quantities: parser-accepted candidates and durable partial records derived from durable record IDs. Removed the ambiguous `accepted_partial_record_count` projection so recovery eligibility, diagnostics, and coverage cannot confuse parser evidence with persistence truth.
+- Removed the duplicate `accepted_record_ids` recovery-window alias. Recovery restoration, eligibility, audit summaries, Session verification, and retirement now use only the identity-backed `durably_persisted_record_ids` contract.
+- Consolidated Memorize recovery onto one executable kernel-action vocabulary. Recovery intent and stage remain descriptive evidence, while `next_eligible_action` now contains only canonical commands; the kernel no longer accepts historical action aliases.
+- Removed the duplicate `tier_obligations` and `owner_obligations` manifest stores and their mutation/query APIs. Tier and owner recovery state now comes only from the canonical obligation ledger; diagnostics derive sibling-owner presentation from that authority without persisting a second lifecycle model.
+- Removed the unused `recordCommittedCatchUpRange` projection mutator. Durable coverage is established by ledger-backed persistence and rebuilt as a read model; current run manifests reject obsolete schema versions with a Fresh Start requirement instead of normalizing them in place.
+- Removed persisted `authoritative_resume_selection` state from the run manifest. The controller now consumes the selection returned directly by the canonical ledger projection, preventing a cached read model from becoming a second execution authority.
+- Removed persisted `checkpoint.authoritative_recovery` state. Recovery authority is now derived at the controller/UI boundary from current ledger, provider, heartbeat, and transaction evidence; diagnostics may retain the resulting read model without feeding it back into execution.
+- Removed persisted `checkpoint.resume_eligibility` state. Resume eligibility now remains a local controller/UI decision derived from current authority; checkpoint status records the durable lifecycle outcome without caching a second actionable decision.
+- Removed persisted `checkpoint.recovery_blocked` state. Blocked obligations, reasons, configuration signatures, and executable recovery actions now project exclusively from the canonical obligation ledger and provider evidence; checkpoint status retains only the durable lifecycle outcome.
+- Removed write-only checkpoint repair and traversal projections (`authority_projection_reconciliation`, `lifecycle_journal_reconciliation`, runtime repair summaries, traversal policy, and recovery-sweep labels). Crash recovery now persists only the ledger and source offsets that execution actually consumes; diagnostics derive repair state from current evidence.
+- Made provider-completion consistency a diagnostics-time projection instead of persisted checkpoint state, and reduced stale-controller audit persistence to its schema-owned evidence DTO. Stale-controller reconciliation no longer embeds repair summaries or another cached Resume decision.
+- Removed the unused stale-controller checkpoint audit, last-committed source-index markers, and duplicate checkpoint `committed_chunks` scalar. Resume progress and diagnostic snapshot identity now read the run manifest’s canonical cumulative chunk count.
+- Replaced persisted `resume_progress_in_flight` with invocation-local controller state. Only the completed, durable Resume progress comparison remains in the checkpoint for repeated-no-progress protection.
+- Removed checkpoint-level source count, source-end, and run-settings timestamp aliases. Resume validation, recovery authority, and diagnostics now read the manifest’s single canonical source window; the settings snapshot remains the only persisted settings recovery value.
+- Removed the persisted source-traversal cursor. The authority projection now derives the furthest traversed processing offset from canonical root-obligation windows, while the controller keeps only an invocation-local cursor during recovery sweeps; the contiguous safe checkpoint remains independently ledger-derived.
+- Removed the cached checkpoint operational-pause record. Pause execution evidence remains invocation-local, while Resume summaries and terminal reasons now project the pause directly from the canonical obligation lifecycle and provider audit.
+- Removed persisted recovery-child manifests and their controller callback. Child registration, state, parentage, consistency checks, and Resume selection now use the canonical obligation tree directly instead of maintaining a diagnostic mirror.
+- Removed the duplicate context-overflow completion store. Recovery scheduler skip keys now derive from terminal canonical child obligations after restart, with only a local current-invocation key set retained while a scheduler is active.
+- Converted persona audit proof into an invocation-local projection of the persisted canonical runtime context. Final reconciliation and diagnostics retain the proof without storing a second checkpoint copy of the same identity facts.
+- Removed duplicate checkpoint storage for secondary controller-finalization failures. The canonical controller-exit diagnostic now owns that bounded evidence without copying it into recovery state.
+- Removed checkpoint persistence for stale-lease callback observations and optional cleanup warnings. Both remain bounded to the controller invocation that observed them; neither can influence Resume authority or durable memory coverage.
+- Removed the duplicate checkpoint controller-failure record. Primary failure identity, stage, transaction context, and bounded error details now have one durable owner in the canonical controller-exit ledger evidence.
+- Removed dead compatibility-era imports, destructured values, aliases, and diagnostic locals across Memorize, profiles, scenes, relationships, and UI integrity checks. Production lint now runs with a zero-warning release gate instead of retaining a standing unused-code warning baseline.
+- Removed the parallel text-link repair counter model and legacy-labelled integrity projections. Final reconciliation now publishes one canonical entity-link repair account plus present-tense unrelated-store, preexisting-record, and reobserved-repair diagnostics.
+- Removed relationship-history provenance aliases and migration metadata. Current relationship records require explicit participant labels and use only `supporting_source_indices` plus `latest_update_indices`; the current state-card type-change operation is now named as a rekey rather than a migration.
+- Removed range-to-index provenance fallback, the legacy-labelled relationship key-debt projection, and duplicate profile relationship/camelCase summaries. Source indices now exclusively generate display ranges, while profile diagnostics retain one canonical terminal-outcome collection and snake_case counters.
+- Removed the idempotence fallback and writer for a stored durable-change boolean, along with the duplicate final-hash aliases. Current idempotence results require both canonical durable semantic hashes, derive convergence directly from that comparison, and fail closed with `durable_state_hashes_missing` when it is unavailable.
+- Removed the former line-oriented scene-provider response contract and duplicate confidence-scope aliases. Scene detection now accepts only its current JSON response shape, while malformed output follows the existing bounded repair, smaller-batch retry, and deterministic fallback path; confidence diagnostics expose one attempt-level collection and one terminal-candidate collection.
+- Removed the final graph-record read-time upgrade path. Current graph records are now constructed only at creation boundaries; reconciliation no longer manufactures missing IDs or link provenance, and idempotence projections fail closed on records without current identities instead of masking them with deterministic legacy defaults.
+- Split Scene History construction from persisted-record validation. Scene loads and saves no longer synthesize deterministic IDs or legacy grounding states; non-current scene records now fail closed with a Fresh Start requirement.
+- Removed Scene Stability gate-output and run-identity migration. Stability history now requires durable run IDs, compares only the current structured gate schema, reports schema coverage directly, and no longer publishes legacy migration progress or duplicate compatibility aliases.
+- Simplified run-failure and provider-audit projections by removing the permanently empty superseded/migrated bucket and obsolete legacy-labelled aliases. Missing bounded diagnostic detail is now reported directly as pruned or unrecorded.
+- Renamed the completed-run failure projection to `physical_failure_observation_count`, matching its authoritative accounting source and removing the last historical-failure alias from UI status projections.
+- Routed feature clears for long-term memories, relationship history, epistemic knowledge, Canon, profiles, Story Arcs, arc summaries, and the session entity registry through the shared rollback-capable persistence boundary. Empty snapshot replacements are now recorded as durable clears instead of being mislabeled as explicit no-update outcomes.
+- Removed startup settings migrations for obsolete template, scene-budget, compaction-budget, arc-budget, and consolidation field layouts. Current defaults now fill only absent current fields and never reinterpret an existing current value as a legacy sentinel.
+- Advanced live-memory-health diagnostics to schema 3, replaced the legacy unknown-outcome label with the current `outcome_unknown` state, and removed the obsolete `legacy_field_name` projection marker.
+- Replaced idempotence-result migration with a current-schema projection. Obsolete result schemas now fail closed instead of being rewritten, and current stored-verdict disagreement is reported directly as `stored_verdict_mismatch`.
+- Replaced the misleading `automatic_stabilization_second_pass_writes` compatibility field with `reconciliation_write_accounting`, retained the explicitly scoped `literal_pass_2_writes`, and removed compatibility-semantics annotations.
+- Renamed profile role cleanup from migration terminology to current-data normalization and renamed its diagnostic counter accordingly.
+- Replaced legacy Arc Summary quarantine/backfill with a current verified-record assertion. Missing identity or verification fields now require Fresh Start instead of being synthesized during reads.
+- Removed the backward-compatible durable-idempotence canonicalizer export; all consumers now use the single explicitly named semantic-state projection.
+- Removed the list-only Continuity and contradiction-parser compatibility APIs. Production callers now consume the typed continuity verdict directly.
+- Removed the untagged Scene Summary prompt fallback; scene summaries now require the current `[SCENE]...[/SCENE]` contract and malformed output proceeds through ordinary recovery.
+- Removed duplicate run-status compatibility projections. Error accounting now exposes only `physical_failure_observations`, and normalized reports no longer retain a parallel legacy-status object.
+- Added current Long-Term/Session record assertions and removed read-time Session ID synthesis. Manual memory creation now establishes graph identity before persistence; obsolete records require Fresh Start.
+- Removed flat Relationship History descriptor conversion from the read path. Descriptor records must now use the current `{word, magnitude}` structure or fail closed with a Fresh Start requirement.
+
+### Added
+
+- Added an executable architecture release gate covering whole-state plain-data
+  validation, provider registration/dispatch ordering, startup without prior
+  heartbeat state, independent real-time persistence, and deterministic
+  9,434-message finalization/idempotence replay.
+- Added reusable fault injection across 18 execution boundaries, with assertions
+  for transaction settlement, root-error preservation, Resume/UI agreement, and
+  full/compact diagnostic serialization. Every boundary is also exercised under
+  manual cancellation and page replacement.
+- Added a shared production Fresh Start run-state reset used by both the UI and
+  the startup release gate, proving that stale execution state is removed while
+  unrelated chat data is preserved before the first provider dispatch.
+- Added canonical controller-exit, transaction-snapshot, provider-registration,
+  and bounded diagnostic-error DTOs, plus a design note documenting authority,
+  effects, persistence, recovery, diagnostics, and UI projection boundaries.
+- Added schema-owned stale-controller, unresolved-obligation, and compact
+  failure-diagnostic DTOs with strict plain-data validation and stable nullable
+  semantics.
+- Added a schema-owned full diagnostics publication boundary with stable build,
+  run, controller, provider-attempt, root-error, and transmission identities.
+- Added a distinct durable `provider_registered` lifecycle stage and explicit
+  provider-transmission evidence so diagnostics no longer count attempt
+  allocation as a physical request.
+
+### Changed
+
+- Provider registration now snapshots audit and journal state, durably commits
+  a fully validated proposed audit/journal/ledger aggregate inside the leased
+  transaction, and publishes it only after durable success. Registration no
+  longer mutates authoritative metadata before persistence.
+- Leased metadata mutations now restore their pre-mutation aggregate when
+  validation or checkpoint persistence throws, preventing partial ledger,
+  audit, or journal publication.
+- Durable cloning boundaries no longer permit `undefined`; transport, recovery,
+  and diagnostic producers normalize their optional values before validation.
+- Malformed-output recovery no longer reads hidden or non-enumerable recovery
+  payloads from provider audit entries; callers supply canonical recovery state
+  explicitly.
+- Session and Long-Term now share a pre-transmission failure boundary that
+  preserves the original exception and explicitly prevents provider retry for
+  registration, receipt, or dispatch-publication failures that occur before a
+  provider call.
+- Persisted Short-Term recovery plans must now match the current schema and
+  carry their configuration signature. Older or unsigned incomplete-run state
+  fails closed with Fresh Start required instead of being rewritten in place.
+- Removed the reachable Short-Term missing-plan and false-failure migration
+  paths. Missing or incompatible incomplete-run state now has one clean-break
+  result—Fresh Start required—and reconciliation reports inconsistent retained
+  evidence without rewriting it from aggregate counters.
+- Completed-run diagnostics are now validated and cloned only at their final
+  publication boundary. A projection defect cannot abort the core commit; it
+  produces an independently validated compact diagnostic-failure export.
+- Continuity Check outcomes and unified-injection token accounting now cross
+  schema-owned immutable read-model boundaries. Continuity failures expose a
+  bounded diagnostic DTO instead of a live `Error`, and callers can no longer
+  mutate injection's internal token-breakdown state.
+- Unified injection now constructs and validates a complete read-only selection
+  plan before mutating prompt slots. The plan records ordering, exact-content
+  deduplication, upstream-budget accounting, placement, rejection reasons, and
+  privacy-safe provenance; it also includes Triggered, Relationship,
+  Epistemic, and State Ledger content that the former seven-tier merge omitted.
+- Continuity Check now consumes canonical evidence records with stable candidate
+  or source identities. Budget selection exports only content-free evidence
+  identities, source ownership, record type, counts, and token estimates rather
+  than maintaining anonymous prose blocks as an alternate fact model.
+- Story Arc, Canon, Epistemic, entity-registry, Long-Term, Session, State
+  Ledger, Scene, Profile, and Short-Term feature rollback snapshots now use the
+  strict serializable-domain clone with named operation paths. Raw browser
+  `structuredClone` failures can no longer escape those persistence boundaries
+  without the offending path and stage.
+- Removed every remaining direct production use of `structuredClone` from
+  feature receipts, recovery manifests, run-status normalization, provider
+  configuration projections, checkpoint/controller state, obligation reads,
+  and final-reconciliation snapshots. An executable gate now reserves the raw
+  clone primitive exclusively for `serializable-domain.js` after validation.
+- Removed the obsolete Short-Term attempt-accounting compatibility fallback.
+  Incomplete runs with an older accounting schema now fail closed with a Fresh
+  Start requirement instead of importing an inexact physical-attempt count.
+- Removed legacy attempt-label and Short-Term recovery-migration aliases from
+  the canonical run diagnostics projection; it now reports only durable current
+  attempt types and current-schema recovery state.
+- Replaced provider-generation unlimited character bounds with an explicit
+  nullable bound so the provider path no longer creates non-finite sentinels.
+- Browser-side page-run recovery now accepts only the current marker schema;
+  stale experimental markers are ignored instead of being interpreted as
+  current interruption evidence.
+- Targeted replay now requires current configuration evidence and a current
+  checkpoint schema. Unsigned old obligations are ineligible, stale replay
+  checkpoints require Fresh Start, and checkpoint updates omit transient
+  command flags instead of persisting `undefined`.
+- Character memories, relationship history, entity registries, Canon,
+  Epistemic knowledge, and persistent character/group arcs now execute through
+  the shared synchronous feature-persistence boundary. Feature modules can no
+  longer publish a durable receipt without running the corresponding settings
+  write and rollback contract.
+- Stored character/chat memory entry points now validate the current schema and
+  reject older test stores instead of invoking the historical migration ladder.
+  New stores are schema-stamped at creation, and the automatic legacy Arc
+  Summary rewrite has been removed from chat startup.
+- Deleted the obsolete version-by-version character/chat migration functions,
+  registries, and runner, and renamed the remaining startup entry points to
+  describe their actual current-schema validation responsibility.
+
+### Fixed
+
+- Fixed controller exits dropping the original exception code when normalizing
+  a recovery reason, so compact failure diagnostics retain both the canonical
+  reason and the first root error identity.
+- Fixed missing controller heartbeats persisting `Infinity` as an unavailable
+  age and preventing a new Memorize Chat transaction from starting.
+- Fixed malformed-recovery diagnostics emitting an explicit undefined
+  `root_obligation_id` for canonical obligations.
+- Fixed transport-failure persistence commands emitting an undefined parser
+  outcome and fixed default provider attempts emitting an undefined recovery
+  stage.
+- Fixed generic provider-registration wrappers obscuring the originating
+  serialization path, type, and failure stage.
+- Fixed Session marking a request as sent before durable dispatch publication,
+  and fixed Session/Long-Term classifying local dispatch-publication failures as
+  provider transport failures.
+
 ## [0.9.93] - 2026-11-19
 
 ### Added

@@ -1,4 +1,4 @@
-import { beginProviderAttempt } from './provider-attempt-audit.js';
+import { beginProviderAttempt, markProviderAttemptDispatched } from './provider-attempt-audit.js';
 import { assessMemorizeProviderDispatch, createMemorizeProviderProfile }
   from './memorize-provider-policy.js';
 import { acknowledgeJournalTransition, createMemorizeLifecycleIdentity,
@@ -11,6 +11,7 @@ import { cloneSerializableDomain } from './serializable-domain.js';
 
 const EXPECTED_EVENT_STATES = Object.freeze({
   obligation_registered: [],
+  provider_attempt_registered: ['provider_registered'],
   provider_attempt_started: ['provider_running'],
   provider_response_received: ['provider_response_received'],
   provider_transport_failed: ['pending_recovery'],
@@ -107,7 +108,87 @@ export function createMemorizeTierPipeline(input) {
     source_range: { start: range.start, end: range.end, message_count: range.message_count },
     source_fingerprint: sourceFingerprint,
   });
+  const pendingRegistrationSnapshots = new Map();
+  const pendingRegistrationProposals = new Map();
+  const pendingAttemptReferences = new Map();
+  const captureRegistrationSnapshot = () => cloneSerializableDomain({
+    provider_attempt_audit: metadata?.live_memory_health?.provider_attempt_audit ?? null,
+    provider_completion_journal: metadata?.provider_completion_journal ?? null,
+  }, {
+    path: '$.provider_registration.before', stage: 'provider_registration_preparation',
+    operation_type: 'provider_attempt_registration', obligation_id: leafObligationId,
+  });
+  const restoreRegistrationSnapshot = (attemptId) => {
+    const snapshot = pendingRegistrationSnapshots.get(attemptId);
+    if (!snapshot || !metadata) return;
+    metadata.live_memory_health ??= {};
+    if (snapshot.provider_attempt_audit == null) {
+      delete metadata.live_memory_health.provider_attempt_audit;
+    } else {
+      metadata.live_memory_health.provider_attempt_audit = snapshot.provider_attempt_audit;
+    }
+    if (snapshot.provider_completion_journal == null) delete metadata.provider_completion_journal;
+    else metadata.provider_completion_journal = snapshot.provider_completion_journal;
+    pendingRegistrationSnapshots.delete(attemptId);
+    pendingRegistrationProposals.delete(attemptId);
+    pendingAttemptReferences.delete(attemptId);
+  };
+  const prepareProviderStateProposal = (mutate, stage) => {
+    const proposalMetadata = {
+      active_catchup_run_id: metadata?.active_catchup_run_id ?? null,
+      live_memory_health: {
+        provider_attempt_audit: cloneSerializableDomain(
+          metadata?.live_memory_health?.provider_attempt_audit ?? null, {
+            path: '$.provider_state_proposal.provider_attempt_audit', stage,
+            operation_type: 'provider_attempt_registration',
+            obligation_id: leafObligationId,
+          }),
+      },
+      provider_completion_journal: cloneSerializableDomain(
+        metadata?.provider_completion_journal ?? null, {
+          path: '$.provider_state_proposal.provider_completion_journal', stage,
+          operation_type: 'provider_attempt_registration',
+          obligation_id: leafObligationId,
+        }),
+    };
+    const value = mutate(proposalMetadata);
+    const proposal = cloneSerializableDomain({
+      provider_attempt_audit:
+        proposalMetadata.live_memory_health?.provider_attempt_audit ?? null,
+      provider_completion_journal:
+        proposalMetadata.provider_completion_journal ?? null,
+    }, {
+      path: '$.provider_state_proposal', stage,
+      operation_type: 'provider_attempt_registration',
+      obligation_id: leafObligationId,
+    });
+    return { value, proposal };
+  };
+  const publishProviderStateProposal = (proposal) => {
+    if (!proposal || !metadata) return;
+    metadata.live_memory_health ??= {};
+    if (proposal.provider_attempt_audit == null) {
+      delete metadata.live_memory_health.provider_attempt_audit;
+    } else metadata.live_memory_health.provider_attempt_audit
+      = proposal.provider_attempt_audit;
+    if (proposal.provider_completion_journal == null) {
+      delete metadata.provider_completion_journal;
+    } else metadata.provider_completion_journal
+      = proposal.provider_completion_journal;
+    for (const [attemptId, reference] of pendingAttemptReferences) {
+      const attempts = metadata.live_memory_health?.provider_attempt_audit
+        ?.recent_attempts ?? [];
+      const index = attempts.findIndex((item) => item.attempt_id === attemptId);
+      if (index < 0) continue;
+      Object.assign(reference, attempts[index]);
+      attempts[index] = reference;
+    }
+  };
   const applyLifecycleEvent = async (type, details = {}) => {
+    const attemptId = details.provider_attempt_id ?? null;
+    const providerStateProposal = type === 'provider_attempt_registered'
+      || type === 'provider_attempt_started'
+      ? pendingRegistrationProposals.get(attemptId) ?? null : null;
     const event = {
       obligation_id: leafObligationId,
       root_obligation_id: rootObligationId,
@@ -118,8 +199,17 @@ export function createMemorizeTierPipeline(input) {
       source_fingerprint: sourceFingerprint,
       type,
       ...details,
+      ...(providerStateProposal ? { provider_state_proposal: providerStateProposal } : {}),
     };
     const result = await execution.hooks.obligation_event(event);
+    if (providerStateProposal
+      && ['applied', 'idempotent_duplicate', 'idempotent_duplicate_verified']
+        .includes(result?.status)) {
+      // The production hook publishes this proposal inside its leased durable
+      // transaction. Publishing again is an idempotent in-memory synchronization
+      // for isolated adapters and tests.
+      publishProviderStateProposal(providerStateProposal);
+    }
     if (!execution.controller.lifecycle_required) return result;
     const receipt = requireAppliedLifecycleResult(result, EXPECTED_EVENT_STATES[type] ?? [], {
       stage: type, obligation_id: leafObligationId, event_type: type,
@@ -194,7 +284,9 @@ export function createMemorizeTierPipeline(input) {
       };
       throw error;
     }
-    return beginProviderAttempt(metadata, {
+    const registrationSnapshot = captureRegistrationSnapshot();
+    const prepared = prepareProviderStateProposal((proposalMetadata) =>
+      beginProviderAttempt(proposalMetadata, {
       tier,
       owner,
       logical_obligation_id: rootObligationId,
@@ -237,32 +329,103 @@ export function createMemorizeTierPipeline(input) {
       safety_margin: preflight.safety_margin_tokens,
       protocol_overhead: preflight.protocol_overhead_tokens,
       estimated_input_tokens: preflight.estimated_input_tokens,
-      estimated_final_request_tokens: preflight.estimated_input_tokens
-        + preflight.reserved_output_tokens + preflight.protocol_overhead_tokens,
+      estimated_final_request_tokens: [preflight.estimated_input_tokens,
+        preflight.reserved_output_tokens, preflight.protocol_overhead_tokens]
+        .every((value) => Number.isFinite(Number(value)))
+        ? Number(preflight.estimated_input_tokens) + Number(preflight.reserved_output_tokens)
+          + Number(preflight.protocol_overhead_tokens)
+        : null,
       resumed_pending_obligation: execution.provider.resumed_pending_obligation,
       schema_version: schemaVersion,
       configuration_signature: providerConfigSignature,
-    });
+    }), 'provider_registration_aggregate_construction');
+    const attempt = prepared.value;
+    if (attempt?.attempt_id) pendingRegistrationSnapshots.set(attempt.attempt_id,
+      registrationSnapshot);
+    if (attempt?.attempt_id) pendingRegistrationProposals.set(attempt.attempt_id,
+      prepared.proposal);
+    if (attempt?.attempt_id) pendingAttemptReferences.set(attempt.attempt_id, attempt);
+    return attempt;
   };
   // Registration and the canonical running transition form one awaited
   // dispatch boundary. Callers cannot send the provider request between them.
   const beginRegisteredAttempt = async (...args) => {
     const attempt = beginAttempt(...args);
-    if (attempt?.attempt_id) await applyLifecycleEvent('provider_attempt_started', {
-      provider_attempt_id: attempt.attempt_id,
-      exact_reason_code: 'provider_request_in_progress',
-      recovery_intent: attempt.recovery_intent,
-      recovery_stage: attempt.recovery_stage,
-    });
+    if (attempt?.attempt_id) {
+      try {
+        await applyLifecycleEvent('provider_attempt_registered', {
+          provider_attempt_id: attempt.attempt_id,
+          exact_reason_code: 'provider_attempt_durably_registered',
+          recovery_intent: attempt.recovery_intent,
+          recovery_stage: attempt.recovery_stage,
+        });
+        pendingRegistrationSnapshots.delete(attempt.attempt_id);
+        pendingRegistrationProposals.delete(attempt.attempt_id);
+        pendingAttemptReferences.delete(attempt.attempt_id);
+      } catch (error) {
+        restoreRegistrationSnapshot(attempt.attempt_id);
+        throw error;
+      }
+    }
     return attempt;
   };
-  const ingestProviderEvidence = (operation, details = {}) => coordinateProviderEvidenceIngress({
-    operation, identity: lifecycleIdentity,
-    prior_state: execution.provider.root_obligation_state,
-    emit_lifecycle_event: applyLifecycleEvent,
-    begin_registered_attempt: beginRegisteredAttempt,
-    ...details,
-  });
+  const ingestProviderEvidence = async (operation, details = {}) => {
+    const attemptId = details.attempt?.attempt_id ?? null;
+    try {
+      const result = await coordinateProviderEvidenceIngress({
+        operation, identity: lifecycleIdentity,
+        prior_state: execution.provider.root_obligation_state,
+        emit_lifecycle_event: applyLifecycleEvent,
+        begin_registered_attempt: beginRegisteredAttempt,
+        ...details,
+      });
+      if (attemptId) {
+        if (['applied', 'idempotent_duplicate_verified'].includes(result?.status)) {
+          pendingRegistrationSnapshots.delete(attemptId);
+          pendingRegistrationProposals.delete(attemptId);
+          pendingAttemptReferences.delete(attemptId);
+        } else restoreRegistrationSnapshot(attemptId);
+      }
+      return result;
+    } catch (error) {
+      if (attemptId) restoreRegistrationSnapshot(attemptId);
+      throw error;
+    }
+  };
+  const markProviderDispatchStarted = async (attempt, detail = {}) => {
+    if (!attempt?.attempt_id) return attempt;
+    const snapshot = captureRegistrationSnapshot();
+    pendingRegistrationSnapshots.set(attempt.attempt_id, snapshot);
+    try {
+      const prepared = prepareProviderStateProposal((proposalMetadata) => {
+        const proposedAttempt = proposalMetadata.live_memory_health
+          ?.provider_attempt_audit?.recent_attempts
+          ?.find((item) => item.attempt_id === attempt.attempt_id);
+        if (!proposedAttempt) {
+          const error = new Error('Provider dispatch requires a durably registered attempt.');
+          error.code = 'SME_PROVIDER_REGISTRATION_REQUIRED';
+          throw error;
+        }
+        return markProviderAttemptDispatched(proposalMetadata, proposedAttempt, detail);
+      }, 'provider_dispatch_aggregate_construction');
+      pendingRegistrationProposals.set(attempt.attempt_id, prepared.proposal);
+      pendingAttemptReferences.set(attempt.attempt_id, attempt);
+      await applyLifecycleEvent('provider_attempt_started', {
+        provider_attempt_id: attempt.attempt_id,
+        exact_reason_code: 'provider_request_in_progress',
+        recovery_intent: attempt.recovery_intent,
+        recovery_stage: attempt.recovery_stage,
+      });
+      Object.assign(attempt, prepared.value);
+      pendingRegistrationSnapshots.delete(attempt.attempt_id);
+      pendingRegistrationProposals.delete(attempt.attempt_id);
+      pendingAttemptReferences.delete(attempt.attempt_id);
+      return attempt;
+    } catch (error) {
+      restoreRegistrationSnapshot(attempt.attempt_id);
+      throw error;
+    }
+  };
   const getCanonicalObligation = () => execution.hooks.get_canonical_obligation(
     leafObligationId, lifecycleIdentity.logical_run_id);
   const recordActionReceipt = async (phase, detail = {}) => {
@@ -452,7 +615,8 @@ export function createMemorizeTierPipeline(input) {
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
     lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
-    beginRegisteredAttempt, ingestProviderEvidence, getCanonicalObligation,
+    beginRegisteredAttempt, ingestProviderEvidence, markProviderDispatchStarted,
+    getCanonicalObligation,
     requireSelectedAction, executeSelectedAction, recordActionReceipt,
     atomicCompletionEnabled, prepareProviderCompletion, applyProviderCompletion,
     contextOverflowError: () => createTierContextOverflowError(tierLabel, preflight, range),

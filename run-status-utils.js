@@ -1,5 +1,6 @@
 import { classifyMemorizeErrorRecord, MEMORIZE_ERROR_CATEGORIES }
   from './memorize-error-origin.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 
 export const RUN_STATUS_CLASSIFIER_VERSION = 6;
 
@@ -32,10 +33,9 @@ export function deriveRunErrorAccounting(report = {}) {
   const operationalPauses = number(failure.operationally_paused_obligation_count
     ?? provider.operational_pause_count ?? report.operational_pause_count);
   const recoveryInProgress = number(failure.recovery_in_progress_obligation_count);
-  const supersededOrMigrated = number(failure.superseded_or_migrated_obligation_count);
   const uniqueFailed = number(failure.unique_failed_obligation_count
     ?? provider.unique_malformed_obligations)
-    || providerUnresolved + recovered + operationalPauses + recoveryInProgress + supersededOrMigrated;
+    || providerUnresolved + recovered + operationalPauses + recoveryInProgress;
   const observedTransportFailures = number(failure.provider_transport_failure_count
     ?? provider.terminal_counts?.provider_failure
     ?? logical.cumulative_request_counters?.provider_failure_count
@@ -129,13 +129,6 @@ export function deriveRunErrorAccounting(report = {}) {
       count: currentDetails.length, unit: 'retained_events', scope: 'current_attempt',
       includes_recovered: true, bounded: true, authoritative: false,
     },
-    historical_failure_observations: {
-      count: cumulativeFailureObservations, unit: 'physical_failure_events',
-      scope: 'cumulative_provider_transmissions_across_attempts', includes_recovered: true,
-      bounded: false, authoritative: true,
-      compatibility_alias: true,
-      canonical_field: 'physical_failure_observations',
-    },
     physical_failure_observations: {
       count: cumulativeFailureObservations, unit: 'physical_failure_events',
       scope: 'cumulative_provider_transmissions_across_attempts', includes_recovered: true,
@@ -157,10 +150,6 @@ export function deriveRunErrorAccounting(report = {}) {
     },
     recovery_in_progress_obligations: {
       count: recoveryInProgress, unit: 'unique_logical_obligations', scope: 'current_operational_state',
-      includes_recovered: false, bounded: false, authoritative: true,
-    },
-    superseded_or_migrated_obligations: {
-      count: supersededOrMigrated, unit: 'unique_logical_obligations', scope: 'cumulative_provider_audit',
       includes_recovered: false, bounded: false, authoritative: true,
     },
     operational_pauses: {
@@ -224,7 +213,7 @@ export function deriveRunErrorAccounting(report = {}) {
       terminal_unresolved_subset_of_failed: providerUnresolved <= uniqueFailed,
       recovered_plus_unresolved_equals_failed: providerAggregateCountsExact
         ? recovered + operationalPauses + recoveryInProgress
-          + supersededOrMigrated + providerUnresolved === uniqueFailed : null,
+          + providerUnresolved === uniqueFailed : null,
       recovered_and_unresolved_do_not_overlap: [...recoveredIds].every((id) => !unresolvedIds.has(id)),
       fatal_not_inferred_from_transient_provider_failures: fatalRunErrors === 0
         || Boolean(report.final_persistence_error || currentDetails.some((entry) => entry?.fatal === true)),
@@ -238,7 +227,7 @@ export function deriveRunErrorAccounting(report = {}) {
       consistent: providerUnresolved <= uniqueFailed
         && displayedCategoryTotal <= displayedErrorCount
         && (!providerAggregateCountsExact || recovered + operationalPauses + recoveryInProgress
-          + supersededOrMigrated + providerUnresolved === uniqueFailed)
+          + providerUnresolved === uniqueFailed)
         && unresolved >= retainedUnresolvedCount
         && (recovered === 0 || cumulativeFailureObservations > 0)
         && cumulativeFailureObservations >= uniqueFailed
@@ -272,17 +261,16 @@ export function deriveRunStatus(report = {}) {
     ?? report.finalReconciliation?.integrity_audit?.status
     ?? null;
   const automaticMissedMutation = report.manual_idempotence?.post_automatic_manual_dependency_trace?.automatic_missed_mutation === true
-    || report.developer_idempotence_check?.post_automatic_manual_dependency_trace?.automatic_missed_mutation === true
     || report.finalReconciliation?.final_state_consistency?.automatic_missed_mutation === true;
   const integrityFailure = integrityStatus !== null && !cleanIntegrity(integrityStatus);
   const unresolvedCount = number(accounting.terminal_unresolved_obligations?.count);
   const recoveredCount = number(accounting.recovered_obligations?.count);
-  const historicalFailureObservationCount = number(accounting.historical_failure_observations?.count);
+  const physicalFailureObservationCount = number(accounting.physical_failure_observations?.count);
   const noticeCount = number(accounting.quality_notices?.count);
   const displayedNoticeCount = noticeCount + (automaticMissedMutation ? 1 : 0);
   const fatalCount = number(accounting.fatal_run_level_errors?.count);
   const operationalPauseCount = number(accounting.operational_pauses?.count);
-  const legacyStatus = String(report.lifecycle_status ?? report.operational_status ?? report.status ?? '').toLowerCase();
+  const reportedLifecycleStatus = String(report.lifecycle_status ?? report.operational_status ?? report.status ?? '').toLowerCase();
   const statusReasonCodes = [];
   let lifecycleStatus;
   if (sourceComplete && finalizationCommitted && fatalCount === 0) {
@@ -292,13 +280,13 @@ export function deriveRunStatus(report = {}) {
     && (recovery.resumable === true || recovery.available === true)) {
     lifecycleStatus = 'incomplete';
     statusReasonCodes.push('durable_resume_available');
-  } else if (recoveryBlocked || recovery.available === true || legacyStatus === 'blocked') {
+  } else if (recoveryBlocked || recovery.available === true || reportedLifecycleStatus === 'blocked') {
     lifecycleStatus = 'blocked';
     statusReasonCodes.push('durable_recovery_blocker');
-  } else if (legacyStatus === 'cancelled') {
+  } else if (reportedLifecycleStatus === 'cancelled') {
     lifecycleStatus = 'incomplete';
     statusReasonCodes.push('cancelled_before_completion');
-  } else if (legacyStatus === 'not_run') {
+  } else if (reportedLifecycleStatus === 'not_run') {
     lifecycleStatus = 'not_run';
     statusReasonCodes.push('no_run_evidence');
   } else {
@@ -316,7 +304,7 @@ export function deriveRunStatus(report = {}) {
       label = unresolvedCount > 0 ? `Completed with ${unresolvedCount} error${unresolvedCount === 1 ? '' : 's'}` : 'Completed with errors';
       if (unresolvedCount > 0) statusReasonCodes.push('terminal_unresolved_obligations');
       if (integrityFailure) statusReasonCodes.push('final_integrity_failure');
-    } else if (recoveredCount > 0 || historicalFailureObservationCount > 0) {
+    } else if (recoveredCount > 0 || physicalFailureObservationCount > 0) {
       outcomeStatus = 'completed_recovered_errors'; severity = 'warning'; icon = 'triangle-exclamation';
       label = 'Completed — recovered errors'; statusReasonCodes.push('historical_errors_fully_recovered');
     } else if (displayedNoticeCount > 0) {
@@ -356,7 +344,7 @@ export function deriveRunStatus(report = {}) {
     unresolved_error_count: unresolvedCount,
     recovered_error_count: recoveredCount,
     operational_pause_count: operationalPauseCount,
-    historical_failure_observation_count: historicalFailureObservationCount,
+    physical_failure_observation_count: physicalFailureObservationCount,
     notice_count: displayedNoticeCount,
     attention_required: automaticMissedMutation || unresolvedCount > 0 || integrityFailure,
     recovery_reason_code: recovery.reason_code ?? null,
@@ -473,7 +461,7 @@ export function deriveRunPerformanceDiagnostics(report = {}) {
       retained_segment_cap_decisions: array(compaction.segment_attempt_ledger).map((entry) => ({
         request_id: entry.request_id ?? null,
         message_count: entry.message_count ?? null,
-        segment_origin: entry.segment_origin ?? 'legacy_unknown',
+        segment_origin: entry.segment_origin ?? 'unrecorded',
         growth_cap_applies: entry.recovery_growth_cap_applies ?? null,
         growth_cap_messages: entry.recovery_growth_cap_messages ?? null,
         growth_decision: entry.recovery_growth_decision ?? null,
@@ -495,10 +483,13 @@ export function deriveRunPerformanceDiagnostics(report = {}) {
   };
 }
 
-/** Read-only compatibility normalization for persisted legacy reports. */
+/** Read-only normalization for current canonical reports. */
 export function normalizeRunStatusReport(report = {}) {
   const providerAttemptAudit = report.provider_attempt_audit == null
-    ? null : structuredClone(report.provider_attempt_audit);
+    ? null : cloneSerializableDomain(report.provider_attempt_audit, {
+      path: '$.run_status.provider_attempt_audit', stage: 'run_status_projection',
+      operation_type: 'run_status',
+    });
   const normalizedInput = { ...report, provider_attempt_audit: providerAttemptAudit };
   const errorAccounting = deriveRunErrorAccounting(normalizedInput);
   const runStatus = deriveRunStatus({ ...normalizedInput, error_accounting: errorAccounting });
@@ -518,12 +509,5 @@ export function normalizeRunStatusReport(report = {}) {
       completion_quality_status: runStatus.outcome_status,
       operational_status: runStatus.lifecycle_status,
     } : report.quality,
-    legacy_status_compatibility: {
-      original_status: report.legacy_status_compatibility?.original_status ?? report.status ?? null,
-      original_operational_status: report.legacy_status_compatibility?.original_operational_status ?? report.operational_status ?? null,
-      original_completion_quality_status: report.legacy_status_compatibility?.original_completion_quality_status
-        ?? report.quality?.completion_quality_status ?? null,
-      derived_without_destructive_rewrite: true,
-    },
   };
 }

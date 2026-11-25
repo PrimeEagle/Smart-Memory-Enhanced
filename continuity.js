@@ -32,7 +32,7 @@
  * Manual-only because running this automatically on every message would be
  * too expensive on local hardware (RTX 2080 / 8GB VRAM).
  *
- * checkContinuity     - runs a contradiction check against the last AI message
+ * checkContinuityDetailed - runs a contradiction check and returns its typed outcome
  * generateRepair      - generates a corrective note from a contradiction list
  * injectRepair        - stores the repair note and injects it into the prompt
  * clearRepair         - removes the pending repair from storage and the prompt
@@ -57,6 +57,10 @@ import { smLog } from './logging.js';
 import { makeExtractionPreflight } from './extraction-window-utils.js';
 import { selectContinuityFactBlocks, validateContinuityRepair } from './continuity-utils.js';
 import { beginContinuityEvent, updateContinuityEvent, finishContinuityEvent, recordContinuityRepairLifecycle } from './live-memory-health.js';
+import { createDiagnosticError } from './memorize-domain-dtos.js';
+import { createContinuityOutcome } from './continuity-outcome.js';
+import { createContinuityEvidenceSet } from './continuity-evidence.js';
+import { candidateIdentityOf } from './candidate-identity.js';
 
 /**
  * Collects all established facts into a single labelled text block.
@@ -69,7 +73,10 @@ function gatherEstablishedFactBlocks(characterName) {
   const context = getContext();
   const meta = context.chatMetadata?.[META_KEY];
   const parts = [];
-  const add = (source, text, count = 1) => { if (text?.trim()) parts.push({ source, text, count }); };
+  const add = (source, evidenceId, sourceIdentity, text, recordType = null, count = 1) => {
+    if (text?.trim()) parts.push({ source, evidence_id: evidenceId,
+      source_identity: sourceIdentity, record_type: recordType, text, count });
+  };
 
   // The character card is the canonical source of truth - check it first.
   // Characters may contradict their card (wrong gender, species, etc.) in ways
@@ -83,7 +90,9 @@ function gatherEstablishedFactBlocks(characterName) {
     if (char.personality) cardParts.push('Personality: ' + char.personality);
     if (char.scenario) cardParts.push('Scenario: ' + char.scenario);
     if (cardParts.length > 0) {
-      add('character_card', '-- CHARACTER CARD --\n' + cardParts.join('\n'));
+      const cardIdentity = String(char.avatar ?? char.name ?? characterName);
+      add('character_card', `character-card:${cardIdentity}`, `character:${cardIdentity}`,
+        '-- CHARACTER CARD --\n' + cardParts.join('\n'), 'character_card');
     }
   }
 
@@ -91,26 +100,39 @@ function gatherEstablishedFactBlocks(characterName) {
   // accurate descriptions of the user's character as contradictions.
   const personaDesc = power_user?.persona_description?.trim();
   if (personaDesc) {
-    add('persona', '-- USER PERSONA --\n' + personaDesc);
+    const personaIdentity = String(power_user?.default_persona ?? 'active-persona');
+    add('persona', `persona:${personaIdentity}`, `persona:${personaIdentity}`,
+      '-- USER PERSONA --\n' + personaDesc, 'persona');
   }
 
   if (meta?.summary) {
-    add('summary', '-- STORY SUMMARY --\n' + meta.summary);
+    const summaryIdentity = meta.shortterm_summary_identity?.candidate_id
+      ?? `shortterm-summary:${Number(meta.summaryEnd ?? 0)}`;
+    add('summary', summaryIdentity, 'chat:shortterm-summary',
+      '-- STORY SUMMARY --\n' + meta.summary, 'summary');
   }
 
   if (characterName) {
     const longterm = loadCharacterMemories(characterName).filter((m) => !m.superseded_by);
     if (longterm.length > 0) {
-      for (const memory of longterm) add('longterm', `-- LONG-TERM MEMORY --\n[${memory.type}] ${memory.content}`);
+      for (const memory of longterm) {
+        const identity = candidateIdentityOf(memory) ?? String(memory.id ?? '').trim();
+        add('longterm', identity, `character:${characterName}`,
+          `-- LONG-TERM MEMORY --\n[${memory.type}] ${memory.content}`, memory.type ?? null);
+      }
     }
   }
 
   const session = loadSessionMemories().filter((m) => !m.superseded_by);
   if (session.length > 0) {
-    for (const memory of session) add('session', `-- SESSION DETAIL --\n[${memory.type}] ${memory.content}`);
+    for (const memory of session) {
+      const identity = candidateIdentityOf(memory) ?? String(memory.id ?? '').trim();
+      add('session', identity, 'chat:session-memory',
+        `-- SESSION DETAIL --\n[${memory.type}] ${memory.content}`, memory.type ?? null);
+    }
   }
 
-  return parts;
+  return createContinuityEvidenceSet(parts);
 }
 
 function gatherEstablishedFacts(characterName) {
@@ -150,7 +172,13 @@ export async function checkContinuityDetailed(characterName, { trigger = 'manual
     target_status: characterName ? 'available' : 'missing', fact_sources: sourceCounts,
     input_tokens: sourceTokens, latest_response_tokens: estimateTokens(lastAiMessage?.mes ?? ''),
   });
-  const complete = (result) => ({ ...result, event_id: event?.event_id ?? null });
+  const complete = (result) => createContinuityOutcome({
+    outcome: result.outcome,
+    contradictions: result.contradictions,
+    attention: result.attention,
+    event_id: event?.event_id ?? null,
+    diagnostic_error: result.diagnostic_error ?? null,
+  });
   if (!lastAiMessage) {
     finishContinuityEvent(metadata, event, { terminal_outcome: 'empty_response', parser_outcome: 'not_started', attention_reason_codes: ['no_latest_ai_response'] });
     return complete({ outcome: 'empty_response', contradictions: [], attention: true });
@@ -180,18 +208,14 @@ export async function checkContinuityDetailed(characterName, { trigger = 'manual
   } catch (err) {
     console.error('[Smart Memory Enhanced] Continuity check failed:', err);
     finishContinuityEvent(metadata, event, { terminal_outcome: 'provider_failure', provider_outcome: 'provider_failure', parser_outcome: 'not_started', attention_reason_codes: ['provider_failure'] });
-    return complete({ outcome: 'provider_failure', contradictions: [], attention: true, error: err });
+    return complete({ outcome: 'provider_failure', contradictions: [], attention: true,
+      diagnostic_error: createDiagnosticError(err) });
   }
-}
-
-/** Backward-compatible list-only continuity API. */
-export async function checkContinuity(characterName, options) {
-  return (await checkContinuityDetailed(characterName, options)).contradictions;
 }
 
 /**
  * Generates a brief corrective context note from a list of contradictions.
- * Called after checkContinuity finds issues and auto-repair is enabled.
+ * Called after the detailed continuity check finds issues and auto-repair is enabled.
  * @param {string[]} contradictions - Array of contradiction descriptions.
  * @param {string} characterName - Used to load the correct long-term memories.
  * @returns {Promise<string>} The corrective note text.

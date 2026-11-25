@@ -9,7 +9,6 @@ import {
   parseSessionOutput,
   parseArcOutput,
   parseSceneSummaryOutput,
-  parseContradictions,
   parseContinuityVerdict,
   formatSummary,
   detectSceneBreakHeuristic,
@@ -19,6 +18,8 @@ import {
   parseEpistemicResponse,
   parseEpistemicRetireIndices,
 } from '../parsers.js';
+
+const parseContradictions = (text) => parseContinuityVerdict(text).contradictions;
 
 test('tagged lexical analysis and authoritative parsers agree exactly', () => {
   const longterm = '[fact:2:permanent:sources=1] A fully supported fact.\n[unknown] rejected fragment';
@@ -623,14 +624,8 @@ test('parseSceneSummaryOutput: rejects parser control words as participants', ()
   assert.deepEqual(result.characterParticipants, ['Paul']);
 });
 
-test('parseSceneSummaryOutput: preserves legacy untagged summaries', () => {
-  assert.deepEqual(
-    parseSceneSummaryOutput('The party leaves the inn and heads for the old road.'),
-    {
-      summary: 'The party leaves the inn and heads for the old road.',
-      characterParticipants: [],
-    },
-  );
+test('parseSceneSummaryOutput: rejects untagged summaries instead of using an old prompt fallback', () => {
+  assert.equal(parseSceneSummaryOutput('The party leaves the inn and heads for the old road.'), null);
   assert.equal(parseSceneSummaryOutput(''), null);
 });
 

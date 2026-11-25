@@ -16,8 +16,8 @@
     "Valerie Erikssen"
   ],
   "session_obligation_id": "session:chat:0-19:fnv1a-39c6c9f",
-  "accepted_partial_record_count": 3,
+  "parser_accepted_candidate_count": 3,
   "rejected_fragment_count": 2,
   "reason_code": "partial_valid_output_has_unresolved_fragments",
-  "next_action": "recover_unresolved_partial_output_fragments"
+  "next_action": "dispatch_provider_request"
 }

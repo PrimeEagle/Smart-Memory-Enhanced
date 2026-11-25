@@ -59,3 +59,20 @@ test('feature persistence receipts are idempotent and bounded', async () => {
   assert.equal(metadata.durable_persistence_receipts.filter(
     (item) => item.command_id === command.command_id).length, 1);
 });
+
+test('an empty replacement is a durable clear rather than an explicit no-update', async () => {
+  const metadata = { records: [{ id: 'old' }] };
+  const command = prepareFeaturePersistenceCommand({
+    workflow_id: 'chat-1', feature: 'profiles', operation: 'clear_profiles', records: [],
+  });
+  assert.equal(command.persistence_outcome.status, 'committed');
+  assert.equal(command.intended_state_transition, 'durably_committed');
+  assert.equal(command.duplicate_no_update_disposition, 'clear_validated_domain_snapshot');
+  await executeFeaturePersistence({
+    command, snapshot: () => structuredClone(metadata.records),
+    apply: () => { metadata.records = []; }, persist: () => {},
+    restore: (before) => { metadata.records = before; }, receipt_container: metadata,
+  });
+  assert.deepEqual(metadata.records, []);
+  assert.equal(metadata.durable_persistence_receipts.at(-1).durable_record_count, 0);
+});

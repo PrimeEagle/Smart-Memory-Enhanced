@@ -47,6 +47,7 @@ import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
   from './feature-persistence.js';
 import { getTokenCountAsync } from '../../../tokenizers.js';
 import { estimateTokens, MODULE_NAME, PROMPT_KEY_SHORT, META_KEY } from './constants.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import { buildSummaryPrompt, buildUpdateSummaryPrompt } from './prompts.js';
 import { formatSummary } from './parsers.js';
 import { loadCharacterMemories } from './longterm.js';
@@ -510,15 +511,19 @@ export async function runCompaction({ includeLastMessage = false, checkpointEach
         feature: 'shortterm', operation, records: [record],
         source_provenance: { source_indices: [0, sourceEnd], source_fingerprint: sourceFingerprint } });
       await executeFeaturePersistence({ command,
-        snapshot: () => ({ summary: meta.summary, summaryEnd: meta.summaryEnd,
-          summaryUpdated: meta.summaryUpdated,
-          checkpoint: structuredClone(meta.shortterm_compaction_checkpoint ?? null),
-          identity: structuredClone(meta.shortterm_summary_identity ?? null) }),
+        snapshot: () => cloneSerializableDomain({ summary: meta.summary ?? null,
+          summaryEnd: meta.summaryEnd ?? null,
+          summaryUpdated: meta.summaryUpdated ?? null,
+          checkpoint: meta.shortterm_compaction_checkpoint ?? null,
+          identity: meta.shortterm_summary_identity ?? null,
+        }, { path: '$.feature_snapshot.shortterm', stage: 'feature_snapshot', operation_type: 'shortterm' }),
         apply: () => {
           meta.summary = summary;
           meta.summaryEnd = nextSummaryEnd;
           meta.summaryUpdated = Date.now();
-          meta.shortterm_summary_identity = structuredClone(record.candidate_identity);
+          meta.shortterm_summary_identity = cloneSerializableDomain(record.candidate_identity, {
+            path: '$.shortterm_summary_identity', stage: 'feature_apply', operation_type: 'shortterm',
+          });
           if (checkpoint) meta.shortterm_compaction_checkpoint = checkpoint(meta.summaryUpdated);
           else delete meta.shortterm_compaction_checkpoint;
         }, persist: () => saveChatMetadata(context),

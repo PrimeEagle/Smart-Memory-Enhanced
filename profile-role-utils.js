@@ -140,22 +140,22 @@ export function extractExplicitNamedFamilyCandidates(messages = []) {
   return candidates;
 }
 
-/** Idempotently separates known roles from legacy structured profile entries. */
-export function migrateProfileRoleDescriptorSeparation(profile = {}) {
+/** Idempotently separates typed roles from descriptive profile fields. */
+export function normalizeProfileRoleDescriptorSeparation(profile = {}) {
   const entries = Array.isArray(profile.relationship_matrix_structured)
     ? profile.relationship_matrix_structured
     : [];
   let removed = 0;
-  let migrated = 0;
+  let normalizedFields = 0;
   const relationship_matrix_structured = entries.map((entry) => {
     const role = String(entry?.canonical_relationship_type ?? '').trim().toLowerCase() || null;
     const cleaned = normalizeRelationshipDescriptors(entry?.relationship_descriptors ?? entry?.descriptors ?? [], role);
     removed += cleaned.removed.length;
-    if (cleaned.removed.length) migrated++;
+    if (cleaned.removed.length) normalizedFields++;
     return { ...entry, canonical_relationship_type: role, relationship_descriptors: cleaned.descriptors };
   });
   const relationship_matrix = relationship_matrix_structured.length
     ? relationship_matrix_structured.map((entry) => renderRelationshipMatrixLine(entry.target, { relationship_type: entry.canonical_relationship_type }, entry.relationship_descriptors)).join('\n')
     : profile.relationship_matrix;
-  return { profile: { ...profile, relationship_matrix, relationship_matrix_structured }, profile_role_tokens_removed: removed, profile_fields_migrated_for_role_separation: migrated };
+  return { profile: { ...profile, relationship_matrix, relationship_matrix_structured }, profile_role_tokens_removed: removed, profile_fields_normalized_for_role_separation: normalizedFields };
 }

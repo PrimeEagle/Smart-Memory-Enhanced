@@ -3,17 +3,6 @@
 const validId = (value) => typeof value === 'string' && value.trim().length > 0;
 const uniqueSorted = (values) => [...new Set(values.filter(Number.isInteger).filter((value) => value >= 0))].sort((a, b) => a - b);
 
-function expandRanges(ranges) {
-  const indices = [];
-  for (const range of ranges ?? []) {
-    if (!Array.isArray(range) || range.length < 2) continue;
-    const start = Number(range[0]); const end = Number(range[1]);
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start) continue;
-    for (let index = start; index <= end; index++) indices.push(index);
-  }
-  return indices;
-}
-
 function toRanges(indices) {
   if (!indices.length) return [];
   const ranges = []; let start = indices[0]; let previous = indices[0];
@@ -25,10 +14,7 @@ function toRanges(indices) {
   return ranges;
 }
 
-/**
- * Makes source_message_indices authoritative while continuing to read/write the
- * legacy source_messages range field for backwards compatibility.
- */
+/** Makes source_message_indices authoritative and derives display ranges. */
 export function normalizeMemoryProvenance(memory, options = {}) {
   const {
     sourceOffset = 0,
@@ -37,7 +23,6 @@ export function normalizeMemoryProvenance(memory, options = {}) {
     inputIndicesAreRelative = false,
   } = options;
   let indices = Array.isArray(memory.source_message_indices) ? memory.source_message_indices.map(Number) : [];
-  if (!indices.some(Number.isInteger)) indices = expandRanges(memory.source_messages);
   indices = uniqueSorted(indices);
   if (inputIndicesAreRelative && relativeSourceLength != null && indices.every((index) => index < relativeSourceLength)) {
     indices = indices.map((index) => index + sourceOffset);
@@ -63,9 +48,8 @@ export function prepareRecordForValidation(record, sourceContext = {}, validatio
     chatLength = null,
     indicesAreRelative = false,
   } = sourceContext;
-  const rawIndices = Array.isArray(record.source_message_indices) && record.source_message_indices.length
-    ? record.source_message_indices.map(Number)
-    : expandRanges(record.source_messages);
+  const rawIndices = Array.isArray(record.source_message_indices)
+    ? record.source_message_indices.map(Number) : [];
   const invalidClaim = rawIndices.some((index) => !Number.isInteger(index) || index < 0 ||
     (indicesAreRelative && sourceLength != null && index >= sourceLength));
   let mapped = rawIndices.filter(Number.isInteger).filter((index) => index >= 0);

@@ -6,13 +6,11 @@ import {
   dispatchMemorizeAction,
 } from '../memorize-action-dispatcher.js';
 
-test('legacy provider recovery labels collapse to one dispatch action', () => {
-  assert.equal(canonicalizeMemorizeAction('resume_exact_obligation'),
+test('only canonical kernel actions cross the dispatcher boundary', () => {
+  assert.equal(canonicalizeMemorizeAction('resume_exact_obligation'), null);
+  assert.equal(canonicalizeMemorizeAction('continue_pending_downstream_processing'), null);
+  assert.equal(canonicalizeMemorizeAction('dispatch_provider_request'),
     'dispatch_provider_request');
-  assert.equal(assertMemorizeActionSelected({ selected_action: 'resume_exact_obligation',
-    requested_action: 'dispatch_provider_request' }), 'dispatch_provider_request');
-  assert.equal(canonicalizeMemorizeAction('continue_pending_downstream_processing'),
-    'apply_journaled_provider_completion');
 });
 
 test('dispatcher rejects a tier action that differs from the kernel action', async () => {
@@ -30,7 +28,7 @@ test('dispatcher rejects a tier action that differs from the kernel action', asy
 test('dispatcher invokes only the exact registered handler', async () => {
   const result = await dispatchMemorizeAction({
     logical_run_id: 'run-1', obligation_id: 'leaf-1',
-    selected_action: 'resume_exact_obligation',
+    selected_action: 'dispatch_provider_request',
     requested_action: 'dispatch_provider_request',
     handlers: { dispatch_provider_request: async ({ action }) => ({ action, sent: true }) },
   });

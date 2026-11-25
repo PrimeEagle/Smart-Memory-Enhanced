@@ -48,10 +48,16 @@ import {
   PROMPT_KEY_ARCS,
   PROMPT_KEY_PROFILES,
   PROMPT_KEY_CANON,
+  PROMPT_KEY_RELATIONSHIPS,
+  PROMPT_KEY_EPISTEMIC,
+  PROMPT_KEY_STATE_LEDGER,
+  PROMPT_KEY_TRIGGERED,
   PROMPT_KEY_UNIFIED,
   estimateTokens,
 } from './constants.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
+import { createInjectionTierBreakdown, createUnifiedInjectionPlan,
+  projectUnifiedInjectionDiagnostics } from './injection-read-model.js';
 
 /**
  * Canonical tier ordering for the unified block.
@@ -64,10 +70,14 @@ const TIER_ORDER = [
   { key: PROMPT_KEY_CANON, label: 'Canon', color: '#a05870' },
   { key: PROMPT_KEY_PROFILES, label: 'Profiles', color: '#5a9ea0' },
   { key: PROMPT_KEY_LONG, label: 'Long-term', color: '#4a6fa5' },
+  { key: PROMPT_KEY_RELATIONSHIPS, label: 'Relationships', color: '#a06078' },
+  { key: PROMPT_KEY_EPISTEMIC, label: 'Perspectives', color: '#6b8e9e' },
+  { key: PROMPT_KEY_STATE_LEDGER, label: 'State Ledger', color: '#8a7c5a' },
   { key: PROMPT_KEY_SHORT, label: 'Short-term', color: '#5a8e5a' },
   { key: PROMPT_KEY_SCENES, label: 'Scenes', color: '#a07840' },
   { key: PROMPT_KEY_SESSION, label: 'Session', color: '#8e5a8e' },
   { key: PROMPT_KEY_ARCS, label: 'Arcs', color: '#7a6ea5' },
+  { key: PROMPT_KEY_TRIGGERED, label: 'Triggered', color: '#4f82b8' },
 ];
 
 /** All individual keys that unified mode absorbs. */
@@ -80,6 +90,7 @@ const INDIVIDUAL_KEYS = TIER_ORDER.map((t) => t.key);
  * @type {Array<{key: string, label: string, color: string, tokens: number}>}
  */
 let lastTierBreakdown = [];
+let lastInjectionReadModel = null;
 
 /**
  * Content cache keyed by prompt key. Holds the last known non-empty content
@@ -96,7 +107,12 @@ let contentCache = {};
  * @returns {Array<{key: string, label: string, color: string, tokens: number}>}
  */
 export function getUnifiedTierBreakdown() {
-  return lastTierBreakdown;
+  return createInjectionTierBreakdown(lastTierBreakdown);
+}
+
+/** Returns the last content-free unified selection projection. */
+export function getUnifiedInjectionReadModel() {
+  return projectUnifiedInjectionDiagnostics(lastInjectionReadModel);
 }
 
 /**
@@ -108,6 +124,7 @@ export function clearUnifiedSlot() {
   setMacroContent(MACRO_NAMES.unified, '');
   setExtensionPrompt(PROMPT_KEY_UNIFIED, '', extension_prompt_types.NONE, 0);
   lastTierBreakdown = [];
+  lastInjectionReadModel = null;
   contentCache = {};
 }
 
@@ -142,47 +159,63 @@ export function invalidateUnifiedCache(key) {
 export function injectUnified() {
   // For each tier: use the fresh slot value if present, otherwise fall back
   // to the cache. Update the cache whenever fresh content is available.
-  const populated = TIER_ORDER.map((tier) => {
+  const candidates = TIER_ORDER.map((tier, rank) => {
     const fresh = extension_prompts[tier.key]?.value ?? '';
     if (fresh.length > 0) contentCache[tier.key] = fresh;
     const content = fresh.length > 0 ? fresh : (contentCache[tier.key] ?? '');
-    return { ...tier, content };
-  }).filter((t) => t.content.length > 0);
+    return {
+      key: tier.key, label: tier.label, color: tier.color, rank, content,
+      tokens: estimateTokens(content),
+      provenance: fresh.length > 0 ? 'fresh_prompt_slot'
+        : content.length > 0 ? 'cached_prompt_slot' : 'empty',
+    };
+  });
 
-  lastTierBreakdown = populated.map((t) => ({
+  const settings = extension_settings[MODULE_NAME];
+  const plan = createUnifiedInjectionPlan({
+    candidates,
+    placement: {
+      position: settings.unified_position ?? extension_prompt_types.IN_PROMPT,
+      depth: settings.unified_depth ?? 0,
+      role: settings.unified_role ?? extension_prompt_roles.SYSTEM,
+    },
+    macro_active: isMacroActive(MACRO_NAMES.unified),
+  });
+  lastInjectionReadModel = plan;
+
+  lastTierBreakdown = createInjectionTierBreakdown(plan.selected.map((t) => ({
     key: t.key,
     label: t.label,
     color: t.color,
     tokens: estimateTokens(t.content),
-  }));
+  })));
 
   // Clear every individual slot - the unified block replaces them all.
   for (const key of INDIVIDUAL_KEYS) {
     setExtensionPrompt(key, '', extension_prompt_types.NONE, 0);
   }
 
-  if (populated.length === 0) {
+  if (plan.selected.length === 0) {
     setMacroContent(MACRO_NAMES.unified, '');
     setExtensionPrompt(PROMPT_KEY_UNIFIED, '', extension_prompt_types.NONE, 0);
     return;
   }
 
-  const unified = populated.map((t) => t.content).join('\n\n');
+  const unified = plan.selected.map((t) => t.content).join('\n\n');
 
   setMacroContent(MACRO_NAMES.unified, unified);
-  if (isMacroActive(MACRO_NAMES.unified)) {
+  if (plan.target === 'macro') {
     setExtensionPrompt(PROMPT_KEY_UNIFIED, '', extension_prompt_types.NONE, 0);
     return;
   }
 
-  const settings = extension_settings[MODULE_NAME];
   setExtensionPrompt(
     PROMPT_KEY_UNIFIED,
     unified,
-    settings.unified_position ?? extension_prompt_types.IN_PROMPT,
-    settings.unified_depth ?? 0,
+    plan.placement.position,
+    plan.placement.depth,
     false,
-    settings.unified_role ?? extension_prompt_roles.SYSTEM,
+    plan.placement.role,
   );
 }
 

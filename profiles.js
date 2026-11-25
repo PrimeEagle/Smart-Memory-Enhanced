@@ -52,8 +52,10 @@ import { saveChatMetadata } from './catchup-transaction.js';
 import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
   from './feature-persistence.js';
 import { generateMemoryExtract } from './generate.js';
+import { cloneSerializableDomain } from './serializable-domain.js';
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
-import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES } from './constants.js';
+import { estimateTokens, MODULE_NAME, META_KEY, PROMPT_KEY_PROFILES,
+  SCHEMA_VERSION } from './constants.js';
 import { CHARACTER_MEMORY_POLICIES, getCharacterMemoryPolicy, getRelationshipHistoryPair, loadCharacterMemories, loadRelationshipHistory, saveRelationshipHistory, formatMemoriesForPrompt } from './longterm.js';
 import { loadSessionMemories } from './session.js';
 import { loadSceneHistory } from './scenes.js';
@@ -63,7 +65,7 @@ import { buildProfileFormatRepairPrompt, buildProfileGenerationPrompt, buildProf
 import { parseProfileOutput } from './parsers.js';
 import { smLog } from './logging.js';
 import { invalidateUnifiedCache } from './unified-inject.js';
-import { buildCanonicalCharacterRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, getCanonicalRosterPeople, resolveCanonicalCharacterName } from './canonical-entities.js';
+import { buildCanonicalRoster, canonicalizeNarrativeNames, deduplicateIdentityDecisions, formatCanonicalRosterForPrompt, getCanonicalRosterPeople, resolveCanonicalCharacterName } from './canonical-entities.js';
 import { MACRO_NAMES, setMacroContent, isMacroActive } from './macros.js';
 import { reportTierTrimStats } from './trim-stats.js';
 import { isGeneratedRecordApproved, validateGeneratedRecord } from './record-validation.js';
@@ -73,7 +75,7 @@ import {
   CANONICAL_RELATIONSHIP_ROLE_TOKENS,
   deriveTypedRolePersistenceState,
   extractExplicitNamedFamilyCandidates,
-  migrateProfileRoleDescriptorSeparation,
+  normalizeProfileRoleDescriptorSeparation,
   mergeRelationshipPairEvidence,
   normalizeRelationshipDescriptors,
   relationshipTypeForProfileTarget,
@@ -82,7 +84,7 @@ import {
 import { isCanonicalProfileSelfTarget } from './profile-self-target-utils.js';
 import { deriveProfileCoverageOutcome, describeProfileFormatCorrection } from './profile-recovery-utils.js';
 
-export { CANONICAL_RELATIONSHIP_ROLE_TOKENS, migrateProfileRoleDescriptorSeparation };
+export { CANONICAL_RELATIONSHIP_ROLE_TOKENS, normalizeProfileRoleDescriptorSeparation };
 
 // Default staleness threshold: 30 minutes. Profiles generated within this
 // window are considered current and will not be regenerated on chat load.
@@ -98,7 +100,7 @@ export function loadProfiles(characterName) {
   if (!characterName) return null;
   const context = getContext();
   const stored = context.chatMetadata?.[META_KEY]?.profiles?.[characterName] ?? null;
-  return stored ? migrateProfileRoleDescriptorSeparation(stored).profile : null;
+  return stored ? normalizeProfileRoleDescriptorSeparation(stored).profile : null;
 }
 
 /**
@@ -113,15 +115,17 @@ async function saveProfiles(profiles, characterName) {
   if (!context.chatMetadata) context.chatMetadata = {};
   if (!context.chatMetadata[META_KEY]) context.chatMetadata[META_KEY] = {};
   const metadata = context.chatMetadata[META_KEY];
-  const staged = migrateProfileRoleDescriptorSeparation(profiles).profile;
+  const staged = normalizeProfileRoleDescriptorSeparation(profiles).profile;
   const workflowId = metadata.active_catchup_run_id
     ?? context.chatId ?? context.groupId ?? `interactive-profile:${characterName}`;
   const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
     feature: 'profiles', operation: 'replace_profile', owner: characterName,
     records: [staged], source_provenance: { validation: 'grounded_profile_fields' } });
   await executeFeaturePersistence({ command,
-    snapshot: () => ({ profile: structuredClone(metadata.profiles?.[characterName] ?? null),
-      pending: structuredClone(metadata.profile_generation_pending?.[characterName] ?? null) }),
+    snapshot: () => cloneSerializableDomain({
+      profile: metadata.profiles?.[characterName] ?? null,
+      pending: metadata.profile_generation_pending?.[characterName] ?? null,
+    }, { path: '$.feature_snapshot.profile', stage: 'feature_snapshot', operation_type: 'profile' }),
     apply: () => {
       metadata.profiles ??= {};
       metadata.profiles[characterName] = staged;
@@ -146,7 +150,7 @@ async function saveProfiles(profiles, characterName) {
 async function saveProfileGenerationPending(characterName, reason) {
   const context = getContext();
   context.chatMetadata ??= {};
-  context.chatMetadata[META_KEY] ??= {};
+  context.chatMetadata[META_KEY] ??= { schema_version: SCHEMA_VERSION };
   context.chatMetadata[META_KEY].profile_generation_pending ??= {};
   context.chatMetadata[META_KEY].profile_generation_pending[characterName] = {
     schema_version: 1,
@@ -165,7 +169,7 @@ export async function reconcileProfileCanonicalNames(characterName, { roster = n
   // Final reconciliation owns the roster lifecycle.  Reusing its finalized
   // roster prevents profile text from lagging one pass behind registry and
   // redirect repairs that became available earlier in the same transaction.
-  const canonicalRoster = roster ?? buildCanonicalCharacterRoster(getContext(), { runtimeSnapshot });
+  const canonicalRoster = roster ?? buildCanonicalRoster(getContext(), { runtimeSnapshot });
   const next = { ...profiles };
   const replacements = [];
   for (const field of ['character_state', 'world_state', 'relationship_matrix']) {
@@ -180,8 +184,8 @@ export async function reconcileProfileCanonicalNames(characterName, { roster = n
     return result.status === 'ambiguous' || !result.canonicalName ? line : `${result.canonicalName}${match[2] ? ` (${match[2]})` : ''}: ${match[3]}`;
   }).join('\n');
   next.relationship_matrix = matrix;
-  const migrated = migrateProfileRoleDescriptorSeparation(next);
-  Object.assign(next, migrated.profile);
+  const normalizedProfile = normalizeProfileRoleDescriptorSeparation(next);
+  Object.assign(next, normalizedProfile.profile);
   if (next.character_state === profiles.character_state
     && next.world_state === profiles.world_state
     && next.relationship_matrix === profiles.relationship_matrix
@@ -317,14 +321,14 @@ export function extractCardRelationshipFacts(roster = []) {
     const subject = resolve(subjectName);
     const target = resolve(targetName);
     if (subject.status !== 'resolved' || target.status !== 'resolved' || subject.canonicalName === target.canonicalName) return;
-    const isPersonaFact = entry?.source === 'user-persona' || entry?.source_type === 'user-persona';
+    const isPersonaFact = entry?.source === 'user-persona' || entry?.source === 'historical-persona';
     facts.push({
       subject: subject.canonicalName.toLowerCase(),
       target: target.canonicalName.toLowerCase(),
       relationship_type: normalizeCardRole(relationshipType, subject.canonicalName),
       relationship_type_source: isPersonaFact ? 'persona_fact' : 'card_fact',
       relationship_type_confidence_class: 'authoritative',
-      relationship_type_source_ids: [`${isPersonaFact ? 'persona' : 'card'}:${entry?.canonical_id ?? entry?.canonical_card_id ?? entry?.canonicalName ?? 'unknown'}`],
+      relationship_type_source_ids: [`${isPersonaFact ? 'persona' : 'card'}:${entry?.id ?? entry?.canonical_card_id ?? entry?.canonicalName ?? 'unknown'}`],
       relationship_type_direction: 'subject_to_target',
       descriptors: [],
     });
@@ -471,8 +475,7 @@ export function persistExplicitFamilyRelationshipFacts(history = {}, roster = []
         : (existing.relationship_type_confidence_class ?? 'grounded'),
       relationship_type_source_ids: [...new Set([...(existing.relationship_type_source_ids ?? []), ...(candidate.source_ids ?? [])])],
       relationship_type_direction: 'subject_to_target',
-      source_message_indices: [...new Set([...(existing.source_message_indices ?? []), candidate.source_index].filter(Number.isInteger))].sort((a, b) => a - b),
-      supporting_source_indices: [...new Set([...(existing.supporting_source_indices ?? existing.source_message_indices ?? []), candidate.source_index].filter(Number.isInteger))].sort((a, b) => a - b),
+      supporting_source_indices: [...new Set([...(existing.supporting_source_indices ?? []), candidate.source_index].filter(Number.isInteger))].sort((a, b) => a - b),
       latest_update_indices: Number.isInteger(candidate.source_index) ? [candidate.source_index] : (existing.latest_update_indices ?? []),
       creation_stage: existing.creation_stage ?? (candidateSource === 'card_fact' || candidateSource === 'persona_fact' ? 'explicit_card_family_fact' : 'explicit_named_family_fact'),
       validation_state: existing.validation_state ?? 'validated',
@@ -599,7 +602,7 @@ function extractRawChatRelationshipFacts(messages = [], roster = []) {
   // but its possessive target can still be ambiguous in a group transcript.
   // Limit it to spouse/partner roles; family roles require named evidence.
   const speakerRelativeSpousePattern = 'husband|wife|ex-husband|ex-wife|partner';
-  const persona = rosterEntries(roster).find((entry) => entry.source === 'user-persona' || entry.source_type === 'user-persona');
+  const persona = rosterEntries(roster).find((entry) => entry.source === 'user-persona');
   if (!persona) return [];
   const resolve = (name) => resolveCanonicalCharacterName(name, roster);
   const resolveExplicitParticipant = (name) => {
@@ -718,7 +721,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
       relationship_type: String(state?.relationship_type ?? state?.canonical_relationship_type ?? '').trim().toLowerCase() || null,
       relationship_type_source: state?.relationship_type_source ?? 'approved_relationship_history',
       relationship_type_source_ids: state?.relationship_type_source_ids ?? [],
-      source_message_indices: state?.source_message_indices ?? [],
+      source_message_indices: state?.supporting_source_indices ?? [],
       relationship_type_confidence_class: state?.relationship_type ? 'authoritative' : null,
       descriptors: (state?.descriptors ?? []).map((descriptor) => String(typeof descriptor === 'string' ? descriptor : descriptor?.word ?? '').trim().toLowerCase()).filter(Boolean),
     }))
@@ -1023,7 +1026,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
  .join('\n');
  }
  const profile_role_tokens_removed = relationship_matrix_structured.reduce((count, entry) => count + entry.role_tokens_removed_from_descriptors.length, 0);
- const profile_fields_migrated_for_role_separation = relationship_matrix_structured.filter((entry) => entry.role_tokens_removed_from_descriptors.length).length;
+ const profile_fields_normalized_for_role_separation = relationship_matrix_structured.filter((entry) => entry.role_tokens_removed_from_descriptors.length).length;
  const roleResolutionTraceRecords = relationship_matrix_structured.map((entry) => {
    const target = String(entry.target ?? '').toLowerCase();
    const evidence = evidenceForTarget(target);
@@ -1041,7 +1044,6 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    const descriptorOnlyRecordPresent = pairHistoryRecords.some((pair) => !pair.relationship_type && pair.descriptors.length);
    const typedRoleEvidenceAvailable = Boolean(evidence?.relationship_type);
    const typedRolePersistence = deriveTypedRolePersistenceState(pairHistoryRecords);
-   const typedRoleFactPresent = typedRolePersistence.typed_role_fact_present;
    const selectedRole = entry.canonical_relationship_type;
    // Bind the trace to the exact directional evidence that authorizes the
    // selected target-relative role. This also covers a safely inverted stored
@@ -1227,7 +1229,7 @@ export function retainKnownProfileRelationships(parsed, characterName, relations
    role_tokens_removed_from_descriptors: entry?.role_tokens_removed_from_descriptors ?? [],
    final_saved_descriptors: entry?.relationship_descriptors ?? outcome.final_saved_descriptors,
  };
- }), normalized, invalid_label: invalidLabel, rejected_placeholder: rejectedPlaceholder, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_migrated_for_role_separation, relationship_evidence_coverage };
+ }), normalized, invalid_label: invalidLabel, rejected_placeholder: rejectedPlaceholder, contradictory_state_lines: contradictoryStateLines, profile_role_tokens_removed, profile_fields_normalized_for_role_separation, relationship_evidence_coverage };
 }
 
 /** Drops present-state profile lines framed as speculation rather than evidence. */
@@ -1295,7 +1297,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     .map((e) => ({ name: e.name, type: e.type }));
 
   const profileContext = getContext();
-  const roster = buildCanonicalCharacterRoster(profileContext);
+  const roster = buildCanonicalRoster(profileContext);
   // The active group roster deliberately excludes inactive cards, but an
   // already-grounded character entity may still be a named relationship
   // target. Add it only as reference evidence; it never changes group-card
@@ -1305,7 +1307,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
     characters: [...(roster.characters ?? []), ...entityRegistry
       .filter((entry) => entry?.type === 'character' && entry?.name)
       .filter((entry) => !(roster.characters ?? []).some((card) => card.canonicalName?.toLowerCase() === String(entry.name).toLowerCase()))
-      .map((entry) => ({ canonicalName: String(entry.name), canonical_id: entry.canonical_id ?? entry.canonical_card_id ?? `grounded:${String(entry.name).toLowerCase()}`, aliases: [], source: 'grounded-entity-registry', source_type: 'grounded-entity-registry' }))],
+      .map((entry) => ({ canonicalName: String(entry.name), id: entry.canonical_id ?? entry.canonical_card_id ?? `grounded:${String(entry.name).toLowerCase()}`, aliases: [], source: 'grounded-entity-registry' }))],
   };
   const rawChatMessages = profileContext.chat ?? [];
   const profileCardId = roster.characters?.find((entry) => entry.canonicalName === characterName)?.id ?? null;
@@ -1516,16 +1518,16 @@ export async function generateProfiles(characterName, abortCheck = null, options
     const fieldGrounding = retainGroundedProfileFields(parsed, [...longtermMemories, ...sessionMemories]);
     parsed = fieldGrounding.profiles;
     const priorProfiles = loadProfiles(characterName);
-    const preservedPriorFields = [];
+    const preservedPriorFieldNames = [];
     if (partialProfile && !String(parsed.relationship_matrix ?? '').trim() && String(priorProfiles?.relationship_matrix ?? '').trim()) {
       parsed.relationship_matrix = priorProfiles.relationship_matrix;
-      preservedPriorFields.push('relationship_matrix');
+      preservedPriorFieldNames.push('relationship_matrix');
     }
     for (const field of fieldGrounding.rejected) {
       const prior = String(priorProfiles?.[field] ?? '').trim();
       if (!prior) continue;
       parsed[field] = prior;
-      preservedPriorFields.push(field);
+      preservedPriorFieldNames.push(field);
     }
     const currentEvidence = [
       ...loadSceneHistory().slice(-2).map((scene) => scene.summary),
@@ -1609,7 +1611,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
       const priorMatrix = String(priorRelationshipCheck.profiles.relationship_matrix ?? '').trim();
       if (priorMatrix) {
         parsed.relationship_matrix = priorMatrix;
-        if (!preservedPriorFields.includes('relationship_matrix')) preservedPriorFields.push('relationship_matrix');
+        if (!preservedPriorFieldNames.includes('relationship_matrix')) preservedPriorFieldNames.push('relationship_matrix');
       }
     }
     if (fieldGrounding.rejected.length) {
@@ -1645,23 +1647,12 @@ export async function generateProfiles(characterName, abortCheck = null, options
       evidence_ids: [...longtermMemories, ...sessionMemories].map((memory) => memory.id).filter(Boolean),
       identity_replacements: deduplicateIdentityDecisions(identityReplacements, 'profile'),
       field_grounding_rejections: fieldGrounding.rejected,
-      preserved_prior_fields: preservedPriorFields,
+      preserved_prior_fields: preservedPriorFieldNames,
       stale_field_rejections: temporalCheck.dropped.map((entry) => entry.field),
       speculative_field_rejections: speculationCheck.dropped.map((entry) => entry.field),
-      // `relationship_field_details` remains a compatibility projection. New
-      // consumers must use the terminal arrays below: attempt-level traces
-      // are deliberately kept out of status/degradation accounting.
       relationship_field_rejections: rejectedRelationshipFields.length,
       relationship_dropped_field_descriptor_count: rejectedRelationshipFields.reduce((total, entry) => total + (entry.rejected_descriptors?.length ?? entry.generated_descriptors?.length ?? 0), 0),
       relationship_descriptor_rejections: rejectedDescriptorsInSavedFields.length,
-      relationship_field_details: profileFieldTerminalOutcomes.map((detail) => ({
-        profile_identity: characterName, profile_card_id: roster.characters?.find((entry) => entry.canonicalName === characterName)?.id ?? null,
-        preserved_value: preservedPriorFields.includes('relationship_matrix') ? String(priorProfiles?.relationship_matrix ?? '') : null,
-        winning_evidence_type: 'relationship_history',
-        winning_evidence_id: relationshipHistory ? 'relationship_history' : null,
-        profile_terminal_outcome: partialProfile ? 'saved_partial' : 'saved_full',
-        ...detail,
-      })),
       profile_descriptor_traces: relationshipCheck.descriptor_traces ?? [],
       relationship_history_counts: relationshipCheck.relationship_history_counts ?? null,
       // Informational only: malformed model self-pairs are removed before
@@ -1686,7 +1677,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
       field_validation: {
         accepted_exact: Math.max(0, profileFields.length - fieldGrounding.rejected.length - temporalCheck.dropped.length - speculationCheck.dropped.length - rejectedRelationshipFields.length),
         accepted_normalized: relationshipCheck.normalized ?? 0,
-        preserved_prior: preservedPriorFields.length,
+        preserved_prior: preservedPriorFieldNames.length,
         dropped_conflict: rejectedRelationshipDescriptors.filter((entry) => entry.disposition === 'rejected_conflict').length,
         dropped_speculative: speculationCheck.dropped.length,
         dropped_invalid_label: rejectedRelationshipDescriptors.filter((entry) => entry.reason_code === 'invalid_relationship_label').length,
@@ -1719,7 +1710,7 @@ export async function generateProfiles(characterName, abortCheck = null, options
       formatting_repair_succeeded: formatCorrectionSucceeded,
       terminal_outcome: formatCorrectionSucceeded ? 'saved_after_format_correction' : 'saved_initial',
       profile_coverage_outcome: formatCorrectionSucceeded ? 'saved_after_format_correction' : 'saved_initial',
-      saved: true, usable_profile_after_run: true, error_stage: null, severity: 'none', affects_operational_status: false, prior_profile_preserved: preservedPriorFields.length > 0 });
+      saved: true, usable_profile_after_run: true, error_stage: null, severity: 'none', affects_operational_status: false, prior_profile_preserved: preservedPriorFieldNames.length > 0 });
     return profiles;
   } catch (err) {
     console.error('[Smart Memory Enhanced] Profile generation failed:', err);
@@ -1835,18 +1826,38 @@ export function injectProfiles(characterName) {
  */
 export async function clearProfiles(characterName) {
   const context = getContext();
-  if (context.chatMetadata?.[META_KEY]?.profiles) {
-    if (characterName) {
-      delete context.chatMetadata[META_KEY].profiles[characterName];
-    } else {
-      delete context.chatMetadata[META_KEY].profiles;
-    }
-    await saveChatMetadata(context);
-  }
-  if (context.chatMetadata?.[META_KEY]?.profile_generation_pending) {
-    if (characterName) delete context.chatMetadata[META_KEY].profile_generation_pending[characterName];
-    else delete context.chatMetadata[META_KEY].profile_generation_pending;
-    await saveChatMetadata(context);
+  const metadata = context.chatMetadata?.[META_KEY];
+  const hasProfile = characterName
+    ? Boolean(metadata?.profiles?.[characterName] || metadata?.profile_generation_pending?.[characterName])
+    : Boolean(metadata?.profiles || metadata?.profile_generation_pending);
+  if (metadata && hasProfile) {
+    const workflowId = metadata.active_catchup_run_id
+      ?? context.chatId ?? context.groupId ?? `interactive-profile:${characterName ?? 'all'}`;
+    const command = prepareFeaturePersistenceCommand({ workflow_id: workflowId,
+      feature: 'profiles', operation: characterName ? 'clear_profile' : 'clear_profiles',
+      owner: characterName ?? null, records: [] });
+    await executeFeaturePersistence({ command,
+      snapshot: () => cloneSerializableDomain({
+        profiles: metadata.profiles ?? null,
+        pending: metadata.profile_generation_pending ?? null,
+      }, { path: '$.feature_snapshot.profiles', stage: 'feature_snapshot', operation_type: 'profiles' }),
+      apply: () => {
+        if (characterName) {
+          if (metadata.profiles) delete metadata.profiles[characterName];
+          if (metadata.profile_generation_pending) delete metadata.profile_generation_pending[characterName];
+        } else {
+          delete metadata.profiles;
+          delete metadata.profile_generation_pending;
+        }
+      },
+      persist: () => saveChatMetadata(context),
+      restore: (before) => {
+        if (before.profiles === null) delete metadata.profiles;
+        else metadata.profiles = before.profiles;
+        if (before.pending === null) delete metadata.profile_generation_pending;
+        else metadata.profile_generation_pending = before.pending;
+      }, receipt_container: metadata,
+    });
   }
   setExtensionPrompt(PROMPT_KEY_PROFILES, '', extension_prompt_types.NONE, 0);
   invalidateUnifiedCache(PROMPT_KEY_PROFILES);

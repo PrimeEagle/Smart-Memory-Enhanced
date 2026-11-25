@@ -26,7 +26,7 @@ const automaticRecoveryFixture = JSON.parse(readFileSync(
   'utf8',
 ));
 
-test('operational pause owns and updates the bound checkpoint without a scope error', () => {
+test('operational pause remains runtime evidence without caching a checkpoint projection', () => {
   const runtime = createMemorizeControllerRuntime();
   const checkpoint = { next_source_offset: 0, run_manifest: { logical_run_id: 'run', total_attempt_count: 1 } };
   bindMemorizeCheckpoint(runtime, checkpoint);
@@ -35,7 +35,7 @@ test('operational pause owns and updates the bound checkpoint without a scope er
     code: 'SME_DOWNSTREAM_VALIDATION_PENDING',
     sme_request_diagnostics: { pause_reason: 'partial_valid_output_has_unresolved_fragments' },
   }, 'session');
-  assert.equal(checkpoint.operational_pause, pause);
+  assert.equal(checkpoint.operational_pause, undefined);
   assert.equal(runResult.operationalPauses.length, 1);
   assert.equal(pause.reason_code, 'partial_valid_output_has_unresolved_fragments');
 });
@@ -54,7 +54,8 @@ test('cleanup is idempotent and one cleanup exception cannot stop later resource
 
 test('0-19 partial Session path pauses safely, settles its transaction, and preserves siblings', async () => {
   const result = await replayPartialSessionResume();
-  assert.equal(result.checkpoint.source_message_count, controllerFailureFixture.source_message_count);
+  assert.equal(result.checkpoint.run_manifest.source_window.message_count,
+    controllerFailureFixture.source_message_count);
   assert.equal(result.beforeResume.next_eligible_obligation.obligation_id, controllerFailureFixture.session_obligation_id);
   assert.deepEqual(
     Object.values(result.ledger.obligations)
@@ -64,9 +65,11 @@ test('0-19 partial Session path pauses safely, settles its transaction, and pres
   );
   assert.equal(result.beforeResume.pending_obligation_count, 1);
   assert.equal(result.beforeResume.next_eligible_obligation.tier, 'session');
-  assert.equal(result.beforeResume.next_eligible_obligation.metrics.parser_accepted_records, controllerFailureFixture.accepted_partial_record_count);
+  assert.equal(result.beforeResume.next_eligible_obligation.metrics.parser_accepted_records,
+    controllerFailureFixture.parser_accepted_candidate_count);
   assert.equal(result.beforeResume.next_eligible_obligation.metrics.parser_rejected_fragments, controllerFailureFixture.rejected_fragment_count);
-  assert.equal(result.checkpoint.operational_pause.reason_code, controllerFailureFixture.reason_code);
+  assert.equal(result.beforeResume.next_eligible_obligation.exact_reason_code,
+    controllerFailureFixture.reason_code);
   assert.equal(result.beforeResume.next_eligible_obligation.next_eligible_action, controllerFailureFixture.next_action);
   assert.equal(result.transaction.state, 'rolled_back');
   assert.equal(result.leaked_transaction, false);
@@ -125,7 +128,7 @@ test('a later internal exception atomically supersedes a provisional pause exit'
   const ledger = createMemorizeObligationLedger('run', 1);
   const provisional = buildMemorizeControllerExit(runtime, {
     classification: 'downstream_validation_pending', reason_code: 'recovery_stage_ladder_exhausted',
-    resumable: true, next_eligible_action: 'fragment_decision_regeneration',
+    resumable: true, next_eligible_action: 'dispatch_provider_request',
   });
   recordMemorizeControllerExit(ledger, provisional);
   const failure = new TypeError('presentation failed after pause');
@@ -135,7 +138,7 @@ test('a later internal exception atomically supersedes a provisional pause exit'
     bounded_message: failure.message, stack_fingerprint_input: failure.stack };
   const finalExit = buildMemorizeControllerExit(runtime, {
     classification: 'internal_exception', reason_code: failure.code, resumable: true,
-    next_eligible_action: 'fragment_decision_regeneration',
+    next_eligible_action: 'dispatch_provider_request',
   });
   recordMemorizeControllerExit(ledger, finalExit);
   const projection = projectMemorizeObligationLedger(ledger);
