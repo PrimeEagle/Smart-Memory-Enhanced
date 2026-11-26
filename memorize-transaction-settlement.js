@@ -39,7 +39,7 @@ export function settleMemorizeTransactionCheckpoint(checkpointValue, transaction
       ?? transaction.terminal_disposition ?? transaction.state,
     durable_subwrites_preserved: transaction.durable_subwrites_preserved === true,
   }, at);
-  checkpoint.status = transaction.state === 'rolled_back'
+  checkpoint.status = ['rolled_back', 'commit_failed_with_exact_state'].includes(transaction.state)
     ? 'awaiting_manual_resume'
     : transaction.state === 'committed' ? checkpoint.status
       : 'blocked_transaction_settlement_failure';

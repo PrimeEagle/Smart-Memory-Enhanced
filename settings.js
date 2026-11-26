@@ -296,8 +296,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.97',
-  build_fingerprint: 'sme-v0.9.97-record-replay-r1',
+  extension_version: '0.9.98',
+  build_fingerprint: 'sme-v0.9.98-durable-save-rollback-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5256,6 +5256,7 @@ export function bindSettingsUI(ctrl) {
       return transaction;
     };
     const commitRunTransaction = async (transaction) => {
+      if (transaction?.checkpoint_failure) throw transaction.checkpoint_failure;
       if (controllerRuntime.checkpoint) {
         controllerRuntime.checkpoint.transaction_lifecycle = {
           schema_version: 1, transaction_id: transaction?.transaction_id ?? null,
@@ -5271,7 +5272,7 @@ export function bindSettingsUI(ctrl) {
     };
     const settleActiveRunTransaction = (reasonCode = 'controller_exit') => {
       const transaction = controllerRuntime.active_transaction;
-      if (!transaction || transaction.state !== 'active') return transaction ?? null;
+      if (!transaction || (transaction.state !== 'active' && !transaction.checkpoint_failure)) return transaction ?? null;
       transaction.exact_reason_code = reasonCode;
       const result = rollbackCatchUpTransaction(transaction);
       const metadata = catchUpContext.chatMetadata?.[META_KEY];
@@ -5322,6 +5323,8 @@ export function bindSettingsUI(ctrl) {
         origin: err?.sme_origin ?? (err?.name === 'ReferenceError'
           ? 'programming_error' : null),
         normalized_exception_class: err?.name ?? null,
+        failure_stage: err?.sme_failure_stage ?? null,
+        http_status: Number.isInteger(err?.status) ? err.status : null,
         provider_fault_attribution: category === 'provider_transport_failure'
           || category === 'provider_output_failure',
         message: String(err?.message ?? err ?? 'Unknown error').replace(/\s+/g, ' ').slice(0, 300),
@@ -6090,6 +6093,7 @@ export function bindSettingsUI(ctrl) {
               return value;
             });
           } catch (error) {
+            if (chunkTransaction.checkpoint_failure) throw chunkTransaction.checkpoint_failure;
             // The storage transaction may already have restored its last
             // durable snapshot. Reapply the exact pre-mutation aggregate so
             // an exception before checkpoint publication cannot leak a
@@ -6527,12 +6531,14 @@ export function bindSettingsUI(ctrl) {
                 = runResult.automaticRecovery.records.slice(-64);
             },
           }).catch((err) => {
+            if (chunkTransaction.checkpoint_failure) throw chunkTransaction.checkpoint_failure;
             recordCatchUpError('Long-Term multi-owner extraction error', err, 'long-term');
             return { decision: 'terminal_failure', reason_code: err?.code ?? 'internal_exception',
               outcome: null, attempts_used: 0,
               root_error_recorded: true,
               maximum_attempts: Math.max(1, Number(settings.provider_max_retries ?? 5) + 1) };
           });
+          if (chunkTransaction.checkpoint_failure) throw chunkTransaction.checkpoint_failure;
           if (longtermSchedule.decision === 'pause_for_user') {
             const pauseSignal = {
               sme_reason_code: longtermSchedule.reason_code,
@@ -6637,6 +6643,7 @@ export function bindSettingsUI(ctrl) {
               }, extractSessionMemories);
             },
           }).catch(async (err) => {
+            if (chunkTransaction.checkpoint_failure) throw chunkTransaction.checkpoint_failure;
             const obligation = getCanonicalObligation(err?.sme_obligation_id);
             if (obligation) {
               try {
@@ -6662,6 +6669,7 @@ export function bindSettingsUI(ctrl) {
             return { status: 'blocked', reason_code: err?.code ?? 'session_action_engine_failure',
               root_error_recorded: true };
           });
+          if (chunkTransaction.checkpoint_failure) throw chunkTransaction.checkpoint_failure;
           if (sessionRun.status === 'cancelled') {
             ctrl.catchUpCancelled = true;
             ctrl.catchUpStopReason = 'cancelled';
@@ -6790,7 +6798,7 @@ export function bindSettingsUI(ctrl) {
           checkpointForCommit.updated_at = Date.now();
         }
         try {
-          await retryTransientMemoryOperation(() => commitRunTransaction(chunkTransaction));
+          await commitRunTransaction(chunkTransaction);
           chunkCommitted = true;
           // The displayed recovery offset is intentionally refreshed only
           // after the same transaction succeeds. Live processing progress may
@@ -6799,6 +6807,7 @@ export function bindSettingsUI(ctrl) {
           refreshCatchUpRecoveryUI();
           updateActivePageMarker(checkpointForCommit, 'source_extraction', 'idle');
         } catch (err) {
+          if (chunkTransaction.checkpoint_failure) throw chunkTransaction.checkpoint_failure;
           // The transaction restores both chat metadata and extension state.
           // Do not advance past an uncommitted chunk: the persisted checkpoint
           // remains on its previous boundary and a later resume can safely
@@ -10105,10 +10114,10 @@ export function bindSettingsUI(ctrl) {
     } catch (err) {
       captureMemorizePrimaryFailure(controllerRuntime, err);
       controllerPrimaryError = err;
-      controllerFailureClassification = err?.code === 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED'
-        ? 'transaction_commit_failure'
-        : err?.code === 'SME_CATCHUP_TRANSACTION_ROLLBACK_FAILED'
-          ? 'transaction_rollback_failure' : 'internal_exception';
+      controllerFailureClassification = err?.code === 'SME_CATCHUP_TRANSACTION_ROLLBACK_FAILED'
+        ? 'transaction_rollback_failure'
+        : err?.sme_origin === 'persistence' || err?.code === 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED'
+          ? 'transaction_commit_failure' : 'internal_exception';
       try {
         settleActiveRunTransaction(err?.code ?? 'internal_exception');
       } catch (rollbackError) {
@@ -10117,7 +10126,7 @@ export function bindSettingsUI(ctrl) {
           message: String(rollbackError?.message ?? rollbackError).replace(/\s+/g, ' ').slice(0, 300),
         });
       }
-      recordCatchUpError('run failure', err);
+      recordCatchUpError('run failure', err, null, err?.sme_origin === 'persistence');
       const failedCheckpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint;
       if (failedCheckpoint?.run_manifest) {
         const failedProviderAudit = catchUpContext.chatMetadata?.[META_KEY]

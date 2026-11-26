@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.98] - 2026-11-26
+
+- Stop Memorize Chat immediately when a chunk save rolls back. Preserve the original group-save HTTP error and stage, discard unsaved records, and settle the restored checkpoint for Resume instead of committing a closed transaction.
+- Added HTTP 500 regressions for both mid-chunk checkpoint and final chunk saves. Both verify that the previous durable offset survives and a fresh transaction can advance it without duplicating records.
+
 ## [0.9.97] - 2026-11-26
 
 - Session retains provider replies before local writes and can replay the exact reply after a writer failure. Internal recovery settles each failed attempt before preparing the next registration, preserving its kernel acknowledgement and safe transport details.

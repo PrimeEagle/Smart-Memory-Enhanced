@@ -15,6 +15,7 @@ import { createRuntimeEffectExecutor } from '../runtime-effect-executor.js';
 import { createLongtermOwnerEffectExecutor, createLongtermOwnerPersistencePlan } from '../longterm-owner-persistence.js';
 import { createMemorizeExecutionAggregate } from '../memorize-execution-kernel.js';
 import { prepareMemorizeUnitOfWork, markMemorizeRecordsApplied, commitMemorizeUnitOfWork } from '../memorize-unit-of-work.js';
+import { settleMemorizeTransactionCheckpoint } from '../memorize-transaction-settlement.js';
 
 const transactionUrl = new URL('../catchup-transaction.js', import.meta.url).href;
 const longtermRuntimeUrl = new URL('../multi-owner-longterm-runtime.js', import.meta.url).href;
@@ -111,6 +112,75 @@ const { extractAndStoreMultiOwnerMemories } = await import(longtermRuntimeUrl);
 const { extractSessionMemories } = await import(sessionRuntimeUrl);
 const { saveCharacterEntityRegistry, loadCharacterEntityRegistry } = await import(registryRuntimeUrl);
 hooks.deregister();
+
+for (const boundary of ['checkpoint', 'commit']) {
+  test(`group save HTTP 500 during ${boundary} preserves the previous boundary and original error`, async () => {
+    const prior = { catch_up_checkpoint: { status: 'in_progress', next_source_offset: 140 },
+      sessionMemories: [{ id: 'committed-record' }] };
+    let context = { groupId: 'group-500', chatId: 'chat-500',
+      groups: [{ id: 'group-500', chat_id: 'chat-500' }],
+      chatMetadata: { [META_KEY]: structuredClone(prior) } };
+    let disk = structuredClone(prior);
+    let rejectSave = true;
+    let saves = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, request) => {
+      assert.equal(url, '/api/chats/group/save');
+      saves++;
+      if (rejectSave) return { ok: false, status: 500, headers: new Headers() };
+      disk = JSON.parse(request.body).chat[0].chat_metadata[META_KEY];
+      return { ok: true };
+    };
+    let active;
+    try {
+      active = beginCatchUpTransaction(context, { page_instance_id: 'failing-page' });
+      const lease = createCatchUpTransactionLease(active);
+      const stageWrite = async () => {
+        const metadata = context.chatMetadata[META_KEY];
+        metadata.catch_up_checkpoint.next_source_offset = 160;
+        metadata.sessionMemories.push({ id: 'new-record' });
+        await saveChatMetadata(context);
+      };
+      let originalError;
+      const isOriginalSaveError = (error) => {
+        originalError = error;
+        assert.equal(error.code, 'SME_CHAT_SAVE_HTTP_ERROR');
+        assert.equal(error.status, 500);
+        assert.equal(error.sme_origin, 'persistence');
+        assert.equal(error.sme_failure_stage, 'group_chat_save');
+        return true;
+      };
+      if (boundary === 'checkpoint') {
+        await assert.rejects(mutateAndCheckpointCatchUpTransaction(active, lease, stageWrite), isOriginalSaveError);
+      } else {
+        await stageWrite();
+        await assert.rejects(commitCatchUpTransaction(active), isOriginalSaveError);
+      }
+      await assert.rejects(commitCatchUpTransaction(active), (error) => error === originalError);
+      assert.equal(saves, 1);
+      assert.equal(getActiveCatchUpTransactionSnapshot(), null);
+      assert.deepEqual(context.chatMetadata[META_KEY], prior);
+      assert.deepEqual(disk, prior);
+      const settled = settleMemorizeTransactionCheckpoint(disk.catch_up_checkpoint, active);
+      assert.equal(settled.next_source_offset, 140);
+      assert.equal(settled.status, 'awaiting_manual_resume');
+      assert.notEqual(settled.transaction_lifecycle.state, 'active');
+      rejectSave = false;
+      context = { ...context, chatMetadata: { [META_KEY]: {
+        ...structuredClone(disk), catch_up_checkpoint: settled,
+      } } };
+      active = beginCatchUpTransaction(context, { page_instance_id: 'resumed-page' });
+      await stageWrite();
+      await commitCatchUpTransaction(active);
+      assert.equal(disk.catch_up_checkpoint.next_source_offset, 160);
+      assert.deepEqual(disk.sessionMemories.map(({ id }) => id), ['committed-record', 'new-record']);
+      assert.equal(saves, 2);
+    } finally {
+      if (active?.state === 'active') rollbackCatchUpTransaction(active);
+      globalThis.fetch = originalFetch;
+    }
+  });
+}
 
 for (const mode of ['no-update', 'record', 'receipt-failure', 'transport-failure', 'internal-session-retry']) {
 test(mode === 'record' ? 'both adapters replay local write failures and Session retries transport after reload'

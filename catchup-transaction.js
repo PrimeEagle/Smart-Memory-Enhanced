@@ -175,6 +175,9 @@ export function rollbackCatchUpTransaction(transaction) {
 function makeSaveError(response, label) {
   const error = new Error(`${label} responded with ${response.status}`);
   error.status = response.status;
+  error.code = 'SME_CHAT_SAVE_HTTP_ERROR';
+  error.sme_origin = 'persistence';
+  error.sme_failure_stage = 'group_chat_save';
   error.retryAfter = response.headers.get('Retry-After');
   return error;
 }
@@ -194,6 +197,7 @@ async function saveGroupChatDirect(context) {
 /** Commits the staged metadata with errors propagated to the caller. */
 export async function commitCatchUpTransaction(transaction) {
   if (!transaction) throw new Error('Cannot commit a missing catch-up transaction.');
+  if (transaction.checkpoint_failure) throw transaction.checkpoint_failure;
   if (transaction.state === 'committed') return terminalSnapshot(transaction);
   if (transaction.state !== 'active' || activeTransaction !== transaction) {
     const error = new Error('Cannot commit an inactive catch-up transaction.');
@@ -223,6 +227,9 @@ export async function commitCatchUpTransaction(transaction) {
       throw rollbackError;
     }
     error.code ??= 'SME_CATCHUP_TRANSACTION_COMMIT_FAILED';
+    error.sme_origin ??= 'persistence';
+    error.sme_failure_stage ??= 'chunk_commit';
+    transaction.checkpoint_failure = error;
     error.sme_transaction_state = terminalSnapshot(transaction);
     throw error;
   }
@@ -266,8 +273,12 @@ export async function checkpointCatchUpTransaction(transaction) {
     transaction.metadataDirty = false;
     transaction.durableCheckpointCount++;
   } catch (error) {
-    rollbackCatchUpTransaction(transaction);
     error.sme_context_overflow_checkpoint_failure = true;
+    error.sme_origin ??= 'persistence';
+    error.sme_failure_stage ??= 'checkpoint_save';
+    transaction.checkpoint_failure = error;
+    transaction.exact_reason_code = 'checkpoint_persistence_failure';
+    rollbackCatchUpTransaction(transaction);
     throw error;
   }
 }
