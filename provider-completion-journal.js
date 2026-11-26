@@ -4,6 +4,24 @@ import { assertSerializableDomain, cloneSerializableDomain }
 
 export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 8;
 
+/** A transport rejection is acknowledged by its exact kernel receipt, not by a caller assertion. */
+export function acknowledgeProviderTransportFailure(metadata, command, receipt) {
+  const entry = metadata?.provider_completion_journal?.entries?.[command.attempt_id];
+  if (!entry || receipt?.command_id !== command.command_id
+    || receipt.attempt_id !== command.attempt_id
+    || receipt.obligation_leaf_id !== command.obligation_leaf_id
+    || receipt.resulting_state !== 'pending_recovery' || receipt.checkpoint_eligible) {
+    throw Object.assign(new Error('Transport failure lacks an exact non-committing kernel receipt.'), {
+      code: 'SME_TRANSPORT_FAILURE_RECEIPT_INVALID',
+    });
+  }
+  entry.ledger_transition = {
+    status: 'applied_verified', disposition: receipt.resulting_state,
+    command_id: receipt.command_id, acknowledged_at: receipt.applied_at,
+  };
+  return entry;
+}
+
 const terminalSuccess = new Set(['completed', 'completed_no_candidates', 'completed_repartitioned']);
 const clone = (value) => cloneSerializableDomain(value, {
   path: '$.provider_completion_journal_value',
@@ -107,6 +125,7 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
     source_fingerprint: attempt.source_fingerprint ?? prior.source_fingerprint ?? null,
     request_kind: patch.request_kind ?? attempt.request_kind ?? prior.request_kind ?? null,
     recovery_stage: patch.recovery_stage ?? attempt.recovery_stage ?? prior.recovery_stage ?? null,
+    transport_failure: prior.transport_failure ?? null,
     provider_disposition: patch.provider_disposition ?? attempt.terminal_outcome
       ?? prior.provider_disposition ?? 'running',
     terminal_outcome: attempt.terminal_outcome ?? prior.terminal_outcome ?? 'running',
@@ -412,6 +431,7 @@ export function exportProviderCompletionJournal(metadata) {
       physical_completed_at: entry.physical_completed_at ?? null,
       request_kind: entry.request_kind, recovery_stage: entry.recovery_stage,
       provider_disposition: entry.provider_disposition,
+      transport_failure: clone(entry.transport_failure ?? null),
       private_response_retained: entry.response_text != null,
       parser_status: entry.parser_result?.status ?? null,
       parser_accepted_candidate_ids: clone(entry.parser_accepted_candidate_ids ?? []),

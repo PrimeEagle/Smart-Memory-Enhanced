@@ -268,6 +268,7 @@ import { settleMemorizeTransactionCheckpoint }
   from './memorize-transaction-settlement.js';
 import {
   markProviderObligationOperationalPause,
+  settleProviderTransportFailure,
   providerConfigurationSignature,
   reconcileProviderRecoveryWindowsFromLedger,
   settleOrphanedProviderAttempts,
@@ -293,8 +294,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.95',
-  build_fingerprint: 'sme-v0.9.95-first-chunk-recovery-r1',
+  extension_version: '0.9.96',
+  build_fingerprint: 'sme-v0.9.96-transport-settlement-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -6194,6 +6195,10 @@ export function bindSettingsUI(ctrl) {
             }
             if (completionResult.mutated === true) {
               checkpoint.run_manifest.obligation_ledger = completionResult.aggregate;
+              if (completionResult.status === 'applied' && command.transport_status === 'failed') {
+                settleProviderTransportFailure(catchUpContext.chatMetadata[META_KEY],
+                  command, completionResult.receipt);
+              }
               const actionReceipt = recordMemorizeActionReceipt(
                 checkpoint.run_manifest.obligation_ledger, {
                   logical_run_id: command.logical_run_id,

@@ -23,3 +23,17 @@ export function annotatePreTransmissionFailure(value, options = {}) {
   error.sme_request_diagnostics.retry_eligible = false;
   return error;
 }
+/** Capture transport evidence without retaining provider bodies, URLs, or credentials. */
+export function describeProviderTransportFailure(error) {
+  const status = Number(error?.status ?? error?.cause?.status ?? error?.sme_request_diagnostics?.http_status);
+  const http_status = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+  const normalized_exception_class = ['Error', 'TypeError', 'AbortError', 'TimeoutError'].includes(error?.name)
+    ? error.name : 'Error';
+  const code = http_status ? `provider_http_${http_status}`
+    : normalized_exception_class === 'AbortError' ? 'provider_request_aborted'
+      : normalized_exception_class === 'TimeoutError' ? 'provider_request_timeout' : 'provider_transport_failure';
+  return { code, http_status, normalized_exception_class, failure_stage: 'provider_request',
+    bounded_message: http_status ? `Provider returned HTTP ${http_status}.`
+      : normalized_exception_class === 'TypeError' ? 'The browser transport rejected the request.'
+        : code.replaceAll('_', ' ') };
+}

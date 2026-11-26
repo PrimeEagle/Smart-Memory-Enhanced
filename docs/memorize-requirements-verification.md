@@ -42,3 +42,10 @@ Session extractor through an explicit no-update response. It verifies the
 first two-tier commit at offset 20 and that neither tier is selected again.
 The test invokes both adapters with scripted host callbacks; the full browser
 handler and live SillyTavern server remain unverified.
+
+Both real extraction adapters also have a transport failure → reload → success
+case. A scripted HTTP 503 leaves a verified acknowledgement and does not advance
+coverage; the next dispatch completes the range and saves offset 20. The Session
+case proves the saved Long-Term record is not duplicated. The tests use the
+shared settlement function and group save serialization, but do not invoke the
+settings event handler or production provider transport.

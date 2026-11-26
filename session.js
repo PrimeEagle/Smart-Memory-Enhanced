@@ -45,7 +45,7 @@ import { generateMemoryExtract, getMemoryProviderCapabilities, getMemoryRequestB
 import { applyPromptOverride, PROMPT_TASKS } from './prompt-config.js';
 import { getContext, extension_settings } from '../../../extensions.js';
 import { saveChatMetadata } from './catchup-transaction.js';
-import { annotatePreTransmissionFailure } from './provider-dispatch-boundary.js';
+import { annotatePreTransmissionFailure, describeProviderTransportFailure } from './provider-dispatch-boundary.js';
 import { cloneSerializableDomain } from './serializable-domain.js';
 import { assertCurrentMemoryRecord } from './memory-store-schema.js';
 import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
@@ -1103,22 +1103,21 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         healthFinish({ terminal_health: 'completed_repartitioned', persistence: 'saved' });
         return added;
       }
-      const providerStatus = Number(err?.status ?? err?.cause?.status);
+      const transportFailure = describeProviderTransportFailure(err);
       err.sme_origin ??= 'provider_transport';
       err.sme_request_diagnostics ??= {};
       err.sme_request_diagnostics.transport_started = true;
       err.sme_request_diagnostics.transport_completed = false;
-      finishProviderAttempt(providerMetadata, providerAttempt, {
+      if (!pipeline.atomicCompletionEnabled) finishProviderAttempt(providerMetadata, providerAttempt, {
         terminal_outcome: 'provider_failure', recoverable: false,
-        failure_classification: Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
-          : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure',
+        failure_classification: transportFailure.code,
       });
-      const failureReason = Number.isFinite(providerStatus) ? `provider_http_${providerStatus}`
-        : err?.name === 'AbortError' ? 'provider_request_aborted' : 'provider_transport_failure';
+      const failureReason = transportFailure.code;
       if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
         attempt_id: providerAttempt?.attempt_id,
         transport_status: 'failed', terminal: false,
         reason_code: failureReason,
+        transport_failure: transportFailure,
         next_action: 'dispatch_provider_request',
         raw_response_reference: null,
       });

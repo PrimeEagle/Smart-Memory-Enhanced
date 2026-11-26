@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.96] - 2026-11-25
+
+- Settle controller-managed provider transport failures with the exact kernel receipt in the same checkpoint transaction. Compact diagnostics now retain the failure stage, safe exception class, and HTTP status when available, without copying provider response bodies.
+- Added Long-Term and Session HTTP 503 → reload → successful retry integration cases. They verify the failed request leaves coverage unchanged, retry advances the saved checkpoint from 0 to 20, and a previously committed Long-Term record is not duplicated. Live SillyTavern verification remains pending.
+
 ## [0.9.95] - 2026-11-25
 
 - Multi-owner Long-Term extraction now records the canonical dispatch transition before calling the provider. A later local receipt failure preserves the saved provider reply and is not classified as a transport failure.

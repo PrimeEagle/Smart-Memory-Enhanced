@@ -155,6 +155,7 @@ export function selectDiagnosticsProjection(input = {}) {
       controller_exit: current.controller_exit ?? completedRun.controller_exit
         ?? completedRun.root_error ?? completedRun.error_details?.[0] ?? null,
       provider_attempt_audit: current.provider_attempt_audit ?? completedRun.provider_attempt_audit,
+      provider_completion_journal: current.provider_completion_journal ?? completedRun.provider_completion_journal,
       catch_up_recovery: {
         ...(current.catch_up_recovery ?? completedRun.catch_up_recovery),
         logical_run_id: current.catch_up_recovery?.logical_run_id

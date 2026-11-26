@@ -30,6 +30,7 @@ import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identi
 import { executeEffectPlanAggregate, validateEffectPlanAggregate }
   from './runtime-effect-executor.js';
 import { assertSerializableDomain } from './serializable-domain.js';
+import { describeProviderTransportFailure } from './provider-dispatch-boundary.js';
 
 const OWNER_SCOPE = '@multi-owner';
 
@@ -241,11 +242,14 @@ export async function extractAndStoreMultiOwnerMemories(
         attention_reason_codes: ['local_completion_replay_failure'] });
       throw fail(error);
     }
-    finishProviderAttempt(metadata, attempt, { terminal_outcome: 'provider_failure',
-      recoverable: true, failure_classification: 'provider_transport_failure' });
+    const transportFailure = describeProviderTransportFailure(error);
+    if (!pipeline.atomicCompletionEnabled) finishProviderAttempt(metadata, attempt, {
+      terminal_outcome: 'provider_failure', recoverable: true, failure_classification: transportFailure.code,
+    });
     await pipeline.applyProviderCompletion({
       attempt_id: attempt?.attempt_id, transport_status: 'failed', terminal: false,
-      reason_code: 'provider_transport_failure', next_action: 'dispatch_provider_request',
+      reason_code: transportFailure.code, next_action: 'dispatch_provider_request',
+      transport_failure: transportFailure,
     });
     healthFinish({ terminal_health: 'provider_failure', provider_outcome: 'provider_failure',
       attention_reason_codes: ['provider_transport_failure'] });

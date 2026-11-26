@@ -218,6 +218,10 @@ export function createCompactFailureDiagnostics(current = {}, createdAt = Date.n
     ?? recovery.exact_pending_obligation ?? recovery.unresolved_obligations?.[0] ?? null;
   const attempts = current.provider_attempt_audit?.retained_attempts ?? [];
   const attempt = attempts.at(-1) ?? null;
+  const journalEntries = plainArray(current.provider_completion_journal?.entries);
+  const transportFailure = journalEntries.findLast((entry) => entry.transport_failure
+    && (!pending || entry.child_obligation_id === pending.obligation_id
+      || entry.root_obligation_id === pending.obligation_id))?.transport_failure ?? null;
   const rootCode = controllerExit?.code ?? controllerExit?.reason_code ?? recovery.reason_code
     ?? recovery.blocked_reason_code ?? 'incomplete_run';
   const invariantViolations = [
@@ -228,13 +232,13 @@ export function createCompactFailureDiagnostics(current = {}, createdAt = Date.n
     : { code: item?.code ?? item?.invariant_id ?? 'unknown_invariant_violation',
       obligation_id: item?.obligation_id ?? null });
   const rootError = createDiagnosticError({
-    code: rootCode,
-    bounded_message: controllerExit?.bounded_message,
-    failure_stage: controllerExit?.failure_stage,
+    code: controllerExit?.bounded_message ? rootCode : transportFailure?.code ?? rootCode,
+    bounded_message: controllerExit?.bounded_message ?? transportFailure?.bounded_message,
+    failure_stage: controllerExit?.failure_stage ?? transportFailure?.failure_stage,
     serialization_path: controllerExit?.serialization_path,
     serialization_type: controllerExit?.serialization_type,
     operation_type: controllerExit?.operation_type,
-    normalized_exception_class: controllerExit?.normalized_exception_class,
+    normalized_exception_class: controllerExit?.normalized_exception_class ?? transportFailure?.normalized_exception_class,
   });
   let obligationState = null;
   let obligationProjectionFailure = null;
@@ -300,6 +304,7 @@ export function createCompactFailureDiagnostics(current = {}, createdAt = Date.n
     },
     provider_attempt_evidence: {
       physical_attempt_count: nullableFiniteNumber(current.provider_attempt_audit?.physical_attempts),
+      transport_failure: transportFailure,
       recent: attempts.slice(-8).map((item) => ({
         attempt_id: nullable(item.attempt_id),
         obligation_id: nullable(item.logical_obligation_id),

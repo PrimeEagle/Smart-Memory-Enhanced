@@ -1,7 +1,23 @@
 /** Bounded, content-free accounting for actual Long-Term/Session provider calls. */
 import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION } from './recovery-stage-eligibility.js';
-import { recordProviderCompletion } from './provider-completion-journal.js';
+import { acknowledgeProviderTransportFailure, recordProviderCompletion } from './provider-completion-journal.js';
+
+/** Publish audit and journal evidence inside the same transaction as the kernel receipt. */
+export function settleProviderTransportFailure(metadata, command, receipt) {
+  const attempt = metadata?.live_memory_health?.provider_attempt_audit?.recent_attempts
+    ?.find((item) => item.attempt_id === command.attempt_id);
+  if (!attempt || attempt.transmission_started !== true) {
+    throw Object.assign(new Error('Transport failure has no dispatched attempt.'), {
+      code: 'SME_TRANSPORT_FAILURE_ATTEMPT_REQUIRED',
+    });
+  }
+  const entry = acknowledgeProviderTransportFailure(metadata, command, receipt);
+  finishProviderAttempt(metadata, attempt, { terminal_outcome: 'provider_failure',
+    recoverable: true, failure_classification: command.reason_code });
+  metadata.provider_completion_journal.entries[command.attempt_id].transport_failure = command.transport_failure ?? null;
+  return entry.ledger_transition;
+}
 import { ensureMemorizeObligationLedger } from './memorize-obligation-ledger.js';
 import { cloneSerializableDomain } from './serializable-domain.js';
 import {

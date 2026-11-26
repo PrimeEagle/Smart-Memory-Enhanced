@@ -6,7 +6,8 @@ import { runMemorizeStartupReleaseGate } from '../memorize-architecture-gates.js
 import { finalizeMemorizeController } from '../memorize-controller-finalizer.js';
 import { selectDiagnosticsProjection } from '../memorize-projections.js';
 import { retainResponseBeforeReceipt } from '../memorize-tier-pipeline.js';
-import { recordProviderCompletion, exportProviderCompletionJournal } from '../provider-completion-journal.js';
+import { recordProviderCompletion, exportProviderCompletionJournal, inspectProviderCompletionConsistency } from '../provider-completion-journal.js';
+import { settleProviderTransportFailure } from '../provider-attempt-audit.js';
 import { applyMemorizeLifecycleEvent, createMemorizeObligationLedger } from '../memorize-obligation-ledger.js';
 import { selectMemorizeSourceTierWork, stageMemorizeSourceCheckpoint } from '../memorize-authority-model.js';
 import { createMemorizeExecutionContext } from '../memorize-execution-context.js';
@@ -103,10 +104,11 @@ const { extractAndStoreMultiOwnerMemories } = await import(longtermRuntimeUrl);
 const { extractSessionMemories } = await import(sessionRuntimeUrl);
 hooks.deregister();
 
-for (const mode of ['no-update', 'record', 'receipt-failure']) {
-test(mode === 'record' ? 'real Long-Term and Session adapters complete the same chunk across reload'
+for (const mode of ['no-update', 'record', 'receipt-failure', 'transport-failure']) {
+test(mode === 'record' ? 'real Session transport failure resumes without repeating committed Long-Term'
   : `real Long-Term adapter: ${mode}`, async () => {
   const rejectReceipt = mode === 'receipt-failure';
+  const rejectTransport = mode === 'transport-failure';
   const producesRecord = mode === 'record';
   const logical_run_id = 'real-longterm-first-chunk';
   let metadata = { active_catchup_run_id: logical_run_id,
@@ -176,6 +178,9 @@ test(mode === 'record' ? 'real Long-Term and Session adapters complete the same 
             });
             const committed = commitMemorizeUnitOfWork(marked.state, command.command_id);
             metadata.ledger = committed.state.aggregate;
+            if (command.transport_status === 'failed') {
+              settleProviderTransportFailure(metadata, command, committed.receipt);
+            }
             return committed;
           })).value;
         },
@@ -186,8 +191,8 @@ test(mode === 'record' ? 'real Long-Term and Session adapters complete the same 
     }));
     context.chat = messages;
     const recordId = 'saved-bicycle';
-    const run = extractAndStoreMultiOwnerMemories(['A', 'B'], messages, null, {
-      executionContext: makeExecutionContext(),
+    const runLongterm = (page) => extractAndStoreMultiOwnerMemories(['A', 'B'], messages, null, {
+      executionContext: makeExecutionContext(page),
       preparePersistencePlan: (owner, records) => {
         assert.equal(producesRecord, true);
         assert.equal(owner, 'A');
@@ -213,11 +218,54 @@ test(mode === 'record' ? 'real Long-Term and Session adapters complete the same 
         calls++;
         assert.equal(Object.values(saved.ledger.obligations)[0].current_state, 'provider_running');
         assert.equal(saved.live_memory_health.provider_attempt_audit.recent_attempts[0].transmission_started, true);
+        if (rejectTransport && calls === 1) throw Object.assign(new Error('private provider body'), { status: 503 });
         return didReply;
       },
     });
+    const run = runLongterm();
     if (rejectReceipt) {
       await assert.rejects(run, (error) => error === failure && error.sme_origin !== 'provider_transport');
+    } else if (rejectTransport) {
+      await assert.rejects(run, (error) => error.status === 503);
+      assert.equal(calls, 1);
+      const journal = exportProviderCompletionJournal(saved);
+      assert.equal(journal.entries[0].ledger_transition.status, 'applied_verified');
+      assert.equal(inspectProviderCompletionConsistency({
+        metadata: saved, ledger: saved.ledger, provider_audit: saved.live_memory_health.provider_attempt_audit,
+      }).consistent, true);
+      const report = selectDiagnosticsProjection({ current: {
+        catch_up_recovery: { available: true, resumable: true, resume_can_make_progress: true,
+          next_eligible_recovery_action: 'dispatch_provider_request', safely_committed_offset: 0 },
+        provider_completion_journal: journal,
+      } });
+      assert.equal(report.root_error.code, 'provider_http_503');
+      assert.equal(report.root_error.failure_stage, 'provider_request');
+      assert.equal(report.provider_attempt_evidence.transport_failure.http_status, 503);
+      assert.equal(report.committed_coverage.safely_committed_offset, 0);
+      assert.doesNotMatch(JSON.stringify(report), /private provider body/);
+      rollbackCatchUpTransaction(transaction);
+      metadata = structuredClone(saved);
+      context = { ...context, chatMetadata: { [META_KEY]: metadata } };
+      globalThis.smeTestExtractionContext = context;
+      transaction = beginCatchUpTransaction(context, { page_instance_id: 'page:longterm-resumed' });
+      const range = { start: 0, end: 19 };
+      const work = selectMemorizeSourceTierWork(metadata.ledger, range, ['longterm']);
+      assert.equal(work.longterm.dispatch, true);
+      assert.equal(work.longterm.obligation.next_eligible_action, 'dispatch_provider_request');
+      assert.equal((await runLongterm('longterm-resumed')).kind, 'complete_no_update');
+      metadata.catch_up_checkpoint = { run_manifest: { logical_run_id,
+        source_window: { message_count: 20 }, obligation_ledger: metadata.ledger } };
+      stageMemorizeSourceCheckpoint(metadata.catch_up_checkpoint, {
+        source_message_count: 20, chunk_size: 20, enabled_tiers: ['longterm'],
+      });
+      await saveChatMetadata(context);
+      await commitCatchUpTransaction(transaction);
+      assert.equal(saved.catch_up_checkpoint.next_source_offset, 20);
+      assert.equal(calls, 2);
+      assert.equal(selectMemorizeSourceTierWork(saved.ledger, range, ['longterm']).longterm.dispatch, false);
+      assert.equal(exportProviderCompletionJournal(saved).entries
+        .find((item) => item.transport_failure).ledger_transition.status, 'applied_verified');
+      return;
     } else {
       const outcome = await run;
       assert.equal(outcome.kind, producesRecord ? 'complete' : 'complete_no_update');
@@ -250,10 +298,28 @@ test(mode === 'record' ? 'real Long-Term and Session adapters complete the same 
           sessionCalls++;
           const leaf = Object.values(saved.ledger.obligations).find((item) => item.tier === 'session');
           assert.equal(leaf.current_state, 'provider_running');
+          if (sessionCalls === 1) throw Object.assign(new Error('private Session body'), { status: 503 });
           return 'NONE';
         };
-        assert.equal(await extractSessionMemories(messages, null, {
+        await assert.rejects(extractSessionMemories(messages, null, {
           executionContext: makeExecutionContext('reloaded'),
+        }), (error) => error.status === 503);
+        assert.equal(saved.catch_up_checkpoint.next_source_offset, 0);
+        const failedEntry = exportProviderCompletionJournal(saved).entries.find((entry) =>
+          entry.tier === 'session' && entry.transport_failure);
+        assert.equal(failedEntry.transport_failure.http_status, 503);
+        assert.equal(failedEntry.ledger_transition.status, 'applied_verified');
+        rollbackCatchUpTransaction(transaction);
+        metadata = structuredClone(saved);
+        context = { ...context, chatMetadata: { [META_KEY]: metadata } };
+        globalThis.smeTestExtractionContext = context;
+        transaction = beginCatchUpTransaction(context, { page_instance_id: 'page:resumed' });
+        const pending = selectMemorizeSourceTierWork(metadata.ledger, range, enabled_tiers);
+        assert.equal(pending.longterm.dispatch, false);
+        assert.equal(pending.session.obligation.current_state, 'pending_recovery');
+        assert.equal(pending.session.obligation.next_eligible_action, 'dispatch_provider_request');
+        assert.equal(await extractSessionMemories(messages, null, {
+          executionContext: makeExecutionContext('resumed'),
         }), 0);
         metadata.catch_up_checkpoint.run_manifest.obligation_ledger = metadata.ledger;
         stageMemorizeSourceCheckpoint(metadata.catch_up_checkpoint, coverageOptions);
@@ -261,7 +327,11 @@ test(mode === 'record' ? 'real Long-Term and Session adapters complete the same 
         await commitCatchUpTransaction(transaction);
         assert.equal(saved.catch_up_checkpoint.next_source_offset, 20);
         assert.deepEqual(saved.saved_records.map((record) => record.id), [recordId]);
-        assert.equal(sessionCalls, 1);
+        assert.equal(sessionCalls, 2);
+        const failureAfterResume = exportProviderCompletionJournal(saved).entries
+          .find((item) => item.attempt_id === failedEntry.attempt_id);
+        assert.equal(failureAfterResume.ledger_transition.status, 'applied_verified');
+        assert.equal(failureAfterResume.transport_failure.http_status, 503);
         const repeat = selectMemorizeSourceTierWork(
           saved.catch_up_checkpoint.run_manifest.obligation_ledger, range, enabled_tiers);
         assert.equal(repeat.longterm.dispatch, false);
