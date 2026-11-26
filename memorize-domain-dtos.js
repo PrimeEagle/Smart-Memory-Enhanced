@@ -100,7 +100,7 @@ export function createControllerExit(input = {}) {
     classification: requiredIdentifier(input.classification,
       'classification', 'controller_exit'),
     ...error,
-    stack_fingerprint_input: nullable(input.stack_fingerprint_input),
+    stack_fingerprint: nullable(input.stack_fingerprint),
     resumable: input.resumable === true,
     next_eligible_action: nullable(input.next_eligible_action),
     at: Number.isFinite(Number(input.at)) ? Number(input.at) : Date.now(),

@@ -6,18 +6,21 @@ import { runMemorizeStartupReleaseGate } from '../memorize-architecture-gates.js
 import { finalizeMemorizeController } from '../memorize-controller-finalizer.js';
 import { selectDiagnosticsProjection } from '../memorize-projections.js';
 import { retainResponseBeforeReceipt } from '../memorize-tier-pipeline.js';
-import { recordProviderCompletion, exportProviderCompletionJournal, inspectProviderCompletionConsistency } from '../provider-completion-journal.js';
+import { acknowledgeProviderCompletionLedger, recordProviderCompletion, exportProviderCompletionJournal, inspectProviderCompletionConsistency } from '../provider-completion-journal.js';
 import { settleProviderTransportFailure } from '../provider-attempt-audit.js';
 import { applyMemorizeLifecycleEvent, createMemorizeObligationLedger } from '../memorize-obligation-ledger.js';
 import { selectMemorizeSourceTierWork, stageMemorizeSourceCheckpoint } from '../memorize-authority-model.js';
 import { createMemorizeExecutionContext } from '../memorize-execution-context.js';
 import { createRuntimeEffectExecutor } from '../runtime-effect-executor.js';
+import { createLongtermOwnerEffectExecutor, createLongtermOwnerPersistencePlan } from '../longterm-owner-persistence.js';
 import { createMemorizeExecutionAggregate } from '../memorize-execution-kernel.js';
 import { prepareMemorizeUnitOfWork, markMemorizeRecordsApplied, commitMemorizeUnitOfWork } from '../memorize-unit-of-work.js';
 
 const transactionUrl = new URL('../catchup-transaction.js', import.meta.url).href;
 const longtermRuntimeUrl = new URL('../multi-owner-longterm-runtime.js', import.meta.url).href;
 const sessionRuntimeUrl = new URL('../session.js', import.meta.url).href;
+const registryRuntimeUrl = new URL('../graph-migration.js', import.meta.url).href;
+const loggingUrl = new URL('../logging.js', import.meta.url).href;
 const stub = (source) => ({ shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(source)}` });
 
 test('the first diagnostic save contains the recorded exit and exports its original failure', async () => {
@@ -47,10 +50,13 @@ test('the first diagnostic save contains the recorded exit and exports its origi
 });
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
+    if ([registryRuntimeUrl, loggingUrl, longtermRuntimeUrl, sessionRuntimeUrl].includes(context.parentURL)
+      && specifier === '../../../extensions.js') return stub(
+      `export const extension_settings = {${JSON.stringify(MODULE_NAME)}: {session_enabled:true}};
+       export const getContext = () => globalThis.smeTestExtractionContext;`);
+    if (context.parentURL === registryRuntimeUrl && specifier === '../../../../script.js')
+      return stub('export const saveSettingsDebounced = () => {};');
     if ([longtermRuntimeUrl, sessionRuntimeUrl].includes(context.parentURL)) {
-      if (specifier === '../../../extensions.js') return stub(
-        `export const extension_settings = {${JSON.stringify(MODULE_NAME)}: {session_enabled:true}};
-         export const getContext = () => globalThis.smeTestExtractionContext;`);
       if (specifier === './generate.js') return stub(
         `export const generateMemoryExtract = (...args) => globalThis.smeTestSessionProvider(...args);
          export const getMemoryProviderCapabilities = () => ({});
@@ -75,13 +81,14 @@ const hooks = registerHooks({
       if (specifier === './macros.js') return stub('export const MACRO_NAMES = {}, setMacroContent = () => {}, isMacroActive = () => false;');
       if (specifier === './logging.js') return stub('export const smLog = () => {};');
       if (specifier === './unified-inject.js') return stub('export const invalidateUnifiedCache = () => {};');
-      const unused = {
-        './graph-migration.js': ['loadSessionEntityRegistry', 'saveSessionEntityRegistry',
-          'resolveEntityNames', 'reconcileCanonicalEntityRegistry', 'reconcileEntityRegistry'],
-        './embeddings.js': ['batchVerify', 'getEmbeddingBatch', 'cosineSimilarity', 'getHardwareProfile'],
-      }[specifier];
-      if (unused) return stub(unused.map((name) =>
-        `export const ${name} = () => { throw new Error('Unexpected test call: ${name}'); };`).join('\n'));
+      if (specifier === './embeddings.js') return stub(
+        `export const batchVerify = async (records) => ({
+           passed: new Set(records.map(record => record.content.toLowerCase().trim())),
+           superseded: new Map(), confirmed: new Set(),
+         });
+         export const getHardwareProfile = () => 'a';
+         export const getEmbeddingBatch = async () => new Map();
+         export const cosineSimilarity = () => 0;`);
     }
     if (context.parentURL === transactionUrl) {
       if (specifier === '../../../../script.js') {
@@ -102,14 +109,17 @@ const {
 } = await import(transactionUrl);
 const { extractAndStoreMultiOwnerMemories } = await import(longtermRuntimeUrl);
 const { extractSessionMemories } = await import(sessionRuntimeUrl);
+const { saveCharacterEntityRegistry, loadCharacterEntityRegistry } = await import(registryRuntimeUrl);
 hooks.deregister();
 
-for (const mode of ['no-update', 'record', 'receipt-failure', 'transport-failure']) {
-test(mode === 'record' ? 'real Session transport failure resumes without repeating committed Long-Term'
-  : `real Long-Term adapter: ${mode}`, async () => {
+for (const mode of ['no-update', 'record', 'receipt-failure', 'transport-failure', 'internal-session-retry']) {
+test(mode === 'record' ? 'both adapters replay local write failures and Session retries transport after reload'
+  : mode === 'internal-session-retry' ? 'internal Session retry settles every attempt before the next registration'
+    : `real Long-Term adapter: ${mode}`, async () => {
   const rejectReceipt = mode === 'receipt-failure';
   const rejectTransport = mode === 'transport-failure';
-  const producesRecord = mode === 'record';
+  const internalRetry = mode === 'internal-session-retry';
+  const producesRecord = mode === 'record' || internalRetry;
   const logical_run_id = 'real-longterm-first-chunk';
   let metadata = { active_catchup_run_id: logical_run_id,
     ledger: createMemorizeExecutionAggregate(logical_run_id) };
@@ -142,11 +152,11 @@ test(mode === 'record' ? 'real Session transport failure resumes without repeati
     no_update_owners: ['B'],
   } : { records: [], no_update_owners: ['A', 'B'] });
   try {
-    const makeExecutionContext = (page = 'real-longterm') => createMemorizeExecutionContext({
+    const makeExecutionContext = (page = 'real-longterm', action = 'dispatch_provider_request') => createMemorizeExecutionContext({
       controller: { lifecycle_required: true, instance_id: 'controller:real-longterm',
         page_instance_id: `page:${page}`,
         transaction_id: transaction.transaction_id, transaction_generation: transaction.generation },
-      provider: { selected_recovery_action: 'dispatch_provider_request' },
+      provider: { selected_recovery_action: action },
       hooks: {
         obligation_event: async (event) => (await persist(() => {
           const { provider_state_proposal: proposal, ...transition } = event;
@@ -180,6 +190,9 @@ test(mode === 'record' ? 'real Session transport failure resumes without repeati
             metadata.ledger = committed.state.aggregate;
             if (command.transport_status === 'failed') {
               settleProviderTransportFailure(metadata, command, committed.receipt);
+            } else if (committed.status === 'applied'
+              && metadata.provider_completion_journal?.entries?.[command.attempt_id]) {
+              acknowledgeProviderCompletionLedger(metadata, command, committed.receipt);
             }
             return committed;
           })).value;
@@ -187,31 +200,35 @@ test(mode === 'record' ? 'real Session transport failure resumes without repeati
       },
     });
     const messages = Array.from({ length: 20 }, (_, i) => ({
-      name: i % 2 ? 'A' : 'B', mes: i === 1 ? 'I keep a blue bicycle.' : `Fixture message ${i}`, __sme_original_index: i,
+      name: i % 2 ? 'A' : 'B', mes: i === 1 ? 'I keep a blue bicycle.'
+        : i === 3 ? 'I left the spare key on the kitchen table.' : `Fixture message ${i}`, __sme_original_index: i,
     }));
     context.chat = messages;
     const recordId = 'saved-bicycle';
-    const runLongterm = (page) => extractAndStoreMultiOwnerMemories(['A', 'B'], messages, null, {
-      executionContext: makeExecutionContext(page),
+    let failOwnerWrite = producesRecord;
+    const writeFailure = new Error('scripted owner storage failure');
+    const runLongterm = (page, action) => extractAndStoreMultiOwnerMemories(['A', 'B'], messages, null, {
+      executionContext: makeExecutionContext(page, action),
       preparePersistencePlan: (owner, records) => {
         assert.equal(producesRecord, true);
         assert.equal(owner, 'A');
         assert.equal(records.length, 1);
         const record = records[0];
         assert.match(record.content, /blue bicycle/);
-        return { operation_type: 'test_owner_write', owner,
-          record: { id: recordId, content: record.content },
-          added: 1, durable_record_ids: [recordId],
-          durable_record_candidate_map: { [recordId]: record._memorize_candidate_id } };
+        return createLongtermOwnerPersistencePlan({ plan_id: 'test-owner-plan', owner,
+          storage_scope: 'character', status: 'committed', added: 1,
+          durable_memories: [{ id: recordId, content: record.content }],
+          entity_registry: [{ id: 'entity-bicycle', name: 'Bicycle', type: 'object', aliases: [] }],
+          candidate_ids: [record._memorize_candidate_id], durable_record_ids: [recordId],
+          durable_record_candidate_map: { [recordId]: record._memorize_candidate_id } });
       },
-      persistenceExecutor: createRuntimeEffectExecutor({
-        test_owner_write: async (plan) => {
-          metadata.saved_records ??= [];
-          metadata.saved_records.push(plan.record);
+      persistenceExecutor: createLongtermOwnerEffectExecutor({
+        save_entity_registry: saveCharacterEntityRegistry,
+        save_chat_local_memories: () => assert.fail('expected card-scoped write'),
+        save_character_memories: async (_owner, records) => {
+          if (failOwnerWrite) throw writeFailure;
+          metadata.saved_records = records;
           await saveChatMetadata(context);
-          return { owner: plan.owner, status: 'committed', added: 1,
-            durable_record_ids: plan.durable_record_ids,
-            durable_record_candidate_map: plan.durable_record_candidate_map };
         },
       }),
       provider: async () => {
@@ -267,7 +284,21 @@ test(mode === 'record' ? 'real Session transport failure resumes without repeati
         .find((item) => item.transport_failure).ledger_transition.status, 'applied_verified');
       return;
     } else {
-      const outcome = await run;
+      let outcome;
+      if (producesRecord) {
+        await assert.rejects(run, (error) => error.cause === writeFailure || error === writeFailure);
+        const range = { start: 0, end: 19 };
+        assert.equal(selectMemorizeSourceTierWork(saved.ledger, range, ['longterm'])
+          .longterm.obligation.next_eligible_action, 'apply_journaled_provider_completion');
+        assert.equal(loadCharacterEntityRegistry('A')[0].id, 'entity-bicycle');
+        rollbackCatchUpTransaction(transaction);
+        metadata = structuredClone(saved);
+        context = { ...context, chatMetadata: { [META_KEY]: metadata } };
+        globalThis.smeTestExtractionContext = context;
+        transaction = beginCatchUpTransaction(context, { page_instance_id: 'page:owner-replay' });
+        failOwnerWrite = false;
+        outcome = await runLongterm('owner-replay', 'apply_journaled_provider_completion');
+      } else outcome = await run;
       assert.equal(outcome.kind, producesRecord ? 'complete' : 'complete_no_update');
       const checkpoint = { run_manifest: { logical_run_id,
         source_window: { message_count: 20 }, obligation_ledger: saved.ledger } };
@@ -294,12 +325,38 @@ test(mode === 'record' ? 'real Session transport failure resumes without repeati
         assert.equal(work.longterm.dispatch, false);
         assert.equal(work.session.dispatch, true);
         let sessionCalls = 0;
+        if (internalRetry) {
+          globalThis.smeTestSessionProvider = async () => {
+            sessionCalls++;
+            if (sessionCalls === 1) return 'This is conversational prose instead of memory records.';
+            if (sessionCalls === 2) throw Object.assign(new Error('scripted retry failure'), { status: 503 });
+            return 'NONE';
+          };
+          await extractSessionMemories(messages, null, { executionContext: makeExecutionContext('internal-retry') });
+          const failedAttempts = saved.live_memory_health.provider_attempt_audit.recent_attempts
+            .filter((attempt) => attempt.tier === 'session' && attempt.terminal_outcome === 'provider_failure');
+          assert.equal(failedAttempts.length, 1, JSON.stringify({ sessionCalls,
+            attempts: saved.live_memory_health.provider_attempt_audit.recent_attempts.map(
+              ({ tier, attempt_id, terminal_outcome, transmission_started }) =>
+                ({ tier, attempt_id, terminal_outcome, transmission_started })),
+          }));
+          const journal = exportProviderCompletionJournal(saved);
+          const entry = journal.entries.find((item) => item.attempt_id === failedAttempts[0].attempt_id);
+          assert.equal(entry.ledger_transition.status, 'applied_verified');
+          assert.equal(entry.transport_failure.http_status, 503);
+          const sessionEntries = journal.entries.filter((item) => item.tier === 'session');
+          assert.equal(sessionEntries.length, 3);
+          assert.ok(sessionEntries.every((item) => item.ledger_transition.status === 'applied_verified'));
+          assert.equal(saved.live_memory_health.provider_attempt_audit.recent_attempts
+            .filter((item) => item.tier === 'session' && item.terminal_outcome === 'running').length, 0);
+          return;
+        }
         globalThis.smeTestSessionProvider = async () => {
           sessionCalls++;
           const leaf = Object.values(saved.ledger.obligations).find((item) => item.tier === 'session');
           assert.equal(leaf.current_state, 'provider_running');
           if (sessionCalls === 1) throw Object.assign(new Error('private Session body'), { status: 503 });
-          return 'NONE';
+          return '[detail:2:session:sources=3] A left the spare key on the kitchen table.';
         };
         await assert.rejects(extractSessionMemories(messages, null, {
           executionContext: makeExecutionContext('reloaded'),
@@ -318,14 +375,30 @@ test(mode === 'record' ? 'real Session transport failure resumes without repeati
         assert.equal(pending.longterm.dispatch, false);
         assert.equal(pending.session.obligation.current_state, 'pending_recovery');
         assert.equal(pending.session.obligation.next_eligible_action, 'dispatch_provider_request');
-        assert.equal(await extractSessionMemories(messages, null, {
+        const sessionWriteFailure = new Error('scripted Session writer failure');
+        await assert.rejects(extractSessionMemories(messages, null, {
           executionContext: makeExecutionContext('resumed'),
-        }), 0);
+          persistSessionMemories: () => { throw sessionWriteFailure; },
+        }), (error) => error === sessionWriteFailure && error.sme_operational_pause === true);
+        const localPending = selectMemorizeSourceTierWork(saved.ledger, range, enabled_tiers);
+        assert.equal(localPending.session.obligation.next_eligible_action, 'apply_journaled_provider_completion');
+        assert.equal(saved.sessionMemories, undefined);
+        assert.equal(saved.catch_up_checkpoint.next_source_offset, 0);
+        rollbackCatchUpTransaction(transaction);
+        metadata = structuredClone(saved);
+        context = { ...context, chatMetadata: { [META_KEY]: metadata } };
+        globalThis.smeTestExtractionContext = context;
+        transaction = beginCatchUpTransaction(context, { page_instance_id: 'page:session-local-replay' });
+        assert.equal(await extractSessionMemories(messages, null, {
+          executionContext: makeExecutionContext('session-local-replay', 'apply_journaled_provider_completion'),
+        }), 1);
         metadata.catch_up_checkpoint.run_manifest.obligation_ledger = metadata.ledger;
         stageMemorizeSourceCheckpoint(metadata.catch_up_checkpoint, coverageOptions);
         await saveChatMetadata(context);
         await commitCatchUpTransaction(transaction);
         assert.equal(saved.catch_up_checkpoint.next_source_offset, 20);
+        assert.equal(saved.sessionMemories.length, 1);
+        assert.match(saved.sessionMemories[0].content, /spare key/);
         assert.deepEqual(saved.saved_records.map((record) => record.id), [recordId]);
         assert.equal(sessionCalls, 2);
         const failureAfterResume = exportProviderCompletionJournal(saved).entries

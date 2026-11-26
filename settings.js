@@ -162,6 +162,8 @@ import { createCompactFailureDiagnostics, createFullDiagnosticsExport,
 import { resetMemorizeRunMetadata } from './fresh-start-state.js';
 import {
   inspectProviderCompletionConsistency,
+  acknowledgeProviderCompletionLedger,
+  findCurrentRunProviderCompletion,
   reconcileImpossibleLiveHealth,
   exportProviderCompletionJournal,
   PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION,
@@ -294,8 +296,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.96',
-  build_fingerprint: 'sme-v0.9.96-transport-settlement-r1',
+  extension_version: '0.9.97',
+  build_fingerprint: 'sme-v0.9.97-record-replay-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -5284,9 +5286,6 @@ export function bindSettingsUI(ctrl) {
     };
     const recordControllerExit = (input = {}) => {
       const exit = buildMemorizeControllerExit(controllerRuntime, input);
-      exit.stack_fingerprint = exit.stack_fingerprint_input
-        ? diagnosticFingerprint(exit.stack_fingerprint_input.replace(/https?:\/\/\S+/g, '<url>')) : null;
-      delete exit.stack_fingerprint_input;
       const checkpoint = catchUpContext.chatMetadata?.[META_KEY]?.catch_up_checkpoint
         ?? controllerRuntime.checkpoint;
       if (!checkpoint?.run_manifest) return exit;
@@ -6156,6 +6155,17 @@ export function bindSettingsUI(ctrl) {
         const commitAtomicProviderCompletion = async (command) => {
           let completionResult = null;
           const leaseResult = await runLeasedPersistence('provider_completion_command', () => {
+            if (command.action === 'apply_journaled_provider_completion') {
+              const entry = findCurrentRunProviderCompletion(catchUpContext.chatMetadata[META_KEY], {
+                logical_run_id: command.logical_run_id, attempt_id: command.attempt_id,
+                obligation_leaf_id: command.obligation_leaf_id, source_fingerprint: command.source_fingerprint,
+              });
+              if (entry?.response_text == null) {
+                throw Object.assign(new Error('Journal replay requires the retained response for this exact attempt.'), {
+                  code: 'SME_JOURNAL_REPLAY_RESPONSE_REQUIRED',
+                });
+              }
+            }
             checkpoint.run_manifest.obligation_ledger = ensureMemorizeObligationLedger(
               checkpoint.run_manifest.obligation_ledger, checkpoint.run_manifest.logical_run_id);
             const priorKernel = checkpoint.run_manifest.obligation_ledger.execution_kernel;
@@ -6197,6 +6207,10 @@ export function bindSettingsUI(ctrl) {
               checkpoint.run_manifest.obligation_ledger = completionResult.aggregate;
               if (completionResult.status === 'applied' && command.transport_status === 'failed') {
                 settleProviderTransportFailure(catchUpContext.chatMetadata[META_KEY],
+                  command, completionResult.receipt);
+              } else if (completionResult.status === 'applied'
+                && catchUpContext.chatMetadata[META_KEY]?.provider_completion_journal?.entries?.[command.attempt_id]) {
+                acknowledgeProviderCompletionLedger(catchUpContext.chatMetadata[META_KEY],
                   command, completionResult.receipt);
               }
               const actionReceipt = recordMemorizeActionReceipt(
@@ -6614,6 +6628,7 @@ export function bindSettingsUI(ctrl) {
                   hooks: {
                     recovery_child_completed: recordCompletedRecoveryChild,
                     obligation_event: applyAuthoritativeLifecycleEvent,
+                    provider_completion_journal_updated: commitProviderCompletionJournal,
                     provider_completion_command: commitAtomicProviderCompletion,
                     action_receipt: commitActionReceipt,
                     get_canonical_obligation: getCanonicalObligation,

@@ -1,7 +1,7 @@
 /** Bounded, content-free accounting for actual Long-Term/Session provider calls. */
 import { analyzeMalformedResponse, classifyTaggedResponseFailure } from './malformed-output-recovery.js';
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION } from './recovery-stage-eligibility.js';
-import { acknowledgeProviderTransportFailure, recordProviderCompletion } from './provider-completion-journal.js';
+import { acknowledgeProviderCompletionLedger, recordProviderCompletion } from './provider-completion-journal.js';
 
 /** Publish audit and journal evidence inside the same transaction as the kernel receipt. */
 export function settleProviderTransportFailure(metadata, command, receipt) {
@@ -12,7 +12,7 @@ export function settleProviderTransportFailure(metadata, command, receipt) {
       code: 'SME_TRANSPORT_FAILURE_ATTEMPT_REQUIRED',
     });
   }
-  const entry = acknowledgeProviderTransportFailure(metadata, command, receipt);
+  const entry = acknowledgeProviderCompletionLedger(metadata, command, receipt);
   finishProviderAttempt(metadata, attempt, { terminal_outcome: 'provider_failure',
     recoverable: true, failure_classification: command.reason_code });
   metadata.provider_completion_journal.entries[command.attempt_id].transport_failure = command.transport_failure ?? null;

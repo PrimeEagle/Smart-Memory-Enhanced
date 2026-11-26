@@ -1,4 +1,4 @@
-import { immutableSerializableDomain } from './serializable-domain.js';
+import { cloneSerializableDomain, immutableSerializableDomain } from './serializable-domain.js';
 import { createRuntimeEffectExecutor } from './runtime-effect-executor.js';
 
 export const LONGTERM_OWNER_REPLACE_OPERATION = 'longterm_owner_replace_v1';
@@ -42,10 +42,11 @@ export function createLongtermOwnerEffectExecutor(adapters = {}) {
       durable_record_ids: [], durable_record_candidate_map: {}, candidate_ids: [],
     }),
     [LONGTERM_OWNER_REPLACE_OPERATION]: async (plan) => {
-      if (plan.entity_registry.length) await saveRegistry(plan.owner, plan.entity_registry);
+      if (plan.entity_registry.length) await saveRegistry(plan.owner, cloneSerializableDomain(plan.entity_registry));
+      const memories = cloneSerializableDomain(plan.durable_memories);
       if (plan.storage_scope === 'chat_local') {
-        await saveChatLocal(plan.owner, plan.durable_memories);
-      } else await saveCharacter(plan.owner, plan.durable_memories);
+        await saveChatLocal(plan.owner, memories);
+      } else await saveCharacter(plan.owner, memories);
       return {
         schema_version: 1, operation_type: plan.operation_type,
         plan_id: plan.plan_id, owner: plan.owner, status: plan.status,

@@ -49,3 +49,10 @@ coverage; the next dispatch completes the range and saves offset 20. The Session
 case proves the saved Long-Term record is not duplicated. The tests use the
 shared settlement function and group save serialization, but do not invoke the
 settings event handler or production provider transport.
+
+Session local-write replay now has its own fault injection in the combined
+record-producing test. After reload it saves the pending record from the
+retained reply, without a third provider call or a duplicate Long-Term record.
+A separate internal retry produces malformed output, rejects a recovery
+request with HTTP 503, then succeeds. It checks that all three Session
+attempts have verified ledger acknowledgements and no attempt remains running.

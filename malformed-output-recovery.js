@@ -2,6 +2,7 @@
 import { analyzeBracketModifiers, analyzeTaggedMemoryOutput, getTaggedMemoryGrammar } from './parsers.js';
 import { deriveRecoveryStageEligibility, RECOVERY_IMPLEMENTATION_VERSION, RECOVERY_STAGE_ORDER } from './recovery-stage-eligibility.js';
 import { classifyOwnerApplicability } from './owner-applicability.js';
+import { describeProviderTransportFailure } from './provider-dispatch-boundary.js';
 
 export const MALFORMED_RECOVERY_SCHEMA_VERSION = 7;
 
@@ -857,6 +858,10 @@ export async function recoverMalformedTaggedOutput({
     await pendingAttemptSettlement;
     return onAttemptRegistered?.(attempt, details);
   };
+  const beginSettledAttempt = async (...args) => {
+    await pendingAttemptSettlement;
+    return beginAttempt(...args);
+  };
   // Recovery state is an explicit canonical input. Bounded attempt-audit
   // records are evidence only and cannot silently become execution state.
   const effectiveResumeState = resumeState;
@@ -923,7 +928,7 @@ export async function recoverMalformedTaggedOutput({
     ? consumeMalformedRecoveryRequest(budget, 'compact_response_repair')
     : { allowed: false, reason: recoveryRoute.avoided_repair_reason };
   if (repairBudget.allowed) {
-    const attempt = beginAttempt('format_repair', ['malformed_response_input', 'compact_repair_prompt'], {
+    const attempt = await beginSettledAttempt('format_repair', ['malformed_response_input', 'compact_repair_prompt'], {
       recovery_of_attempt_id: originalAttempt?.attempt_id ?? null, repair_reason: originalReason,
       recovery_stage: 'compact_response_repair', expected_output_format: `${tier}_tagged_lines_v1`,
     });
@@ -935,6 +940,7 @@ export async function recoverMalformedTaggedOutput({
       });
     } catch (error) {
       finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: true,
+        transport_failure: describeProviderTransportFailure(error),
         recovery_stage: 'compact_response_repair', final_disposition: 'repair_provider_failure' });
       repairedResponse = null;
       lastFailedAttempt = attempt;
@@ -972,7 +978,7 @@ export async function recoverMalformedTaggedOutput({
     ? { allowed: false, reason: 'stage_already_exhausted_before_resume' }
     : consumeMalformedRecoveryRequest(budget, 'changed_dimension_regeneration');
   if (regenerationBudget.allowed) {
-    const attempt = beginAttempt('changed_dimension_regeneration', ['minimal_output_prompt', 'deterministic_fresh_generation'], {
+    const attempt = await beginSettledAttempt('changed_dimension_regeneration', ['minimal_output_prompt', 'deterministic_fresh_generation'], {
       recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null, repair_reason: lastReason,
       recovery_stage: 'changed_dimension_regeneration', expected_output_format: `${tier}_tagged_lines_v1`,
     });
@@ -984,6 +990,7 @@ export async function recoverMalformedTaggedOutput({
       });
     } catch (error) {
       finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: true,
+        transport_failure: describeProviderTransportFailure(error),
         recovery_stage: 'changed_dimension_regeneration', final_disposition: 'regeneration_provider_failure' });
       regeneratedResponse = null;
       lastFailedAttempt = attempt;
@@ -1052,7 +1059,7 @@ export async function recoverMalformedTaggedOutput({
   if (!splitResult?.completed && !priorStages.has('structured_json_regeneration')) {
     const jsonBudget = consumeMalformedRecoveryRequest(budget, 'structured_json_regeneration');
     if (jsonBudget.allowed) {
-      const attempt = beginAttempt('structured_json_regeneration', ['structured_json_schema', 'minimum_window_terminal_rescue'], {
+      const attempt = await beginSettledAttempt('structured_json_regeneration', ['structured_json_schema', 'minimum_window_terminal_rescue'], {
         recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
         repair_reason: lastReason, recovery_stage: 'structured_json_regeneration',
         expected_output_format: `${tier}_json_records_v1`,
@@ -1070,6 +1077,7 @@ export async function recoverMalformedTaggedOutput({
         });
       } catch (error) {
         finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: true,
+          transport_failure: describeProviderTransportFailure(error),
           recovery_stage: 'structured_json_regeneration', final_disposition: 'structured_json_provider_failure' });
         jsonResponse = null;
         lastProviderError = error;
@@ -1185,7 +1193,7 @@ export async function recoverMalformedTaggedOutput({
     ? { allowed: false, reason: 'stage_already_exhausted_for_source_window' }
     : consumeMalformedRecoveryRequest(budget, 'minimal_record_regeneration');
   if (minimalBudget.allowed) {
-    const attempt = beginAttempt('minimal_record_regeneration',
+    const attempt = await beginSettledAttempt('minimal_record_regeneration',
       ['single_record_contract', 'optional_modifiers_removed', 'minimum_window_changed_recovery_dimension'], {
         recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
         repair_reason: lastReason, recovery_stage: 'minimal_record_regeneration',
@@ -1200,6 +1208,7 @@ export async function recoverMalformedTaggedOutput({
       });
     } catch (error) {
       finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: false,
+        transport_failure: describeProviderTransportFailure(error),
         recovery_stage: 'minimal_record_regeneration', final_disposition: 'minimal_record_provider_failure',
         recovery_ladder_terminal: true, accepted_candidate_count: acceptedPartialRecords.length });
       lastProviderError = error;
@@ -1264,7 +1273,7 @@ export async function recoverMalformedTaggedOutput({
   if (fragmentDecisionEligible) {
     const allowance = consumeMalformedRecoveryRequest(budget, 'fragment_decision_regeneration');
     if (allowance.allowed) {
-      const attempt = beginAttempt('fragment_decision_regeneration',
+      const attempt = await beginSettledAttempt('fragment_decision_regeneration',
         ['fragment_identity', 'semantic_decision_json', 'deterministic_metadata_construction'], {
           recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
           repair_reason: lastReason, recovery_stage: 'fragment_decision_regeneration',
@@ -1280,6 +1289,7 @@ export async function recoverMalformedTaggedOutput({
         });
       } catch (error) {
         finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: true,
+          transport_failure: describeProviderTransportFailure(error),
           recovery_stage: 'fragment_decision_regeneration',
           final_disposition: 'fragment_decision_provider_failure' });
         lastProviderError = error;
@@ -1382,7 +1392,7 @@ export async function recoverMalformedTaggedOutput({
       let requestPlan = buildSingleSourceProviderRequest(unit, {
         tier, owner, capabilities: providerCapabilities, enforcement: false,
       });
-      let attempt = beginAttempt('single_source_unit_regeneration', eligibility.changed_dimensions, {
+      let attempt = await beginSettledAttempt('single_source_unit_regeneration', eligibility.changed_dimensions, {
         recovery_of_attempt_id: lastFailedAttempt?.attempt_id ?? originalAttempt?.attempt_id ?? null,
         repair_reason: lastReason, recovery_stage: 'single_source_unit_regeneration',
         expected_output_format: requestPlan.expected_output_format,
@@ -1407,6 +1417,7 @@ export async function recoverMalformedTaggedOutput({
         });
       } catch (error) {
         finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: false,
+          transport_failure: describeProviderTransportFailure(error),
           recovery_stage: 'single_source_unit_regeneration', recovery_ladder_terminal: true,
           target_source_unit: String(unit.unit_key),
           target_source_fingerprint: unit.source_fingerprint ?? safeFingerprint(unit.text),
@@ -1452,7 +1463,7 @@ export async function recoverMalformedTaggedOutput({
           requestPlan = buildSingleSourceProviderRequest(unit, {
             tier, owner, capabilities: providerCapabilities, enforcement: true,
           });
-          attempt = beginAttempt('single_source_contract_enforcement', [
+          attempt = await beginSettledAttempt('single_source_contract_enforcement', [
             'contract_only_classifier', 'provider_role_or_schema_constraint',
             'bounded_single_enforcement_retry',
           ], {
@@ -1480,6 +1491,7 @@ export async function recoverMalformedTaggedOutput({
             unitResult = parseSingleSourceUnitResponse(unitResponse, { tier, parse });
           } catch (error) {
             finishAttempt(attempt, { terminal_outcome: 'provider_failure', recoverable: false,
+              transport_failure: describeProviderTransportFailure(error),
               recovery_stage: 'single_source_contract_enforcement', recovery_ladder_terminal: true,
               contract_enforcement_retry_performed: true, applicability_decision: applicability,
               provider_capability_path: requestPlan.capability_path,

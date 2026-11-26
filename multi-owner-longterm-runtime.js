@@ -267,7 +267,8 @@ export async function extractAndStoreMultiOwnerMemories(
   }, () => pipeline.recordActionReceipt('provider_response_received', {
     action: dispatchAction, attempt_id: attempt?.attempt_id,
   }));
-  const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', { attempt });
+  const responseIngress = journalReplayMode ? { status: 'applied' }
+    : await pipeline.ingestProviderEvidence('record_new_response', { attempt });
   if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
     const error = new Error('Multi-owner response could not enter the lifecycle.');
     error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';

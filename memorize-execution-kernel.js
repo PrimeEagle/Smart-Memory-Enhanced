@@ -266,6 +266,9 @@ export function applyProviderCompletion(aggregateValue, command, now = Date.now(
   } else {
     applyRequiredEvent(aggregate, identity, {
       type: 'provider_response_received', provider_attempt_id: attemptId,
+      journal_replay_verified: command.action === 'apply_journaled_provider_completion'
+        && command.raw_response_reference?.retained === true
+        && command.raw_response_reference.journal_attempt_id === attemptId,
       event_id: `${commandId}:response`, at: now,
     }, 'provider_response_received');
     const parserEvent = parser.status === 'partial' ? 'parser_partially_accepted'

@@ -642,7 +642,10 @@ export function applyMemorizeLifecycleEvent(ledgerValue, identity = {}, event = 
         return recordSemanticViolation(ledger, identity, event,
           'provider_response_without_registered_attempt', { missing_evidence: ['registered_provider_attempt'] });
       }
-      if (priorState !== 'provider_running' && priorState !== 'provider_response_received') {
+      if (priorState !== 'provider_running' && priorState !== 'provider_response_received'
+        && !(priorState === 'pending_recovery' && event.journal_replay_verified === true
+          && existing.next_eligible_action === 'apply_journaled_provider_completion'
+          && existing.provider_attempt_lineage.at(-1) === event.provider_attempt_id)) {
         result = recordHistoricalLifecycleNoop(ledger, identity, event,
           'provider_response_not_applicable_due_to_later_verified_state');
         break;

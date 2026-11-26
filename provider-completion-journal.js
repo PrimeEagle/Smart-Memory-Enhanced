@@ -4,15 +4,16 @@ import { assertSerializableDomain, cloneSerializableDomain }
 
 export const PROVIDER_COMPLETION_JOURNAL_SCHEMA_VERSION = 8;
 
-/** A transport rejection is acknowledged by its exact kernel receipt, not by a caller assertion. */
-export function acknowledgeProviderTransportFailure(metadata, command, receipt) {
+/** A journal transition is acknowledged by its exact kernel receipt, not by a caller assertion. */
+export function acknowledgeProviderCompletionLedger(metadata, command, receipt) {
   const entry = metadata?.provider_completion_journal?.entries?.[command.attempt_id];
+  const transportFailure = command.transport_status === 'failed';
   if (!entry || receipt?.command_id !== command.command_id
     || receipt.attempt_id !== command.attempt_id
     || receipt.obligation_leaf_id !== command.obligation_leaf_id
-    || receipt.resulting_state !== 'pending_recovery' || receipt.checkpoint_eligible) {
-    throw Object.assign(new Error('Transport failure lacks an exact non-committing kernel receipt.'), {
-      code: 'SME_TRANSPORT_FAILURE_RECEIPT_INVALID',
+    || (transportFailure && (receipt.resulting_state !== 'pending_recovery' || receipt.checkpoint_eligible))) {
+    throw Object.assign(new Error('Provider journal acknowledgement lacks the exact kernel receipt.'), {
+      code: 'SME_PROVIDER_COMPLETION_RECEIPT_INVALID',
     });
   }
   entry.ledger_transition = {
@@ -42,6 +43,8 @@ function deriveCurrentCompletionCursor(entry = {}) {
 }
 const verifiedTransition = (value) => ['applied_verified', 'idempotent_duplicate_verified',
   'not_applicable'].includes(value?.status);
+const verifiedNonPendingTransition = (value) => verifiedTransition(value)
+  && !['pending_recovery', 'partial_records_committed'].includes(value.disposition);
 function mergeUnverifiedCallerTransition(priorValue, patchValue) {
   const prior = clone(priorValue) ?? { status: 'pending' };
   if (!patchValue) return prior.status === 'applied' ? {
@@ -180,7 +183,7 @@ export function recordProviderCompletion(metadata, attempt, patch = {}) {
   };
   if (['committed', 'verified_existing', 'not_needed', 'not_applicable', 'rejected'].includes(entry.persistence.status)
     && verifiedTransition(entry.manifest_transition)
-    && verifiedTransition(entry.ledger_transition)) {
+    && verifiedNonPendingTransition(entry.ledger_transition)) {
     entry.completed_at ??= entry.physical_completed_at ?? entry.updated_at;
     entry.logical_completed_at ??= entry.updated_at;
   }
@@ -219,7 +222,7 @@ export function assessCurrentRunCompletionReplay(metadata, input = {}) {
   if (entry.response_text == null) return Object.freeze({
     replayable: false, reason_code: 'provider_response_not_journaled', entry: clone(entry),
   });
-  if (entry.logical_completed_at != null || verifiedTransition(entry.ledger_transition)) {
+  if (entry.logical_completed_at != null || verifiedNonPendingTransition(entry.ledger_transition)) {
     return Object.freeze({ replayable: false, reason_code: 'completion_command_already_applied',
       already_applied: true, entry: clone(entry) });
   }

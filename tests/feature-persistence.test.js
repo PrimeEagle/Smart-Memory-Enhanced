@@ -6,7 +6,7 @@ import { executeFeaturePersistence, prepareFeaturePersistenceCommand }
 
 test('feature persistence validates, applies, persists, and records one receipt', async () => {
   const metadata = { scenes: [] };
-  const record = { id: 'scene-1', summary: 'A grounded scene.', source_message_indices: [1, 2] };
+  const record = Object.freeze({ id: 'scene-1', summary: 'A grounded scene.', source_message_indices: [1, 2] });
   const command = prepareFeaturePersistenceCommand({
     workflow_id: 'chat-1', feature: 'scenes', records: [record],
   });
@@ -19,7 +19,8 @@ test('feature persistence validates, applies, persists, and records one receipt'
   });
   assert.equal(result.status, 'committed');
   assert.equal(persisted, 1);
-  assert.equal(metadata.scenes[0].candidate_identity.candidate_id,
+  assert.equal(metadata.scenes[0].candidate_identity, undefined);
+  assert.equal(result.command.persistence_outcome.durable_record_candidate_map['scene-1'],
     command.durable_records[0].candidate_id);
   assert.equal(metadata.durable_persistence_receipts.length, 1);
 });

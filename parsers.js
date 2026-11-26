@@ -204,7 +204,7 @@ export function analyzeBracketModifiers(rawModifiers = '') {
 
 /** Parses recognized bracket modifier fields without allowing sources to bleed into entity values. */
 export function parseBracketModifiers(rawModifiers = '') {
-  const result = { score: undefined, expiration: undefined, candidateId: null, entityNames: [], sourceIndices: [], witnessedBy: [], triggers: [], unknownModifiers: [] };
+  const result = { score: undefined, expiration: undefined, candidateId: null, claimHash: null, entityNames: [], sourceIndices: [], witnessedBy: [], triggers: [], unknownModifiers: [] };
   const analysis = analyzeBracketModifiers(rawModifiers);
   const source = analysis.failures.length === 0 ? analysis.canonical_modifiers : String(rawModifiers);
   const positional = [];

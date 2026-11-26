@@ -486,7 +486,9 @@ export function createMemorizeTierPipeline(input) {
   }
   const buildProviderCompletionCommand = (details = {}) => {
     const attemptId = details.attempt_id ?? details.provider_attempt_id;
-    const commandId = details.command_id ?? `provider-completion:${attemptId}:${leafObligationId}`;
+    const replay = execution.provider.selected_recovery_action === 'apply_journaled_provider_completion';
+    const commandId = details.command_id ?? `provider-completion:${attemptId}:${leafObligationId}${replay
+      ? `:journal-replay:${details.terminal === false ? 'pending' : 'settled'}` : ''}`;
     const persistence = details.persistence_outcome ?? {};
     const durableIds = [...new Set(persistence.durable_record_ids ?? [])];
     const candidateMap = persistence.durable_record_candidate_map ?? {};

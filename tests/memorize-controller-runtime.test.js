@@ -145,6 +145,10 @@ test('a later internal exception atomically supersedes a provisional pause exit'
   assert.equal(projection.controller_exits.length, 1);
   assert.equal(projection.last_controller_exit.classification, 'internal_exception');
   assert.equal(projection.last_controller_exit.normalized_exception_class, 'TypeError');
+  assert.equal(projection.last_controller_exit.bounded_message, failure.message);
+  assert.match(projection.last_controller_exit.stack_fingerprint, /^fnv1a-[0-9a-f]{8}$/);
+  assert.equal(Object.isFrozen(finalExit), true);
+  assert.equal(Object.hasOwn(finalExit, 'stack_fingerprint_input'), false);
 });
 
 test('overlapping transaction state is observable and therefore blocks a second invocation', () => {

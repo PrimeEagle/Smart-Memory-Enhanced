@@ -1,4 +1,4 @@
-import { assignCandidateIdentity, candidateIdentityOf } from './candidate-identity.js';
+import { candidateIdentityOf } from './candidate-identity.js';
 import { preparePersistenceCommand } from './persistence-command.js';
 import { assertSerializableDomain, cloneSerializableDomain,
   immutableSerializableDomain } from './serializable-domain.js';
@@ -48,7 +48,6 @@ export function prepareFeaturePersistenceCommand({
     const recordId = recordIdOf(record, feature, owner, index);
     const candidateId = candidateIdentityOf(record)
       ?? `${feature}-candidate:${fingerprint(`${workflowId}:${recordId}`)}`;
-    assignCandidateIdentity(record, candidateId);
     return { record_id: recordId, candidate_id: candidateId,
       source_provenance: provenanceOf(record, fallback) };
   });

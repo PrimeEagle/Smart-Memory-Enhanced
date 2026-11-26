@@ -2,6 +2,15 @@ import { isMemorizeOutcome, memorizeOutcomeFromException } from './memorize-outc
 import { normalizeMemorizeReasonCode } from './memorize-reasons.js';
 import { createControllerExit } from './memorize-domain-dtos.js';
 
+function fingerprintStack(stack) {
+  if (!stack) return null;
+  let hash = 2166136261;
+  for (const character of stack.replace(/https?:\/\/\S+/g, '<url>')) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
 /**
  * Explicit ownership for one Memorize Chat controller invocation.
  *
@@ -142,7 +151,7 @@ export function buildMemorizeControllerExit(runtime, input = {}) {
     code: failure?.code ?? null,
     normalized_exception_class: failure?.normalized_exception_class ?? null,
     bounded_message: failure?.bounded_message ?? null,
-    stack_fingerprint_input: failure?.stack_fingerprint_input ?? null,
+    stack_fingerprint: fingerprintStack(failure?.stack_fingerprint_input),
     failure_stage: failure?.failure_stage ?? null,
     serialization_path: failure?.serialization_path ?? null,
     serialization_type: failure?.serialization_type ?? null,

@@ -1989,7 +1989,7 @@ test('source-tier coverage becomes complete only after a terminal parse or persi
     assert.doesNotMatch(source.slice(requestStart, requestEnd), /recordExtractionCoverage/);
     const saveCall = file === 'longterm.js'
       ? source.indexOf('saveCharacterMemories(characterName, [...finalActive, ...updatedRetired])')
-      : source.indexOf('await saveSessionMemories([...finalActive, ...updatedRetired])');
+      : source.indexOf('await (options.persistSessionMemories ?? saveSessionMemories)([...finalActive, ...updatedRetired])');
     const durableCoverage = source.indexOf("recordCompletedCoverage('completed_and_persisted')", saveCall);
     assert.ok(saveCall >= 0 && durableCoverage > saveCall);
   }

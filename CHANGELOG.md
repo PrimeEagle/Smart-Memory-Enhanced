@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.97] - 2026-11-26
+
+- Session retains provider replies before local writes and can replay the exact reply after a writer failure. Internal recovery settles each failed attempt before preparing the next registration, preserving its kernel acknowledgement and safe transport details.
+- Feature persistence no longer adds candidate identity to immutable source records; the command owns its identity mapping. Long-Term storage adapters receive their own copy of the planned registry and records.
+- Session record parsing represents an absent citation claim hash explicitly. Controller exits fingerprint the stack before freezing the diagnostic record, preserving the underlying failure.
+- Long-Term recovery can complete the exact retained reply after a local storage failure without another provider call. The first-chunk integration test exercises the real registry writer, the Session memory writer, and both record-producing replies.
+- Added regression coverage for Session write failure and reload, and for malformed output followed by an HTTP 503 and successful recovery. Live SillyTavern verification remains pending.
+
 ## [0.9.96] - 2026-11-25
 
 - Settle controller-managed provider transport failures with the exact kernel receipt in the same checkpoint transaction. Compact diagnostics now retain the failure stage, safe exception class, and HTTP status when available, without copying provider response bodies.

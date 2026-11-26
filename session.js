@@ -1145,9 +1145,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (!recoveryOnlyMode) {
       smLog('[Smart Memory Enhanced] Session extraction response:', response);
       healthUpdate({ response_received: true, parser_outcome: 'not_started' });
-      updateCompletionJournal(providerAttempt, {
+      const retainedResponse = updateCompletionJournal(providerAttempt, {
         provider_disposition: 'response_received', response_text: response,
       });
+      if (retainedResponse) await execution.hooks.provider_completion_journal_updated(retainedResponse,
+        { await_point: 'response_parse', progress: true });
     }
     const primaryStructuredResult = !recoveryOnlyMode
       && primaryProviderRequest.protocol === 'structured_json_schema_v1'
@@ -1240,6 +1242,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
         responseLength,
         originalAttempt: providerAttempt, beginAttempt: beginPhysicalAttempt,
         finishAttempt: (attempt, patch) => attempt?._already_finished
+          || (pipeline.atomicCompletionEnabled && patch.terminal_outcome === 'provider_failure')
           ? attempt : finishProviderAttempt(providerMetadata, attempt, patch),
         splitWindow: automaticFragmentRecovery ? null : splitMalformedWindow,
         budget: malformedRecoveryBudget,
@@ -1274,7 +1277,8 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             if (pipeline.atomicCompletionEnabled) await pipeline.applyProviderCompletion({
               attempt_id: attempt.attempt_id,
               transport_status: 'failed', terminal: false,
-              reason_code: attempt.failure_classification ?? 'provider_transport_failure',
+              reason_code: detail.transport_failure?.code ?? attempt.failure_classification ?? 'provider_transport_failure',
+              transport_failure: detail.transport_failure ?? null,
               next_action: 'dispatch_provider_request',
               raw_response_reference: null,
               recovery_stage: detail.recovery_stage ?? attempt.recovery_stage,
@@ -2288,17 +2292,41 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (pipeline.atomicCompletionEnabled) {
       pipeline.prepareProviderCompletion(persistenceCompletionDetails);
     }
-    if (entityRegistry.length > 0 && !abortCheck?.()) {
+    try {
+      if (entityRegistry.length > 0 && !abortCheck?.()) {
+        persistenceStarted = true;
+        await saveSessionEntityRegistry(entityRegistry);
+      }
+      for (const memory of finalActive) {
+        delete memory._citation_candidate_id;
+        delete memory._citation_claim_hash;
+      }
+      if (abortCheck?.()) return 0;
       persistenceStarted = true;
-      await saveSessionEntityRegistry(entityRegistry);
+      await (options.persistSessionMemories ?? saveSessionMemories)([...finalActive, ...updatedRetired]);
+    } catch (error) {
+      const retained = lifecycleAttemptId && findCurrentRunProviderCompletion(providerMetadata, {
+        logical_run_id: pipeline.lifecycleIdentity.logical_run_id, attempt_id: lifecycleAttemptId,
+        obligation_leaf_id: leafObligationId, source_fingerprint: coverageBase.source_fingerprint,
+      });
+      if (!pipeline.atomicCompletionEnabled || retained?.response_text == null
+        || unresolvedPartialFragments > 0) throw error;
+      await pipeline.applyProviderCompletion({
+        ...persistenceCompletionDetails,
+        terminal: false,
+        persistence_outcome: { status: 'rejected', durable_record_ids: [],
+          durable_record_candidate_map: {}, source_provenance: {} },
+        reason_code: 'local_persistence_replay_required',
+        next_action: 'apply_journaled_provider_completion',
+      });
+      error.sme_origin ??= 'persistence';
+      error.sme_reason_code = 'local_persistence_replay_required';
+      error.sme_operational_pause = true;
+      error.sme_obligation_id = leafObligationId;
+      error.sme_request_diagnostics = { ...error.sme_request_diagnostics,
+        provider_call_required: false, next_eligible_recovery_action: 'apply_journaled_provider_completion' };
+      throw error;
     }
-    for (const memory of finalActive) {
-      delete memory._citation_candidate_id;
-      delete memory._citation_claim_hash;
-    }
-    if (abortCheck?.()) return 0;
-    persistenceStarted = true;
-    await saveSessionMemories([...finalActive, ...updatedRetired]);
     updateCompletionJournal(providerAttempt, {
       parser_accepted_candidate_ids: parserAcceptedCandidateIds,
       validation: { status: 'accepted', accepted_count: incoming.length },
