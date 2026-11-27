@@ -1057,22 +1057,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
             providerConstraints: primaryProviderRequest.providerConstraints,
           }), { attempt_id: providerAttempt?.attempt_id });
         providerResponseReceived = true;
+        await pipeline.retainProviderResponse(providerAttempt, response, {
+          child_key: extractionRecoveryChildKey('session', 'chat', sourceMessages),
+        });
         await pipeline.recordActionReceipt('provider_response_received', {
           action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
         });
-        const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
-          attempt: providerAttempt,
-        });
-        if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
-          const error = new Error('Session provider response could not enter the lifecycle.');
-          error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
-          error.sme_recovery_blocked = true;
-          error.sme_obligation_id = rootObligationId;
-          error.sme_request_diagnostics = responseIngress;
-          throw error;
-        }
       }
     } catch (err) {
+      if (providerResponseReceived) throw err;
       if (!automaticFragmentRecovery && !recoveryOnlyMode) {
         await pipeline.recordActionReceipt('action_failed', {
           action: 'dispatch_provider_request', attempt_id: providerAttempt?.attempt_id,
@@ -1146,11 +1139,6 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     if (!recoveryOnlyMode) {
       smLog('[Smart Memory Enhanced] Session extraction response:', response);
       healthUpdate({ response_received: true, parser_outcome: 'not_started' });
-      const retainedResponse = updateCompletionJournal(providerAttempt, {
-        provider_disposition: 'response_received', response_text: response,
-      });
-      if (retainedResponse) await execution.hooks.provider_completion_journal_updated(retainedResponse,
-        { await_point: 'response_parse', progress: true });
     }
     const primaryStructuredResult = !recoveryOnlyMode
       && primaryProviderRequest.protocol === 'structured_json_schema_v1'

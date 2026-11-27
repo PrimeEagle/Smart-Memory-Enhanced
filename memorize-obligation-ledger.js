@@ -1,5 +1,6 @@
 import { acknowledgeJournalTransition, requireAppliedLifecycleResult } from './memorize-lifecycle-coordinator.js';
 import { cloneSerializableDomain } from './serializable-domain.js';
+import { findCurrentRunProviderCompletion } from './provider-completion-journal.js';
 
 /**
  * Authoritative Memorize Chat extraction-obligation lifecycle.
@@ -1321,7 +1322,7 @@ export function reconcileMemorizeLifecycleFromJournal(ledgerValue, input = {}) {
 }
 
 /** Repairs registered/running states when no physical provider transmission is active. */
-export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit = null) {
+export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit = null, journal = null) {
   const ledger = ensureMemorizeObligationLedger(ledgerValue);
   const attemptObligationId = (attempt) => attempt?.child_obligation_id
     ?? attempt?.logical_obligation_id ?? attempt?.root_obligation_id ?? null;
@@ -1331,6 +1332,22 @@ export function reconcileMemorizeRunningObligations(ledgerValue, providerAudit =
     .map((attempt) => [attemptObligationId(attempt), attempt]));
   const repairs = [];
   for (const obligation of Object.values(ledger.obligations)) {
+    if (obligation.current_state === 'provider_response_received') {
+      const retained = findCurrentRunProviderCompletion({ provider_completion_journal: journal }, {
+        logical_run_id: ledger.logical_run_id,
+        attempt_id: obligation.provider_attempt_lineage.at(-1),
+        obligation_leaf_id: obligation.obligation_id,
+        source_fingerprint: obligation.source_fingerprint,
+      })?.response_text != null;
+      obligation.current_state = 'pending_recovery';
+      obligation.checkpoint_eligible = false;
+      obligation.exact_reason_code = retained ? 'retained_provider_reply_pending_processing'
+        : 'provider_reply_not_durably_retained';
+      obligation.next_eligible_action = retained ? 'apply_journaled_provider_completion'
+        : 'dispatch_provider_request';
+      repairs.push({ obligation_id: obligation.obligation_id, reason_code: obligation.exact_reason_code });
+      continue;
+    }
     if (obligation.current_state === 'provider_registered') {
       const registered = [...(providerAudit?.recent_attempts ?? [])].reverse()
         .find((attempt) => attemptObligationId(attempt) === obligation.obligation_id

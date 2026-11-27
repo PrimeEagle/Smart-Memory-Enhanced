@@ -296,8 +296,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.99',
-  build_fingerprint: 'sme-v0.9.99-session-record-identity-r1',
+  extension_version: '0.9.100',
+  build_fingerprint: 'sme-v0.9.100-atomic-provider-response-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -2270,7 +2270,7 @@ export function bindSettingsUI(ctrl) {
       });
       if (staleAudit.stale && rawCheckpoint.run_manifest?.obligation_ledger) {
         const repaired = reconcileMemorizeRunningObligations(
-          rawCheckpoint.run_manifest.obligation_ledger, audit);
+          rawCheckpoint.run_manifest.obligation_ledger, audit, liveMetadata?.provider_completion_journal);
         rawCheckpoint.run_manifest.obligation_ledger = repaired.ledger;
         const staleCoverage = liveMetadata?.catch_up_diagnostics?.extractionCoverage ?? {};
         const staleJournalReconciliation = reconcileMemorizeLifecycleFromJournal(
@@ -5597,6 +5597,7 @@ export function bindSettingsUI(ctrl) {
       const runningReconciliation = reconcileMemorizeRunningObligations(
         checkpoint.run_manifest.obligation_ledger,
         providerAudit,
+        catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
       );
       checkpoint.run_manifest.obligation_ledger = runningReconciliation.ledger;
       const persistedCoverage = catchUpContext.chatMetadata?.[META_KEY]
@@ -6403,6 +6404,10 @@ export function bindSettingsUI(ctrl) {
             requireAppliedLifecycleResult(lifecycleResult, ['provider_running'], {
               stage: event.type, obligation_id: event.obligation_id,
               event_type: event.type,
+            });
+          } else if (event.type === 'provider_response_received' && providerStateProposal) {
+            requireAppliedLifecycleResult(lifecycleResult, ['provider_response_received'], {
+              stage: event.type, obligation_id: event.obligation_id, event_type: event.type,
             });
           }
           checkpoint.updated_at = Date.now();
@@ -10138,6 +10143,7 @@ export function bindSettingsUI(ctrl) {
         const failedRunningReconciliation = reconcileMemorizeRunningObligations(
           failedCheckpoint.run_manifest.obligation_ledger,
           failedProviderAudit,
+          catchUpContext.chatMetadata?.[META_KEY]?.provider_completion_journal,
         );
         failedCheckpoint.run_manifest.obligation_ledger = failedRunningReconciliation.ledger;
         const failedCoverage = catchUpContext.chatMetadata?.[META_KEY]
@@ -10244,7 +10250,8 @@ export function bindSettingsUI(ctrl) {
           });
           const repaired = reconcileMemorizeRunningObligations(
             terminalCheckpoint.run_manifest.obligation_ledger,
-            terminalMetadata?.live_memory_health?.provider_attempt_audit);
+            terminalMetadata?.live_memory_health?.provider_attempt_audit,
+            terminalMetadata?.provider_completion_journal);
           terminalCheckpoint.run_manifest.obligation_ledger = repaired.ledger;
           return { provider_attempt_settlement: settlement,
             logical_obligation_repairs: repaired.repairs };

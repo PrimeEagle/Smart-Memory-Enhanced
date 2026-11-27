@@ -8,6 +8,7 @@ import { assertMemorizeActionSelected, canonicalizeMemorizeAction, dispatchMemor
   from './memorize-action-dispatcher.js';
 import { preparePersistenceCommand } from './persistence-command.js';
 import { cloneSerializableDomain } from './serializable-domain.js';
+import { recordProviderCompletion } from './provider-completion-journal.js';
 
 const EXPECTED_EVENT_STATES = Object.freeze({
   obligation_registered: [],
@@ -187,7 +188,7 @@ export function createMemorizeTierPipeline(input) {
   const applyLifecycleEvent = async (type, details = {}) => {
     const attemptId = details.provider_attempt_id ?? null;
     const providerStateProposal = type === 'provider_attempt_registered'
-      || type === 'provider_attempt_started'
+      || type === 'provider_attempt_started' || type === 'provider_response_received'
       ? pendingRegistrationProposals.get(attemptId) ?? null : null;
     const event = {
       obligation_id: leafObligationId,
@@ -426,6 +427,31 @@ export function createMemorizeTierPipeline(input) {
       throw error;
     }
   };
+  // The same leased hook publishes the private reply and its ledger transition.
+  // A rejected save must leave neither half visible in the authoritative state.
+  const retainProviderResponse = async (attempt, response, detail = {}) => {
+    const attemptId = attempt?.attempt_id;
+    if (!attemptId || typeof response !== 'string') throw Object.assign(
+      new Error('Response retention requires a registered attempt and a reply.'),
+      { code: 'SME_PROVIDER_RESPONSE_EVIDENCE_REQUIRED' });
+    const snapshot = captureRegistrationSnapshot();
+    const prepared = prepareProviderStateProposal((proposalMetadata) =>
+      recordProviderCompletion(proposalMetadata, attempt, {
+        child_key: leafObligationId, ...detail, child_obligation_id: leafObligationId,
+        provider_disposition: 'response_received', response_text: response,
+      }), 'provider_response_retention');
+    pendingRegistrationSnapshots.set(attemptId, snapshot);
+    pendingRegistrationProposals.set(attemptId, prepared.proposal);
+    pendingAttemptReferences.set(attemptId, attempt);
+    const result = await ingestProviderEvidence('record_new_response', { attempt });
+    if (!['applied', 'idempotent_duplicate_verified'].includes(result.status)) {
+      throw Object.assign(new Error('Provider reply could not enter the durable lifecycle.'), {
+        code: 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED', sme_origin: 'internal_invariant',
+        sme_obligation_id: leafObligationId, sme_request_diagnostics: result,
+      });
+    }
+    return completionJournalEntry(metadata, attemptId);
+  };
   const getCanonicalObligation = () => execution.hooks.get_canonical_obligation(
     leafObligationId, lifecycleIdentity.logical_run_id);
   const recordActionReceipt = async (phase, detail = {}) => {
@@ -617,7 +643,7 @@ export function createMemorizeTierPipeline(input) {
     rootObligationId, leafObligationId, isRecoveryLeaf, coverageBase,
     lifecycleIdentity,
     recordCoverage, recordCompletedCoverage, emitLifecycleEvent, beginAttempt,
-    beginRegisteredAttempt, ingestProviderEvidence, markProviderDispatchStarted,
+    beginRegisteredAttempt, ingestProviderEvidence, markProviderDispatchStarted, retainProviderResponse,
     getCanonicalObligation,
     requireSelectedAction, executeSelectedAction, recordActionReceipt,
     atomicCompletionEnabled, prepareProviderCompletion, applyProviderCompletion,

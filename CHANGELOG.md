@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.100] - 2026-11-27
+
+- Save provider reply retention and the response-received ledger transition together for Session and Long-Term extraction. Interrupted downstream work replays the exact retained reply when available, or retries only the unfinished request if the reply never reached disk.
+- Added fault injection for an HTTP 500 at the response checkpoint and a receipt failure after it. Both paths preserve the committed sibling and can advance coverage without repeating it.
+
 ## [0.9.99] - 2026-11-26
 
 - Session classifies inserts by durable record ID rather than by mutable prose. Canonical rewrites of existing memories no longer require candidate provenance from the current reply. True write-plan validation failures retain the exact obligation, reason, and stage.

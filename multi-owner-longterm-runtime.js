@@ -255,27 +255,12 @@ export async function extractAndStoreMultiOwnerMemories(
       attention_reason_codes: ['provider_transport_failure'] });
     throw fail(error);
   }
-  let journalEntry = await retainResponseBeforeReceipt(async () => {
-    const entry = recordProviderCompletion(metadata, attempt, {
-      child_key: pipeline.leafObligationId, response_text: response,
-      owner_scope: owners,
-    });
-    await execution.hooks.provider_completion_journal_updated(entry, {
-      await_point: 'response_parse', progress: true,
-    });
-    return entry;
-  }, () => pipeline.recordActionReceipt('provider_response_received', {
+  let journalEntry = await retainResponseBeforeReceipt(
+    () => journalReplayMode ? journaledCurrentCompletion
+      : pipeline.retainProviderResponse(attempt, response, { owner_scope: owners }),
+    () => pipeline.recordActionReceipt('provider_response_received', {
     action: dispatchAction, attempt_id: attempt?.attempt_id,
   }));
-  const responseIngress = journalReplayMode ? { status: 'applied' }
-    : await pipeline.ingestProviderEvidence('record_new_response', { attempt });
-  if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
-    const error = new Error('Multi-owner response could not enter the lifecycle.');
-    error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
-    error.sme_origin = 'internal_invariant';
-    error.sme_request_diagnostics = responseIngress;
-    throw fail(error);
-  }
   if (partition.status === 'malformed') {
     finishProviderAttempt(metadata, attempt, { terminal_outcome: 'malformed_output', recoverable: true });
     journalEntry = recordProviderCompletion(metadata, attempt, {

@@ -7,8 +7,9 @@ import { finalizeMemorizeController } from '../memorize-controller-finalizer.js'
 import { selectDiagnosticsProjection } from '../memorize-projections.js';
 import { retainResponseBeforeReceipt } from '../memorize-tier-pipeline.js';
 import { acknowledgeProviderCompletionLedger, recordProviderCompletion, exportProviderCompletionJournal, inspectProviderCompletionConsistency } from '../provider-completion-journal.js';
-import { settleProviderTransportFailure } from '../provider-attempt-audit.js';
-import { applyMemorizeLifecycleEvent, createMemorizeObligationLedger } from '../memorize-obligation-ledger.js';
+import { settleOrphanedProviderAttempts, settleProviderTransportFailure } from '../provider-attempt-audit.js';
+import { applyMemorizeLifecycleEvent, createMemorizeObligationLedger,
+  reconcileMemorizeRunningObligations } from '../memorize-obligation-ledger.js';
 import { selectMemorizeSourceTierWork, stageMemorizeSourceCheckpoint } from '../memorize-authority-model.js';
 import { createMemorizeExecutionContext } from '../memorize-execution-context.js';
 import { createRuntimeEffectExecutor } from '../runtime-effect-executor.js';
@@ -182,14 +183,16 @@ for (const boundary of ['checkpoint', 'commit']) {
   });
 }
 
-for (const mode of ['no-update', 'record', 'receipt-failure', 'transport-failure', 'internal-session-retry']) {
+for (const mode of ['no-update', 'record', 'receipt-failure', 'transport-failure', 'internal-session-retry',
+  'response-save-failure', 'response-saved-interruption']) {
 test(mode === 'record' ? 'both adapters replay local write failures and Session retries transport after reload'
   : mode === 'internal-session-retry' ? 'internal Session retry settles every attempt before the next registration'
     : `real Long-Term adapter: ${mode}`, async () => {
   const rejectReceipt = mode === 'receipt-failure';
   const rejectTransport = mode === 'transport-failure';
   const internalRetry = mode === 'internal-session-retry';
-  const producesRecord = mode === 'record' || internalRetry;
+  const responseBoundary = mode.startsWith('response-');
+  const producesRecord = mode === 'record' || internalRetry || responseBoundary;
   const logical_run_id = 'real-longterm-first-chunk';
   let metadata = { active_catchup_run_id: logical_run_id,
     ledger: createMemorizeExecutionAggregate(logical_run_id) };
@@ -198,13 +201,25 @@ test(mode === 'record' ? 'both adapters replay local write failures and Session 
     chatMetadata: { [META_KEY]: metadata } };
   globalThis.smeTestExtractionContext = context;
   let saved;
+  let injectResponseBoundary = responseBoundary;
   const fetchBefore = globalThis.fetch;
   globalThis.fetch = async (url, request) => {
     assert.equal(url, '/api/chats/group/save');
     assert.equal(request.method, 'POST');
     const body = JSON.parse(request.body);
     assert.equal(body.id, context.chatId);
-    saved = body.chat[0].chat_metadata[META_KEY];
+    const proposed = body.chat[0].chat_metadata[META_KEY];
+    const acceptingSessionReply = Object.values(proposed.ledger.obligations)
+      .find((leaf) => leaf.tier === 'session' && leaf.current_state === 'provider_response_received');
+    if (acceptingSessionReply) {
+      const id = acceptingSessionReply.provider_attempt_lineage.at(-1);
+      assert.equal(typeof proposed.provider_completion_journal.entries[id].response_text, 'string');
+      if (injectResponseBoundary && mode === 'response-save-failure') {
+        injectResponseBoundary = false;
+        return { ok: false, status: 500, headers: new Headers() };
+      }
+    }
+    saved = proposed;
     return { ok: true };
   };
   let transaction = beginCatchUpTransaction(context);
@@ -240,6 +255,13 @@ test(mode === 'record' ? 'both adapters replay local write failures and Session 
         get_canonical_obligation: (id) => metadata.ledger.obligations[id],
         action_receipt: async ({ phase }) => {
           if (rejectReceipt && phase === 'provider_response_received') throw failure;
+          if (injectResponseBoundary && mode === 'response-saved-interruption'
+            && phase === 'provider_response_received'
+            && Object.values(saved.ledger.obligations).some((leaf) =>
+              leaf.tier === 'session' && leaf.current_state === 'provider_response_received')) {
+            injectResponseBoundary = false;
+            throw failure;
+          }
           return { status: 'applied' };
         },
         provider_await_point: async () => {},
@@ -395,6 +417,46 @@ test(mode === 'record' ? 'both adapters replay local write failures and Session 
         assert.equal(work.longterm.dispatch, false);
         assert.equal(work.session.dispatch, true);
         let sessionCalls = 0;
+        if (responseBoundary) {
+          globalThis.smeTestSessionProvider = async () => {
+            sessionCalls++;
+            return '[detail:2:session:sources=3] A left the spare key on the kitchen table.';
+          };
+          await assert.rejects(extractSessionMemories(messages, null, {
+            executionContext: makeExecutionContext('interrupted-response'),
+          }), (error) => error === failure || (error.status === 500 && error.sme_origin === 'persistence'));
+          const hadDurableReply = mode === 'response-saved-interruption';
+          assert.equal(saved.catch_up_checkpoint.next_source_offset, 0);
+          const sessionLeaf = Object.values(saved.ledger.obligations).find((leaf) => leaf.tier === 'session');
+          assert.equal(sessionLeaf.current_state, hadDurableReply ? 'provider_response_received' : 'provider_running');
+          const attemptId = sessionLeaf.provider_attempt_lineage.at(-1);
+          assert.equal(saved.provider_completion_journal.entries[attemptId].response_text != null, hadDurableReply);
+          rollbackCatchUpTransaction(transaction);
+          metadata = structuredClone(saved);
+          settleOrphanedProviderAttempts(metadata, { logical_run_id });
+          metadata.ledger = reconcileMemorizeRunningObligations(metadata.ledger,
+            metadata.live_memory_health.provider_attempt_audit, metadata.provider_completion_journal).ledger;
+          context = { ...context, chatMetadata: { [META_KEY]: metadata } };
+          globalThis.smeTestExtractionContext = context;
+          transaction = beginCatchUpTransaction(context, { page_instance_id: 'page:response-resumed' });
+          const pending = selectMemorizeSourceTierWork(metadata.ledger, range, enabled_tiers);
+          const next = hadDurableReply ? 'apply_journaled_provider_completion' : 'dispatch_provider_request';
+          assert.equal(pending.longterm.dispatch, false);
+          assert.equal(pending.session.obligation.next_eligible_action, next);
+          assert.equal(await extractSessionMemories(messages, null, {
+            executionContext: makeExecutionContext('response-resumed', next),
+          }), 1);
+          metadata.catch_up_checkpoint.run_manifest.obligation_ledger = metadata.ledger;
+          stageMemorizeSourceCheckpoint(metadata.catch_up_checkpoint, coverageOptions);
+          await saveChatMetadata(context);
+          await commitCatchUpTransaction(transaction);
+          assert.equal(saved.catch_up_checkpoint.next_source_offset, 20);
+          assert.equal(saved.sessionMemories.length, 1);
+          assert.deepEqual(saved.saved_records.map((record) => record.id), [recordId]);
+          assert.equal(calls, 1);
+          assert.equal(sessionCalls, hadDurableReply ? 1 : 2);
+          return;
+        }
         if (internalRetry) {
           globalThis.smeTestSessionProvider = async () => {
             sessionCalls++;

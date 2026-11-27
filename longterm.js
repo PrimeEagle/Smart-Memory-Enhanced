@@ -1652,25 +1652,10 @@ export async function extractAndStoreMemories(characterName, recentMessages, sta
         source_range: { start: range.start, end: range.end, message_count: range.message_count },
         last_durable_transition: 'provider_response_received',
       });
-      completionJournalEntry = recordProviderCompletion(providerMetadata, providerAttempt, {
-        child_key: completionChildKey,
-        response_text: response,
-        live_health_event_id: options.liveHealth?.event_id ?? null,
-      });
-      await execution.hooks.provider_completion_journal_updated(completionJournalEntry, {
-        await_point: 'response_parse', progress: true,
-      });
-      const responseIngress = await pipeline.ingestProviderEvidence('record_new_response', {
-        attempt: providerAttempt,
-      });
-      if (!['applied', 'idempotent_duplicate_verified'].includes(responseIngress.status)) {
-        const error = new Error('Long-Term provider response could not enter the lifecycle.');
-        error.code = 'SME_PROVIDER_RESPONSE_INGRESS_REJECTED';
-        error.sme_recovery_blocked = true;
-        error.sme_obligation_id = rootObligationId;
-        error.sme_request_diagnostics = responseIngress;
-        throw error;
-      }
+      completionJournalEntry = journalReplayMode ? journaledCurrentCompletion
+        : await pipeline.retainProviderResponse(providerAttempt, response, {
+          child_key: completionChildKey, live_health_event_id: options.liveHealth?.event_id ?? null,
+        });
     }
     const primaryStructuredResult = !recoveryOnlyMode
       && primaryProviderRequest.protocol === 'structured_json_schema_v1'
