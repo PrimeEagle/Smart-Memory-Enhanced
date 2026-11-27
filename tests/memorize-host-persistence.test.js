@@ -426,7 +426,7 @@ test(mode === 'record' ? 'both adapters replay local write failures and Session 
           const leaf = Object.values(saved.ledger.obligations).find((item) => item.tier === 'session');
           assert.equal(leaf.current_state, 'provider_running');
           if (sessionCalls === 1) throw Object.assign(new Error('private Session body'), { status: 503 });
-          return '[detail:2:session:sources=3] A left the spare key on the kitchen table.';
+          return '[detail:2:session:sources=3] Adam Lawson left the spare key on the kitchen table.';
         };
         await assert.rejects(extractSessionMemories(messages, null, {
           executionContext: makeExecutionContext('reloaded'),
@@ -479,6 +479,36 @@ test(mode === 'record' ? 'both adapters replay local write failures and Session 
           saved.catch_up_checkpoint.run_manifest.obligation_ledger, range, enabled_tiers);
         assert.equal(repeat.longterm.dispatch, false);
         assert.equal(repeat.session.dispatch, false);
+        const originalSessionId = saved.sessionMemories[0].id;
+        assert.match(saved.sessionMemories[0].content, /Adam Lawson/);
+        metadata = structuredClone(saved);
+        const nextMessages = Array.from({ length: 20 }, (_, index) => ({
+          name: 'Kyle Holland',
+          mes: index === 2 ? 'The spare flashlight is in the hallway.' : `Second chunk line ${index}`,
+          __sme_original_index: index + 20,
+        }));
+        context = { ...context, chat: [...messages, ...nextMessages], name1: 'Kyle Holland',
+          persona: { name: 'Kyle Holland', previous_names: ['Adam Lawson'] },
+          chatMetadata: { [META_KEY]: metadata } };
+        globalThis.smeTestExtractionContext = context;
+        transaction = beginCatchUpTransaction(context, { page_instance_id: 'page:next-chunk' });
+        globalThis.smeTestSessionProvider = async () =>
+          '[detail:2:session:sources=2] The spare flashlight is in the hallway.';
+        assert.equal(await extractSessionMemories(nextMessages, null, {
+          executionContext: makeExecutionContext('next-chunk'),
+        }), 1);
+        await commitCatchUpTransaction(transaction);
+        const reopened = structuredClone(saved);
+        assert.equal(reopened.sessionMemories.length, 2);
+        assert.match(reopened.sessionMemories.find((record) => record.id === originalSessionId).content,
+          /Kyle Holland left the spare key/);
+        const inserted = reopened.sessionMemories.find((record) => record.id !== originalSessionId);
+        assert.match(inserted.content, /spare flashlight/);
+        const secondEntry = exportProviderCompletionJournal(reopened).entries.find(
+          (entry) => entry.tier === 'session' && entry.source_range.start === 20);
+        assert.deepEqual(secondEntry.persistence.durable_record_ids, [inserted.id]);
+        assert.ok(secondEntry.parser_accepted_candidate_ids.includes(
+          secondEntry.persistence.durable_record_candidate_map[inserted.id]));
       }
     }
     assert.equal(calls, 1);

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.99] - 2026-11-26
+
+- Session classifies inserts by durable record ID rather than by mutable prose. Canonical rewrites of existing memories no longer require candidate provenance from the current reply. True write-plan validation failures retain the exact obligation, reason, and stage.
+- Added a second-chunk regression covering an existing memory rewrite alongside a new cited record, with only the new record in the current attempt's durable candidate mapping.
+
 ## [0.9.98] - 2026-11-26
 
 - Stop Memorize Chat immediately when a chunk save rolls back. Preserve the original group-save HTTP error and stage, discard unsaved records, and settle the restored checkpoint for Resume instead of committing a closed transaction.

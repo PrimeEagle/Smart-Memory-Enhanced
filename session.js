@@ -435,6 +435,7 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     }
 
     const existingAll = loadSessionMemories();
+    const existingRecordIds = new Set(existingAll.map((memory) => memory.id));
 
     // Separate active from retired memories. Verification and merge operate only
     // on active entries; retired ones are preserved in storage for history but
@@ -2127,12 +2128,11 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // deduplication.  Reattach it deterministically when an adapter returned a
     // cloned record instead of the original candidate object.
     const acceptedCandidateIdentity = new Map(incoming.map((memory) => [
-      `${memory.type}|${String(memory.content ?? '').trim()}`,
+      memory.id,
       candidateIdentityOf(memory),
     ]));
     for (const memory of merged) {
-      const acceptedIdentity = candidateIdentityOf(memory) ?? acceptedCandidateIdentity.get(
-        `${memory.type}|${String(memory.content ?? '').trim()}`) ?? null;
+      const acceptedIdentity = candidateIdentityOf(memory) ?? acceptedCandidateIdentity.get(memory.id) ?? null;
       if (acceptedIdentity) assignCandidateIdentity(memory, acceptedIdentity);
     }
 
@@ -2187,10 +2187,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
 
     // Profile B and opted-in Profile A: generate LLM-suggested triggers for
     // newly added session memories. Same path as long-term, runs sequentially.
-    const existingKeys = new Set(existing.map((m) => `${m.type}|${m.content}`));
     if (getHardwareProfile() === 'b' || settings.longterm_triggers_enabled) {
       for (const mem of finalActive) {
-        if (existingKeys.has(`${mem.type}|${mem.content}`)) continue;
+        if (existingRecordIds.has(mem.id)) continue;
         if (Array.isArray(mem.triggers) && mem.triggers.length > 0) continue;
         try {
           const triggerPrompt = buildTriggerGenerationPrompt(mem.content);
@@ -2246,7 +2245,9 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
       updatedRetired = updatedRetired.slice(updatedRetired.length - MAX_RETIRED_POOL);
     }
 
-    const newlyAddedMemories = finalActive.filter((m) => !existingKeys.has(`${m.type}|${m.content}`));
+    // A rewrite or retirement of an existing record is part of the snapshot
+    // write, not a new extraction from this provider attempt.
+    const newlyAddedMemories = finalActive.filter((memory) => !existingRecordIds.has(memory.id));
     const added = newlyAddedMemories.length;
     const addedRecordIds = newlyAddedMemories.map((memory) => memory.id).filter(Boolean);
     const durableRecordCandidateMap = Object.fromEntries(newlyAddedMemories
@@ -2290,7 +2291,15 @@ export async function extractSessionMemories(recentMessages, abortCheck = null, 
     // This throws before either the Session store or its completion journal can
     // claim success when a record lost its accepted-candidate identity.
     if (pipeline.atomicCompletionEnabled) {
-      pipeline.prepareProviderCompletion(persistenceCompletionDetails);
+      try {
+        pipeline.prepareProviderCompletion(persistenceCompletionDetails);
+      } catch (error) {
+        error.sme_origin ??= 'internal_invariant';
+        error.sme_reason_code ??= error.code ?? 'session_write_plan_invalid';
+        error.sme_failure_stage ??= 'session_write_plan_validation';
+        error.sme_obligation_id ??= leafObligationId;
+        throw error;
+      }
     }
     try {
       if (entityRegistry.length > 0 && !abortCheck?.()) {

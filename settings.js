@@ -296,8 +296,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.98',
-  build_fingerprint: 'sme-v0.9.98-durable-save-rollback-r1',
+  extension_version: '0.9.99',
+  build_fingerprint: 'sme-v0.9.99-session-record-identity-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -6657,13 +6657,16 @@ export function bindSettingsUI(ctrl) {
                   source_fingerprint: obligation.source_fingerprint,
                   exact_reason_code: err?.sme_reason_code ?? err?.code
                     ?? 'persistence_command_validation_failed',
-                  next_eligible_action: null,
+                  next_eligible_action: 'stop_blocked',
                 });
               } catch (blockError) {
                 err.sme_block_transition_error = {
                   code: blockError?.code ?? null, message: blockError?.message ?? String(blockError),
                 };
               }
+            }
+            if (err?.sme_failure_stage === 'session_write_plan_validation') {
+              captureMemorizePrimaryFailure(controllerRuntime, err);
             }
             recordCatchUpError('session canonical action engine error', err, 'session');
             return { status: 'blocked', reason_code: err?.code ?? 'session_action_engine_failure',
@@ -6899,7 +6902,8 @@ export function bindSettingsUI(ctrl) {
               Number(obligation.source_range?.start) === Number(currentRange.source_start_index)
               && Number(obligation.source_range?.end) === Number(currentRange.source_end_index));
             const canonicalBlockedWithoutAction = Boolean(exactPendingObligation
-              && !exactPendingObligation.next_eligible_action);
+              && (!exactPendingObligation.next_eligible_action
+                || exactPendingObligation.next_eligible_action === 'stop_blocked'));
             const controllerBlocked = recoveryBlocked || canonicalBlockedWithoutAction;
             if (canonicalBlockedWithoutAction) {
               checkpointForCommit.status = 'blocked_recovery_change_required';
