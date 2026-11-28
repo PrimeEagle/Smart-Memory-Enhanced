@@ -86,11 +86,12 @@ export function selectCanonicalMemorizeAction({ ledger, tier, source_range: sour
 
 /** Iterative controller loop. Durable graph state is reread after every action. */
 export async function runCanonicalMemorizeActions({ read_ledger: readLedger, select,
-  execute, execute_local: executeLocal = null, aggregate, cancelled = () => false,
+  handlers, cancelled = () => false,
   maximum_actions: maximumActions = 512,
   on_action: onAction = null } = {}) {
-  if (![readLedger, select, execute, aggregate].every((value) => typeof value === 'function')) {
-    throw new TypeError('Canonical Memorize action engine requires graph, selector, executor, and aggregator.');
+  if (![readLedger, select].every((value) => typeof value === 'function')
+    || !handlers || typeof handlers !== 'object') {
+    throw new TypeError('Canonical Memorize action engine requires a graph, selector, and action handlers.');
   }
   const history = [];
   let priorSignature = null;
@@ -102,18 +103,15 @@ export async function runCanonicalMemorizeActions({ read_ledger: readLedger, sel
       history: Object.freeze(history), selected });
     if (selected.kind === 'blocked') return Object.freeze({ status: 'blocked',
       reason_code: selected.reason_code, history: Object.freeze(history), selected });
-    if (selected.kind === 'local_action' && typeof executeLocal !== 'function') {
-      return Object.freeze({ status: 'blocked', reason_code: 'canonical_local_action_has_no_handler',
+    const handler = Object.hasOwn(handlers, selected.action) ? handlers[selected.action] : null;
+    if (typeof handler !== 'function') {
+      return Object.freeze({ status: 'blocked', reason_code: 'canonical_action_has_no_handler',
         history: Object.freeze(history), selected });
     }
     const signature = JSON.stringify([selected.kind, selected.obligation?.obligation_id,
       selected.action, selected.obligation?.current_state, selected.obligation?.revision,
       selected.obligation?.provider_attempt_lineage?.length ?? 0]);
-    const result = selected.kind === 'aggregate_parent'
-      ? await aggregate(selected, { action_index: index })
-      : selected.kind === 'local_action'
-        ? await executeLocal(selected, { action_index: index })
-        : await execute(selected, { action_index: index });
+    const result = await handler(selected, { action_index: index });
     history.push(Object.freeze({ selected, result }));
     if (result?.kind === 'cancelled') return Object.freeze({ status: 'cancelled',
       history: Object.freeze(history), selected });

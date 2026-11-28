@@ -56,3 +56,9 @@ retained reply, without a third provider call or a duplicate Long-Term record.
 A separate internal retry produces malformed output, rejects a recovery
 request with HTTP 503, then succeeds. It checks that all three Session
 attempts have verified ledger acknowledgements and no attempt remains running.
+
+The response-checkpoint fault cases now start after reload through the Session
+action controller used by settings, rather than passing a preselected action
+to the extractor. They verify that Resume eligibility agrees with the action
+selected by the controller, that saved replies require no provider call, and
+that an unregistered Session action is blocked before dispatch.

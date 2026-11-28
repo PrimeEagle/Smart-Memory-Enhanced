@@ -17,6 +17,9 @@ import { createLongtermOwnerEffectExecutor, createLongtermOwnerPersistencePlan }
 import { createMemorizeExecutionAggregate } from '../memorize-execution-kernel.js';
 import { prepareMemorizeUnitOfWork, markMemorizeRecordsApplied, commitMemorizeUnitOfWork } from '../memorize-unit-of-work.js';
 import { settleMemorizeTransactionCheckpoint } from '../memorize-transaction-settlement.js';
+import { runSessionActionController } from '../session-action-controller.js';
+import { executeSessionTier } from '../session-tier-runtime.js';
+import { deriveMemorizeRecoveryAuthority } from '../memorize-recovery-authority.js';
 
 const transactionUrl = new URL('../catchup-transaction.js', import.meta.url).href;
 const longtermRuntimeUrl = new URL('../multi-owner-longterm-runtime.js', import.meta.url).href;
@@ -443,9 +446,35 @@ test(mode === 'record' ? 'both adapters replay local write failures and Session 
           const next = hadDurableReply ? 'apply_journaled_provider_completion' : 'dispatch_provider_request';
           assert.equal(pending.longterm.dispatch, false);
           assert.equal(pending.session.obligation.next_eligible_action, next);
-          assert.equal(await extractSessionMemories(messages, null, {
-            executionContext: makeExecutionContext('response-resumed', next),
-          }), 1);
+          const getAuthority = (ledger) => deriveMemorizeRecoveryAuthority({
+            checkpoint: { status: 'awaiting_manual_resume', next_source_offset: 0 },
+            ledger, provider_audit: metadata.live_memory_health.provider_attempt_audit,
+            provider_completion_journal: metadata.provider_completion_journal,
+            checkpoint_status: 'awaiting_manual_resume',
+          });
+          const authority = getAuthority(metadata.ledger);
+          assert.equal(authority.resume_eligible, true);
+          assert.equal(authority.next_executable_action, next);
+          assert.equal(authority.provider_call_permitted, !hadDurableReply);
+          const unsupported = structuredClone(metadata.ledger);
+          unsupported.obligations[sessionLeaf.obligation_id].next_eligible_action
+            = 'recover_missing_owner_coverage';
+          const blocked = getAuthority(unsupported);
+          assert.equal(blocked.resume_eligible, false);
+          assert.equal(blocked.next_executable_action, null);
+          assert.ok(blocked.resume_blockers.some((item) => item.reason_code === 'canonical_action_has_no_handler'));
+          const result = await runSessionActionController({
+            read_ledger: () => metadata.ledger, source_range: range,
+            extract: (selected) => executeSessionTier(messages, null, {
+              executionContext: makeExecutionContext('response-resumed', selected.action),
+            }, extractSessionMemories),
+            aggregate: () => assert.fail('single leaf does not aggregate'),
+          });
+          assert.equal(result.status, 'complete');
+          assert.equal(result.history.length, 1);
+          assert.equal(result.history[0].selected.action, next);
+          assert.equal(result.history[0].selected.provider_call_required, !hadDurableReply);
+          assert.equal(result.history[0].result.value.added, 1);
           metadata.catch_up_checkpoint.run_manifest.obligation_ledger = metadata.ledger;
           stageMemorizeSourceCheckpoint(metadata.catch_up_checkpoint, coverageOptions);
           await saveChatMetadata(context);

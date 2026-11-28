@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runCanonicalMemorizeActions, selectCanonicalMemorizeAction }
   from '../memorize-action-engine.js';
+import { runSessionActionController, hasSessionActionHandler } from '../session-action-controller.js';
+import { getMemorizeActionContract } from '../memorize-obligation-ledger.js';
 import { aggregateMemorizeObligationParents, createMemorizeObligationLedger,
   transitionMemorizeObligation } from '../memorize-obligation-ledger.js';
 import { classifyMemorizeErrorRecord } from '../memorize-error-origin.js';
@@ -48,11 +50,10 @@ test('crash after 30-34 resumes 35-39, then aggregates each ancestor without pro
   const ledger = nestedLedger();
   const providerDispatches = [];
   const aggregations = [];
-  const result = await runCanonicalMemorizeActions({
+  const result = await runSessionActionController({
     read_ledger: () => ledger,
-    select: (graph) => selectCanonicalMemorizeAction({ ledger: graph, tier: 'session',
-      source_range: { start: 20, end: 39 } }),
-    execute: async (selected) => {
+    source_range: { start: 20, end: 39 },
+    extract: async (selected) => {
       providerDispatches.push(selected.obligation.obligation_id);
       Object.assign(ledger.obligations[selected.obligation.obligation_id], {
         current_state: 'durably_committed', checkpoint_eligible: true, updated_at: 2,
@@ -99,11 +100,11 @@ test('real obligation reducer and action engine complete nested Session recovery
     next_eligible_action: 'dispatch_provider_request', at: 6,
   });
   const dispatches = [];
-  const result = await runCanonicalMemorizeActions({
+  const result = await runSessionActionController({
     read_ledger: () => ledger,
-    select: (graph) => selectCanonicalMemorizeAction({ ledger: graph, tier: 'session',
-      source_range: { start: 20, end: 39 }, root_obligation_id: 'root' }),
-    execute: async (selected) => {
+    source_range: { start: 20, end: 39 },
+    read_root_obligation_id: () => 'root',
+    extract: async (selected) => {
       dispatches.push(selected.obligation.obligation_id);
       transitionMemorizeObligation(ledger, selected.obligation, {
         current_state: 'durably_committed', at: 7,
@@ -123,8 +124,7 @@ test('production Session wiring delegates recursion and automatic continuation t
     readFile(new URL('../settings.js', import.meta.url), 'utf8'),
     readFile(new URL('../session.js', import.meta.url), 'utf8'),
   ]);
-  assert.match(settings, /runCanonicalMemorizeActions\s*\(/);
-  assert.match(settings, /selectCanonicalMemorizeAction\s*\(/);
+  assert.match(settings, /runSessionActionController\s*\(/);
   assert.match(settings, /controller_owned:\s*true/);
   assert.match(session, /canonical_recovery_children_declared/);
   assert.match(session, /!execution\.recovery\.controller_owned\s*\n\s*&& execution\.recovery\.automatic_partial_recovery/);
@@ -148,10 +148,29 @@ test('a claimed completion without a canonical transition fails before duplicate
     read_ledger: () => ledger,
     select: (graph) => selectCanonicalMemorizeAction({ ledger: graph, tier: 'session',
       source_range: { start: 0, end: 19 }, root_obligation_id: 'root' }),
-    execute: async () => { calls++; return { kind: 'complete' }; },
-    aggregate: async () => {},
+    handlers: { dispatch_provider_request: async () => { calls++; return { kind: 'complete' }; } },
   });
   assert.equal(result.status, 'failed');
   assert.equal(result.reason_code, 'action_outcome_without_canonical_transition');
   assert.equal(calls, 1);
+});
+
+test('Session exposes handlers for dispatch, retained reply replay, and aggregation', () => {
+  for (const action of ['dispatch_provider_request', 'apply_journaled_provider_completion', 'aggregate_completed_children']) {
+    assert.equal(hasSessionActionHandler(action), true);
+    assert.ok(getMemorizeActionContract(action));
+  }
+  assert.equal(hasSessionActionHandler('recover_missing_owner_coverage'), false);
+  assert.throws(() => runSessionActionController({ extract: () => {} }), /has no aggregate adapter/);
+});
+
+test('unbound action fails closed and never falls through to provider dispatch', async () => {
+  const selected = { kind: 'local_action', action: 'apply_journaled_provider_completion' };
+  const result = await runCanonicalMemorizeActions({
+    read_ledger: () => ({}), select: () => selected,
+    handlers: { dispatch_provider_request: () => assert.fail('local work must not dispatch') },
+  });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.reason_code, 'canonical_action_has_no_handler');
+  assert.deepEqual(result.history, []);
 });

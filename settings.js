@@ -136,8 +136,7 @@ import {
 } from './memorize-controller-runtime.js';
 import { createMemorizeRunEngine, bindMemorizeRunEngine } from './memorize-run-engine.js';
 import { createMemorizeRecoveryScheduler } from './memorize-recovery-scheduler.js';
-import { runCanonicalMemorizeActions, selectCanonicalMemorizeAction }
-  from './memorize-action-engine.js';
+import { runSessionActionController } from './session-action-controller.js';
 import { executeSessionTier } from './session-tier-runtime.js';
 import { createMemorizeExecutionContext } from './memorize-execution-context.js';
 import { applyProviderCompletion as applyAtomicProviderCompletion,
@@ -296,8 +295,8 @@ import {
 } from './shortterm-recovery-utils.js';
 
 const SME_BUILD_IDENTITY = Object.freeze({
-  extension_version: '0.9.100',
-  build_fingerprint: 'sme-v0.9.100-atomic-provider-response-r1',
+  extension_version: '0.9.101',
+  build_fingerprint: 'sme-v0.9.101-session-action-registry-r1',
   recovery_schema_version: SHORTTERM_RECOVERY_SCHEMA_VERSION,
   loaded_module_schema_versions: Object.freeze({
     shortterm_recovery: SHORTTERM_RECOVERY_SCHEMA_VERSION,
@@ -6591,18 +6590,18 @@ export function bindSettingsUI(ctrl) {
               && message.__sme_original_index <= selectedRange.end);
             return exact.length ? exact : chunk;
           };
-          const sessionRun = await runCanonicalMemorizeActions({
+          const sessionRun = await runSessionActionController({
             maximum_actions: Math.max(16,
               (Number(settings.provider_max_retries ?? 5) + 1) * 8),
             read_ledger: () => checkpoint.run_manifest.obligation_ledger,
-            select: (ledger) => selectCanonicalMemorizeAction({ ledger, tier: 'session',
-              source_range: canonicalSourceRange, root_obligation_id: sessionRootObligationId }),
+            source_range: canonicalSourceRange,
+            read_root_obligation_id: () => sessionRootObligationId,
             cancelled: () => ctrl.catchUpCancelled === true,
             aggregate: async (selected) => runLeasedPersistence('aggregate_session_children', () => {
               aggregateMemorizeObligationParents(checkpoint.run_manifest.obligation_ledger, Date.now());
               checkpoint.updated_at = Date.now();
             }, { obligation_id: selected.obligation.obligation_id }),
-            execute: async (selected, { action_index: actionIndex }) => {
+            extract: async (selected, { action_index: actionIndex }) => {
               const selectedRange = selected.obligation?.source_range ?? canonicalSourceRange;
               const actionMessages = messagesForRange(selectedRange);
               const root = selected.root_obligation ?? selected.obligation;

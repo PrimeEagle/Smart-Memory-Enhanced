@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.101] - 2026-11-27
+
+- Session Resume and execution share one action registry for provider dispatch, retained-reply replay, and child aggregation. An unsupported action is blocked explicitly and never falls through to a provider request.
+- Recovery integration tests now reload a saved checkpoint and let the production Session action controller select and execute both local replay and provider retry. They verify the durable offset advances without rerunning committed Long-Term work.
+
 ## [0.9.100] - 2026-11-27
 
 - Save provider reply retention and the response-received ledger transition together for Session and Long-Term extraction. Interrupted downstream work replays the exact retained reply when available, or retries only the unfinished request if the reply never reached disk.

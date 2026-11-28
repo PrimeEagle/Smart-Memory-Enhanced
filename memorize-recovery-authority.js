@@ -5,6 +5,7 @@ import { deriveRecoveryStageEligibility } from './recovery-stage-eligibility.js'
 import { resumeNoProgressBlockIsCurrent, snapshotMemorizeResumeProgress }
   from './memorize-resume-progress.js';
 import { projectMemorizeKernelStatus } from './memorize-execution-kernel.js';
+import { hasSessionActionHandler } from './session-action-controller.js';
 
 /** Exact pending work takes precedence over unrelated finalization checks. */
 export function selectMemorizeResumePreflight(authority, evaluateFinalization) {
@@ -113,6 +114,10 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     reason_code: kernelStatus.exact_blocker ?? 'no_executable_canonical_action', evidence: null,
   });
   const actionContract = getMemorizeActionContract(exactAction);
+  const missingSessionHandler = pending?.tier === 'session' && exactAction && !hasSessionActionHandler(exactAction);
+  if (missingSessionHandler) {
+    blockers.push({ reason_code: 'canonical_action_has_no_handler', evidence: { action: exactAction, tier: 'session' } });
+  }
   const eligible = blockers.length === 0 && Boolean(exactAction)
     && (sourceTraversalPending || finalizationPending || kernelStatus?.action_executable === true
       || actionContract != null);
@@ -133,7 +138,7 @@ export function deriveMemorizeRecoveryAuthority(input = {}) {
     state,
     pending_obligation: pending,
     exact_recovery_stage: stageEligibility?.eligible_action ?? pending?.recovery_stage ?? null,
-    next_executable_action: exactAction,
+    next_executable_action: missingSessionHandler ? null : exactAction,
     resume_eligible: eligible,
     resume_blockers: blockers,
     provider_call_permitted: providerCallPermitted,
